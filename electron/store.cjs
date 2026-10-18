@@ -610,7 +610,7 @@ class LocalStore {
     const serviceId = serviceValue === null && (previous || allowDetached) ? null : id(serviceValue,'서비스');
     if (previous && (previous.reviewId !== reviewId || previous.serviceId !== serviceId)) fail('에이전트 실행의 리뷰와 서비스를 바꿀 수 없습니다.');
     const review = this.get('reviews',reviewId);
-    if (serviceId !== null) this.get('services',serviceId);
+    const service = serviceId !== null ? this.get('services',serviceId) : null;
     if (!previous && !allowDetached && !this.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(review.projectId,serviceId)) fail('프로젝트에 연결된 서비스의 실행 기록만 저장할 수 있습니다.');
     const status = choice(input.status,AGENT_STATES,previous?.status || 'queued','에이전트 실행 상태');
     const sessionId = input.sessionId ?? previous?.sessionId ?? '';
@@ -619,12 +619,17 @@ class LocalStore {
     if (/\s/.test(model)) fail('에이전트 모델 이름에 공백을 사용할 수 없습니다.');
     const startedAt = date(input.startedAt ?? previous?.startedAt ?? input.createdAt ?? timestamp());
     const finishedAt = AGENT_FINAL.has(status) ? date(input.finishedAt || previous?.finishedAt || timestamp()) : null;
+    const workPathValue = input.workPath ?? previous?.workPath;
+    // A saved run belongs to its original host, even after a connection is
+    // changed or deleted. Backups must preserve that path convention as well.
+    const historicalPaths = typeof workPathValue === 'string' && (/^[A-Za-z]:[\\/]/.test(workPathValue) || workPathValue.startsWith('\\') || workPathValue.startsWith('//')) ? path.win32 : path.posix;
+    const workPaths = previous || allowDetached ? historicalPaths : service?.kind === 'ssh' ? path.posix : path;
     return {
       reviewId,serviceId,kind:choice(input.kind,['agent'],'agent','에이전트 실행 종류'),
       prompt:byteText(input.prompt ?? previous?.prompt,'에이전트 요청',256 * 1024,strict),model,
       reasoningEffort:choice(input.reasoningEffort,AGENT_EFFORTS,previous?.reasoningEffort || '','에이전트 추론 수준'),status,
       sessionId:text(sessionId,'에이전트 대화',128),sessionScope:text(input.sessionScope ?? previous?.sessionScope,'에이전트 대화 구분',256),
-      workPath:absolutePath(input.workPath ?? previous?.workPath,'에이전트 작업 폴더'),
+      workPath:absolutePath(workPathValue,'에이전트 작업 폴더',false,workPaths),
       response:byteText(input.response ?? previous?.response,'에이전트 응답',256 * 1024,strict),
       output:byteText(input.output ?? previous?.output,'에이전트 출력',1024 * 1024,strict),error:text(input.error ?? previous?.error,'에이전트 오류',10000),
       progressJson:agentProgress(input.progress ?? input.progressJson ?? previous?.progress,strict),metadataJson:agentMetadata(input,previous),startedAt,finishedAt

@@ -17,6 +17,15 @@ test('agent links keep literal percentages and encoded paths for backend resolut
  assert.deepEqual(links.map(item=>item.target),['build/100% 완료.txt','file:///opt/project/report%20final.md#L22','sandbox:/mnt/data/report.pdf']);
 });
 
+test('Windows absolute paths remain clickable file destinations after Markdown parsing',async()=>{
+ const {parseInlineMarkdown,markdownLinkType}=await parser;
+ const destinations=[String.raw`C:\Users\Operator\My project\결과 (최종).md:42`,'d:/Work/ReviewOps/result.html#L8'];
+ const links=parseInlineMarkdown(destinations.map((target,index)=>`[결과 ${index+1}](<${target}>)`).join(' ')).filter(item=>item.type==='link');
+ assert.deepEqual(links.map(item=>item.target),destinations);
+ for(const link of links)assert.equal(markdownLinkType(link.target),'file');
+ for(const target of ['C:relative.md','C:','custom:/result.md','javascript:/result.md','data:/result.md'])assert.equal(markdownLinkType(target),null);
+});
+
 test('inline code and escaped Markdown never become file links',async()=>{
  const {parseInlineMarkdown}=await parser;
  assert.deepEqual(parseInlineMarkdown('`[설명](private.txt)` \\[설명](other.txt)'),[
