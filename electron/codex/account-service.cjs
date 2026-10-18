@@ -4,6 +4,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 const { RpcClient } = require('./rpc-client.cjs');
+const { syncDirectory } = require('../directory-sync.cjs');
 const { emptyStatistics, restoreStatistics, publicDetails, tokenUsage, recordSnapshot, recordReset } = require('./statistics.cjs');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -715,9 +716,7 @@ class AccountService {
         await file.sync();
       } finally { if (file) await file.close(); }
       await fs.rename(temporary, path.join(this.dataDir, 'accounts.json'));
-      // Make the rename durable as well as the file content.
-      const directory = await fs.open(this.dataDir, 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
+      await syncDirectory(this.dataDir);
     });
     this.saveChain = write;
     return write;

@@ -49,13 +49,13 @@ Release builds are ad hoc signed and are **not Apple-notarized**. If macOS block
 Each release includes SHA-256 checksums. To check a Windows installer in PowerShell:
 
 ```powershell
-Get-FileHash .\ReviewOps-1.2.2-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\ReviewOps-1.2.3-windows-x64.exe -Algorithm SHA256
 ```
 
 To check a macOS installer:
 
 ```sh
-shasum -a 256 ReviewOps-1.2.2-arm64.dmg
+shasum -a 256 ReviewOps-1.2.3-arm64.dmg
 ```
 
 Compare the result with the checksum published in that release.

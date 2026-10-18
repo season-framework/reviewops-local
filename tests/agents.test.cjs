@@ -15,6 +15,7 @@ const remoteAgent = require('../electron/remote-agent.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 async function eventually(check) {for(let attempt=0;attempt<200;attempt++){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
 async function completed(manager,id){return eventually(()=>{const job=manager.read(id);return ['completed','failed','cancelled'].includes(job.status)?job:null;});}
+async function updateReady(manager,id){return eventually(()=>{const job=manager.read(id);return job.status==='running'&&job.remoteExecution?.ready&&manager.hasBlockingJobs===false?job:null;});}
 const executable = `#!/usr/bin/env node
 const fs=require('node:fs'),{spawn}=require('node:child_process');
 const args=process.argv.slice(2), cwd=process.cwd();
@@ -168,7 +169,7 @@ test('failed turns and cancellation during startup do not become successful resp
 const hostKey=crypto.generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs1',format:'pem'},publicKeyEncoding:{type:'pkcs1',format:'pem'}}).privateKey;
 const fingerprint=fingerprintOf(utils.parseKey(hostKey).getPublicSSH());
 async function remoteFixture(t,options={}) {
- const f=await fixture(t,options.managerOptions||{}),clients=new Set(),processes=new Set();let authentications=0,rejectedStops=0;
+ const f=await fixture(t,options.managerOptions||{}),clients=new Set(),processes=new Set(),heldLaunchResponses=new Set();let authentications=0,rejectedStops=0,launchResponseReleased=!options.holdLaunchResponse;
  if(options.loginProfile) {
   f.profileCodexHome=path.join(f.home,'profile-codex');
   await fs.mkdir(f.profileCodexHome);
@@ -192,12 +193,16 @@ async function remoteFixture(t,options={}) {
    if(info.command.startsWith("bash -c 'd=")&&(options.rejectStop||options.rejectStopOnce&&rejectedStops++===0)){channel.exit(1);channel.end();return;}
    const child=spawn('/bin/bash',['-c',info.command],{env:{...process.env,PATH:f.bin+path.delimiter+process.env.PATH,HOME:f.home,CODEX_HOME:path.join(f.home,'.codex')},stdio:['pipe','pipe','pipe'],detached:true});processes.add(child);
    channel.pipe(child.stdin);child.stdin.on('error',()=>{});child.stdout.pipe(channel,{end:false});child.stderr.pipe(channel.stderr,{end:false});
-   child.on('close',(code)=>{processes.delete(child);if(!channel.destroyed){if(!(options.dropLaunchResponse&&info.command.includes('nohup setsid bash')))channel.exit(Number.isInteger(code)?code:143);channel.end();}});
+   child.on('close',(code)=>{
+    processes.delete(child);
+    const respond=()=>{if(!channel.destroyed){if(!(options.dropLaunchResponse&&info.command.includes('nohup setsid bash')))channel.exit(Number.isInteger(code)?code:143);channel.end();}};
+    if(info.command.includes('nohup setsid bash')&&!launchResponseReleased)heldLaunchResponses.add(respond);else respond();
+   });
   });}));
  });
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
  t.after(async()=>{await f.manager.closeAll();for(const child of processes){try{process.kill(-child.pid,'SIGKILL')}catch{}}for(const client of clients)client.destroy();await new Promise(resolve=>server.close(resolve));});
- return {...f,config:{id:'remote-service',kind:'ssh',host:'127.0.0.1',port:server.address().port,username:'tester',authType:'password',password:'fixture-password',rootPath:f.root,hostFingerprint:fingerprint},authentications:()=>authentications,disconnect:()=>{for(const client of clients)client.end();}};
+ return {...f,config:{id:'remote-service',kind:'ssh',host:'127.0.0.1',port:server.address().port,username:'tester',authType:'password',password:'fixture-password',rootPath:f.root,hostFingerprint:fingerprint},authentications:()=>authentications,disconnect:()=>{for(const client of clients)client.end();},releaseLaunchResponse:()=>{launchResponseReleased=true;for(const respond of heldLaunchResponses)respond();heldLaunchResponses.clear();}};
 }
 
 test('SSH agent refuses missing or changed host trust before sending credentials',async t=>{
@@ -286,7 +291,8 @@ test('explicit cancellation after restoring a running SSH request stops its proc
  const f=await remoteFixture(t,{managerOptions:{remotePollMs:20,remoteReconnectMs:30}});
  const job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
- await eventually(()=>f.manager.read(job.id).remoteExecution?.ready && f.manager.read(job.id).sessionId);
+ await updateReady(f.manager,job.id);
+ await eventually(()=>f.manager.read(job.id).sessionId);
  const saved=f.manager.read(job.id);
  await f.manager.closeAll({preserveRemote:true});
  const restored=createAgentManager({remotePollMs:20,remoteReconnectMs:30,commandTimeoutMs:3000});
@@ -344,9 +350,13 @@ test('SSH launch reports missing required commands and removes only its own prep
 });
 
 test('a saved SSH cancellation is sent again after app restart and still stops descendants',async t=>{
- const f=await remoteFixture(t,{managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const f=await remoteFixture(t,{holdLaunchResponse:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
- const saved={...f.manager.read(job.id),cancelRequested:true};
+ // A server child can start before the SSH launch acknowledgment reaches the
+ // app. Updates must remain blocked until the durable control is attached.
+ assert.equal(f.manager.read(job.id).remoteExecution.ready,false);assert.equal(f.manager.hasBlockingJobs,true);
+ f.releaseLaunchResponse();
+ const saved={...await updateReady(f.manager,job.id),cancelRequested:true};
  await f.manager.closeAll({preserveRemote:true});
  const restored=createAgentManager({remotePollMs:20,commandTimeoutMs:3000});
  try {
@@ -357,9 +367,10 @@ test('a saved SSH cancellation is sent again after app restart and still stops d
 });
 
 test('a restored SSH cancellation remains active after a failed stop and accepts another cancellation',async t=>{
- const f=await remoteFixture(t,{rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const f=await remoteFixture(t,{holdLaunchResponse:true,rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
- const saved={...f.manager.read(job.id),cancelRequested:true};
+ f.releaseLaunchResponse();
+ const saved={...await updateReady(f.manager,job.id),cancelRequested:true};
  await f.manager.closeAll({preserveRemote:true});
  const restored=createAgentManager({remotePollMs:20,commandTimeoutMs:3000});
  try {
@@ -374,7 +385,7 @@ test('a restored SSH cancellation remains active after a failed stop and accepts
 test('an update shutdown waits for cancellation reserved in the same tick and preserves its final output',async t=>{
  const f=await remoteFixture(t,{managerOptions:{remotePollMs:50}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL FINAL_ON_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
- await pause(150);
+ await updateReady(f.manager,job.id);
  const cancelling=f.manager.cancel(job.id);assert.equal(f.manager.hasBlockingJobs,true);
  await f.manager.closeAll({preserveRemote:true});
  const result=await cancelling;assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);assert.equal(result.response,'중지 직전 마지막 응답');
@@ -425,6 +436,7 @@ test('SSH cancellation can be retried after an unconfirmed stop without losing t
 test('app shutdown is bounded when an SSH cancellation cannot be confirmed',async t=>{
  const f=await remoteFixture(t,{rejectStop:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ await updateReady(f.manager,job.id);
  const group=Number(await fs.readFile(`/tmp/reviewops-agent-${job.id}/pid`,'utf8'));
  try {
   const cancelling=f.manager.cancel(job.id).catch(error=>error.code),started=Date.now();
@@ -432,6 +444,24 @@ test('app shutdown is bounded when an SSH cancellation cannot be confirmed',asyn
   const result=f.manager.read(job.id);assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.remoteExecution.ready,true);
   assert.doesNotThrow(()=>process.kill(pid,0));
  } finally {try{process.kill(-group,'SIGKILL')}catch{}try{process.kill(pid,'SIGKILL')}catch{}await fs.rm(`/tmp/reviewops-agent-${job.id}`,{recursive:true,force:true});}
+});
+
+test('app shutdown during SSH startup is bounded when its later cancellation cannot be confirmed',async t=>{
+ const f=await remoteFixture(t,{holdLaunchResponse:true,rejectStop:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ const directory=remoteAgent.directory(job.id),group=Number(await fs.readFile(path.join(directory,'pid'),'utf8'));
+ assert.equal(f.manager.read(job.id).remoteExecution.ready,false);assert.equal(f.manager.hasBlockingJobs,true);
+ const shutdown=f.manager.closeAll({preserveRemote:true});
+ f.releaseLaunchResponse();
+ try {
+  assert.equal(await Promise.race([shutdown.then(()=>true),pause(5000).then(()=>false)]),true,'Shutdown must settle after an unconfirmed startup cancellation.');
+  const result=f.manager.read(job.id);
+  assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.terminationConfirmed,false);assert.equal(result.errorCode,'AGENT_STOP_UNCONFIRMED');assert.equal(result.remoteExecution.ready,true);
+  assert.doesNotThrow(()=>process.kill(pid,0));
+ } finally {
+  try{process.kill(-group,'SIGKILL')}catch{}try{process.kill(pid,'SIGKILL')}catch{}
+  await shutdown;await fs.rm(directory,{recursive:true,force:true});
+ }
 });
 
 test('closing active jobs waits for termination and the manager can be used after restoring data',async t=>{

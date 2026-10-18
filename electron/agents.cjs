@@ -600,7 +600,12 @@ function createAgentManager(options = {}) {
       }
       if(job.data.cancelRequested){finish(job,'cancelled');return;}
       job.control=job.config.kind==='local'?localRun(settings,preparedArgs,prompt,(chunk,stderr)=>collect(job,chunk,stderr)):job.data.kind==='agent'?await durableRemoteRun(job,args,prompt):await remoteRun(job.config,settings,args,prompt,(chunk,stderr)=>collect(job,chunk,stderr),job.data.id,job.images,()=>job.data.cancelRequested,job.files);
-      if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;}
+      if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){
+        if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;
+        // A control created after closeAll took its snapshot must also release
+        // the app when stopping the server could not be confirmed.
+        if(closing&&job.control.durable)job.control.detach();
+      }
       const result=await job.control.done;
       if(result.detached)return;
       if(job.pending.trim()){try{acceptEvent(job,JSON.parse(job.pending.trim()));}catch{}}
@@ -651,7 +656,10 @@ function createAgentManager(options = {}) {
       job.control = observeRemote(job);
       queueMicrotask(async()=>{
         try {
-          if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;}
+          if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){
+            if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;
+            if(closing&&job.control.durable)job.control.detach();
+          }
           const result = await job.control.done;
           if(result.detached)return;
           if(job.pending.trim()){try{acceptEvent(job,JSON.parse(job.pending.trim()));}catch{}}
