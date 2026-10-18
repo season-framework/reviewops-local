@@ -51,11 +51,74 @@ const equalBounds = (actual, expected) => {
 };
 
 async function controlsGeometry() {
-  return page.locator('.sidebar').evaluate(sidebar => {
-    const box = node => { const { x, y, width, height } = node.getBoundingClientRect(); return { x, y, width, height }; };
-    const buttons = [...sidebar.querySelectorAll('button')].filter(button => ['창 닫기', '창 전체 화면', '창 전체 화면 종료'].includes(button.getAttribute('aria-label')));
-    return { sidebar: box(sidebar), buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region') })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
+  return page.locator('.workspace-tabs').evaluate(strip => {
+    const box = node => { const { x, y, width, height, right, bottom } = node.getBoundingClientRect(); return { x, y, width, height, right, bottom }; };
+    const buttons = [...strip.querySelectorAll('.window-control')];
+    return { strip: box(strip), refresh: box(strip.querySelector('.workspace-refresh')), sidebarControls: document.querySelectorAll('.sidebar .window-control').length, buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region'), cursor: getComputedStyle(button).cursor, text: button.textContent.trim(), icons: button.querySelectorAll('svg').length })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
   });
+}
+
+function expectTopRightControls(geometry) {
+  assert.equal(geometry.sidebarControls, 0);
+  assert.equal(geometry.buttons.length, 2);
+  assert.match(geometry.buttons[0].label, /^창 전체 화면(?: 종료)?$/);
+  assert.equal(geometry.buttons[1].label, '창 닫기');
+  const controls = [geometry.refresh, ...geometry.buttons];
+  for (const button of geometry.buttons) {
+    assert.equal(button.appRegion, 'no-drag');
+    assert.equal(button.cursor, 'pointer');
+    assert.equal(button.text, '');
+    assert.equal(button.icons, 1);
+    assert.ok(button.width >= 32 && button.height >= 32);
+    assert.ok(button.x >= geometry.strip.x && button.right <= geometry.strip.right + 1);
+    assert.ok(button.y >= geometry.strip.y && button.bottom <= geometry.strip.bottom + 1);
+  }
+  for (let index = 1; index < controls.length; index += 1) {
+    assert.ok(controls[index].x >= controls[index - 1].right - 1);
+    assert.ok(controls[index].x - controls[index - 1].right <= 12);
+    assert.ok(Math.abs(controls[index].y + controls[index].height / 2 - controls[index - 1].y - controls[index - 1].height / 2) <= 1);
+  }
+  assert.ok(geometry.strip.right - geometry.buttons[1].right <= 20);
+  assert.ok(geometry.scrollWidth <= geometry.width);
+}
+
+const settleControl = button => button.evaluate(async node => {
+  getComputedStyle(node).backgroundColor;
+  await Promise.all(node.getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})));
+});
+const controlStyle = async button => {
+  await settleControl(button);
+  return button.evaluate(node => {
+    const style = getComputedStyle(node);
+    return { color: style.color, background: style.backgroundColor, border: style.borderColor, borderWidth: style.borderTopWidth, shadow: style.boxShadow, transform: style.transform, outline: style.outlineStyle, outlineWidth: style.outlineWidth, outlineColor: style.outlineColor };
+  });
+};
+async function controlFeedback() {
+  const states = [];
+  for (const button of [enterFullScreen(), close()]) {
+    await page.mouse.move(10, 100);
+    await button.evaluate(node => node.blur());
+    const normal = await controlStyle(button);
+    assert.equal(normal.background, 'rgba(0, 0, 0, 0)');
+    assert.equal(normal.borderWidth, '0px');
+    await button.hover();
+    const hover = await controlStyle(button);
+    assert.notEqual(hover.background, normal.background);
+    states.push({ label: await button.getAttribute('aria-label'), normal, hover });
+  }
+  await page.mouse.move(10, 100);
+  await page.locator('.workspace-refresh').focus();
+  for (const button of [enterFullScreen(), close()]) {
+    await page.keyboard.press('Tab');
+    await expect(button).toBeFocused();
+    assert.equal(await button.evaluate(node => node.matches(':focus-visible')), true);
+    const focus = await controlStyle(button);
+    assert.ok((focus.outline !== 'none' && parseFloat(focus.outlineWidth) >= 1) || focus.shadow !== 'none');
+    const label = await button.getAttribute('aria-label');
+    states.find(state => state.label === label).focus = focus;
+  }
+  await close().evaluate(node => node.blur());
+  return states;
 }
 
 try {
@@ -86,17 +149,9 @@ try {
   await expect(enterFullScreen()).toHaveAttribute('aria-pressed', 'false');
   await expect(close()).toBeVisible();
   const collapsed = await controlsGeometry();
-  assert.equal(collapsed.buttons.length, 2);
-  for (const button of collapsed.buttons) {
-    assert.equal(button.appRegion, 'no-drag');
-    assert.ok(button.width >= 40 && button.height >= 40);
-    assert.ok(button.x >= collapsed.sidebar.x && button.x + button.width <= collapsed.sidebar.x + collapsed.sidebar.width + 1);
-    assert.ok(button.y + button.height <= collapsed.sidebar.y + collapsed.sidebar.height);
-  }
-  assert.ok(Math.abs(collapsed.buttons[0].x - collapsed.buttons[1].x) <= 1);
-  assert.ok(Math.abs(collapsed.buttons[0].y - collapsed.buttons[1].y) >= 40);
-  assert.ok(collapsed.scrollWidth <= collapsed.width);
-  passed('로고의 기본 창 드래그 영역과 접힌 메뉴 하단의 세로 창 제어 버튼');
+  expectTopRightControls(collapsed);
+  const lightFeedback = await controlFeedback();
+  passed('접힌 메뉴에서도 상단 오른쪽에 새로고침·전체 화면·닫기 아이콘을 순서대로 표시하고 마우스·키보드 효과 적용');
 
   const dragRegions = await page.locator('.workspace-tabs').evaluate(strip => {
     const region = node => getComputedStyle(node).getPropertyValue('-webkit-app-region');
@@ -126,7 +181,8 @@ try {
     host.on('enter-full-screen', () => globalThis.windowControlsNativeEvents.push('enter-full-screen'));
     host.on('leave-full-screen', () => globalThis.windowControlsNativeEvents.push('leave-full-screen'));
   });
-  await enterFullScreen().click();
+  await enterFullScreen().focus();
+  await enterFullScreen().press('Enter');
   await expect.poll(() => nativeWindow(host => host.isFullScreen())).toBe(true);
   await expect(leaveFullScreen()).toHaveAttribute('aria-pressed', 'true');
   await expect(leaveFullScreen()).toBeEnabled();
@@ -142,7 +198,7 @@ try {
   equalBounds(await nativeWindow(host => host.getBounds()), normal.bounds);
   assert.equal((await invoke('window.state')).fullScreen, false);
   assert.deepEqual(await app.evaluate(() => globalThis.windowControlsNativeEvents), ['enter-full-screen', 'leave-full-screen']);
-  passed('전체 화면 버튼이 macOS 전체 화면에 진입하고 종료 시 이전 위치와 크기를 복원');
+  passed('키보드로 전체 화면에 진입하고 종료 시 이전 창 위치와 크기를 복원');
 
   const nativeMenuRole = await app.evaluate(({ Menu }) => {
     const find = menu => menu.items.flatMap(item => [item, ...(item.submenu ? find(item.submenu) : [])]);
@@ -201,6 +257,7 @@ try {
   assert.ok(overflow.pageWidth <= overflow.innerWidth);
   assert.ok(overflow.refreshRight <= overflow.innerWidth);
   assert.ok(overflow.tabRegions.every(region => region === 'no-drag'));
+  expectTopRightControls(await controlsGeometry());
   const lastTab = tabs.getByRole('tab').last();
   await lastTab.focus();
   await lastTab.press('Home');
@@ -221,21 +278,35 @@ try {
   await page.getByRole('button', { name: '메뉴 펼치기', exact: true }).click();
   await expect(page.locator('.workspace-app')).toHaveClass(/sidebar-expanded/);
   const expanded = await controlsGeometry();
-  assert.equal(expanded.buttons.length, 2);
-  assert.ok(Math.abs(expanded.buttons[0].y - expanded.buttons[1].y) <= 1);
-  assert.ok(Math.abs(expanded.buttons[0].x - expanded.buttons[1].x) >= 40);
-  for (const button of expanded.buttons) assert.ok(button.x + button.width <= expanded.sidebar.x + expanded.sidebar.width && button.y + button.height <= expanded.sidebar.y + expanded.sidebar.height);
+  expectTopRightControls(expanded);
   await page.getByRole('button', { name: '어두운 화면', exact: true }).click();
   await expect(enterFullScreen()).toHaveAttribute('aria-pressed', 'false');
   await expect(close()).toBeVisible();
-  const dark = await close().evaluate(button => ({ color: getComputedStyle(button).color, background: getComputedStyle(button.closest('.sidebar')).backgroundColor }));
+  const dark = await close().evaluate(button => ({ color: getComputedStyle(button).color, background: getComputedStyle(button.closest('.workspace-tabs')).backgroundColor }));
   assert.notEqual(dark.color, dark.background);
+  const darkFeedback = await controlFeedback();
+  expectTopRightControls(await controlsGeometry());
   fs.mkdirSync(resultRoot, { recursive: true });
-  await page.screenshot({ scale: 'css', path: path.join(resultRoot, 'window-controls-expanded-dark.png') });
+  await page.screenshot({ scale: 'css', animations: 'disabled', path: path.join(resultRoot, 'window-controls-expanded-dark.png') });
   await page.getByRole('button', { name: '밝은 화면', exact: true }).click();
   await page.getByRole('button', { name: '메뉴 접기', exact: true }).click();
-  await page.screenshot({ scale: 'css', path: path.join(resultRoot, 'window-controls-collapsed.png') });
-  passed('펼친 메뉴의 가로 창 제어 버튼과 밝은 화면·어두운 화면 표시');
+  await page.screenshot({ scale: 'css', animations: 'disabled', path: path.join(resultRoot, 'window-controls-collapsed.png') });
+  passed('펼친 메뉴와 밝은 화면·어두운 화면에서 창 아이콘의 위치·마우스 효과·키보드 초점 유지');
+
+  await nativeWindow(host => host.setSize(800, 740));
+  await expect.poll(() => page.evaluate(() => innerWidth)).toBe(800);
+  const narrowCollapsed = await controlsGeometry();
+  expectTopRightControls(narrowCollapsed);
+  await page.getByRole('button', { name: '메뉴 펼치기', exact: true }).click();
+  const narrowExpanded = await controlsGeometry();
+  expectTopRightControls(narrowExpanded);
+  await page.getByRole('button', { name: '어두운 화면', exact: true }).click();
+  expectTopRightControls(await controlsGeometry());
+  await page.screenshot({ scale: 'css', animations: 'disabled', path: path.join(resultRoot, 'window-controls-narrow-dark.png') });
+  await page.getByRole('button', { name: '밝은 화면', exact: true }).click();
+  await page.getByRole('button', { name: '메뉴 접기', exact: true }).click();
+  await nativeWindow(host => host.setBounds({ x: 100, y: 100, width: 1200, height: 850 }));
+  passed('800px 창에서 메뉴를 접거나 펼쳐도 새로고침·전체 화면·닫기 아이콘을 겹침 없이 표시');
 
   const group = await invoke('group.save', { name: '창 닫기 검사 그룹' });
   const service = await invoke('service.save', { name: '창 닫기 검사 서비스', groupId: group.id, kind: 'local', rootPath: files, viewerUrl: origin });
@@ -281,7 +352,7 @@ try {
 
   assert.deepEqual(errors, []);
   assert.deepEqual(externalRequests, []);
-  fs.writeFileSync(path.join(resultRoot, 'window-controls.json'), JSON.stringify({ version, executable: process.env.REVIEWOPS_TEST_EXECUTABLE || 'development Electron', checks, errors, externalRequests, normal, fullScreen, collapsed, expanded, logo, dragRegions, overflow, dark }, null, 2));
+  fs.writeFileSync(path.join(resultRoot, 'window-controls.json'), JSON.stringify({ version, executable: process.env.REVIEWOPS_TEST_EXECUTABLE || 'development Electron', checks, errors, externalRequests, normal, fullScreen, collapsed, expanded, narrowCollapsed, narrowExpanded, logo, dragRegions, overflow, dark, lightFeedback, darkFeedback }, null, 2));
   console.log(`PASS: 창 제어 ${checks.length}개 검사 완료`);
 } finally {
   if (app) { await app.evaluate(({ app }) => app.exit(0)).catch(() => {}); await app.close().catch(() => {}); }
