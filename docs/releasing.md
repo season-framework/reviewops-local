@@ -28,7 +28,7 @@ Use the actual version for each release. Do not put application data, credential
 
 Run `npm run package:windows` on Windows to build `ReviewOps-<version>-windows-x64.exe`. The installer applies to the current user and retains the application data folder. It includes Start menu and desktop shortcuts.
 
-The `Windows release` GitHub Actions workflow builds on a Windows runner, runs the Windows-compatible unit checks, installs the package, and checks application startup, local project persistence, and uninstallation. Download its installer, SHA-256 file, and verification report after the workflow passes. The report is a build record; publish only the installer and checksum as user downloads.
+The `Windows installer` GitHub Actions workflow builds on a Windows runner, runs the Windows-compatible unit checks, installs the package, and checks application startup, local project persistence, and uninstallation. Download its installer, SHA-256 file, and verification report after the workflow passes. The report is a build record; publish only the installer and checksum as user downloads.
 
 Windows installers are unsigned. The macOS updater does not install Windows EXE files. Windows users download a new installer and run it with the app closed. The optional Season AI connection is macOS-only, and Windows host management uses SSH key authentication.
 
