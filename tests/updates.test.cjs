@@ -81,13 +81,54 @@ test('only confirmed durable SSH agents are excluded from active work',()=>{
  assert.equal(hasActiveWork({...durable,codexManager:{fileService:{getTransfers:()=>[{status:'completed'}]}}}),false);
 });
 const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}};
-async function managerFixture(t,{requestFailure=false,beforeRequest,beforeInspect}={}) {
+async function managerFixture(t,{requestFailure=false,beforeRequest,beforeInspect,automatic=true,platform='darwin'}={}) {
  const root=await temp(t),bundle=path.join(root,'ReviewOps.app'),exe=path.join(bundle,'Contents/MacOS/ReviewOps');await fs.mkdir(path.dirname(exe),{recursive:true});await fs.writeFile(exe,'old');
  const bytes=archive(),selected={...asset,size:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')},published={...release,assets:release.assets.map(item=>item.name===asset.name?{...item,size:bytes.length}:item)},document={...manifest,artifacts:{'darwin-arm64':selected}};
  const observed={requests:[],states:[],inspections:[],quit:0,spawn:[],busy:false,requestFailure};
- const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '1.1.1',getPath:()=>exe,quit:()=>observed.quit++},dataPath:path.join(root,'data'),shell:{openExternal:async url=>{observed.url=url}},platform:'darwin',arch:'arm64',isBusy:()=>observed.busy,onChange:state=>observed.states.push(state),request:async(url,options)=>{observed.requests.push(url);await beforeRequest?.(url,options);if(observed.requestFailure)throw new Error('network unavailable');if(url===RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('reviewops-update.json'))return Buffer.from(JSON.stringify(document));assert.equal(options.expectedHash,selected.sha256);assert.equal(options.expectedSize,bytes.length);await fs.writeFile(options.filename,bytes);return {size:bytes.length}},command:async(_binary,args)=>{if(args[0]==='-x'){const target=path.join(args.at(-1),'ReviewOps.app');await fs.mkdir(target,{recursive:true})}return {stdout:''}},inspect:async(bundle,version,arch)=>{observed.inspections.push({bundle,version,arch});await beforeInspect?.(observed)},spawnImpl:(...args)=>{observed.spawn.push(args);return {unref(){}}}});
+ if(!automatic){await fs.mkdir(path.join(root,'data/updates'),{recursive:true});await fs.writeFile(path.join(root,'data/updates/settings.json'),JSON.stringify({automatic:false}));}
+ const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '1.1.1',getPath:()=>exe,quit:()=>observed.quit++},dataPath:path.join(root,'data'),shell:{openExternal:async url=>{observed.url=url}},platform,arch:'arm64',isBusy:()=>observed.busy,onChange:state=>observed.states.push(state),request:async(url,options)=>{observed.requests.push(url);await beforeRequest?.(url,options);if(observed.requestFailure)throw new Error('network unavailable');if(url===RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('reviewops-update.json'))return Buffer.from(JSON.stringify(document));assert.equal(options.expectedHash,selected.sha256);assert.equal(options.expectedSize,bytes.length);await fs.writeFile(options.filename,bytes);return {size:bytes.length}},command:async(_binary,args)=>{if(args[0]==='-x'){const target=path.join(args.at(-1),'ReviewOps.app');await fs.mkdir(target,{recursive:true})}return {stdout:''}},inspect:async(bundle,version,arch)=>{observed.inspections.push({bundle,version,arch});await beforeInspect?.(observed)},spawnImpl:(...args)=>{observed.spawn.push(args);return {unref(){}}}});
  t.after(()=>manager.close());return {manager,root,observed};
 }
+const settleCheck=()=>new Promise(resolve=>setImmediate(resolve));
+test('startup checks immediately, repeats every ten minutes, and closes a single schedule',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const {manager,observed}=await managerFixture(t);
+ manager.start();manager.start();await settleCheck();
+ assert.equal(manager.snapshot().status,'available');assert.equal(observed.requests.length,2);
+ t.mock.timers.tick(10*60*1000-1);await settleCheck();assert.equal(observed.requests.length,2);
+ t.mock.timers.tick(1);await settleCheck();assert.equal(observed.requests.length,4);
+ t.mock.timers.tick(10*60*1000);await settleCheck();assert.equal(observed.requests.length,6);
+ manager.close();t.mock.timers.tick(20*60*1000);await settleCheck();assert.equal(observed.requests.length,6);
+ assert.equal(observed.quit,0);assert.equal(observed.spawn.length,0);
+});
+test('saved automatic-check preference is respected and enabling it checks immediately',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const {manager,observed}=await managerFixture(t,{automatic:false});
+ manager.start();await settleCheck();t.mock.timers.tick(10*60*1000);await settleCheck();assert.deepEqual(observed.requests,[]);
+ assert.equal((await manager.configure({automatic:true})).status,'available');assert.equal(observed.requests.length,2);
+ await manager.configure({automatic:false});t.mock.timers.tick(10*60*1000);await settleCheck();assert.equal(observed.requests.length,2);
+ manager.close();await manager.configure({automatic:true});await settleCheck();assert.equal(observed.requests.length,2);
+});
+test('a failed startup check retries on the next ten-minute check',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const {manager,observed}=await managerFixture(t,{requestFailure:true});
+ manager.start();await settleCheck();assert.equal(manager.snapshot().status,'error');assert.equal(observed.requests.length,1);
+ observed.requestFailure=false;t.mock.timers.tick(10*60*1000);await settleCheck();
+ assert.equal(manager.snapshot().status,'available');assert.equal(manager.snapshot().availableVersion,'1.2.0');assert.equal(observed.requests.length,3);
+});
+test('timer ticks share a slow startup check without duplicate requests',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const entered=deferred(),gate=deferred();t.after(()=>gate.resolve());
+ const {manager,observed}=await managerFixture(t,{beforeRequest:async url=>{if(url===RELEASE_API){entered.resolve();await gate.promise}}});
+ manager.start();await entered.promise;t.mock.timers.tick(20*60*1000);await settleCheck();assert.deepEqual(observed.requests,[RELEASE_API]);
+ gate.resolve();await manager.check();assert.equal(manager.snapshot().status,'available');assert.equal(observed.requests.length,2);
+ t.mock.timers.tick(10*60*1000);await settleCheck();assert.equal(observed.requests.length,4);
+});
+test('unsupported environments do not make scheduled update requests',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const {manager,observed}=await managerFixture(t,{platform:'win32'});
+ manager.start();t.mock.timers.tick(20*60*1000);await settleCheck();assert.deepEqual(observed.requests,[]);
+});
 test('update check/download/install waits for actual quit and preserves isolated data location',async t=>{
  const {manager,observed,root}=await managerFixture(t);assert.equal((await manager.check()).status,'available');assert.equal((await manager.download()).status,'ready');
  observed.busy=true;await assert.rejects(manager.install(),/active tasks/);observed.busy=false;

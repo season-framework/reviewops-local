@@ -121,7 +121,7 @@ Deleting a group removes its projects, reviews, history, and attachments. Deleti
 
 ## Updates
 
-On macOS, ReviewOps automatically checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) for new versions. No GitHub account or token is needed in the app. An update notification appears at the bottom of the sidebar. Select it to download, verify, install, and restart in one action. The same action is available in Settings.
+On macOS, ReviewOps checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) immediately at startup and every ten minutes while the app is running, when automatic checks are enabled. No GitHub account or token is needed in the app. An update notification appears at the bottom of the sidebar. Select it to download, verify, install, and restart in one action. The same action is available in Settings. Enabling automatic checks also checks immediately.
 
 The updater selects the build for your Mac, checks its declared size and SHA-256 hash, verifies the app bundle, and replaces the application before restarting. Project data is kept outside the application bundle. SSH agent tasks continue on the server while the app restarts, and the app reconnects to their output. Local tasks, terminal sessions, login operations, and file transfers must finish before installation. Remote agent execution requires Linux with bash, nohup, and setsid. The website is an introduction and download page; the update feed comes directly from GitHub Releases.
 

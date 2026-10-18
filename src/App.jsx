@@ -27,7 +27,7 @@ export default function App() {
  const [updateState,setUpdateState]=useState(null),[updateApplying,setUpdateApplying]=useState(false);
  const updateApplyPending=useRef(false);
  const dataLoaded=useRef(false);
- useEffect(()=>{let alive=true;invoke('update.state').then(value=>{if(alive)setUpdateState(value)}).catch(()=>{});const unsubscribe=window.reviewops?.onUpdateState?.(value=>{if(alive)setUpdateState(value)});return()=>{alive=false;unsubscribe?.()}},[]);
+ useEffect(()=>{let alive=true,updated=false;const unsubscribe=window.reviewops?.onUpdateState?.(value=>{updated=true;if(alive)setUpdateState(value)});invoke('update.state').then(value=>{if(alive&&!updated)setUpdateState(value)}).catch(()=>{});return()=>{alive=false;unsubscribe?.()}},[]);
  useEffect(()=>{if(!ready||!dataLoaded.current)return;const frame=requestAnimationFrame(()=>invoke('update.rendererReady').catch(()=>{}));return()=>cancelAnimationFrame(frame)},[ready]);
  const [dark,setDark]=useState(()=>localStorage.getItem('reviewops.theme')==='dark'),[expanded,setExpanded]=useState(()=>localStorage.getItem('reviewops.sidebar.expanded')==='true');
  const [windowState,setWindowState]=useState({maximized:false,fullScreen:false}),[windowChanging,setWindowChanging]=useState(false);
