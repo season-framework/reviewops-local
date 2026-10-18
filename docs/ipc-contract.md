@@ -65,6 +65,10 @@ State is `{id,url,title,loading,canGoBack,canGoForward,error}`. Bounds and clip 
 
 ## Screenshots and agents (1.0.5)
 
+`update.apply {}` checks when needed, downloads and verifies the selected release, and requests installation. Concurrent calls share the same operation. It returns the same state shape as `update.state`; failures include `status: "error"` and a message, and another call retries the incomplete step. Unsaved editor changes may cancel restart.
+
+SSH agent runs persist `remoteExecution: {version:1,ready,stdoutOffset,stderrOffset}`. Only confirmed server launches can survive app shutdown. Startup reconnects to the saved service and run ID, replays output, and never launches another process for that ID. Explicit cancellation still terminates the remote process group. Backup restoration interrupts existing jobs. Local tasks, terminals, login operations, and transfers prevent installation.
+
 - `browser.capture {id}` captures the external WebContentsView. `viewer.capture {bounds}` captures a local file preview using renderer CSS coordinates. Both return `{dataUrl,mimeType,name,width,height,capturedAt,url?}`; dimensions are PNG pixels.
 - `attachment.stageData {dataUrl,name}` accepts validated PNG bytes and returns a staged attachment token. `review.save` or `activity.add` persists it with `attachmentTokens`. `attachment.discard` releases unused tokens.
 - `screenshot.export {dataUrl,name}` opens a native save dialog and returns `{path}` or `{cancelled:true}`.

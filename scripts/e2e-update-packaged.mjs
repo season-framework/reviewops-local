@@ -12,12 +12,13 @@ const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 if(process.argv[2]==='--worker') {
  const plan=JSON.parse(await fs.readFile(process.argv[3],'utf8'));
  const {archive,dataPath,target,version,asset}=plan;
- const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '0.0.1',getPath:()=>path.join(target,'Contents/MacOS/ReviewOps'),quit(){}},dataPath,shell:{openExternal:async()=>{}},platform:'darwin',arch:process.arch,request:async(url,options)=>{
+ const states=[];
+ const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '0.0.1',getPath:()=>path.join(target,'Contents/MacOS/ReviewOps'),quit(){}},dataPath,shell:{openExternal:async()=>{}},platform:'darwin',arch:process.arch,onChange:state=>states.push(state.status),request:async(url,options)=>{
   if(url===RELEASE_API)return Buffer.from(JSON.stringify({tag_name:`v${version}`,draft:false,prerelease:false,assets:[{...asset,browser_download_url:asset.url},{name:'reviewops-update.json',size:512,browser_download_url:`${RELEASES_URL}/download/v${version}/reviewops-update.json`}]}));
   if(url.endsWith('/reviewops-update.json'))return Buffer.from(JSON.stringify({schema:1,version,artifacts:{[`darwin-${process.arch}`]:asset}}));
   assert.equal(options.expectedHash,asset.sha256);assert.equal(options.expectedSize,asset.size);await fs.copyFile(archive,options.filename);return {size:asset.size};
  }});
- assert.equal((await manager.check()).status,'available');assert.equal((await manager.download()).status,'ready');assert.equal((await manager.install()).status,'installing');manager.launchInstall();process.exit(0);
+ assert.equal((await manager.apply()).status,'installing');assert.deepEqual(states,['checking','available','downloading','verifying','ready','installing']);manager.launchInstall();process.exit(0);
 }
 const source=process.env.REVIEWOPS_TEST_APP;
 if(!source||!path.isAbsolute(source)||!source.endsWith('.app'))throw new Error('Set REVIEWOPS_TEST_APP to an absolute packaged ReviewOps.app path.');
@@ -47,7 +48,7 @@ try{
  assert.equal(await fs.readFile(preserved,'utf8'),'Keep this project data unchanged.');
  assert.equal((await fs.stat(path.join(dataPath,'reviewops.sqlite'))).isFile(),true);
  await run('/usr/bin/codesign',['--verify','--deep','--strict',target]);
- const report={version,checks:['GitHub release contract','native ZIP extraction and signature verification','replacement after parent exit','real Electron startup','trusted renderer-ready health acknowledgment','isolated data location','existing data preserved'],result,installedAppTouched:false,actualAccountOperations:0};
+ const report={version,checks:['one-click check, download, verification and installation','GitHub release contract','native ZIP extraction and signature verification','replacement after parent exit','real Electron startup','trusted renderer-ready health acknowledgment','isolated data location','existing data preserved'],result,installedAppTouched:false,actualAccountOperations:0};
  await fs.mkdir('test-results/updates',{recursive:true});await fs.writeFile('test-results/updates/packaged.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{
  if(launchedPid)try{process.kill(launchedPid,'SIGTERM')}catch{}

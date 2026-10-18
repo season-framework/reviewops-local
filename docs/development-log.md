@@ -1,5 +1,13 @@
 # Release history
 
+## 1.2.2
+
+- Show available updates at the bottom of the sidebar, with one action to download, install, and restart.
+- Keep SSH agent tasks running through app updates and reconnect to their output after restarting.
+- Keep local tasks, terminals, login operations, and transfers protected during installation.
+- Show work-history images, files, and logs as small attachment buttons that open a popup.
+- Keep saved partial output when a remote task cannot be recovered, without starting the request again.
+
 ## 1.2.1
 
 - Move full-screen and close icons to the upper right, next to refresh.
