@@ -6,3 +6,6 @@
 @media(prefers-reduced-motion:reduce){:root{scroll-behavior:auto}.button{transition:none}.button:hover{transform:none}}
 html:lang(ja) .hero-description,html:lang(zh-CN) .hero-description{word-break:normal;overflow-wrap:anywhere}
 @media(max-width:700px){html:lang(ja) h1{font-size:clamp(32px,10.6vw,42px)}html:lang(ja) .download-section h2{font-size:26px}}
+
+.download-actions{display:flex;justify-content:center;gap:12px;flex-wrap:wrap}
+@media(max-width:700px){.download-actions{gap:8px}}
