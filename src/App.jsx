@@ -24,7 +24,8 @@ export default function App() {
  const [data,setData]=useState(EMPTY),[ready,setReady]=useState(false),[tabs,setTabs]=useState(savedTabs),[active,setActive]=useState('home');
  const [error,setError]=useState(''),[toast,setToast]=useState(''),[busy,setBusy]=useState(false),[modal,setModal]=useState(null),[closePending,setClosePending]=useState(null);
  const [deleteConfirm,setDeleteConfirm]=useState('');
- const [updateState,setUpdateState]=useState(null);
+ const [updateState,setUpdateState]=useState(null),[updateApplying,setUpdateApplying]=useState(false);
+ const updateApplyPending=useRef(false);
  const dataLoaded=useRef(false);
  useEffect(()=>{let alive=true;invoke('update.state').then(value=>{if(alive)setUpdateState(value)}).catch(()=>{});const unsubscribe=window.reviewops?.onUpdateState?.(value=>{if(alive)setUpdateState(value)});return()=>{alive=false;unsubscribe?.()}},[]);
  useEffect(()=>{if(!ready||!dataLoaded.current)return;const frame=requestAnimationFrame(()=>invoke('update.rendererReady').catch(()=>{}));return()=>cancelAnimationFrame(frame)},[ready]);
@@ -194,13 +195,31 @@ export default function App() {
  };
  const fullscreenLabel=windowState.fullScreen?t("창 전체 화면 종료"):t("창 전체 화면");
  const selectedTab=tabs.find(t=>t.id===active)||HOME;
- const updateAvailable=Boolean(updateState?.availableVersion);
- const settingsTitle=updateAvailable?t('설정 · 새 버전 {0}',[updateState.availableVersion]):t('설정');
+ const updateAvailable=Boolean(updateState?.supported&&updateState?.availableVersion);
+ const updateWorking=updateApplying||['checking','downloading','verifying','installing'].includes(updateState?.status);
+ const updateProgress=Math.max(0,Math.min(100,Number(updateState?.progress)||0));
+ const updateLabel=updateState?.status==='downloading'?t('다운로드 중 {0}%',[updateProgress]):updateState?.status==='verifying'?t('다운로드한 앱 검사 중'):updateState?.status==='installing'?t('업데이트 설치 중'):updateWorking?t('업데이트 준비 중'):updateState?.status==='error'?t('업데이트 다시 시도'):t('업데이트 설치');
+ const updateDetail=t('새 버전 {0}',[updateState?.availableVersion||'']);
+ const updateTitle=`${updateLabel} · ${updateDetail}${updateState?.error?` · ${t(updateState.error)}`:''}`;
+ const applyUpdate=async()=>{
+  if(updateApplyPending.current||updateWorking||!updateAvailable)return;
+  updateApplyPending.current=true;setUpdateApplying(true);setError('');
+  try{const state=await invoke('update.apply');if(state?.status)setUpdateState(state);if(state?.status==='error')setError(t(state.error||'업데이트를 완료하지 못했습니다.'))}
+  catch(failure){setError(t(failure.message));setUpdateState(state=>({...state,status:'error',error:failure.message}))}
+  finally{updateApplyPending.current=false;setUpdateApplying(false)}
+ };
  const deleteLinks=modal?.type==='delete'&&modal.entity==='service'?data.projects.filter(project=>project.serviceIds?.includes(modal.record.id)):[];
  return <div className={`app workspace-app ${expanded?'sidebar-expanded':''}`}>
   <aside className="sidebar"><div className="sidebar-brand" title={t("드래그하여 창 이동")}><img src={expanded?'./assets/brand/reviewops-logo.svg':'./assets/brand/reviewops-icon.svg'} alt="ReviewOps" draggable={false}/></div>
    <nav className="main-nav" aria-label={t("주요 메뉴")}>{[['home','home',t("홈")],['groups','group',t("그룹")],['accounts','users',t("계정관리")],['hosts','service',t("호스트관리")]].map(([key,icon,name])=><button key={key} className={`nav-item ${(key==='home'?selectedTab.kind==='home':key==='groups'?['groups','group','project','editor'].includes(selectedTab.kind):selectedTab.kind===key)?'active':''}`} onClick={()=>key==='home'?setActive('home'):key==='groups'?openGroups():openTab(key)} title={name} aria-label={name}><Icon name={icon}/>{expanded&&<span>{name}</span>}</button>)}</nav>
-   <div className="sidebar-bottom"><button className="nav-item" onClick={()=>setExpanded(!expanded)} title={expanded?t("메뉴 접기"):t("메뉴 펼치기")} aria-label={expanded?t("메뉴 접기"):t("메뉴 펼치기")}><Icon name="columns"/>{expanded&&<span>{t("메뉴 접기")}</span>}</button><button className={`nav-item ${selectedTab.kind==='settings'?'active':''}`} onClick={()=>openTab('settings')} title={settingsTitle} aria-label={t("설정")}><Icon name="settings"/>{updateAvailable&&<span className="sidebar-update-dot" aria-label={t("새 버전을 사용할 수 있습니다.")}/>}{expanded&&<span>{t("설정")}</span>}</button><button className="nav-item" onClick={()=>setDark(!dark)} title={dark?t("밝은 화면"):t("어두운 화면")} aria-label={dark?t("밝은 화면"):t("어두운 화면")}><Icon name={dark?'sun':'moon'}/>{expanded&&<span>{dark?t("밝은 화면"):t("어두운 화면")}</span>}</button></div>
+   <div className="sidebar-bottom">
+    {updateAvailable&&<button type="button" className={`nav-item sidebar-update ${updateWorking?'is-working':''} ${updateState.status==='error'?'has-error':''}`} onClick={applyUpdate} disabled={updateWorking} title={updateTitle} aria-label={updateTitle} aria-busy={updateWorking}>
+     <span className="sidebar-update-icon"><Icon name={updateWorking?'refresh':'download'}/>{!updateWorking&&<small className="sidebar-update-alert" aria-hidden="true"/>}</span>
+     <span className="sidebar-update-copy"><strong>{updateLabel}</strong><small>{updateDetail}</small></span>
+     {updateState.status==='downloading'&&<progress className="sidebar-update-progress" max="100" value={updateProgress} aria-label={t('업데이트 다운로드 진행률')}/>}
+    </button>}
+    <button className="nav-item" onClick={()=>setExpanded(!expanded)} title={expanded?t("메뉴 접기"):t("메뉴 펼치기")} aria-label={expanded?t("메뉴 접기"):t("메뉴 펼치기")}><Icon name="columns"/>{expanded&&<span>{t("메뉴 접기")}</span>}</button><button className={`nav-item ${selectedTab.kind==='settings'?'active':''}`} onClick={()=>openTab('settings')} title={t('설정')} aria-label={t("설정")}><Icon name="settings"/>{expanded&&<span>{t("설정")}</span>}</button><button className="nav-item" onClick={()=>setDark(!dark)} title={dark?t("밝은 화면"):t("어두운 화면")} aria-label={dark?t("밝은 화면"):t("어두운 화면")}><Icon name={dark?'sun':'moon'}/>{expanded&&<span>{dark?t("밝은 화면"):t("어두운 화면")}</span>}</button>
+   </div>
   </aside>
   <main className="workspace-main">
    <div className="workspace-tabs" role="tablist" aria-label={t("작업 탭")}><div ref={tabOrder.listRef} className={`workspace-tab-list reviewops-tab-strip ${tabOrder.draggedTabId?'is-reordering':''}`}>{tabs.map((tab,index)=><div key={tab.id} data-tab-id={tab.id} className={`workspace-tab reviewops-tab-item ${active===tab.id?'active is-active':''} ${tabOrder.draggedTabId===tab.id?'dragging':''}`} role="presentation" onPointerDown={event=>tabOrder.beginDrag(event,tab.id)} onDragStart={event=>event.preventDefault()}><button id={`tab-${tab.id}`} type="button" className="workspace-tab-select reviewops-tab-label" role="tab" aria-label={tabTitle(tab)} aria-selected={active===tab.id} aria-controls={`pane-${tab.id}`} aria-describedby={tab.id==='home'?undefined:'workspace-tab-move-help'} aria-keyshortcuts={tab.id==='home'?undefined:'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>tabKey(event,index)}><Icon name={tabIcon(tab)} size={16}/><span className="tab-title">{tabTitle(tab)}</span></button>{tab.id!=='home'&&<button className="tab-close reviewops-tab-close" onClick={()=>requestClose(tab.id)} aria-label={t("{0} 닫기",[tabTitle(tab)])} title={t("탭 닫기")}><Icon name="close" size={12}/></button>}</div>)}<button className="workspace-add-tab" aria-label={t("새 작업 탭")} title={t("새 작업 탭")} onClick={duplicateTab}><Icon name="plus" size={17}/></button></div><button className="workspace-refresh" aria-label={t("새로고침")} title={t("새로고침")} onClick={()=>run(reload)} disabled={busy}><Icon name="refresh" size={18}/></button>

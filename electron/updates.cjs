@@ -109,9 +109,13 @@ async function inspectBundle(bundle, version, arch, command = run) {
   if (!architectures.includes(arch)) throw new Error('The update does not support this Mac processor.');
   await command('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], { timeout: 120000, maxBuffer: 1024 ** 2 });
 }
-function hasActiveWork({ operations, terminals, codexManager }) {
+function hasActiveWork({ operations, terminals, codexManager, agents }) {
   const account = codexManager?.accountState?.(), host = codexManager?.hostState?.();
-  return Boolean(operations?.size || terminals?.size || account?.refresh?.running || account?.accounts?.some(item => ['loading','loggingIn'].includes(item.status) || item.resetAttempt?.status === 'pending') || host?.refresh?.running || host?.batchUpgrade?.running || host?.hosts?.some(item => item.operation?.running) || codexManager?.fileService?.operations?.size || codexManager?.fileService?.getTransfers?.().some(item => item.status === 'running'));
+  const blockingOperations=[...(operations || [])].some(token=>{
+    if(typeof token!=='string'||!token.startsWith('agent:')||!agents||agents.hasBlockingJobs!==false)return true;
+    try {const job=agents.read(token.slice(6));return !(job.kind==='agent'&&job.remoteExecution?.version===1&&job.remoteExecution.ready);}catch{return true;}
+  });
+  return Boolean(blockingOperations || agents?.hasBlockingJobs || terminals?.size || account?.refresh?.running || account?.accounts?.some(item => ['loading','loggingIn'].includes(item.status) || item.resetAttempt?.status === 'pending') || host?.refresh?.running || host?.batchUpgrade?.running || host?.hosts?.some(item => item.operation?.running) || codexManager?.fileService?.operations?.size || codexManager?.fileService?.getTransfers?.().some(item => item.status === 'running'));
 }
 async function pruneUpdateCache(root, protectedJobs = []) {
   let contents; try { contents = await fsp.readdir(root, { withFileTypes: true }); } catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -208,6 +212,9 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
         const suffix = crypto.randomUUID(), incoming = path.join(path.dirname(target), `.ReviewOps-update-${suffix}.app`), previous = path.join(path.dirname(target), `.ReviewOps-previous-${suffix}.app`);
         const helper = path.join(ready.job, 'install.sh');
         await fsp.copyFile(path.join(__dirname, 'update-install.sh'), helper); await fsp.chmod(helper, 0o700);
+        // Verification can take time. Work started during it still needs the
+        // same protection as work that was active when installation began.
+        if(isBusy())throw new Error('Finish active tasks and close terminal sessions before installing the update.');
         pendingInstall = { ...ready, target, incoming, previous, helper };
         atomicWrite(pendingFile, JSON.stringify({ job: ready.job, target, version: ready.release.version }));
         set('installing'); setImmediate(() => app.quit()); return snapshot();
@@ -235,6 +242,31 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
       interval = setInterval(() => { if (automatic) manager.check().catch(() => {}); }, 6 * 60 * 60 * 1000); interval.unref?.();
     },
     close() { clearTimeout(scheduled); clearInterval(interval); }
+  };
+  // All callers share the current operation. A sidebar click can safely join a
+  // scheduled check or a Settings download without starting a second request.
+  let activeTask=null,applying=null;
+  for(const name of ['check','download','install']) {
+    const action=manager[name];
+    manager[name]=(...args)=>{
+      if(activeTask)return activeTask;
+      const task=Promise.resolve().then(()=>action(...args));
+      const tracked=task.finally(()=>{if(activeTask===tracked)activeTask=null;});
+      activeTask=tracked;return tracked;
+    };
+  }
+  manager.apply=()=>{
+    if(applying)return applying;
+    const task=(async()=>{
+      try {
+        if(activeTask)await activeTask;
+        if(!supported||pendingInstall)return snapshot();
+        if(!release){await manager.check();if(!release||status==='error')return snapshot();}
+        if(!ready){await manager.download();if(!ready||status==='error')return snapshot();}
+        return await manager.install();
+      }catch(failure){set('error',failure.message);return snapshot();}
+    })();
+    applying=task.finally(()=>{applying=null;});return applying;
   };
   return manager;
 }

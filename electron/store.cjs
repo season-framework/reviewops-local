@@ -13,7 +13,7 @@ const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews',
 const AGENT_STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
 const AGENT_FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const AGENT_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution'];
+const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution'];
 const LOG_FIELDS = ['navigation_log','input_log','network_log','console_log','fingerprint_log'];
 const SECRET_KEY = /^(password|passphrase|private[_-]?key|ssh[_-]?password|ssh[_-]?private[_-]?key|access[_-]?token|api[_-]?key|secret|credential)$/i;
 const MAX_ITEMS = 100000;
@@ -67,11 +67,11 @@ function safeFilename(value) {
   if (name === '.' || name === '..' || name !== path.basename(name) || /[/\\]/.test(name)) fail('첨부 파일명이 올바르지 않습니다.');
   return name;
 }
-function absolutePath(value, label, required = false) {
+function absolutePath(value, label, required = false, paths = path) {
   const result = text(value, label, 4096, required);
   if (!result) return '';
-  if (!path.posix.isAbsolute(result) || /[\r\n]/.test(result) || result.split('/').includes('..')) fail(`${label}은 상위 폴더 이동이 없는 절대 경로로 입력하십시오.`);
-  return path.posix.normalize(result);
+  if (!paths.isAbsolute(result) || /[\r\n]/.test(result) || result.split(paths === path.posix ? '/' : /[/\\]/).includes('..')) fail(`${label}은 상위 폴더 이동이 없는 절대 경로로 입력하십시오.`);
+  return paths.normalize(result);
 }
 function safeUrl(value, label) {
   const result = text(value, label, 8192);
@@ -176,6 +176,11 @@ function agentMetadata(input, previous) {
   if(value.requestId!==undefined)value.requestId=id(value.requestId,'요청');
   if(value.retryOf!==undefined)value.retryOf=id(value.retryOf,'원본 요청');
   if(value.requestSignature!==undefined && !/^[a-f0-9]{64}$/.test(value.requestSignature))fail('에이전트 요청 정보가 올바르지 않습니다.');
+  if(value.remoteExecution!==undefined) {
+    const remote=object(value.remoteExecution,'SSH 에이전트 실행 정보');
+    if(remote.version!==1||typeof remote.ready!=='boolean'||['stdoutOffset','stderrOffset'].some(key=>!Number.isSafeInteger(remote[key])||remote[key]<0)||Object.keys(remote).some(key=>!['version','ready','stdoutOffset','stderrOffset'].includes(key)))fail('SSH 에이전트 실행 정보가 올바르지 않습니다.');
+    value.remoteExecution={version:1,ready:remote.ready,stdoutOffset:remote.stdoutOffset,stderrOffset:remote.stderrOffset};
+  }
   if(value.context!==undefined) {
     object(value.context,'에이전트 첨부 자료');
     const context=value.context;
@@ -498,7 +503,8 @@ class LocalStore {
     const hostAlias = text(input.hostAlias ?? previous?.hostAlias, 'SSH Host', 255);
     if (hostAlias && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(hostAlias)) fail('SSH Host 이름이 올바르지 않습니다.');
     const sshConfigPath = absolutePath(input.sshConfigPath ?? previous?.sshConfigPath, 'SSH 설정 파일 경로');
-    const rootPath = absolutePath(input.rootPath ?? previous?.rootPath ?? (kind === 'ssh' ? '/' : ''), '작업 경로', true);
+    const workPaths = kind === 'ssh' ? path.posix : path;
+    const rootPath = absolutePath(input.rootPath ?? previous?.rootPath ?? (kind === 'ssh' ? '/' : ''), '작업 경로', true, workPaths);
     if (kind === 'ssh' && (!host || !username)) fail('SSH 호스트와 사용자명을 입력하십시오.');
     if (kind === 'ssh' && authType === 'key' && !privateKeyPath) fail('SSH 키 파일을 선택하십시오.');
     let hostFingerprint = text(input.hostFingerprint ?? previous?.hostFingerprint, 'SSH 호스트 키', 120);
@@ -506,7 +512,7 @@ class LocalStore {
     if (previous && (previous.host !== host || previous.port !== port || previous.kind !== kind)) hostFingerprint = '';
     if (kind === 'local') hostFingerprint = '';
     const agentBinary = text(input.agentBinary ?? previous?.agentBinary ?? 'codex', '에이전트 실행 파일', 4096, true);
-    if (agentBinary.startsWith('/')) absolutePath(agentBinary, '에이전트 실행 파일', true);
+    if (workPaths.isAbsolute(agentBinary)) absolutePath(agentBinary, '에이전트 실행 파일', true, workPaths);
     else if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(agentBinary)) fail('에이전트 실행 파일 이름 또는 전체 경로를 입력하십시오.');
     const agentModel = text(input.agentModel ?? previous?.agentModel, '에이전트 모델', 256);
     if (/\s/.test(agentModel)) fail('에이전트 모델 이름에 공백을 사용할 수 없습니다.');
@@ -514,7 +520,7 @@ class LocalStore {
       description: text(input.description ?? previous?.description, '서비스 설명', 10000), ...metadata(input, previous), viewerWidth:integer(input.viewerWidth,previous?.viewerWidth||1440,240,7680,'화면 너비'), viewerHeight:integer(input.viewerHeight,previous?.viewerHeight||900,240,7680,'화면 높이'), viewerScale:choice(input.viewerScale,['fit','50','75','100','125','150','200'],previous?.viewerScale||'fit','화면 배율'), kind, host, port, username, authType,
       privateKeyPath, rootPath, viewerUrl: safeUrl(input.viewerUrl ?? previous?.viewerUrl, '미리보기 주소'), hostFingerprint, managedProjectId, hostAlias, sshConfigPath,
       agentEnabled:integer(input.agentEnabled,previous?.agentEnabled || 0,0,1,'에이전트 사용'),agentBinary,
-      agentWorkPath:absolutePath(input.agentWorkPath ?? previous?.agentWorkPath,'에이전트 작업 폴더'),agentModel,
+      agentWorkPath:absolutePath(input.agentWorkPath ?? previous?.agentWorkPath,'에이전트 작업 폴더',false,workPaths),agentModel,
       agentReasoningEffort:choice(input.agentReasoningEffort,AGENT_EFFORTS,previous?.agentReasoningEffort || '','에이전트 추론 수준'),
       agentInstructions:text(input.agentInstructions ?? previous?.agentInstructions,'에이전트 지침',50000) };
   }
@@ -609,7 +615,7 @@ class LocalStore {
     const serviceId = serviceValue === null && (previous || allowDetached) ? null : id(serviceValue,'서비스');
     if (previous && (previous.reviewId !== reviewId || previous.serviceId !== serviceId)) fail('에이전트 실행의 리뷰와 서비스를 바꿀 수 없습니다.');
     const review = this.get('reviews',reviewId);
-    if (serviceId !== null) this.get('services',serviceId);
+    const service = serviceId !== null ? this.get('services',serviceId) : null;
     if (!previous && !allowDetached && !this.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(review.projectId,serviceId)) fail('프로젝트에 연결된 서비스의 실행 기록만 저장할 수 있습니다.');
     const status = choice(input.status,AGENT_STATES,previous?.status || 'queued','에이전트 실행 상태');
     const sessionId = input.sessionId ?? previous?.sessionId ?? '';
@@ -618,12 +624,17 @@ class LocalStore {
     if (/\s/.test(model)) fail('에이전트 모델 이름에 공백을 사용할 수 없습니다.');
     const startedAt = date(input.startedAt ?? previous?.startedAt ?? input.createdAt ?? timestamp());
     const finishedAt = AGENT_FINAL.has(status) ? date(input.finishedAt || previous?.finishedAt || timestamp()) : null;
+    const workPathValue = input.workPath ?? previous?.workPath;
+    // A saved run belongs to its original host, even after a connection is
+    // changed or deleted. Backups must preserve that path convention as well.
+    const historicalPaths = typeof workPathValue === 'string' && (/^[A-Za-z]:[\\/]/.test(workPathValue) || workPathValue.startsWith('\\') || workPathValue.startsWith('//')) ? path.win32 : path.posix;
+    const workPaths = previous || allowDetached ? historicalPaths : service?.kind === 'ssh' ? path.posix : path;
     return {
       reviewId,serviceId,kind:choice(input.kind,['agent'],'agent','에이전트 실행 종류'),
       prompt:byteText(input.prompt ?? previous?.prompt,'에이전트 요청',256 * 1024,strict),model,
       reasoningEffort:choice(input.reasoningEffort,AGENT_EFFORTS,previous?.reasoningEffort || '','에이전트 추론 수준'),status,
       sessionId:text(sessionId,'에이전트 대화',128),sessionScope:text(input.sessionScope ?? previous?.sessionScope,'에이전트 대화 구분',256),
-      workPath:absolutePath(input.workPath ?? previous?.workPath,'에이전트 작업 폴더'),
+      workPath:absolutePath(workPathValue,'에이전트 작업 폴더',false,workPaths),
       response:byteText(input.response ?? previous?.response,'에이전트 응답',256 * 1024,strict),
       output:byteText(input.output ?? previous?.output,'에이전트 출력',1024 * 1024,strict),error:text(input.error ?? previous?.error,'에이전트 오류',10000),
       progressJson:agentProgress(input.progress ?? input.progressJson ?? previous?.progress,strict),metadataJson:agentMetadata(input,previous),startedAt,finishedAt
@@ -666,11 +677,11 @@ class LocalStore {
       return {activityId:activity.id,alreadySaved:false};
     });
   }
-  interruptAgentRuns() {
+  interruptAgentRuns({preserveRemote=false}={}) {
     return this.transaction(() => {
       const pending = this.db.prepare("SELECT * FROM agent_runs WHERE status IN ('queued','running')").all().map(plain);
       const message = '앱이 다시 시작되어 실행 연결이 끊겼습니다. 작업 결과를 확인한 뒤 다시 실행하십시오.';
-      return pending.map(run => this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}]}));
+      return pending.filter(run=>!(preserveRemote&&run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready&&this.db.prepare('SELECT kind FROM services WHERE id=?').get(run.serviceId)?.kind==='ssh')).map(run => this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}]}));
     });
   }
   addAttachment(input) {

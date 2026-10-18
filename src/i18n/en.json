@@ -1164,5 +1164,13 @@
   "개발자 도구": "Developer Tools",
   "최소화": "Minimize",
   "모두 앞으로 가져오기": "Bring All to Front",
-  "설정 · 새 버전 {0}": "Settings · New version {0}"
+  "설정 · 새 버전 {0}": "Settings · New version {0}",
+  "다운로드 중 {0}%": "Downloading {0}%",
+  "업데이트 설치 중": "Installing update",
+  "업데이트 준비 중": "Preparing update",
+  "업데이트 다시 시도": "Retry update",
+  "업데이트 설치": "Install update",
+  "새 버전 {0}": "New version {0}",
+  "업데이트 진행 중": "Updating",
+  "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Selecting the update downloads and installs the new version, then restarts the app. Projects and account data are preserved."
 }

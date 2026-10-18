@@ -117,8 +117,8 @@ async function harness(t, options = {}) {
     if (name === './terminal.cjs') return require('../electron/terminal.cjs');
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
-      state.agentStarts=[];state.agentValidations=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async()=>{}};
+      state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
+      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
@@ -129,6 +129,7 @@ async function harness(t, options = {}) {
     if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
+      if (state.seasonError) throw new Error(state.seasonError);
       return { close: async () => { state.seasonIntegrationClosed = true; } };
     } };
     if (name.startsWith('node:')) return require(name);
@@ -140,10 +141,11 @@ async function harness(t, options = {}) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   options.prepare?.({dataPath,root});
+  state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: process.platform, arch: process.arch },
-    URL, Response, Buffer, console, setImmediate, setTimeout, clearTimeout
+    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch },
+    URL, Response, Buffer, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate, setTimeout, clearTimeout
   }, { filename: MAIN_PATH, timeout: 5000 });
   await state.startup;
   assert.deepEqual(state.startupErrors, []);
@@ -158,7 +160,7 @@ async function harness(t, options = {}) {
     // VM creates objects in another realm; return plain local values to assertions.
     return result.data === undefined ? undefined : JSON.parse(JSON.stringify(result.data));
   };
-  return { root, dataPath, state, invoke, success, event };
+  return { root, dataPath, state, invoke, success, event, appEvents };
 }
 
 async function seed(h) {
@@ -171,6 +173,60 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+
+function savedRemoteFixture({dataPath},change={}) {
+  fs.mkdirSync(dataPath,{recursive:true});
+  const store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
+  try {
+    const group=store.saveGroup({name:'재연결 검사'});
+    const service=store.saveService({groupId:group.id,name:'서버 작업',kind:'ssh',host:'example.test',username:'tester',rootPath:'/tmp/project',authType:'password',agentEnabled:1,agentBinary:'codex',agentModel:'fixture-model'});
+    const project=store.saveProject({groupId:group.id,name:'프로젝트',serviceIds:[service.id]});
+    const review=store.saveReview({projectId:project.id,serviceId:service.id,title:'앱 재시작 후 계속'});
+    const sessionScope='target-v2:'+crypto.createHash('sha256').update(JSON.stringify(['ssh',service.host,service.port,service.username,service.hostAlias||'',service.sshConfigPath||'',service.rootPath,service.agentBinary,service.agentModel])).digest('hex');
+    const run=store.saveAgentRun({reviewId:review.id,serviceId:service.id,prompt:'보존할 요청',status:'running',workPath:service.rootPath,model:service.agentModel,sessionScope,response:'기존 부분 응답',remoteExecution:{version:1,ready:true,stdoutOffset:200,stderrOffset:0},...change.run});
+    if(change.service)store.saveService({id:service.id,...change.service});
+    const vault=createVault(path.join(dataPath,'credentials.json'));vault.commit(service.id,vault.prepare({password:'fixture-resume-password'}));
+    return {run,service};
+  }finally{store.close();}
+}
+
+test('startup reconnects a durable SSH job using its saved target and vault without starting another request',async t=>{
+  let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths);}});
+  assert.equal(h.state.agentRestores.length,1);assert.equal(h.state.agentStarts.length,0);
+  const restored=h.state.agentRestores[0];
+  assert.equal(restored.job.id,fixture.run.id);assert.equal(restored.config.password,'fixture-resume-password');
+  assert.equal(restored.settings.workPath,fixture.run.workPath);assert.equal(restored.settings.model,fixture.run.model);
+  assert.equal((await h.success('snapshot')).agentRunning,1);
+  assert.equal((await h.success('agent.read',{id:fixture.run.id})).response,'기존 부분 응답');
+  h.state.window.close();h.appEvents.emit('before-quit',{preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(h.state.agentCloseOptions.preserveRemote,true);
+});
+
+test('startup retains saved SSH output and refuses to reconnect a changed execution target',async t=>{
+  let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths,{service:{host:'changed.example.test'}});}});
+  assert.equal(h.state.agentRestores,undefined);
+  const saved=await h.success('agent.read',{id:fixture.run.id});assert.equal(saved.status,'interrupted');assert.equal(saved.response,'기존 부분 응답');
+  assert.match(saved.error,/접속 설정/);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('startup interrupts remote launch preparation instead of launching it again',async t=>{
+  let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths,{run:{remoteExecution:{version:1,ready:false,stdoutOffset:0,stderrOffset:0}}});}});
+  assert.equal(h.state.agentRestores,undefined);assert.equal((await h.success('agent.read',{id:fixture.run.id})).status,'interrupted');
+});
+
+test('Windows starts the standalone app without opening the Unix-only Season AI connection', async t => {
+  const h = await harness(t, { platform: 'win32' });
+  assert.equal(h.state.seasonIntegration, undefined);
+  assert.equal(h.state.codexRegistered, true);
+  assert.equal((await h.success('snapshot')).projects.length, 0);
+});
+
+test('an unavailable optional Season AI connection leaves the app open', async t => {
+  const h = await harness(t, { platform: 'darwin', seasonError: 'fixture integration failure' });
+  assert.equal(h.state.seasonWarnings.length, 1);
+  assert.equal(h.state.window.isDestroyed(), false);
+  assert.equal((await h.success('snapshot')).groups.length, 0);
+});
 
 test('Season AI navigation preserves data and moves an already fullscreen window to the requested display', async t => {
   const h = await harness(t);

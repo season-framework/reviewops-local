@@ -6,9 +6,12 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { Server, utils } = require('ssh2');
 const { createAgentManager, normalizeSettings, buildArguments, modelOptions } = require('../electron/agents.cjs');
 const { fingerprintOf } = require('../electron/ssh.cjs');
+const remoteAgent = require('../electron/remote-agent.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 async function eventually(check) {for(let attempt=0;attempt<200;attempt++){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
 async function completed(manager,id){return eventually(()=>{const job=manager.read(id);return ['completed','failed','cancelled'].includes(job.status)?job:null;});}
@@ -22,15 +25,16 @@ if(args[0]==='login'){console.log('Open https://auth.example.test/device and ent
 let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{
  const images=args.flatMap((arg,index)=>arg==='-i'?[{path:args[index+1],bytes:fs.readFileSync(args[index+1]).toString('base64'),mode:fs.statSync(args[index+1]).mode&0o777}]:[]);
  const files=input.split('\\n').filter(line=>line.startsWith('"')&&line.includes(': /')).map(line=>{const location=line.slice(line.indexOf(': /')+2);return {path:location,bytes:fs.readFileSync(location).toString('base64'),mode:fs.statSync(location).mode&0o777};});
- fs.writeFileSync(cwd+'/last-input.json',JSON.stringify({args,input,cwd,images,files,codexHome:process.env.CODEX_HOME,loginProfile:process.env.REVIEWOPS_FIXTURE_LOGIN||''}));
+ fs.writeFileSync(cwd+'/last-input.json',JSON.stringify({args,input,cwd,pid:process.pid,images,files,codexHome:process.env.CODEX_HOME,loginProfile:process.env.REVIEWOPS_FIXTURE_LOGIN||''}));
+ fs.appendFileSync(cwd+'/request-starts','1');
  const send=event=>process.stdout.write(JSON.stringify(event)+'\\n');
  send({type:'thread.started',thread_id:'synthetic-thread'});send({type:'turn.started'});
- if(input.includes('WAIT_FOR_CANCEL')){const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});fs.writeFileSync(cwd+'/child.pid',String(child.pid));setInterval(()=>{},1000);return;}
+ if(input.includes('WAIT_FOR_CANCEL')){const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});fs.writeFileSync(cwd+'/child.pid',String(child.pid));if(input.includes('FINAL_ON_CANCEL'))process.on('SIGTERM',()=>{fs.writeSync(1,JSON.stringify({type:'item.completed',item:{id:'last-answer',type:'agent_message',text:'중지 직전 마지막 응답'}})+'\\n');process.exit(0);});setInterval(()=>{},1000);return;}
  if(input.includes('FAIL_TURN')){send({type:'turn.failed',error:{message:'Synthetic request failure'}});process.exitCode=1;return;}
  send({type:'item.started',item:{id:'command-1',type:'command_execution',command:'echo secret',status:'in_progress'}});
  send({type:'item.completed',item:{id:'command-1',type:'command_execution',status:'completed',exit_code:0}});
  const response=JSON.stringify({type:'item.completed',item:{id:'answer',type:'agent_message',text:'작업 완료: '+input}})+'\\n';const bytes=Buffer.from(response),split=bytes.indexOf(Buffer.from('작업'))+1;
- process.stdout.write(bytes.subarray(0,split));setTimeout(()=>{process.stdout.write(bytes.subarray(split));send({type:'turn.completed',usage:{input_tokens:12,output_tokens:8}})},25);
+ process.stdout.write(bytes.subarray(0,split));setTimeout(()=>{process.stdout.write(bytes.subarray(split));send({type:'turn.completed',usage:{input_tokens:12,output_tokens:8}})},input.includes('FINISH_AFTER_RESTART')?1200:25);
 });
 `;
 async function fixture(t,options={}) {
@@ -51,6 +55,50 @@ test('agent arguments bypass approvals and sandbox for fresh and resumed CLI req
  assert.throws(()=>buildArguments(settings,'bad;id'),{code:'AGENT_SESSION_INVALID'});
  assert.throws(()=>normalizeSettings({workPath:'relative'},{}),{code:'AGENT_CONFIG_INVALID'});
  assert.throws(()=>normalizeSettings({provider:'unknown',workPath:'/tmp'},{}),{code:'AGENT_PROVIDER_INVALID'});
+});
+
+test('remote result detection rechecks completion after the runner exits during its process check',async t=>{
+ const id='completion-race-'+crypto.randomUUID(),directory=remoteAgent.directory(id),bin=path.join(directory,'bin');
+ await fs.mkdir(bin,{recursive:true,mode:0o700});
+ t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ await fs.writeFile(path.join(directory,'stdout'),'');await fs.writeFile(path.join(directory,'stderr'),'');await fs.writeFile(path.join(directory,'pid'),'99999999');
+ await fs.writeFile(path.join(bin,'ps'),`#!/bin/sh\nprintf '0\\n' > '${directory}/result'\n`,{mode:0o700});
+ const result=await new Promise((resolve,reject)=>{
+  const child=spawn('/bin/bash',['-c',remoteAgent.read(id)],{env:{...process.env,PATH:bin+path.delimiter+process.env.PATH}}),output=[];
+  child.stdout.on('data',chunk=>output.push(chunk));child.once('error',reject);child.once('close',code=>code===0?resolve(remoteAgent.parseRead(Buffer.concat(output).toString())):reject(new Error('원격 작업 결과 검사 실패')));
+ });
+ assert.equal(result.state,'done');assert.equal(result.code,0);
+});
+
+test('Windows agent workspaces accept drive and share paths while SSH keeps server paths', () => {
+ for(const workPath of ['C:\\Users\\Operator\\work', '\\\\server\\share\\work']) assert.equal(normalizeSettings({workPath},{kind:'local'},'win32').workPath,workPath);
+ assert.equal(normalizeSettings({workPath:'/srv/work'},{kind:'ssh'},'win32').workPath,'/srv/work');
+ assert.throws(()=>normalizeSettings({workPath:'C:\\work'},{kind:'ssh'},'win32'),{code:'AGENT_CONFIG_INVALID'});
+ assert.throws(()=>normalizeSettings({workPath:'relative'},{kind:'local'},'win32'),{code:'AGENT_CONFIG_INVALID'});
+});
+
+test('Windows local agents resolve npm wrappers and cancel the whole process tree without a shell', async t => {
+ const calls=[],resolved=[],children=new Map();let nextPid=45000;
+ const spawnImpl=(command,args,options)=>{
+  calls.push({command,args,options});
+  const child=Object.assign(new EventEmitter(),{pid:++nextPid,stdout:new PassThrough(),stderr:new PassThrough(),stdin:new PassThrough()});children.set(child.pid,child);
+  if(command==='taskkill.exe')setImmediate(()=>{children.get(Number(args[1])).emit('close',null,'SIGKILL');child.emit('close',0);});
+  else if(args[0]==='--version')setImmediate(()=>{child.stdout.write('codex-cli 0.161.0\n');child.emit('close',0);});
+  else if(args[0]==='login')setImmediate(()=>child.emit('close',0));
+  else child.stdin.on('finish',()=>child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'windows-thread'})+'\n'));
+  return child;
+ };
+ const f=await fixture(t,{platform:'win32',env:{Path:'C:\\Windows\\System32',APPDATA:'C:\\Users\\Operator\\AppData\\Roaming'},spawn:spawnImpl,findRuntime:async custom=>{resolved.push(custom);return{available:true,path:'C:\\Codex\\codex.exe',command:'C:\\Codex\\codex.exe',args:[]};}});
+ const binary='C:\\Users\\Operator\\AppData\\Roaming\\npm\\codex.cmd';
+ const job=f.manager.start({config:f.config,settings:{...f.settings,binary},prompt:'Keep running until cancelled'});
+ await eventually(()=>f.manager.read(job.id).sessionId==='windows-thread');
+ const stopped=await f.manager.cancel(job.id);
+ assert.equal(stopped.status,'cancelled');assert.equal(stopped.terminationConfirmed,true);
+ assert.ok(resolved.length>=2);assert.ok(resolved.every(value=>value===binary));
+ const cliCalls=calls.filter(call=>call.command!=='taskkill.exe');
+ assert.ok(cliCalls.every(call=>call.command==='C:\\Codex\\codex.exe'&&call.options.shell===false&&call.options.windowsHide===true&&call.options.detached===false));
+ assert.equal(cliCalls[0].options.env.Path,undefined);assert.match(cliCalls[0].options.env.PATH,/C:\\Windows\\System32;C:\\Users\\Operator\\AppData\\Roaming\\npm/);
+ const kill=calls.find(call=>call.command==='taskkill.exe');assert.deepEqual(kill.args.slice(2),['/T','/F']);assert.equal(kill.options.shell,false);
 });
 
 test('agent preflight shares start validation without creating a job, process or SSH connection',async()=>{
@@ -120,7 +168,7 @@ test('failed turns and cancellation during startup do not become successful resp
 const hostKey=crypto.generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs1',format:'pem'},publicKeyEncoding:{type:'pkcs1',format:'pem'}}).privateKey;
 const fingerprint=fingerprintOf(utils.parseKey(hostKey).getPublicSSH());
 async function remoteFixture(t,options={}) {
- const f=await fixture(t,options.managerOptions||{}),clients=new Set(),processes=new Set();let authentications=0;
+ const f=await fixture(t,options.managerOptions||{}),clients=new Set(),processes=new Set();let authentications=0,rejectedStops=0;
  if(options.loginProfile) {
   f.profileCodexHome=path.join(f.home,'profile-codex');
   await fs.mkdir(f.profileCodexHome);
@@ -140,15 +188,16 @@ async function remoteFixture(t,options={}) {
    sftp.on('CLOSE',async(id,key)=>{try{await handles.get(key.toString()).close();handles.delete(key.toString());sftp.status(id,0);}catch(error){sftp.status(id,4,error.message);}});
   });session.on('exec',(accept,reject,info)=>{
    const channel=accept();channel.on('error',()=>{});
-   if(options.rejectStop&&info.command.startsWith("bash -c 'd=")){channel.exit(1);channel.end();return;}
+   if(options.rejectLaunch&&info.command.includes('nohup setsid bash')){channel.exit(127);channel.end();return;}
+   if(info.command.startsWith("bash -c 'd=")&&(options.rejectStop||options.rejectStopOnce&&rejectedStops++===0)){channel.exit(1);channel.end();return;}
    const child=spawn('/bin/bash',['-c',info.command],{env:{...process.env,PATH:f.bin+path.delimiter+process.env.PATH,HOME:f.home,CODEX_HOME:path.join(f.home,'.codex')},stdio:['pipe','pipe','pipe'],detached:true});processes.add(child);
    channel.pipe(child.stdin);child.stdin.on('error',()=>{});child.stdout.pipe(channel,{end:false});child.stderr.pipe(channel.stderr,{end:false});
-   child.on('close',(code)=>{processes.delete(child);if(!channel.destroyed){channel.exit(Number.isInteger(code)?code:143);channel.end();}});
+   child.on('close',(code)=>{processes.delete(child);if(!channel.destroyed){if(!(options.dropLaunchResponse&&info.command.includes('nohup setsid bash')))channel.exit(Number.isInteger(code)?code:143);channel.end();}});
   });}));
  });
  await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
  t.after(async()=>{await f.manager.closeAll();for(const child of processes){try{process.kill(-child.pid,'SIGKILL')}catch{}}for(const client of clients)client.destroy();await new Promise(resolve=>server.close(resolve));});
- return {...f,config:{id:'remote-service',kind:'ssh',host:'127.0.0.1',port:server.address().port,username:'tester',authType:'password',password:'fixture-password',rootPath:f.root,hostFingerprint:fingerprint},authentications:()=>authentications};
+ return {...f,config:{id:'remote-service',kind:'ssh',host:'127.0.0.1',port:server.address().port,username:'tester',authType:'password',password:'fixture-password',rootPath:f.root,hostFingerprint:fingerprint},authentications:()=>authentications,disconnect:()=>{for(const client of clients)client.end();}};
 }
 
 test('SSH agent refuses missing or changed host trust before sending credentials',async t=>{
@@ -163,7 +212,7 @@ test('SSH execution streams over pinned direct connection, quotes paths and resu
  assert.equal(result.status,'completed',result.error);assert.equal(result.sessionId,'synthetic-thread');assert.equal(result.terminationConfirmed,true);
  const input=JSON.parse(await fs.readFile(path.join(f.root,'last-input.json'),'utf8'));assert.equal(input.input,'SSH 요청 $HOME `touch /tmp/never`');assert.equal(input.cwd,await fs.realpath(f.root));assert.deepEqual(input.args.slice(-3),['resume','prior-thread','-']);
  assert.ok(input.args.includes('--dangerously-bypass-approvals-and-sandbox'));assert.equal(input.args.some(arg=>arg.includes('sandbox_mode=')),false);
- await assert.rejects(fs.access(`/tmp/reviewops-agent-${job.id}`));
+ await eventually(async()=>{try{await fs.access(`/tmp/reviewops-agent-${job.id}`);return false;}catch{return true;}});
 });
 
 test('SSH CLI, model cache and stored sessions share the server login profile environment',async t=>{
@@ -191,16 +240,198 @@ test('SSH cancellation confirms process group termination instead of only closin
  const image=JSON.parse(await fs.readFile(path.join(f.root,'last-input.json'),'utf8')).images[0];await assert.rejects(fs.access(image.path));
 });
 
+test('SSH requests keep running during an app update and restore finished UTF8 output without duplicate execution',async t=>{
+ const f=await remoteFixture(t,{managerOptions:{remotePollMs:20,remoteReconnectMs:30}}),prompt='FINISH_AFTER_RESTART 한글 응답 유지';
+ const job=f.manager.start({config:f.config,settings:f.settings,prompt,files:[{name:'source.txt',bytes:Buffer.from('첨부 자료')}]});
+ await eventually(async()=>{
+  const current=f.manager.read(job.id);
+  try{return current.remoteExecution?.ready && current.remoteExecution.stdoutOffset===(await fs.stat(`/tmp/reviewops-agent-${job.id}/stdout`)).size && current.output.includes('command-1');}catch{return false;}
+ });
+ const saved=f.manager.read(job.id),record=JSON.parse(await fs.readFile(path.join(f.root,'last-input.json'),'utf8'));
+ assert.equal(f.manager.hasBlockingJobs,false);assert.equal(saved.status,'running');
+ await f.manager.closeAll({preserveRemote:true});
+ assert.equal(f.manager.read(job.id).cancelRequested,false);assert.doesNotThrow(()=>process.kill(record.pid,0));
+ assert.equal(await fs.readFile(record.files[0].path,'utf8'),'첨부 자료');
+ await pause(1400);
+ const restored=createAgentManager({remotePollMs:20,remoteReconnectMs:30,commandTimeoutMs:3000});
+ try {
+  restored.restore({job:saved,config:f.config,settings:f.settings});
+  const result=await completed(restored,job.id);
+  assert.equal(result.status,'completed',result.error);assert.equal(result.sessionId,'synthetic-thread');
+  assert.ok(result.response.includes(prompt));assert.equal(result.response.includes('\ufffd'),false);assert.equal(result.output.includes('\ufffd'),false);
+  assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+  await eventually(async()=>{try{await fs.access(`/tmp/reviewops-agent-${job.id}`);return false;}catch{return true;}});
+ } finally {await restored.closeAll();}
+});
 
-test('SSH stop failures remain failed and never report a confirmed cancellation',async t=>{
+test('SSH connection loss reconnects to the same running request and reads its result',async t=>{
+ const f=await remoteFixture(t,{managerOptions:{remotePollMs:20,remoteReconnectMs:30}});
+ const job=f.manager.start({config:f.config,settings:f.settings,prompt:'FINISH_AFTER_RESTART 연결 복구'});
+ await eventually(()=>f.manager.read(job.id).sessionId==='synthetic-thread');
+ f.disconnect();
+ const result=await completed(f.manager,job.id);
+ assert.equal(result.status,'completed',result.error);assert.ok(result.response.includes('연결 복구'));
+ assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+});
+
+test('an interrupted SSH launch response observes the existing request without retrying execution',async t=>{
+ const f=await remoteFixture(t,{dropLaunchResponse:true,managerOptions:{remotePollMs:20,remoteReconnectMs:30}});
+ const job=f.manager.start({config:f.config,settings:f.settings,prompt:'FINISH_AFTER_RESTART 실행 응답 복구'});
+ const result=await completed(f.manager,job.id);
+ assert.equal(result.status,'completed',result.error);assert.ok(result.response.includes('실행 응답 복구'));
+ assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+});
+
+test('explicit cancellation after restoring a running SSH request stops its process group',async t=>{
+ const f=await remoteFixture(t,{managerOptions:{remotePollMs:20,remoteReconnectMs:30}});
+ const job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ await eventually(()=>f.manager.read(job.id).remoteExecution?.ready && f.manager.read(job.id).sessionId);
+ const saved=f.manager.read(job.id);
+ await f.manager.closeAll({preserveRemote:true});
+ const restored=createAgentManager({remotePollMs:20,remoteReconnectMs:30,commandTimeoutMs:3000});
+ try {
+  restored.restore({job:saved,config:f.config,settings:f.settings});
+  const result=await restored.cancel(job.id);
+  assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);
+  await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+  assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+ } finally {await restored.closeAll();}
+});
+
+test('restoring a missing SSH execution reports failure without starting another request',async t=>{
+ const f=await remoteFixture(t),job={id:'missing-'+crypto.randomUUID(),kind:'agent',status:'running',reviewId:'review',serviceId:f.config.id,sessionId:'',progress:[],remoteExecution:{version:1,ready:true,stdoutOffset:200,stderrOffset:0}};
+ f.manager.restore({job,config:f.config,settings:f.settings});
+ const result=await completed(f.manager,job.id);assert.equal(result.status,'failed');assert.equal(result.terminationConfirmed,false);assert.match(result.error,/다시 실행하지 않았습니다/);
+ await assert.rejects(fs.access(path.join(f.root,'request-starts')));
+});
+
+test('failed SSH recovery preserves saved partial output, response and progress in every update',async t=>{
+ const f=await remoteFixture(t),saved={id:'missing-'+crypto.randomUUID(),kind:'agent',status:'running',reviewId:'review',serviceId:f.config.id,sessionId:'prior-session',response:'저장된 응답',output:'저장된 출력\n',progress:[{sequence:1,state:'running',message:'저장된 진행 기록',step:'execution'}],remoteExecution:{version:1,ready:true,stdoutOffset:1024,stderrOffset:20}};
+ f.manager.restore({job:saved,config:f.config,settings:f.settings});
+ const result=await completed(f.manager,saved.id);
+ assert.equal(result.status,'failed');assert.equal(result.response,saved.response);assert.equal(result.output,saved.output);assert.equal(result.sessionId,saved.sessionId);
+ assert.ok(result.progress.some(row=>row.message==='저장된 진행 기록'));
+ for(const update of f.updates.filter(row=>row.id===saved.id)){assert.equal(update.output,saved.output);assert.equal(update.response,saved.response);assert.ok(update.progress.some(row=>row.message==='저장된 진행 기록'));}
+});
+
+test('missing SSH recovery also retains preparation progress before the first output byte',async t=>{
+ const f=await remoteFixture(t),saved={id:'missing-'+crypto.randomUUID(),kind:'agent',status:'running',reviewId:'review',serviceId:f.config.id,sessionId:'',response:'',output:'',progress:[{sequence:1,state:'running',message:'저장된 실행 준비 기록',step:'execution'}],remoteExecution:{version:1,ready:true,stdoutOffset:0,stderrOffset:0}};
+ f.manager.restore({job:saved,config:f.config,settings:f.settings});
+ const result=await completed(f.manager,saved.id);assert.equal(result.status,'failed');assert.ok(result.progress.some(row=>row.message==='저장된 실행 준비 기록'));
+ for(const update of f.updates.filter(row=>row.id===saved.id))assert.ok(update.progress.some(row=>row.message==='저장된 실행 준비 기록'));
+});
+
+test('SSH recovery drains unread output after runner failure and keeps the earlier response while replaying',async t=>{
+ const f=await remoteFixture(t),id='lost-'+crypto.randomUUID(),directory=`/tmp/reviewops-agent-${id}`;
+ const earlier=JSON.stringify({type:'item.completed',item:{id:'earlier',type:'agent_message',text:'앞서 작성한 응답'}})+'\n';
+ const answer='서버에 남은 응답 '+ '가'.repeat(30000),unread=JSON.stringify({type:'item.completed',item:{id:'latest',type:'agent_message',text:answer}})+'\n';
+ await fs.mkdir(directory,{mode:0o700});await fs.writeFile(path.join(directory,'stdout'),earlier+unread);await fs.writeFile(path.join(directory,'stderr'),'마지막 서버 로그');await fs.writeFile(path.join(directory,'pid'),'99999999');
+ try {
+  const saved={id,kind:'agent',status:'running',reviewId:'review',serviceId:f.config.id,sessionId:'prior-session',response:'앞서 작성한 응답',output:earlier,progress:[],remoteExecution:{version:1,ready:true,stdoutOffset:Buffer.byteLength(earlier),stderrOffset:0}};
+  f.manager.restore({job:saved,config:f.config,settings:f.settings});
+  const result=await completed(f.manager,id);
+  assert.equal(result.status,'failed');assert.equal(result.response,answer);assert.ok(result.output.includes('마지막 서버 로그'));assert.equal(result.output.includes('\ufffd'),false);
+  assert.ok(f.updates.filter(row=>row.id===id).every(row=>row.response));
+  await assert.rejects(fs.access(path.join(f.root,'request-starts')));
+ } finally {await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('SSH launch reports missing required commands and removes only its own preparation files',async t=>{
+ const f=await remoteFixture(t,{rejectLaunch:true}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'실행 명령 검사'});
+ const result=await completed(f.manager,job.id);assert.equal(result.status,'failed');assert.equal(result.errorCode,'AGENT_REMOTE_START_FAILED');assert.match(result.error,/nohup 및 setsid/);
+ await assert.rejects(fs.access(`/tmp/reviewops-agent-${job.id}`));await assert.rejects(fs.access(path.join(f.root,'request-starts')));
+});
+
+test('a saved SSH cancellation is sent again after app restart and still stops descendants',async t=>{
+ const f=await remoteFixture(t,{managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ const saved={...f.manager.read(job.id),cancelRequested:true};
+ await f.manager.closeAll({preserveRemote:true});
+ const restored=createAgentManager({remotePollMs:20,commandTimeoutMs:3000});
+ try {
+  restored.restore({job:saved,config:f.config,settings:f.settings});
+  const result=await completed(restored,job.id);assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);
+  await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+ } finally {await restored.closeAll();}
+});
+
+test('a restored SSH cancellation remains active after a failed stop and accepts another cancellation',async t=>{
+ const f=await remoteFixture(t,{rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ const saved={...f.manager.read(job.id),cancelRequested:true};
+ await f.manager.closeAll({preserveRemote:true});
+ const restored=createAgentManager({remotePollMs:20,commandTimeoutMs:3000});
+ try {
+  restored.restore({job:saved,config:f.config,settings:f.settings});
+  await eventually(()=>restored.read(job.id).errorCode==='AGENT_STOP_UNCONFIRMED');
+  assert.equal(restored.read(job.id).status,'running');assert.doesNotThrow(()=>process.kill(pid,0));
+  const result=await restored.cancel(job.id);assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);
+  await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+ } finally {await restored.closeAll();}
+});
+
+test('an update shutdown waits for cancellation reserved in the same tick and preserves its final output',async t=>{
+ const f=await remoteFixture(t,{managerOptions:{remotePollMs:50}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL FINAL_ON_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ await pause(150);
+ const cancelling=f.manager.cancel(job.id);assert.equal(f.manager.hasBlockingJobs,true);
+ await f.manager.closeAll({preserveRemote:true});
+ const result=await cancelling;assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);assert.equal(result.response,'중지 직전 마지막 응답');
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+});
+
+test('a new SSH request cannot overwrite or remove a prior remote execution with the same ID',async t=>{
+ const f=await remoteFixture(t),id='existing-'+crypto.randomUUID(),directory=`/tmp/reviewops-agent-${id}`;
+ await fs.mkdir(directory,{mode:0o700});await fs.writeFile(path.join(directory,'retained-output'),'이전 작업 결과');
+ try {
+  f.manager.start({id,config:f.config,settings:f.settings,prompt:'이전 작업을 덮어쓰지 마십시오.'});
+  const result=await completed(f.manager,id);assert.equal(result.status,'failed');assert.equal(result.errorCode,'AGENT_REMOTE_START_FAILED');
+  assert.equal(await fs.readFile(path.join(directory,'retained-output'),'utf8'),'이전 작업 결과');
+  await assert.rejects(fs.access(path.join(f.root,'request-starts')));
+ } finally {await fs.rm(directory,{recursive:true,force:true});}
+});
+
+test('updates keep local requests protected while remote requests are prepared for recovery',async t=>{
+ const f=await fixture(t),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ await eventually(()=>f.manager.read(job.id).sessionId);
+ assert.equal(f.manager.hasBlockingJobs,true);
+ await f.manager.closeAll({preserveRemote:true});
+ assert.equal(f.manager.read(job.id).status,'cancelled');assert.equal(f.manager.hasBlockingJobs,false);
+});
+
+
+test('SSH stop failures keep observing the running job and never report a confirmed cancellation',async t=>{
  const f=await remoteFixture(t,{rejectStop:true}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL',images:[{name:'test.png',mimeType:'image/png',bytes:Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64')}]});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
  const group=Number(await fs.readFile(`/tmp/reviewops-agent-${job.id}/pid`,'utf8'));
  t.after(async()=>{try{process.kill(-group,'SIGKILL')}catch{}try{process.kill(pid,'SIGKILL')}catch{}await fs.rm(`/tmp/reviewops-agent-${job.id}`,{recursive:true,force:true});});
  await assert.rejects(f.manager.cancel(job.id),{code:'AGENT_STOP_UNCONFIRMED'});
- const result=await completed(f.manager,job.id);assert.equal(result.status,'failed');assert.equal(result.terminationConfirmed,false);
+ const result=f.manager.read(job.id);assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.terminationConfirmed,false);assert.equal(result.errorCode,'AGENT_STOP_UNCONFIRMED');assert.equal(f.manager.hasBlockingJobs,true);
  assert.doesNotThrow(()=>process.kill(pid,0));
  try{process.kill(-group,'SIGKILL')}catch{}
+});
+
+test('SSH cancellation can be retried after an unconfirmed stop without losing the running job',async t=>{
+ const f=await remoteFixture(t,{rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ await assert.rejects(f.manager.cancel(job.id),{code:'AGENT_STOP_UNCONFIRMED'});
+ assert.equal(f.manager.read(job.id).status,'running');assert.doesNotThrow(()=>process.kill(pid,0));
+ const result=await f.manager.cancel(job.id);assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);assert.equal(result.error,'');
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+ assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+});
+
+test('app shutdown is bounded when an SSH cancellation cannot be confirmed',async t=>{
+ const f=await remoteFixture(t,{rejectStop:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ const group=Number(await fs.readFile(`/tmp/reviewops-agent-${job.id}/pid`,'utf8'));
+ try {
+  const cancelling=f.manager.cancel(job.id).catch(error=>error.code),started=Date.now();
+  await f.manager.closeAll({preserveRemote:true});assert.equal(await cancelling,'AGENT_STOP_UNCONFIRMED');assert.ok(Date.now()-started<5000);
+  const result=f.manager.read(job.id);assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.remoteExecution.ready,true);
+  assert.doesNotThrow(()=>process.kill(pid,0));
+ } finally {try{process.kill(-group,'SIGKILL')}catch{}try{process.kill(pid,'SIGKILL')}catch{}await fs.rm(`/tmp/reviewops-agent-${job.id}`,{recursive:true,force:true});}
 });
 
 test('closing active jobs waits for termination and the manager can be used after restoring data',async t=>{

@@ -5,6 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const vm = require('node:vm');
 const {createStore, SCHEMA_VERSION} = require('../electron/store.cjs');
 
 const SERVICE_FIELDS = ['agentEnabled','agentBinary','agentWorkPath','agentModel','agentReasoningEffort','agentInstructions'];
@@ -25,6 +26,64 @@ function setup(t) {
 function start(f, extra={}) {
   return f.store.saveAgentRun({reviewId:f.review.id,serviceId:f.service.id,prompt:'검색어가 유지되도록 수정하십시오.',status:'running',model:'test-model',reasoningEffort:'high',workPath:f.directory,sessionScope:'scope-test',progress:[{sequence:1,state:'running',message:'요청 처리 시작',step:'response',createdAt:new Date().toISOString()}],...extra});
 }
+
+function windowsStore(t) {
+  const windowsModule = {exports:{}};
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron/store.cjs'),'utf8'), {
+    require:name=>name==='node:path'?path.win32:require(name), module:windowsModule, Buffer
+  });
+  const store=windowsModule.exports.createStore({dbPath:':memory:'});
+  t.after(()=>store.close());
+  return store;
+}
+
+test('Windows preserves SSH run paths through progress, owned connection versions, deletion and backup', t => {
+  const store=windowsStore(t),group=store.saveGroup({name:'Windows SSH history'});
+  const project=store.saveProject({groupId:group.id,name:'SSH project',connection:{kind:'ssh',host:'example.test',username:'operator',rootPath:'/srv/project'}});
+  const review=store.saveReview({projectId:project.id,serviceId:project.connection.id,title:'SSH result'});
+  const run=store.saveAgentRun({reviewId:review.id,serviceId:project.connection.id,status:'running',workPath:'/srv/project',prompt:'Preserve the server path'});
+  assert.equal(run.workPath,'/srv/project');
+  assert.equal(store.saveAgentRun({id:run.id,output:'progress',workPath:run.workPath}).workPath,'/srv/project');
+  const next=store.saveProjectConnection(project.id,{rootPath:'/srv/next-project'});
+  assert.notEqual(next.connection.id,run.serviceId);
+  assert.equal(store.saveAgentRun({id:run.id,status:'completed',response:'SSH result',workPath:run.workPath}).workPath,'/srv/project');
+  assert.equal(store.get('agent_runs',run.id).serviceId,project.connection.id);
+  let backup=clone(store.exportData());store.importData(backup);
+  assert.deepEqual(clone(store.exportData()),backup);
+  store.deleteService(project.connection.id);
+  assert.equal(store.get('agent_runs',run.id).serviceId,null);
+  assert.equal(store.saveAgentRun({id:run.id,output:'Historical output'}).workPath,'/srv/project');
+  backup=clone(store.exportData());store.importData(backup);
+  assert.deepEqual(clone(store.exportData()),backup);
+  assert.equal(store.get('agent_runs',run.id).workPath,'/srv/project');
+});
+
+test('Windows preserves local drive and share run paths, including detached backup history', t => {
+  const store=windowsStore(t),group=store.saveGroup({name:'Windows local history'});
+  for(const workPath of ['C:\\Users\\Operator\\Project','\\\\server\\share\\Project']) {
+    const project=store.saveProject({groupId:group.id,name:workPath,connection:{kind:'local',rootPath:workPath}});
+    const review=store.saveReview({projectId:project.id,serviceId:project.connection.id,title:'Local result'});
+    const run=store.saveAgentRun({reviewId:review.id,serviceId:project.connection.id,status:'running',workPath});
+    assert.equal(run.workPath,workPath);
+    assert.equal(store.saveAgentRun({id:run.id,status:'completed',response:'Local result'}).workPath,workPath);
+    store.saveProjectConnection(project.id,null);store.deleteService(project.connection.id);
+    assert.equal(store.saveAgentRun({id:run.id,output:'Detached local output'}).workPath,workPath);
+  }
+  const backup=clone(store.exportData());store.importData(backup);
+  assert.deepEqual(clone(store.exportData()),backup);
+});
+
+test('Windows historical runs retain their paths when a legacy service changes host kind', t => {
+  const store=windowsStore(t),group=store.saveGroup({name:'Legacy connection'});
+  const service=store.saveService({groupId:group.id,name:'Shared SSH',kind:'ssh',host:'example.test',username:'operator',rootPath:'/srv/project'});
+  const project=store.saveProject({groupId:group.id,name:'Legacy project',serviceIds:[service.id]});
+  const review=store.saveReview({projectId:project.id,serviceId:service.id,title:'Historical result'});
+  const run=store.saveAgentRun({reviewId:review.id,serviceId:service.id,status:'running',workPath:'/srv/project'});
+  store.saveService({id:service.id,kind:'local',rootPath:'C:\\New project'});
+  assert.equal(store.saveAgentRun({id:run.id,status:'completed',response:'Original SSH output',workPath:run.workPath}).workPath,'/srv/project');
+  const backup=clone(store.exportData());store.importData(backup);
+  assert.deepEqual(clone(store.exportData()),backup);
+});
 
 test('service agent defaults and configured paths persist without altering SSH or viewer settings', t => {
   const f=setup(t);
@@ -85,6 +144,27 @@ test('unfinished executions are marked interrupted after restart and completed c
   assert.ok(rows.find(item=>item.id===queued.id).finishedAt);
   assert.equal(rows.find(item=>item.id===done.id).sessionId,'completed-session');
   assert.equal(reopened.snapshot().activities.filter(item=>item.role==='agent').length,1);
+});
+
+test('restart preserves only confirmed remote agent jobs and backup restore still interrupts them',t=>{
+  const f=setup(t),remote=f.store.saveService({groupId:f.group.id,name:'SSH 작업',kind:'ssh',host:'example.test',username:'test',rootPath:'/tmp/project'});
+  f.store.saveProject({id:f.project.id,serviceIds:[f.service.id,remote.id]});
+  const metadata={version:1,ready:true,stdoutOffset:1024,stderrOffset:12};
+  const durable=start(f,{serviceId:remote.id,workPath:'/tmp/project',remoteExecution:metadata});
+  const preparing=start(f,{serviceId:remote.id,workPath:'/tmp/project',remoteExecution:{...metadata,ready:false}});
+  const legacy=start(f,{serviceId:remote.id,workPath:'/tmp/project'}),local=start(f,{remoteExecution:metadata});
+  assert.deepEqual(f.store.get('agent_runs',durable.id).remoteExecution,metadata);
+  assert.equal(f.store.interruptAgentRuns({preserveRemote:true}).length,3);
+  assert.equal(f.store.get('agent_runs',durable.id).status,'running');
+  for(const run of [preparing,legacy,local])assert.equal(f.store.get('agent_runs',run.id).status,'interrupted');
+  assert.equal(f.store.interruptAgentRuns().length,1);
+  assert.equal(f.store.get('agent_runs',durable.id).status,'interrupted');
+});
+
+test('remote execution metadata rejects paths, commands and invalid output offsets',t=>{
+  const f=setup(t),remote={version:1,ready:true,stdoutOffset:0,stderrOffset:0};
+  for(const change of [{version:2},{ready:1},{stdoutOffset:-1},{stderrOffset:1.1},{stdoutOffset:Number.MAX_SAFE_INTEGER+1},{directory:'/tmp/arbitrary'},{command:'anything'}])assert.throws(()=>start(f,{remoteExecution:{...remote,...change}}));
+  assert.equal(f.store.listAgentRuns().length,0);
 });
 
 test('fresh agent runs need a linked service, while unlinking preserves and permits updates to past executions', t => {

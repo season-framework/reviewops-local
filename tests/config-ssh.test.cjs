@@ -30,7 +30,7 @@ async function fixture(t, options = {}) {
   const codex = `#!${process.execPath}\nconst fs=require('node:fs');const a=process.argv.slice(2);if(a[0]==='--version'){console.log('codex-cli config-fixture-1.0');return;}if(a[0]==='login'&&a[1]==='status')return;let input='';process.stdin.on('data',x=>input+=x);process.stdin.on('end',()=>{const images=a.flatMap((v,i)=>v==='-i'?[{path:a[i+1],bytes:fs.readFileSync(a[i+1]).toString('base64'),mode:fs.statSync(a[i+1]).mode&511}]:[]);fs.writeFileSync('request.json',JSON.stringify({input,args:a,images,pid:process.pid}));const send=x=>console.log(JSON.stringify(x));send({type:'thread.started',thread_id:'alias-session'});if(input.includes('WAIT_FOR_CANCEL')){setInterval(()=>{},1000);return;}send({type:'item.completed',item:{id:'response',type:'agent_message',text:'SSH 완료'}});send({type:'turn.completed'});});\n`;
   await fs.writeFile(path.join(bin, 'codex'), codex, { mode: 0o700 });
   await fs.writeFile(path.join(bin, 'setsid'), `#!${process.execPath}\nconst{spawn}=require('node:child_process');let a=process.argv.slice(2);if(a[0]==='--wait')a.shift();const c=spawn(a.shift(),a,{stdio:'inherit',detached:true});c.on('error',()=>process.exit(127));c.on('exit',code=>process.exit(code??143));\n`, { mode: 0o700 });
-  const clients = new Set(), children = new Set(), sockets = new Set(); let forwards = 0;
+  const clients = new Set(), children = new Set(), sockets = new Set(); let forwards = 0, rejectNextRead = false;
   const server = new Server({ hostKeys: [hostKey] }, client => {
     clients.add(client); client.on('error', () => {}); client.on('close', () => clients.delete(client));
     client.on('authentication', context => context.method === 'none' && context.username === 'fixture' ? context.accept() : context.reject());
@@ -59,6 +59,7 @@ async function fixture(t, options = {}) {
         session.on('exec', (accept, _reject, info) => {
           const channel = accept(); channel.on('error', () => {});
           if(options.rejectStop&&info.command.startsWith("bash -c 'd=")){channel.exit(1);channel.end();return;}
+          if(rejectNextRead&&info.command.includes('tail -c +')){rejectNextRead=false;channel.exit(255);channel.end();return;}
           // Prevent a test shell from reading the user's actual login files.
           const command = info.command.replaceAll('bash -lc ', '/bin/bash --noprofile -c ');
           const child = spawn('/bin/bash', ['--noprofile', '-c', command], { detached: true, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, HOME: home, CODEX_HOME: path.join(home, '.codex') }, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -80,7 +81,7 @@ async function fixture(t, options = {}) {
     for (const socket of sockets) socket.destroy(); for (const client of clients) { client.end(); client._sock?.destroy(); }
     await new Promise(resolve => server.close(resolve)); await fs.rm(base, { recursive: true, force: true });
   });
-  return { base, root, manager, ssh, configPath, known, snapshotRoot, forwards: () => forwards, config: { id: 'alias-project', kind: 'ssh', hostAlias: 'fixture', sshConfigPath: configPath, rootPath: root }, settings: { binary: 'codex', model: 'fixture-model' } };
+  return { base, root, manager, ssh, configPath, known, snapshotRoot, forwards: () => forwards, rejectNextRead:()=>{rejectNextRead=true;}, config: { id: 'alias-project', kind: 'ssh', hostAlias: 'fixture', sshConfigPath: configPath, rootPath: root }, settings: { binary: 'codex', model: 'fixture-model' } };
 }
 
 test('SSH alias validation reads host and user from config while preserving direct SSH requirements', () => {
@@ -136,8 +137,13 @@ test('SSH alias cancellation confirms the remote process group stopped and remov
   const run = f.manager.start({ config: f.config, settings: f.settings, prompt: 'WAIT_FOR_CANCEL', images: [{ name: 'cancel.png', mimeType: 'image/png', bytes: image }] });
   const recorded = await eventually(async () => { try { return JSON.parse(await fs.readFile(path.join(f.root, 'request.json'), 'utf8')); } catch { return null; } });
   await fs.writeFile(f.configPath,'Host fixture\n HostName different.invalid\n User wrong-user\n');
+  f.rejectNextRead();
+  await eventually(()=>f.manager.read(run.id).progress.some(row=>row.message==='SSH 연결을 다시 연결하는 중'));
+  await fs.appendFile(`/tmp/reviewops-agent-${run.id}/stdout`,JSON.stringify({type:'item.completed',item:{id:'after-config-change',type:'agent_message',text:'원래 서버 연결 유지'}})+'\n');
+  await eventually(()=>f.manager.read(run.id).response==='원래 서버 연결 유지');
   const result = await f.manager.cancel(run.id);
   assert.equal(result.status, 'cancelled', result.error); assert.equal(result.terminationConfirmed, true);
+  assert.equal(result.response,'원래 서버 연결 유지');
   await eventually(() => { try { process.kill(recorded.pid, 0); return false; } catch (error) { return error.code === 'ESRCH'; } });
   await assert.rejects(fs.access(recorded.images[0].path));
   assert.deepEqual(await fs.readdir(f.snapshotRoot),[]);
@@ -150,7 +156,8 @@ test('SSH alias cancellation reports an unconfirmed stop when the original serve
   const controlDirectory = `/tmp/reviewops-agent-${run.id}`, group = Number(await fs.readFile(path.join(controlDirectory, 'pid'), 'utf8'));
   t.after(async () => { try { process.kill(-group, 'SIGKILL'); } catch {} await fs.rm(controlDirectory, { recursive: true, force: true }); });
   await assert.rejects(f.manager.cancel(run.id), { code: 'AGENT_STOP_UNCONFIRMED' });
-  const result = await eventually(() => { const row = f.manager.read(run.id); return row.status === 'failed' && row; });
+  const result = f.manager.read(run.id);
+  assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.errorCode,'AGENT_STOP_UNCONFIRMED');
   assert.equal(result.terminationConfirmed, false); assert.doesNotThrow(() => process.kill(recorded.pid, 0));
   try { process.kill(-group, 'SIGKILL'); } catch {}
 });

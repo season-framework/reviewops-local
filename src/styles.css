@@ -74,6 +74,21 @@
 .workspace-app.sidebar-expanded .sidebar-brand img { width: 134px; height: auto; }
 .workspace-app.sidebar-expanded .nav-item { width: 100%; justify-content: flex-start; gap: 11px; padding: 0 12px; font-size: 13px; }
 .workspace-app.sidebar-expanded .nav-item > span { display: block; }
+.workspace-app .sidebar-bottom .sidebar-update { position: relative; overflow: hidden; color: var(--accent-ink); background: var(--accent-soft); border-color: var(--accent-border); transition: background .15s, border-color .15s, transform .15s; }
+.workspace-app .sidebar-bottom .sidebar-update:hover:not(:disabled) { color: var(--accent-ink); background: color-mix(in srgb, var(--accent-soft) 78%, var(--accent-border)); border-color: var(--accent-ink); }
+.workspace-app .sidebar-bottom .sidebar-update:active:not(:disabled) { transform: translateY(1px); }
+.workspace-app .sidebar-bottom .sidebar-update:disabled { opacity: 1; cursor: progress; }
+.workspace-app .sidebar-update > .sidebar-update-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; flex: 0 0 20px; }
+.sidebar-update-alert { position: absolute; width: 6px; height: 6px; top: -3px; right: -3px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.workspace-app.sidebar-expanded .sidebar-bottom .sidebar-update { height: 58px; min-height: 58px; gap: 9px; padding: 0 10px; }
+.workspace-app.sidebar-expanded .sidebar-update > .sidebar-update-copy { display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 4px; text-align: start; }
+.sidebar-update-copy strong { max-width: 100%; font-size: 12px; line-height: 1.3; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-update-copy small { max-width: 100%; font-size: 10px; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sidebar-update-progress { position: absolute; left: 5px; right: 5px; bottom: 3px; width: calc(100% - 10px); height: 3px; border: 0; border-radius: 3px; overflow: hidden; accent-color: var(--accent); }
+.sidebar-update-progress::-webkit-progress-bar { background: var(--accent-border); }
+.sidebar-update-progress::-webkit-progress-value { background: var(--accent); }
+.sidebar-update.is-working .sidebar-update-icon svg { animation: spin 1.4s linear infinite; }
+@media (prefers-reduced-motion: reduce) { .workspace-app .sidebar-bottom .sidebar-update { transition: none; } .sidebar-update.is-working .sidebar-update-icon svg { animation: none; } }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #548a61; flex-shrink: 0; }
 .workspace-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; background: var(--surface); }
 .workspace-tabs{display:flex;height:var(--reviewops-tab-height);min-height:var(--reviewops-tab-height);align-items:stretch;gap:8px;padding:0 12px;border:0;box-shadow:none;background:var(--tabs);overflow:hidden;flex:0 0 auto;-webkit-app-region:drag;app-region:drag;-webkit-user-select:none;user-select:none}

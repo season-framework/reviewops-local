@@ -312,7 +312,15 @@
     "접속 중": "接続中",
     "조회 중": "読み込み中",
     "주간": "週別",
-    "첨부파일": "添付ファイル"
+    "첨부파일": "添付ファイル",
+    "다운로드 중 {0}%": "ダウンロード中 {0}%",
+    "업데이트 설치 중": "アップデートをインストール中",
+    "업데이트 준비 중": "アップデートを準備中",
+    "업데이트 다시 시도": "アップデートを再試行",
+    "업데이트 설치": "アップデートをインストール",
+    "새 버전 {0}": "新しいバージョン {0}",
+    "업데이트 진행 중": "アップデート中",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "アップデートを選択すると、ダウンロードとインストールの後にアプリを再起動します。プロジェクトとアカウントのデータは保持されます。"
   },
   "zh-CN": {
     "홈": "主页",
@@ -627,7 +635,15 @@
     "접속 중": "正在连接",
     "조회 중": "加载中",
     "주간": "按周",
-    "첨부파일": "附件"
+    "첨부파일": "附件",
+    "다운로드 중 {0}%": "下载中 {0}%",
+    "업데이트 설치 중": "正在安装更新",
+    "업데이트 준비 중": "正在准备更新",
+    "업데이트 다시 시도": "重试更新",
+    "업데이트 설치": "安装更新",
+    "새 버전 {0}": "新版本 {0}",
+    "업데이트 진행 중": "正在更新",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "点击更新后，将下载并安装新版本，然后重启应用。项目和账户数据会保留。"
   },
   "zh-TW": {
     "홈": "首頁",
@@ -942,7 +958,15 @@
     "접속 중": "正在連線",
     "조회 중": "載入中",
     "주간": "每週",
-    "첨부파일": "附件"
+    "첨부파일": "附件",
+    "다운로드 중 {0}%": "下載中 {0}%",
+    "업데이트 설치 중": "正在安裝更新",
+    "업데이트 준비 중": "正在準備更新",
+    "업데이트 다시 시도": "重試更新",
+    "업데이트 설치": "安裝更新",
+    "새 버전 {0}": "新版本 {0}",
+    "업데이트 진행 중": "正在更新",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "按一下更新後，將下載並安裝新版本，然後重新啟動應用程式。專案與帳戶資料會保留。"
   },
   "es": {
     "홈": "Inicio",
@@ -1257,7 +1281,15 @@
     "접속 중": "Conectando",
     "조회 중": "Cargando",
     "주간": "Semanal",
-    "첨부파일": "Adjuntos"
+    "첨부파일": "Adjuntos",
+    "다운로드 중 {0}%": "Descargando {0} %",
+    "업데이트 설치 중": "Instalando actualización",
+    "업데이트 준비 중": "Preparando actualización",
+    "업데이트 다시 시도": "Reintentar actualización",
+    "업데이트 설치": "Instalar actualización",
+    "새 버전 {0}": "Nueva versión {0}",
+    "업데이트 진행 중": "Actualizando",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Al seleccionar la actualización, se descarga e instala la nueva versión y se reinicia la aplicación. Los proyectos y los datos de las cuentas se conservan."
   },
   "fr": {
     "홈": "Accueil",
@@ -1572,7 +1604,15 @@
     "접속 중": "Connexion en cours",
     "조회 중": "Chargement",
     "주간": "Par semaine",
-    "첨부파일": "Pièces jointes"
+    "첨부파일": "Pièces jointes",
+    "다운로드 중 {0}%": "Téléchargement : {0} %",
+    "업데이트 설치 중": "Installation de la mise à jour",
+    "업데이트 준비 중": "Préparation de la mise à jour",
+    "업데이트 다시 시도": "Réessayer la mise à jour",
+    "업데이트 설치": "Installer la mise à jour",
+    "새 버전 {0}": "Nouvelle version {0}",
+    "업데이트 진행 중": "Mise à jour en cours",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Sélectionner la mise à jour lance le téléchargement et l’installation, puis redémarre l’application. Les projets et les données des comptes sont conservés."
   },
   "de": {
     "홈": "Startseite",
@@ -1887,7 +1927,15 @@
     "접속 중": "Verbindung wird hergestellt",
     "조회 중": "Wird geladen",
     "주간": "Wöchentlich",
-    "첨부파일": "Anhänge"
+    "첨부파일": "Anhänge",
+    "다운로드 중 {0}%": "Download: {0} %",
+    "업데이트 설치 중": "Update wird installiert",
+    "업데이트 준비 중": "Update wird vorbereitet",
+    "업데이트 다시 시도": "Update erneut versuchen",
+    "업데이트 설치": "Update installieren",
+    "새 버전 {0}": "Neue Version {0}",
+    "업데이트 진행 중": "Update läuft",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Beim Auswählen des Updates wird die neue Version heruntergeladen und installiert. Anschließend startet die App neu. Projekte und Kontodaten bleiben erhalten."
   },
   "pt-BR": {
     "홈": "Início",
@@ -2202,7 +2250,15 @@
     "접속 중": "Conectando",
     "조회 중": "Carregando",
     "주간": "Semanal",
-    "첨부파일": "Anexos"
+    "첨부파일": "Anexos",
+    "다운로드 중 {0}%": "Baixando {0}%",
+    "업데이트 설치 중": "Instalando atualização",
+    "업데이트 준비 중": "Preparando atualização",
+    "업데이트 다시 시도": "Tentar atualização novamente",
+    "업데이트 설치": "Instalar atualização",
+    "새 버전 {0}": "Nova versão {0}",
+    "업데이트 진행 중": "Atualizando",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Ao selecionar a atualização, a nova versão é baixada e instalada, e o aplicativo é reiniciado. Os projetos e os dados das contas são preservados."
   },
   "it": {
     "홈": "Home",
@@ -2517,7 +2573,15 @@
     "접속 중": "Connessione in corso",
     "조회 중": "Caricamento",
     "주간": "Settimanale",
-    "첨부파일": "Allegati"
+    "첨부파일": "Allegati",
+    "다운로드 중 {0}%": "Download: {0}%",
+    "업데이트 설치 중": "Installazione aggiornamento",
+    "업데이트 준비 중": "Preparazione aggiornamento",
+    "업데이트 다시 시도": "Riprova aggiornamento",
+    "업데이트 설치": "Installa aggiornamento",
+    "새 버전 {0}": "Nuova versione {0}",
+    "업데이트 진행 중": "Aggiornamento in corso",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Selezionando l’aggiornamento, la nuova versione viene scaricata e installata, quindi l’app viene riavviata. I progetti e i dati degli account vengono conservati."
   },
   "ru": {
     "홈": "Главная",
@@ -2832,7 +2896,15 @@
     "접속 중": "Подключение",
     "조회 중": "Загрузка",
     "주간": "По неделям",
-    "첨부파일": "Вложения"
+    "첨부파일": "Вложения",
+    "다운로드 중 {0}%": "Загрузка: {0}%",
+    "업데이트 설치 중": "Установка обновления",
+    "업데이트 준비 중": "Подготовка обновления",
+    "업데이트 다시 시도": "Повторить обновление",
+    "업데이트 설치": "Установить обновление",
+    "새 버전 {0}": "Новая версия {0}",
+    "업데이트 진행 중": "Обновление",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "После нажатия кнопки обновления новая версия будет загружена и установлена, затем приложение перезапустится. Проекты и данные учётных записей сохранятся."
   },
   "vi": {
     "홈": "Trang chủ",
@@ -3147,6 +3219,14 @@
     "접속 중": "Đang kết nối",
     "조회 중": "Đang tải",
     "주간": "Theo tuần",
-    "첨부파일": "Tệp đính kèm"
+    "첨부파일": "Tệp đính kèm",
+    "다운로드 중 {0}%": "Đang tải {0}%",
+    "업데이트 설치 중": "Đang cài bản cập nhật",
+    "업데이트 준비 중": "Đang chuẩn bị cập nhật",
+    "업데이트 다시 시도": "Thử cập nhật lại",
+    "업데이트 설치": "Cài bản cập nhật",
+    "새 버전 {0}": "Phiên bản mới {0}",
+    "업데이트 진행 중": "Đang cập nhật",
+    "업데이트를 누르면 다운로드와 설치 후 앱을 다시 시작합니다. 프로젝트와 계정 자료는 유지됩니다.": "Khi chọn cập nhật, phiên bản mới sẽ được tải xuống và cài đặt, sau đó ứng dụng sẽ khởi động lại. Các dự án và dữ liệu tài khoản được giữ nguyên."
   }
 }
