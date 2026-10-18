@@ -69,16 +69,11 @@
 .workspace-app .nav-item.active { color: var(--accent-ink); border-color: var(--accent-border); background: var(--accent-soft); }
 .workspace-app .sidebar-bottom { display: flex; width: 100%; flex-direction: column; align-items: center; gap: 5px; margin-top: auto; border-top: 1px solid var(--border); padding: 11px 0 14px; }
 .workspace-app .sidebar-bottom .nav-item { height: 40px; min-height: 40px; }
-.workspace-app .window-controls { display: flex; width: 100%; flex: 0 0 auto; flex-direction: column; align-items: center; gap: 5px; margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border); -webkit-app-region: no-drag; app-region: no-drag; }
-.workspace-app .window-control { display: inline-flex; width: 40px; height: 40px; flex: 0 0 auto; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 9px; background: var(--app); color: var(--muted); -webkit-app-region: no-drag; app-region: no-drag; }
-.workspace-app .window-control:hover { color: var(--text); background: var(--hover); }
-.workspace-app .window-control-close:hover { color: #fff; border-color: #bc3033; background: #bc3033; }
 .app.workspace-app.sidebar-expanded { grid-template-columns: 184px minmax(0, 1fr); }
 .workspace-app.sidebar-expanded .sidebar { align-items: stretch; padding-left: 12px; padding-right: 12px; }
 .workspace-app.sidebar-expanded .sidebar-brand img { width: 134px; height: auto; }
 .workspace-app.sidebar-expanded .nav-item { width: 100%; justify-content: flex-start; gap: 11px; padding: 0 12px; font-size: 13px; }
 .workspace-app.sidebar-expanded .nav-item > span { display: block; }
-.workspace-app.sidebar-expanded .window-controls { flex-direction: row; justify-content: center; gap: 9px; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: #548a61; flex-shrink: 0; }
 .workspace-main { display: flex; min-width: 0; min-height: 0; flex-direction: column; overflow: hidden; background: var(--surface); }
 .workspace-tabs{display:flex;height:var(--reviewops-tab-height);min-height:var(--reviewops-tab-height);align-items:stretch;gap:8px;padding:0 12px;border:0;box-shadow:none;background:var(--tabs);overflow:hidden;flex:0 0 auto;-webkit-app-region:drag;app-region:drag;-webkit-user-select:none;user-select:none}
@@ -98,6 +93,20 @@
 .workspace-add-tab:hover, .workspace-refresh:hover { background: var(--sidebar); color: var(--text); }
 .workspace-add-tab:focus-visible, .workspace-refresh:focus-visible { outline: 2px solid var(--reviewops-tab-focus); outline-offset: -2px; }
 .workspace-refresh { margin-left: auto; }
+.workspace-app .window-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; -webkit-app-region: no-drag; app-region: no-drag; }
+.workspace-app .window-control { display: inline-flex; width: 40px; height: 40px; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text); transition: background-color 140ms ease, color 140ms ease; -webkit-app-region: no-drag; app-region: no-drag; }
+.workspace-app .window-control svg { stroke-width: 1.9; transition: transform 140ms ease; }
+.workspace-app .window-control:is(:hover, :focus-visible):not(:disabled) { background: var(--hover); }
+.workspace-app .window-control:focus-visible { outline: 2px solid var(--reviewops-tab-focus); outline-offset: -3px; }
+.workspace-app .window-control:active:not(:disabled) { background: var(--border); }
+.workspace-app .window-control:active:not(:disabled) svg { transform: scale(.9); }
+.workspace-app .window-control-close:is(:hover, :focus-visible):not(:disabled) { color: #ae2d31; background: #bc30331f; }
+.workspace-app .window-control-close:active:not(:disabled) { background: #bc303333; }
+:root[data-theme=dark] .workspace-app .window-control-close:is(:hover, :focus-visible):not(:disabled) { color: #ffb4b8; background: #e8505b29; }
+:root[data-theme=dark] .workspace-app .window-control-close:active:not(:disabled) { background: #e8505b40; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-app .window-control, .workspace-app .window-control svg { transition: none; }
+}
 .workspace-panes { display: flex; min-width: 0; min-height: 0; flex: 1; overflow: hidden; }
 .workspace-pane { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
 .workspace-pane[hidden] { display: none !important; }

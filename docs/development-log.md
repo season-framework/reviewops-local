@@ -1,5 +1,11 @@
 # Release history
 
+## 1.2.1
+
+- Move full-screen and close icons to the upper right, next to refresh.
+- Use icons without persistent borders or backgrounds, with visible hover, click and keyboard focus feedback.
+- Keep window controls visible with collapsed or expanded navigation, light or dark appearance, and narrow windows.
+
 ## 1.2.0
 
 - First public source release under the MIT License.
