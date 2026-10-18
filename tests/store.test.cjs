@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const vm = require('node:vm');
 const { DatabaseSync } = require('node:sqlite');
 const { createStore, SCHEMA_VERSION } = require('../electron/store.cjs');
 
@@ -33,6 +34,26 @@ function attachment(reviewId, extra = {}) {
 }
 function clone(value) { return JSON.parse(JSON.stringify(value)); }
 const PIN = 'SHA256:' + crypto.createHash('sha256').update('synthetic host key').digest('base64').replace(/=+$/, '');
+
+test('Windows services keep native local paths and POSIX server paths separate', () => {
+  const windowsModule = { exports: {} };
+  vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../electron/store.cjs'), 'utf8'), {
+    require: name => name === 'node:path' ? path.win32 : require(name), module: windowsModule, Buffer
+  });
+  const normalize = draft => windowsModule.exports.LocalStore.prototype.normalizeService.call({}, { groupId: 'windows-group', name: 'Windows project', ...draft });
+  const local = normalize({ kind: 'local', rootPath: 'C:\\Users\\Operator\\My project', agentWorkPath: 'D:\\Work\\ReviewOps', agentBinary: 'C:\\Program Files\\Codex\\codex.exe' });
+  assert.equal(local.rootPath, 'C:\\Users\\Operator\\My project');
+  assert.equal(local.agentWorkPath, 'D:\\Work\\ReviewOps');
+  assert.equal(local.agentBinary, 'C:\\Program Files\\Codex\\codex.exe');
+  assert.equal(normalize({ kind: 'local', rootPath: '\\\\server\\share\\work' }).rootPath, '\\\\server\\share\\work');
+  const remote = normalize({ kind: 'ssh', host: 'example.test', username: 'operator', rootPath: '/srv/project', agentWorkPath: '/srv/project/work', privateKeyPath: 'C:\\Users\\Operator\\.ssh\\id_ed25519', sshConfigPath: 'C:\\Users\\Operator\\.ssh\\config' });
+  assert.equal(remote.rootPath, '/srv/project');
+  assert.equal(remote.agentWorkPath, '/srv/project/work');
+  assert.equal(remote.privateKeyPath, 'C:\\Users\\Operator\\.ssh\\id_ed25519');
+  assert.equal(remote.sshConfigPath, 'C:\\Users\\Operator\\.ssh\\config');
+  for (const rootPath of ['C:\\work\\..\\private', 'relative']) assert.throws(() => normalize({kind: 'local', rootPath}), /작업 경로/);
+  assert.throws(() => normalize({kind: 'ssh', host: 'example.test', username: 'operator', rootPath: 'C:\\work'}), /작업 경로/);
+});
 
 test('empty database migrates, enables foreign keys and WAL, and has no sample data', t => {
   const { store, dbPath } = setup(t);

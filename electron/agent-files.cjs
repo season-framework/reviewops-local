@@ -4,8 +4,9 @@ const os = require('node:os');
 const path = require('node:path');
 const {inside,readLocal} = require('./files.cjs');
 
-function filePathVariants(value) {
-  if (typeof value !== 'string' || !value.trim() || value.length > 16384 || /[\0\r\n\\]/.test(value)) throw new Error('파일 경로가 올바르지 않습니다.');
+function filePathVariants(value, paths = path.posix) {
+  const invalid = paths === path.win32 ? /[\0\r\n]/ : /[\0\r\n\\]/;
+  if (typeof value !== 'string' || !value.trim() || value.length > 16384 || invalid.test(value)) throw new Error('파일 경로가 올바르지 않습니다.');
   let input = value.trim();
   if (input.startsWith('<') && input.endsWith('>')) input = input.slice(1,-1);
   let encoded = false;
@@ -18,32 +19,34 @@ function filePathVariants(value) {
   } else if (/^[a-z][a-z\d+.-]*:\/\//i.test(input) || /^(?:javascript|data|reviewops):/i.test(input)) throw new Error('파일 경로를 선택하십시오.');
   const decode = value => {try{return decodeURIComponent(value);}catch{return value;}};
   if (encoded) input = decode(input);
+  if (paths === path.win32 && encoded) input = input.replace(/^\/(?=[A-Za-z]:[\\/])/, '').replace(/\//g, '\\');
   const stripLocation = value => value.replace(/(?:#L\d+(?:C\d+)?(?:-L?\d+(?:C\d+)?)?|:\d+(?::\d+)?(?:-\d+(?::\d+)?)?)$/i,'');
   const variants = encoded ? [input,stripLocation(input)] : [stripLocation(input),input];
   if (!encoded) variants.push(stripLocation(decode(input)),decode(input));
   // A literal # in a filename takes priority over a Markdown section fragment.
   for (const value of [...variants]) if (value.includes('#')) variants.push(value.slice(0,value.indexOf('#')));
-  return [...new Set(variants)].filter(value=>value && !/[\0\r\n\\]/.test(value));
+  return [...new Set(variants)].filter(value=>value && !invalid.test(value));
 }
 
-function agentFileCandidates(root, value, basePath, home = '') {
-  if (typeof root !== 'string' || !path.posix.isAbsolute(root)) throw new Error('에이전트 작업 폴더를 설정하십시오.');
-  const base = basePath ? filePathVariants(basePath)[0] : '';
-  if (base && !path.posix.isAbsolute(base)) throw new Error('열린 문서의 경로가 올바르지 않습니다.');
+function agentFileCandidates(root, value, basePath, home = '', paths = path.posix) {
+  if (typeof root !== 'string' || !paths.isAbsolute(root)) throw new Error('에이전트 작업 폴더를 설정하십시오.');
+  const base = basePath ? filePathVariants(basePath,paths)[0] : '';
+  if (base && !paths.isAbsolute(base)) throw new Error('열린 문서의 경로가 올바르지 않습니다.');
   const candidates = [];
-  for (let candidate of filePathVariants(value)) {
-    if (home && candidate.startsWith('~/')) candidate = path.posix.join(home,candidate.slice(2));
-    if (path.posix.isAbsolute(candidate) || candidate.startsWith('~/')) candidates.push(candidate);
+  for (let candidate of filePathVariants(value,paths)) {
+    if (home && /^~[\\/]/.test(candidate)) candidate = paths.join(home,candidate.slice(2));
+    if (paths.isAbsolute(candidate) || candidate.startsWith('~/')) candidates.push(candidate);
     else {
-      if (base) candidates.push(path.posix.resolve(path.posix.dirname(base),candidate));
-      candidates.push(path.posix.resolve(root,candidate));
+      if (base) candidates.push(paths.resolve(paths.dirname(base),candidate));
+      candidates.push(paths.resolve(root,candidate));
     }
   }
   return [...new Set(candidates)];
 }
 
 async function readAgentOutput(config, value, {raw=false,basePath,ssh} = {}) {
-  const candidates = agentFileCandidates(config.rootPath,value,basePath,config.kind==='local'?os.homedir():'');
+  const paths = config.kind === 'local' ? path : path.posix;
+  const candidates = agentFileCandidates(config.rootPath,value,basePath,config.kind==='local'?os.homedir():'',paths);
   const canonicalRoot = config.kind==='local'?await fs.realpath(config.rootPath):null;
   let missing;
   for (const candidate of candidates) {
@@ -55,7 +58,7 @@ async function readAgentOutput(config, value, {raw=false,basePath,ssh} = {}) {
       } else {
         absolutePath = await fs.realpath(candidate);
         if (!inside(canonicalRoot,absolutePath)) throw new Error('에이전트 작업 폴더 안의 파일만 열 수 있습니다.');
-        file = await readLocal({...config,rootPath:canonicalRoot},path.relative(canonicalRoot,absolutePath),{raw});
+        file = await readLocal({...config,rootPath:canonicalRoot},path.relative(canonicalRoot,absolutePath).split(path.sep).join('/'),{raw});
       }
       return {...file,absolutePath};
     } catch(error) {
@@ -63,7 +66,7 @@ async function readAgentOutput(config, value, {raw=false,basePath,ssh} = {}) {
       missing = error;
     }
   }
-  const error = new Error(`파일을 찾을 수 없습니다. 파일이 이동되거나 삭제됐는지 확인하십시오. (${filePathVariants(value)[0]})`);
+  const error = new Error(`파일을 찾을 수 없습니다. 파일이 이동되거나 삭제됐는지 확인하십시오. (${filePathVariants(value,paths)[0]})`);
   error.code = 'AGENT_FILE_NOT_FOUND';error.cause = missing;
   throw error;
 }

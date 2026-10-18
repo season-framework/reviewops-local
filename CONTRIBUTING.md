@@ -4,7 +4,7 @@ Use an issue to describe a problem or discuss a substantial change before beginn
 
 ## Set up
 
-Use macOS with Node.js 24 or later.
+Use macOS or Windows with Node.js 24 or later. Build installation packages on the matching operating system.
 
 ```sh
 git clone https://github.com/season-framework/reviewops-local.git

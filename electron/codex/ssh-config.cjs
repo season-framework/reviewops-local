@@ -2,6 +2,7 @@ const fs = require('node:fs/promises')
 const path = require('node:path')
 const os = require('node:os')
 const crypto = require('node:crypto')
+const { syncDirectory } = require('../directory-sync.cjs')
 
 const FIELDS = {
   hostName: 'HostName', user: 'User', port: 'Port', identityFile: 'IdentityFile',
@@ -356,7 +357,7 @@ class SshConfigStore {
       const finalCheck = await this.load()
       if (finalCheck.revision !== snapshot.revision || finalCheck.actualPath !== snapshot.actualPath) throw new Error('SSH 설정이 변경되었습니다. 호스트 목록을 다시 불러온 후 저장하십시오.')
       await fs.rename(temporary, snapshot.actualPath)
-      try { const dir = await fs.open(directory, 'r'); try { await dir.sync() } finally { await dir.close() } } catch {}
+      await syncDirectory(directory)
       return this.read()
     } finally { await fs.rm(temporary, { force: true }).catch(() => {}) }
   }

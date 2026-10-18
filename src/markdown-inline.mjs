@@ -68,6 +68,7 @@ export function parseInlineMarkdown(value) {
 export function markdownLinkType(target) {
   if (/^https?:\/\//i.test(target)) return 'external';
   if (/^(?:javascript|data|vbscript|mailto|tel|https?):/i.test(target)) return null;
+  if (/^[a-z]:[\\/]/i.test(target)) return 'file';
   // A bare file name with a line suffix can resemble a URL scheme.
   if (/^[^/:]+:\d+(?::\d+)?$/.test(target)) return 'file';
   if (!/^[a-z][a-z\d+.-]*:/i.test(target) || /^(?:file:\/|sandbox:)/i.test(target)) return 'file';

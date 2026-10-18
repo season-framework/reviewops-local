@@ -4,6 +4,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { syncDirectory } = require('../directory-sync.cjs');
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const json = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
@@ -39,7 +40,7 @@ async function atomic(file, bytes) {
   try {
     handle = await fs.open(temporary, 'wx', 0o600); await handle.writeFile(bytes); await handle.sync(); await handle.close(); handle = null;
     await fs.rename(temporary, file);
-    const directory = await fs.open(path.dirname(file), 'r'); try { await directory.sync(); } finally { await directory.close(); }
+    await syncDirectory(path.dirname(file));
   } finally { await handle?.close(); await fs.rm(temporary, { force: true }); }
 }
 async function privateWrite(file, bytes) { await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 }); await fs.writeFile(file, bytes, { flag: 'wx', mode: 0o600 }); await fs.chmod(file, 0o600); }

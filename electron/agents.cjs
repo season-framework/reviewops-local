@@ -241,6 +241,7 @@ function createAgentManager(options = {}) {
     const data = {id, kind, reviewId:input.reviewId || '', serviceId:input.serviceId || config.id || '', status:'running', sessionId:input.sessionId || '', model:settings.model, reasoningEffort:settings.reasoningEffort, response:'', output:'', error:'', progress:[], startedAt:new Date().toISOString(), finishedAt:null, cancelRequested:false};
     const job = {data, settings, config, images:input.images || [], files:input.files || [], seen:new Map(), stdoutDecoder:new StringDecoder('utf8'), stderrDecoder:new StringDecoder('utf8'), pending:'', stderr:'', secrets:[config.password, config.passphrase]};
     job.done = new Promise(resolve => {job.resolveDone = resolve;});
+    job.controlReady = new Promise(resolve => {job.resolveControlReady = resolve;});
     jobs.set(id, job);
     if (jobs.size > 200) for (const [key,item] of jobs) {if (FINAL.has(item.data.status)) {jobs.delete(key); break;}}
     appendProgress(job, kind==='login'?'로그인 준비 중':'에이전트 실행 준비 중'); if (publishInitial) publish(job);
@@ -600,7 +601,13 @@ function createAgentManager(options = {}) {
       }
       if(job.data.cancelRequested){finish(job,'cancelled');return;}
       job.control=job.config.kind==='local'?localRun(settings,preparedArgs,prompt,(chunk,stderr)=>collect(job,chunk,stderr)):job.data.kind==='agent'?await durableRemoteRun(job,args,prompt):await remoteRun(job.config,settings,args,prompt,(chunk,stderr)=>collect(job,chunk,stderr),job.data.id,job.images,()=>job.data.cancelRequested,job.files);
-      if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;}
+      job.resolveControlReady(job.control);
+      if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){
+        if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;
+        // A control created after closeAll took its snapshot must also release
+        // the app when stopping the server could not be confirmed.
+        if(closing&&job.control.durable)job.control.detach();
+      }
       const result=await job.control.done;
       if(result.detached)return;
       if(job.pending.trim()){try{acceptEvent(job,JSON.parse(job.pending.trim()));}catch{}}
@@ -649,9 +656,13 @@ function createAgentManager(options = {}) {
       job.replaySaved = {response:saved.response || '',output:saved.output || '',progress:saved.progress || [],...(saved.usage?{usage:saved.usage}:{}),sessionId:saved.sessionId || '',remoteExecution:{...saved.remoteExecution}};
       publish(job);
       job.control = observeRemote(job);
+      job.resolveControlReady(job.control);
       queueMicrotask(async()=>{
         try {
-          if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;}
+          if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){
+            if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;
+            if(closing&&job.control.durable)job.control.detach();
+          }
           const result = await job.control.done;
           if(result.detached)return;
           if(job.pending.trim()){try{acceptEvent(job,JSON.parse(job.pending.trim()));}catch{}}
@@ -677,7 +688,13 @@ function createAgentManager(options = {}) {
     },
     read(id){return publicJob(get(id));},
     list(){return [...jobs.values()].map(publicJob);},
-    async cancel(id){const job=get(id);if(FINAL.has(job.data.status))return job.done;job.data.cancelRequested=true;appendProgress(job,'에이전트 작업을 중지하는 중');publish(job);if(job.control)await stopControl(job.control);return job.done;},
+    async cancel(id){
+      const job=get(id);if(FINAL.has(job.data.status))return job.done;
+      job.data.cancelRequested=true;appendProgress(job,'에이전트 작업을 중지하는 중');publish(job);
+      const control=job.control||await Promise.race([job.controlReady,job.done.then(()=>null)]);
+      if(control)await stopControl(control);
+      return job.done;
+    },
     async closeService(serviceId){await Promise.allSettled([...jobs.values()].filter(job=>job.data.serviceId===serviceId&&!FINAL.has(job.data.status)).map(job=>this.cancel(job.data.id)));},
     async closeAll({preserveRemote=false}={}){closing=true;try{const pending=[...jobs.values()].filter(job=>!job.doneSettled).map(job=>preserveRemote&&job.control?.durable&&job.data.remoteExecution?.ready&&!job.data.cancelRequested?job.control.detach():this.cancel(job.data.id));const stopping=[...controls].map(control=>preserveRemote&&control.durable&&!control.cancelling&&!stoppingControls.has(control)?control.detach():stopControl(control).catch(()=>control.close()));await Promise.allSettled([...pending,...stopping]);await Promise.allSettled([...remoteConnections].map(client=>client.destroy()));}finally{closing=false;}},
     get hasBlockingJobs(){return [...jobs.values()].some(job=>!FINAL.has(job.data.status)&&(job.data.cancelRequested||!(job.control?.durable&&job.data.remoteExecution?.ready)));},
