@@ -52,5 +52,7 @@ try{
  await fs.mkdir('test-results/updates',{recursive:true});await fs.writeFile('test-results/updates/packaged.json',JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
 }finally{
  if(launchedPid)try{process.kill(launchedPid,'SIGTERM')}catch{}
- await wait(1500);await fs.rm(root,{recursive:true,force:true});
+ // The helper may still be retaining the previous bundle after reporting a
+ // successful install. Retry removal while that private copy finishes.
+ await wait(1500);await fs.rm(root,{recursive:true,force:true,maxRetries:12,retryDelay:250});
 }
