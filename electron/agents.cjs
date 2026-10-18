@@ -6,8 +6,11 @@ const os = require('node:os');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { SshError, validateConfig, fingerprintOf } = require('./ssh.cjs');
 const { terminateProcessGroup } = require('./codex/host-ssh.cjs');
+const { RpcClient } = require('./codex/rpc-client.cjs');
 const remoteAgent = require('./remote-agent.cjs');
 
 const FINAL = new Set(['completed', 'failed', 'cancelled']);
@@ -153,18 +156,31 @@ function acceptEvent(job, event) {
   }
 }
 function modelOptions(value) {
-  const rows = Array.isArray(value) ? value : value?.models;
+  const rows = Array.isArray(value) ? value : value?.data || value?.models;
   if (!Array.isArray(rows)) return [];
   const seen = new Set();
-  return rows.flatMap(row => {
-    if (!row || row.visibility === 'hidden') return [];
-    const id = text(typeof row.slug === 'string' ? row.slug : row.id, '모델 이름', 256);
+  return rows.slice(0,500).flatMap(row => {
+    if (!row || typeof row !== 'object' || row.hidden === true || row.visibility === 'hidden') return [];
+    let id;
+    try {id = text(row.slug ?? row.model ?? row.id, '모델 이름', 256);} catch {return [];}
     if (!id || seen.has(id)) return [];
     seen.add(id);
-    const levels = row.supported_reasoning_levels || row.reasoning || [];
-    const reasoning = [...new Set(levels.map(level => typeof level === 'string' ? level : level?.effort).filter(level => typeof level === 'string' && /^[\w-]{1,128}$/.test(level)))];
-    return [{id, label:String(row.display_name || row.label || id).slice(0,256), reasoning, defaultReasoningEffort:String(row.default_reasoning_level || row.default_reasoning_effort || '')}];
+    const candidateLevels = row.supportedReasoningEfforts || row.supported_reasoning_levels || row.reasoning;
+    const levels = Array.isArray(candidateLevels) ? candidateLevels.slice(0,32) : [];
+    const reasoning = [...new Set(levels.map(level => typeof level === 'string' ? level : level?.reasoningEffort ?? level?.effort).filter(level => typeof level === 'string' && /^[\w-]{1,128}$/.test(level)))];
+    const fallback = row.defaultReasoningEffort || row.default_reasoning_level || row.default_reasoning_effort;
+    const defaultReasoningEffort = typeof fallback === 'string' && /^[\w-]{1,128}$/.test(fallback) && (!reasoning.length || reasoning.includes(fallback)) ? fallback : '';
+    return [{id, label:String(row.displayName || row.display_name || row.label || id).replace(/[\x00-\x1f\x7f]/g,'').slice(0,256), reasoning, defaultReasoningEffort}];
   }).slice(0,100);
+}
+
+function modelDefaults(models, rows, configuration = {}) {
+  const safe = value => typeof value === 'string' && value.length <= 256 && !/[\x00-\x1f\x7f]/.test(value) ? value.trim() : '';
+  const recommended = Array.isArray(rows) ? rows.find(row => row?.isDefault === true && modelOptions([row]).length) : null;
+  const defaultModel = safe(configuration.model) || (recommended ? modelOptions([recommended])[0].id : '');
+  const configuredEffort = safe(configuration.model_reasoning_effort);
+  const defaultReasoningEffort = /^[\w-]{1,128}$/.test(configuredEffort) ? configuredEffort : models.find(row => row.id === defaultModel)?.defaultReasoningEffort || '';
+  return {defaultModel,defaultReasoningEffort};
 }
 
 function createAgentManager(options = {}) {
@@ -285,7 +301,8 @@ function createAgentManager(options = {}) {
       child.stdout.on('data', chunk => consume(output, chunk, false)); child.stderr.on('data', chunk => consume(errors, chunk, true));
       child.once('error', error => finishProcess({code:null, error:error.code==='ENOENT'?'Codex 실행 파일을 찾을 수 없습니다. 설치 후 실행 파일 경로를 지정하십시오.':error.code==='EACCES'?'Codex 실행 파일에 실행 권한이 없습니다. 파일 권한을 확인하십시오.':error.message, terminationConfirmed:true}));
       child.once('close', (code, signalName) => finishProcess({code, signal:signalName, terminationConfirmed:true}));
-      child.stdin.on('error', () => {}); child.stdin.end(input);
+      child.stdin.on('error', () => {});
+      if(typeof input === 'function')input(child.stdin);else child.stdin.end(input);
       if (timeoutMs) {timer = setTimeout(() => {control.cancel();}, timeoutMs); timer.unref?.();}
     } catch(error) {finishProcess({code:null,error:error.message,terminationConfirmed:true});}
     return control;
@@ -543,7 +560,7 @@ function createAgentManager(options = {}) {
       stream.on('data',chunk=>onData?.(chunk,false));stream.stderr.on('data',chunk=>onData?.(chunk,true));
       stream.on('error',error=>finishRemote({code:null,error:error.message,terminationConfirmed:false}));
       stream.on('close',(code,signal)=>finishRemote({code:Number.isInteger(code)?code:null,signal,terminationConfirmed:Number.isInteger(code)||Boolean(signal)}));
-      stream.end(filesPrompt(input,files,filePaths));
+      if(typeof input === 'function')input(stream);else stream.end(filesPrompt(input,files,filePaths));
     });
     return control;
   }
@@ -554,28 +571,97 @@ function createAgentManager(options = {}) {
     try{const result=await control.done;return {...result,stdout:Buffer.concat(output).toString('utf8'),stderr:Buffer.concat(errors).toString('utf8')};}
     finally{clearTimeout(timer);}
   }
-  async function probe(config, settings) {
+  async function queryModels(config,settings) {
+    const child = new EventEmitter();
+    child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null;
+    let control,rpc,bytes=0,limitExceeded=false,finished=false,queryFinished=false,shutdownInterrupted=false;
+    const collectModels = (chunk,stderr) => {
+      bytes += Buffer.byteLength(chunk);
+      if(bytes > 2*1024*1024) {limitExceeded=true;rpc?.close();return;}
+      (stderr?child.stderr:child.stdout).write(chunk);
+    };
+    const connectInput = stream => {child.stdin.pipe(stream);stream.on('error',()=>{});};
+    try {
+      control = config.kind === 'local'
+        ? localRun(settings,['app-server'],connectInput,collectModels)
+        : await remoteRun(config,settings,['app-server'],connectInput,collectModels);
+      const cancel = control.cancel;
+      control.cancel = async() => {if(closing&&!queryFinished)shutdownInterrupted=true;return cancel();};
+      child.kill = () => {stopControl(control).catch(()=>control.close());return true;};
+      control.done.then(result=>{
+        finished=true;child.exitCode=result.code;child.stdin.destroy();child.stdout.end();child.stderr.end();child.emit('close',result.code,result.signal);
+      });
+      rpc = new RpcClient({command:settings.binary,args:['app-server'],env,cwd:settings.workPath,timeoutMs:commandTimeoutMs,spawnImpl:()=>{
+        if(finished)queueMicrotask(()=>child.emit('close',child.exitCode));
+        return child;
+      }});
+      const deadline = setTimeout(()=>rpc.close(),commandTimeoutMs);
+      let configuration = {},configurationError = false,rows=[],modelFailed=false;
+      try {
+        try {
+          const value = await rpc.request('config/read',{includeLayers:false});
+          configuration = {model:value?.config?.model,model_reasoning_effort:value?.config?.model_reasoning_effort};
+        } catch {configurationError=true;}
+        try {
+          let cursor=null;
+          const seen = new Set();
+          for(let page=0;page<5;page++) {
+            const value = await rpc.request('model/list',{limit:100,includeHidden:false,...(cursor?{cursor}:{})});
+            if(!value || !Array.isArray(value.data))throw new Error('Invalid model catalog');
+            rows.push(...value.data.slice(0,100));
+            if(rows.length>=100 || value.nextCursor == null)break;
+            if(typeof value.nextCursor!=='string'||!value.nextCursor||value.nextCursor.length>1024||seen.has(value.nextCursor)||page===4)throw new Error('Invalid model catalog cursor');
+            seen.add(value.nextCursor);cursor=value.nextCursor;
+          }
+        } catch {modelFailed=true;rows=[];}
+      } finally {clearTimeout(deadline);queryFinished=true;rpc.close();await stopControl(control).catch(()=>control.close());}
+      if(shutdownInterrupted)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
+      const models = modelOptions(rows);
+      return {models,...modelDefaults(models,rows,configuration),modelSource:modelFailed?'none':'host',modelError:modelFailed||limitExceeded?'호스트의 모델 목록을 읽지 못했습니다. 다시 조회하거나 사용할 모델을 직접 등록하십시오.':configurationError?'호스트의 기본 모델 설정을 읽지 못했습니다.':'',modelFailed};
+    } finally {
+      queryFinished=true;rpc?.close();
+      if(control)await stopControl(control).catch(()=>control.close());
+      child.stdin.destroy();child.stdout.destroy();child.stderr.destroy();
+    }
+  }
+  async function availableModels(config,settings) {
+    let catalog;
+    try {catalog=await queryModels(config,settings);}catch(error){if(error.code==='AGENT_CLOSING')throw error;catalog={models:[],defaultModel:'',defaultReasoningEffort:'',modelSource:'none',modelFailed:true,modelError:'호스트의 모델 목록을 읽지 못했습니다. 다시 조회하거나 사용할 모델을 직접 등록하십시오.'};}
+    if(catalog.modelFailed) {
+      let value;
+      if(config.kind==='local') {
+        try {const file=path.join(env.CODEX_HOME || path.join(env.HOME || os.homedir(),'.codex'),'models_cache.json');if((await fs.stat(file)).size<=2*1024*1024)value=JSON.parse(await fs.readFile(file,'utf8'));}catch{}
+      } else {
+        if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
+        const {client}=await connectRemote(config);
+        try {const cache=await remoteSimple(client,remoteLoginCommand(`${remotePrefix}file="\${CODEX_HOME:-$HOME/.codex}/models_cache.json"\n[ -f "$file" ] && [ "$(wc -c < "$file")" -le 2097152 ] && cat "$file"`));if(cache.code===0)value=JSON.parse(cache.stdout);}catch{}finally{client.end();}
+      }
+      catalog.models=modelOptions(value);
+      const defaults=modelDefaults(catalog.models,Array.isArray(value)?value:value?.models || value?.data);
+      catalog.defaultModel ||= defaults.defaultModel;
+      catalog.defaultReasoningEffort ||= catalog.models.find(row=>row.id===catalog.defaultModel)?.defaultReasoningEffort || defaults.defaultReasoningEffort;
+      catalog.modelSource=catalog.models.length?'cache':'none';
+    }
+    delete catalog.modelFailed;
+    return catalog;
+  }
+  async function probe(config, settings, includeModels = false) {
     if (config.kind === 'local') {
       const prepared = await prepareLocal(settings);
       const version = await localRun(prepared,['--version'],'',null,commandTimeoutMs).done;
       if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
       if (version.code !== 0) return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:prepared.workPath,models:[],error:version.error || clean(version.stderr).slice(0,2000)};
       const auth = await localRun(prepared,['login','status'],'',null,commandTimeoutMs).done;
-      let models=[];
-      try {const file=path.join(env.CODEX_HOME || path.join(env.HOME || os.homedir(),'.codex'),'models_cache.json'); if ((await fs.stat(file)).size<=2*1024*1024)models=modelOptions(JSON.parse(await fs.readFile(file,'utf8')));}catch{}
-      return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:prepared.workPath,models};
+      const models=includeModels?await availableModels(config,prepared):{models:[]};
+      return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:prepared.workPath,...models};
     }
     const version=await remoteCommand(config,settings,['--version']);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
     if(version.code!==0)return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:settings.workPath,models:[],error:clean(version.stderr||version.error).slice(0,2000)};
     const auth=await remoteCommand(config,settings,['login','status']);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
-    const {client}=await connectRemote(config);
-    try {
-      let models=[];
-      try{const cache=await remoteSimple(client,remoteLoginCommand(`${remotePrefix}file="\${CODEX_HOME:-$HOME/.codex}/models_cache.json"\n[ -f "$file" ] && [ "$(wc -c < "$file")" -le 2097152 ] && cat "$file"`));if(cache.code===0)models=modelOptions(JSON.parse(cache.stdout));}catch{}
-      return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:settings.workPath,models};
-    } finally {client.end();}
+    const models=includeModels?await availableModels(config,settings):{models:[]};
+    return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:settings.workPath,...models};
   }
   async function execute(job,prompt,args) {
     try {
@@ -640,7 +726,7 @@ function createAgentManager(options = {}) {
       const changed=Boolean(metadata?.model&&normalized.model&&metadata.model!==normalized.model);
       return {available:Boolean(metadata)&&!changed,sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:!metadata?'missing':changed?'model_changed':'available',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':changed?'저장된 세션과 선택한 모델이 달라 새 대화로 실행합니다.':metadata.model?'저장된 세션 파일과 모델을 확인했습니다.':'저장된 세션 파일을 찾았습니다. 모델 정보는 기록되어 있지 않습니다.'};
     },
-    environment(config,settings={}){return probe(config,normalize(settings,config));},
+    environment(config,settings={}){return probe(config,normalize(settings,config),true);},
     validateStart(input){prepareStart(input);},
     start(input){
       const {settings,args,prompt,images,files}=prepareStart(input);

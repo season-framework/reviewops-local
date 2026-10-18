@@ -17,6 +17,7 @@ fs.writeFileSync(binary,`#!/usr/bin/env node
 const fs=require('node:fs'),path=require('node:path');
 const args=process.argv.slice(2),root=process.cwd(),file=name=>path.join(root,name);
 if(args[0]==='--version'){console.log('codex-cli synthetic-ui-1.0');process.exit(0)}
+if(args[0]==='app-server'){let pending='';process.stdin.on('data',chunk=>{pending+=chunk;let end;while((end=pending.indexOf('\\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);if(!line.trim())continue;const message=JSON.parse(line);if(message.id==null)continue;const result=message.method==='config/read'?{config:{model:'fixture-model',model_reasoning_effort:'high'}}:message.method==='model/list'?{data:[{model:'fixture-model',slug:'fixture-model',displayName:'Fixture model',display_name:'Fixture model',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'high'}],supported_reasoning_levels:[{effort:'low'},{effort:'high'}],defaultReasoningEffort:'high',default_reasoning_level:'high'}],nextCursor:null}:{};console.log(JSON.stringify({id:message.id,result}));}});return;}
 if(args[0]==='login'&&args[1]==='status'){process.exit(fs.existsSync(file('unauthenticated'))?1:0)}
 if(args[0]==='logout'){fs.writeFileSync(file('unauthenticated'),'');process.exit(0)}
 if(args[0]==='login'){console.log('Open https://auth.example.test/device');console.log('Code: UI-1234');const timer=setInterval(()=>{if(fs.existsSync(file('login.complete'))){fs.rmSync(file('unauthenticated'),{force:true});fs.rmSync(file('login.complete'),{force:true});clearInterval(timer);console.log('Successfully logged in');process.exit(0)}},50);return;}
@@ -51,7 +52,7 @@ try{
  await openProject(project.name);
  await pane().getByRole('navigation',{name:'프로젝트 기능',exact:true}).getByRole('button',{name:'설정',exact:true}).click();
  await pane().getByRole('tablist',{name:'프로젝트 설정 항목',exact:true}).getByRole('tab',{name:'에이전트',exact:true}).click();
- await pane().getByLabel('에이전트 사용',{exact:true}).check();await pane().getByLabel('에이전트 실행 파일',{exact:true}).fill(binary);await typeSelectValue(pane().getByLabel('에이전트 모델',{exact:true}), 'fixture-model');await pane().getByLabel('에이전트 추론 수준',{exact:true}).fill('high');await pane().getByLabel('에이전트 작업 지침',{exact:true}).fill('한국어로 명확하게 응답하십시오.');
+ await pane().getByLabel('에이전트 사용',{exact:true}).check();await pane().getByLabel('에이전트 실행 파일',{exact:true}).fill(binary);await typeSelectValue(pane().getByLabel('에이전트 모델',{exact:true}), 'fixture-model');await selectControl(pane().getByRole('combobox',{name:'에이전트 추론 수준',exact:true}), 'high');await pane().getByLabel('에이전트 작업 지침',{exact:true}).fill('한국어로 명확하게 응답하십시오.');
  await expect(pane().getByRole('button',{name:'실행 환경 검사',exact:true})).toBeDisabled();await pane().getByRole('button',{name:'저장하기',exact:true}).click();
  await expect.poll(async()=>(await ipc('snapshot')).projects.find(row=>row.id===project.id).connection.agentBinary).toBe(binary);assert.equal((await ipc('snapshot')).projects.find(row=>row.id===project.id).connection.agentEnabled,1);
  await pane().getByRole('button',{name:'실행 환경 검사',exact:true}).click();await expect(pane().locator('.agent-environment')).toContainText('codex-cli synthetic-ui-1.0');await expect(pane().locator('.agent-environment')).toContainText('로그인 필요');assert.equal(requests().length,0);checks.push('project_settings_and_read_only_environment');

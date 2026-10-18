@@ -5,7 +5,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 const CATEGORIES = ['bug', 'ux', 'feature', 'content', 'performance', 'accessibility', 'security', 'structure', 'design', 'data', 'message', 'typo', 'other'];
@@ -87,6 +87,7 @@ function plain(row) {
   if (!row) return null;
   const result = {...row};
   if (typeof result.labels === 'string') result.labels = JSON.parse(result.labels);
+  if (typeof result.agentModels === 'string') result.agentModels = JSON.parse(result.agentModels);
   if (typeof result.progressJson === 'string') {result.progress = JSON.parse(result.progressJson); delete result.progressJson;}
   if (typeof result.metadataJson === 'string') {Object.assign(result, JSON.parse(result.metadataJson)); delete result.metadataJson;}
   if (typeof result.evidenceJson === 'string') {result.evidence=JSON.parse(result.evidenceJson);delete result.evidenceJson;}
@@ -127,7 +128,23 @@ function mergeEvidence(previous, incoming, label) {
   }
   return evidenceValue({...base,...next,log_captures:[...captures.values()]});
 }
-function sqlRow(row) { const result={...row, ...(Array.isArray(row.labels) ? {labels:JSON.stringify(row.labels)} : {})};if(result.evidence!==undefined){result.evidenceJson=JSON.stringify(result.evidence);delete result.evidence;}return result; }
+function sqlRow(row) { const result={...row, ...(Array.isArray(row.labels) ? {labels:JSON.stringify(row.labels)} : {}), ...(Array.isArray(row.agentModels) ? {agentModels:JSON.stringify(row.agentModels)} : {})};if(result.evidence!==undefined){result.evidenceJson=JSON.stringify(result.evidence);delete result.evidence;}return result; }
+function agentModels(value = []) {
+  if (!Array.isArray(value) || value.length > 100) fail('모델은 100개까지 등록할 수 있습니다.');
+  const seen = new Set();
+  return value.map(row => {
+    object(row, '모델');
+    const modelId = text(row.id, '모델 ID', 256, true);
+    if (/\s/.test(modelId)) fail('모델 ID에 공백을 사용할 수 없습니다.');
+    if (seen.has(modelId)) fail('같은 모델 ID를 두 번 등록할 수 없습니다.');
+    seen.add(modelId);
+    const levels = row.reasoning ?? [];
+    if (!Array.isArray(levels) || levels.length > AGENT_EFFORTS.length - 1) fail('모델의 추론 수준 목록이 올바르지 않습니다.');
+    const reasoning = [...new Set(levels.map(level => choice(level, AGENT_EFFORTS.slice(1), '', '모델의 추론 수준')))];
+    const defaultReasoningEffort = choice(row.defaultReasoningEffort, ['', ...reasoning], '', '모델의 기본 추론 수준');
+    return { id:modelId, label:text(row.label, '모델 표시 이름', 256) || modelId, reasoning, defaultReasoningEffort };
+  });
+}
 function metadata(input, previous) {
   const labels = input.labels === undefined ? previous?.labels || [] : input.labels;
   if (!Array.isArray(labels) || labels.length > 30) fail('라벨은 30개까지 등록할 수 있습니다.');
@@ -391,6 +408,10 @@ class LocalStore {
       ALTER TABLE services ADD COLUMN sshConfigPath TEXT NOT NULL DEFAULT '';
       PRAGMA user_version=6;
     `));
+    if (current < 7) this.transaction(() => this.db.exec(`
+      ALTER TABLE services ADD COLUMN agentModels TEXT NOT NULL DEFAULT '[]';
+      PRAGMA user_version=7;
+    `));
   }
 
   transaction(fn) {
@@ -522,6 +543,7 @@ class LocalStore {
       agentEnabled:integer(input.agentEnabled,previous?.agentEnabled || 0,0,1,'에이전트 사용'),agentBinary,
       agentWorkPath:absolutePath(input.agentWorkPath ?? previous?.agentWorkPath,'에이전트 작업 폴더',false,workPaths),agentModel,
       agentReasoningEffort:choice(input.agentReasoningEffort,AGENT_EFFORTS,previous?.agentReasoningEffort || '','에이전트 추론 수준'),
+      agentModels:agentModels(input.agentModels === undefined ? previous?.agentModels : input.agentModels),
       agentInstructions:text(input.agentInstructions ?? previous?.agentInstructions,'에이전트 지침',50000) };
   }
   saveService(input) {
@@ -783,7 +805,7 @@ class LocalStore {
 
   importData(payload) {
     object(payload, '백업 파일');
-    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
     for (const table of ['groups', 'projects', 'services', 'reviews', 'activities', 'attachments']) {
       if (!Array.isArray(payload[table]) || payload[table].length > MAX_ITEMS) fail('백업 자료의 항목 수가 올바르지 않습니다.');
     }

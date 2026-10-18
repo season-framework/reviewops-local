@@ -7,7 +7,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { createStore, SCHEMA_VERSION } = require('../electron/store.cjs');
 const clone = value => JSON.parse(JSON.stringify(value));
-const NEW_FIELDS = ['managedProjectId', 'hostAlias', 'sshConfigPath'];
+const NEW_FIELDS = ['managedProjectId', 'hostAlias', 'sshConfigPath', 'agentModels'];
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reviewops-project-connection-'));
@@ -147,7 +147,7 @@ test('SSH Host selection fields persist and malformed names or config paths are 
 test('current backups verify duplicated project connection fields and reject mismatches without changing data', t => {
   const f = fixture(t), project = f.store.saveProject({ groupId: f.group.id, name: '백업할 프로젝트', connection: local(f) });
   const before = f.store.exportData();
-  assert.equal(before.version, 6);
+  assert.equal(before.version, SCHEMA_VERSION);
   f.store.importData(before); assert.deepEqual(f.store.exportData(), before);
   for (const mutate of [
     data => { data.projects[0].connection = null; },
