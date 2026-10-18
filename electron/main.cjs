@@ -201,7 +201,11 @@ async function agentAction(action,payload) {
   if(action==='agent.environment'||action==='agent.logout') {
     assertNoAgent(job=>job.serviceId===service.id);
     const token=`agent-probe:${crypto.randomUUID()}`;operations.add(token);
-    try{return await manager[action==='agent.environment'?'environment':'logout'](service,settings);}
+    try{
+      const environment=await manager[action==='agent.environment'?'environment':'logout'](service,settings);
+      if(action==='agent.environment'&&!environment.models?.length&&service.agentModels?.length)return {...environment,models:service.agentModels,modelSource:'manual'};
+      return environment;
+    }
     catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
     finally{operations.delete(token);}
   }

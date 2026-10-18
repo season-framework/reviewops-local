@@ -1,5 +1,13 @@
 # Release history
 
+## 1.2.4
+
+- Load model choices, supported reasoning levels, and defaults when opening a review agent or its settings.
+- Query Codex on the selected computer or SSH host, with cached models when the host cannot return a fresh list.
+- Manage a saved model list in project agent settings when host discovery is unavailable.
+- Retain model lists through app restarts, connection history, and backup restoration.
+- Discard late model responses from a previously selected host and clear unsupported reasoning selections.
+
 ## 1.2.3
 
 - Add a Windows x64 installer with Start menu and desktop shortcuts.

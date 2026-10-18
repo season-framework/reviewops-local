@@ -118,7 +118,7 @@ async function harness(t, options = {}) {
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
+      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
@@ -893,6 +893,20 @@ test('review logs and staged files commit together and a failed activity leaves 
  h.state.liveStore.addAttachment=original;assert.deepEqual(await h.success('snapshot'),before);assert.equal(fs.readdirSync(path.join(h.dataPath,'attachments')).length,0);
  await h.success('activity.add',{reviewId:review.id,evidence:syntheticEvidence('new log'),attachmentTokens:[staged.token]});
  const saved=await h.success('snapshot');assert.equal(saved.reviews[0].evidence.log_captures.length,1);assert.equal(saved.activities.at(-1).evidence.console_log[0].message,'new log');assert.equal(saved.attachments.length,1);
+});
+
+test('agent environment uses registered models only when the host did not return a model list',async t=>{
+ const h=await harness(t),{service}=await seed(h);
+ const models=[{id:'manual-code',label:'Manual Code',reasoning:['low','high'],defaultReasoningEffort:'high'}];
+ await h.success('service.save',{id:service.id,agentModels:models});
+ const fallback=await h.success('agent.environment',{serviceId:service.id});
+ assert.equal(fallback.modelSource,'manual');assert.deepEqual(fallback.models,models);
+ const hostModels=[{id:'host-code',label:'Host Code',reasoning:['medium'],defaultReasoningEffort:'medium'}];
+ h.state.agentEnvironment={installed:true,loggedIn:true,models:hostModels,modelSource:'host',defaultModel:'host-code',defaultReasoningEffort:'medium'};
+ const remote=await h.success('agent.environment',{serviceId:service.id});
+ assert.equal(remote.modelSource,'host');assert.deepEqual(remote.models,hostModels);assert.equal(remote.defaultModel,'host-code');
+ await h.success('service.save',{id:service.id,agentModels:[]});h.state.agentEnvironment={installed:true,models:[],modelSource:'none',modelError:'모델 목록을 불러오지 못했습니다.'};
+ const empty=await h.success('agent.environment',{serviceId:service.id});assert.deepEqual(empty.models,[]);assert.equal(empty.modelSource,'none');assert.equal(empty.modelError,h.state.agentEnvironment.modelError);
 });
 
 test('agent materials expose generated instructions and only shared files from the same group',async t=>{

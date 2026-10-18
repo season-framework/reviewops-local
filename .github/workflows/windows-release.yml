@@ -67,6 +67,8 @@ jobs:
             'tests/codex-host-file-handlers.test.cjs',
             'tests/codex-native-architecture.test.cjs',
             'tests/codex-sftp-client.test.cjs',
+            'tests/agent-models.test.cjs',
+            'tests/agent-model-storage.test.cjs',
             'tests/directory-sync.test.cjs',
             'tests/i18n.test.cjs',
             'tests/markdown-inline.test.cjs'

@@ -49,13 +49,13 @@ Release builds are ad hoc signed and are **not Apple-notarized**. If macOS block
 Each release includes SHA-256 checksums. To check a Windows installer in PowerShell:
 
 ```powershell
-Get-FileHash .\ReviewOps-1.2.3-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\ReviewOps-1.2.4-windows-x64.exe -Algorithm SHA256
 ```
 
 To check a macOS installer:
 
 ```sh
-shasum -a 256 ReviewOps-1.2.3-arm64.dmg
+shasum -a 256 ReviewOps-1.2.4-arm64.dmg
 ```
 
 Compare the result with the checksum published in that release.
@@ -74,6 +74,8 @@ Drag the logo or an empty area of the tab bar to move the window. The Home tab s
 ### Using Codex
 
 Codex CLI must be installed and signed in on the computer where a task will run. Local projects use Codex on your computer; SSH projects use Codex on the selected host. Configure the executable, model, reasoning level, and instructions in **Project → Settings → Agent**.
+
+The review Agent panel loads models, supported reasoning levels, and defaults from the selected computer or SSH host. If the host cannot return a list, register models and their reasoning levels in **Project → Settings → Agent → Register models**. Registered models are saved with the project connection and included in backups.
 
 Agent commands run as:
 

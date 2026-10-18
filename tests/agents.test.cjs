@@ -28,6 +28,29 @@ if(args[0]==='--version'){if(fs.existsSync(cwd+'/hang-probe')){writePid('probe.p
 if(args[0]==='login'&&args[1]==='status'){process.exit(fs.existsSync(cwd+'/unauthenticated')?1:0);}
 if(args[0]==='logout'){fs.writeFileSync(cwd+'/unauthenticated','');process.exit(0);}
 if(args[0]==='login'){console.log('Open https://auth.example.test/device and enter TEST-1234');setTimeout(()=>{try{fs.unlinkSync(cwd+'/unauthenticated')}catch{};process.exit(0)},150);return;}
+if(args[0]==='app-server'){
+ const file=process.env.CODEX_HOME+'/app-server-models.json';
+ if(!fs.existsSync(file)){console.error('Synthetic app-server is unavailable');process.exit(2);}
+ const options=JSON.parse(fs.readFileSync(file,'utf8'));
+ writePid('model-server.pid',process.pid);
+ if(options.ignoreTerm)process.on('SIGTERM',()=>{});
+ require('node:readline').createInterface({input:process.stdin}).on('line',line=>{
+  const message=JSON.parse(line);fs.appendFileSync(cwd+'/model-requests.jsonl',JSON.stringify(message)+'\\n');
+  const send=result=>process.stdout.write(JSON.stringify({id:message.id,result})+'\\n');
+  if(message.method==='initialize')send({});
+  else if(message.method==='initialized')return;
+  else if(message.method==='config/read'){
+   if(options.configError)process.stdout.write(JSON.stringify({id:message.id,error:{code:-32601,message:'synthetic secret token'}})+'\\n');
+   else send({config:options.config||{}});
+  }else if(message.method==='model/list'){
+   if(options.hang)return;
+   if(options.invalidJson){process.stdout.write('not-json\\n');return;}
+   if(options.oversized){send({data:[{model:'huge',displayName:'x'.repeat(3*1024*1024)}]});return;}
+   if(options.modelError){process.stdout.write(JSON.stringify({id:message.id,error:{code:-32601,message:'synthetic secret token'}})+'\\n');return;}
+   send(options.pages?.[message.params.cursor||'first']||{data:[],nextCursor:null});
+  }else{fs.writeFileSync(cwd+'/forbidden-rpc',message.method);process.exit(3);}
+ });return;
+}
 let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end',()=>{
  const images=args.flatMap((arg,index)=>arg==='-i'?[{path:args[index+1],bytes:fs.readFileSync(args[index+1]).toString('base64'),mode:fs.statSync(args[index+1]).mode&0o777}]:[]);
  const files=input.split('\\n').filter(line=>line.startsWith('"')&&line.includes(': /')).map(line=>{const location=line.slice(line.indexOf(': /')+2);return {path:location,bytes:fs.readFileSync(location).toString('base64'),mode:fs.statSync(location).mode&0o777};});
@@ -140,6 +163,7 @@ test('local agent probes fixture authentication and available model cache withou
  const f=await fixture(t),status=await f.manager.environment(f.config,f.settings);
  assert.equal(status.installed,true);assert.equal(status.loggedIn,true);assert.equal(status.version,'codex-cli synthetic-1.0');
  assert.deepEqual(status.models,[{id:'fixture-model',label:'Fixture model',reasoning:['low','high'],defaultReasoningEffort:'high'}]);
+ assert.equal(status.modelSource,'cache');assert.match(status.modelError,/모델 목록을 읽지 못했습니다/);
  await assert.rejects(fs.access(path.join(f.root,'last-input.json')));
  const missing=await f.manager.environment(f.config,{binary:path.join(f.bin,'missing')});assert.equal(missing.installed,false);
 });
@@ -217,6 +241,144 @@ async function remoteFixture(t,options={}) {
  t.after(async()=>{await f.manager.closeAll();for(const child of processes)killFixtureProcess(child.pid,true);for(const client of clients)client.destroy();await new Promise(resolve=>server.close(resolve));});
  return {...f,config:{id:'remote-service',kind:'ssh',host:'127.0.0.1',port:server.address().port,username:'tester',authType:'password',password:'fixture-password',rootPath:f.root,hostFingerprint:fingerprint},authentications:()=>authentications,disconnect:()=>{for(const client of clients)client.end();},releaseLaunchResponse:()=>{launchResponseReleased=true;for(const respond of heldLaunchResponses)respond();heldLaunchResponses.clear();}};
 }
+
+async function configureModels(f,overrides={}) {
+ const options={config:{model:'host-configured-model',model_reasoning_effort:'high',api_key:'synthetic-secret-never-returned'},pages:{
+  first:{data:[{id:'catalog-entry',model:'host-recommended-model',displayName:'Host recommended',supportedReasoningEfforts:[{reasoningEffort:'minimal'},{reasoningEffort:'xhigh'}],defaultReasoningEffort:'minimal',isDefault:true}],nextCursor:'page-two'},
+  'page-two':{data:[{id:'different-entry-id',model:'host-configured-model',displayName:'Host configured',supportedReasoningEfforts:[{reasoningEffort:'medium'},{reasoningEffort:'high'}],defaultReasoningEffort:'medium'},{model:'hidden-model',hidden:true}],nextCursor:null},
+ },...overrides};
+ await fs.writeFile(path.join(f.profileCodexHome||path.join(f.home,'.codex'),'app-server-models.json'),JSON.stringify(options));
+ return options;
+}
+const modelRequests=async f=>(await fs.readFile(path.join(f.root,'model-requests.jsonl'),'utf8')).trim().split('\n').map(line=>JSON.parse(line));
+
+test('model catalog accepts current RPC fields, keeps CLI model IDs, and skips malformed or hidden entries',()=>{
+ const options=modelOptions({data:[null,{id:'internal',model:'cli-model',displayName:'CLI model',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'high'},'high'],defaultReasoningEffort:'high'},{model:'hidden',hidden:true},{slug:'legacy-hidden',visibility:'hidden'},{slug:17},{slug:'bad\nmodel'},{model:'cli-model'},{model:'no-efforts',supportedReasoningEfforts:{invalid:true},defaultReasoningEffort:'invalid\nvalue'}]});
+ assert.deepEqual(options,[{id:'cli-model',label:'CLI model',reasoning:['low','high'],defaultReasoningEffort:'high'},{id:'no-efforts',label:'no-efforts',reasoning:[],defaultReasoningEffort:''}]);
+ assert.equal(modelOptions(Array.from({length:200},(_,index)=>({model:`model-${index}`}))).length,100);
+});
+
+for(const kind of ['local','ssh'])test(`${kind} model discovery reads paginated host RPC capabilities and effective defaults without starting a task`,async t=>{
+ const f=kind==='ssh'?await remoteFixture(t,{loginProfile:true}):await fixture(t);
+ await configureModels(f);
+ const status=await f.manager.environment(f.config,{...f.settings,binary:kind==='ssh'?'codex':f.binary});
+ assert.equal(status.modelSource,'host',status.modelError);assert.equal(status.modelError,'');
+ assert.deepEqual(status.models,[{id:'host-recommended-model',label:'Host recommended',reasoning:['minimal','xhigh'],defaultReasoningEffort:'minimal'},{id:'host-configured-model',label:'Host configured',reasoning:['medium','high'],defaultReasoningEffort:'medium'}]);
+ assert.equal(status.defaultModel,'host-configured-model');assert.equal(status.defaultReasoningEffort,'high');
+ assert.equal(JSON.stringify(status).includes('synthetic-secret'),false);
+ const requests=await modelRequests(f);
+ assert.deepEqual(requests.map(row=>row.method),['initialize','initialized','config/read','model/list','model/list']);
+ assert.equal(requests[4].params.cursor,'page-two');assert.equal(requests[3].params.includeHidden,false);
+ await assert.rejects(fs.access(path.join(f.root,'last-input.json')));await assert.rejects(fs.access(path.join(f.root,'forbidden-rpc')));
+});
+
+test('host default model uses the recommendation only when effective configuration omits it',async t=>{
+ const f=await fixture(t);await configureModels(f,{config:{}});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.defaultModel,'host-recommended-model');assert.equal(status.defaultReasoningEffort,'minimal');
+});
+
+test('agent execution checks authentication without querying model RPC again',async t=>{
+ const f=await fixture(t);await configureModels(f);await f.manager.environment(f.config,f.settings);
+ const before=await modelRequests(f);
+ const job=f.manager.start({config:f.config,settings:f.settings,prompt:'Synthetic execution without a model query'});
+ assert.equal((await completed(f.manager,job.id)).status,'completed');
+ assert.deepEqual(await modelRequests(f),before);
+});
+
+for(const kind of ['local','ssh'])test(`${kind} malformed model RPC falls back to that host's cache and keeps safe effective defaults`,async t=>{
+ const f=kind==='ssh'?await remoteFixture(t,{loginProfile:true}):await fixture(t);
+ await configureModels(f,{invalidJson:true});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.modelSource,'cache');assert.match(status.modelError,/모델 목록을 읽지 못했습니다/);
+ assert.equal(status.models[0].id,kind==='ssh'?'profile-model':'fixture-model');
+ assert.equal(status.defaultModel,'host-configured-model');assert.equal(status.defaultReasoningEffort,'high');
+ assert.equal(JSON.stringify(status).includes('synthetic-secret'),false);
+});
+
+test('unsupported model RPC with no cache returns no invented models and a useful message',async t=>{
+ const f=await fixture(t);await fs.rm(path.join(f.home,'.codex','models_cache.json'));
+ const started=Date.now(),status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.installed,true);assert.equal(status.modelSource,'none');assert.deepEqual(status.models,[]);
+ assert.match(status.modelError,/모델 목록을 읽지 못했습니다/);assert.ok(Date.now()-started<2000);
+});
+
+test('RPC method errors preserve the safe code boundary and fall back to the cache',async t=>{
+ const f=await fixture(t);await configureModels(f,{modelError:true});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.modelSource,'cache');assert.equal(JSON.stringify(status).includes('synthetic secret'),false);
+});
+
+test('host model recommendations remain usable when older CLI versions cannot read effective configuration',async t=>{
+ const f=await fixture(t);await configureModels(f,{configError:true});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.modelSource,'host');assert.equal(status.defaultModel,'host-recommended-model');assert.equal(status.defaultReasoningEffort,'minimal');
+ assert.match(status.modelError,/기본 모델 설정을 읽지 못했습니다/);
+});
+
+test('Windows model discovery resolves the native npm runtime and preserves its launch arguments without a shell',async t=>{
+ const calls=[],resolved=[],children=new Map();let nextPid=25000;
+ const spawnImpl=(command,args,options)=>{
+  calls.push({command,args,options});
+  const child=new EventEmitter();child.pid=nextPid++;child.exitCode=null;child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();children.set(child.pid,child);
+  const close=(target,code=0)=>{if(target.exitCode!==null)return;target.exitCode=code;target.emit('close',code);};
+  child.kill=()=>{close(child);return true;};
+  if(command==='taskkill.exe')setImmediate(()=>{close(children.get(Number(args[1])));close(child);});
+  else if(args.includes('--version'))setImmediate(()=>{child.stdout.write('codex-cli synthetic-windows\n');close(child);});
+  else if(args.includes('login'))setImmediate(()=>close(child));
+  else {
+   assert.deepEqual(args,['--runtime-flag','app-server']);
+   let buffer='';child.stdin.on('data',chunk=>{
+    buffer+=chunk;
+    let boundary;
+    while((boundary=buffer.indexOf('\n'))>=0){
+     const message=JSON.parse(buffer.slice(0,boundary));buffer=buffer.slice(boundary+1);
+     if(message.method==='initialized')continue;
+     let result;
+     if(message.method==='initialize')result={};
+     else if(message.method==='config/read')result={config:{model:'windows-host-model',model_reasoning_effort:'high'}};
+     else {assert.equal(message.method,'model/list');result={data:[{model:'windows-host-model',supportedReasoningEfforts:[{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],nextCursor:null};}
+     child.stdout.write(JSON.stringify({id:message.id,result})+'\n');
+    }
+   });
+  }
+  return child;
+ };
+ const f=await fixture(t,{platform:'win32',spawn:spawnImpl,findRuntime:async custom=>{resolved.push(custom);return {available:true,command:'C:\\Native Codex\\codex.exe',path:'C:\\Native Codex\\codex.exe',args:['--runtime-flag']};}});
+ const binary='C:\\Users\\Operator\\AppData\\Roaming\\npm\\codex.cmd';
+ const status=await f.manager.environment(f.config,{...f.settings,binary});
+ assert.deepEqual(resolved,[binary]);assert.equal(status.modelSource,'host',status.modelError);assert.equal(status.models[0].id,'windows-host-model');
+ assert.equal(status.defaultModel,'windows-host-model');assert.equal(status.defaultReasoningEffort,'high');
+ const processes=calls.filter(call=>call.command!=='taskkill.exe');
+ assert.equal(processes.length,3);assert.ok(processes.every(call=>call.command==='C:\\Native Codex\\codex.exe'&&call.options.shell===false&&call.options.windowsHide===true&&call.options.detached===false));
+});
+
+for(const failure of ['repeated cursor','too many pages','oversized response'])test(`model discovery bounds ${failure} and recovers with the cache`,async t=>{
+ const f=await fixture(t),pages={first:{data:[],nextCursor:'next'}};
+ if(failure==='repeated cursor')pages.next={data:[],nextCursor:'next'};
+ if(failure==='too many pages'){pages.next={data:[],nextCursor:'page2'};for(let i=2;i<=5;i++)pages[`page${i}`]={data:[],nextCursor:`page${i+1}`};}
+ await configureModels(f,{pages,oversized:failure==='oversized response'});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.modelSource,'cache');assert.equal(status.models[0].id,'fixture-model');
+ assert.ok((await modelRequests(f)).filter(row=>row.method==='model/list').length<=5);
+});
+
+test('model query timeout terminates the RPC process and recovers with the cache',async t=>{
+ const f=await fixture(t,{commandTimeoutMs:1000});await configureModels(f,{hang:true,ignoreTerm:true});
+ const status=await f.manager.environment(f.config,f.settings);
+ assert.equal(status.modelSource,'cache');
+ const pid=Number(await fs.readFile(path.join(f.root,'model-server.pid'),'utf8'));
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+});
+
+for(const kind of ['local','ssh'])test(`${kind} app shutdown also stops a hanging model RPC and does not detach it as a server task`,async t=>{
+ const f=kind==='ssh'?await remoteFixture(t):await fixture(t);await configureModels(f,{hang:true,ignoreTerm:true});
+ const pending=f.manager.environment(f.config,f.settings).then(value=>value,error=>({error:error.code}));
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'model-server.pid'),'utf8'));}catch{return false;}});
+ await f.manager.closeAll({preserveRemote:true});
+ const status=await pending;assert.equal(status.error,'AGENT_CLOSING');
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+});
 
 test('SSH agent refuses missing or changed host trust before sending credentials',async t=>{
  const f=await remoteFixture(t);

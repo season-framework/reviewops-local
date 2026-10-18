@@ -8,7 +8,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const {createStore, SCHEMA_VERSION} = require('../electron/store.cjs');
 
-const SERVICE_FIELDS = ['agentEnabled','agentBinary','agentWorkPath','agentModel','agentReasoningEffort','agentInstructions'];
+const SERVICE_FIELDS = ['agentEnabled','agentBinary','agentWorkPath','agentModel','agentReasoningEffort','agentInstructions','agentModels'];
 const clone = value => JSON.parse(JSON.stringify(value));
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-agent-store-'));
@@ -87,7 +87,7 @@ test('Windows historical runs retain their paths when a legacy service changes h
 
 test('service agent defaults and configured paths persist without altering SSH or viewer settings', t => {
   const f=setup(t);
-  assert.deepEqual(SERVICE_FIELDS.map(key=>f.service[key]),[0,'codex','','','','']);
+  assert.deepEqual(SERVICE_FIELDS.map(key=>f.service[key]),[0,'codex','','','','',[]]);
   const configured=f.store.saveService({id:f.service.id,agentEnabled:true,agentBinary:'/Applications/Test App/codex',agentWorkPath:f.directory,agentModel:'test-model',agentReasoningEffort:'high',agentInstructions:'요청한 파일만 수정하십시오.'});
   assert.equal(configured.agentEnabled,1);
   f.store.saveService({id:f.service.id,description:'이름과 설정 유지'});
@@ -275,7 +275,7 @@ test('version 4 agent history migrates with every record intact and allows detac
   f.store.addActivity({reviewId:f.review.id,body:run.prompt,agentRunId:run.id});
   f.store.saveAgentRun({id:run.id,status:'completed',response:'기존 작업 응답',sessionId:'existing-session',usage:{input_tokens:12,output_tokens:8}});
   const legacyBackup=f.store.exportData();legacyBackup.version=4;
-  for(const key of ['managedProjectId','hostAlias','sshConfigPath'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
+  for(const key of ['managedProjectId','hostAlias','sshConfigPath','agentModels'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
   const schema=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'").get().sql;
   const indexes=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='agent_runs' AND type='index' AND sql IS NOT NULL").all();
   f.store.db.exec('DROP TRIGGER project_service_delete; DROP TRIGGER service_delete_linked;');

@@ -22,7 +22,7 @@ test('version 3 SQLite and JSON data migrate with empty evidence while preservin
  const f=fixture(t),review=f.store.saveReview({projectId:f.project.id,title:'기존 리뷰'}),backup=f.store.exportData();
  // Restore the actual version 3 service constraints and triggers before reopening.
  // Merely lowering user_version would leave version 5 deletion rules in this fixture.
- for(const key of ['managedProjectId','hostAlias','sshConfigPath'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
+ for(const key of ['managedProjectId','hostAlias','sshConfigPath','agentModels'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
  const schema=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'").get().sql;
  const indexes=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='agent_runs' AND type='index' AND sql IS NOT NULL").all();
  f.store.db.exec('DROP TRIGGER project_service_delete; DROP TRIGGER service_delete_linked;');

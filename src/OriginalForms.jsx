@@ -6,7 +6,7 @@ import {Button, Dialog, Field, invoke} from './components.jsx';
 import './original-forms.css';
 
 const STATUS_OPTIONS = localized([['active','활성'],['archived','보관'],['disabled','비활성']]);
-export const PROJECT_CONNECTION_DEFAULTS = {kind:'local',hostAlias:'',rootPath:'',viewerUrl:'',viewerWidth:1920,viewerHeight:1080,viewerScale:'fit',agentEnabled:1,agentBinary:'codex',agentWorkPath:'',agentModel:'',agentReasoningEffort:'',agentInstructions:''};
+export const PROJECT_CONNECTION_DEFAULTS = {kind:'local',hostAlias:'',rootPath:'',viewerUrl:'',viewerWidth:1920,viewerHeight:1080,viewerScale:'fit',agentEnabled:1,agentBinary:'codex',agentWorkPath:'',agentModel:'',agentReasoningEffort:'',agentInstructions:'',agentModels:[]};
 export const projectConnection = (project,data={}) => project?.connection || data.services?.find(item=>project?.serviceIds?.includes(item.id)) || null;
 export const connectionLabel = connection => !connection ? t("작업 폴더 미설정") : connection.kind==='ssh' ? `SSH · ${connection.hostAlias||connection.host||t("호스트 미선택")}` : t("로컬 폴더");
 function useDraft(initial,onDirtyChange,pendingInput='',revision) {

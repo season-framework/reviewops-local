@@ -1,7 +1,7 @@
 {
   "name": "reviewops-local",
   "productName": "ReviewOps",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "Review websites, organize projects, and run Codex on your computer or SSH hosts.",
   "author": "SEASON",
   "license": "MIT",
@@ -49,7 +49,8 @@
     "package:windows": "npm run build && electron-builder --win nsis --x64 --publish never",
     "test:windows-release": "node scripts/windows-release-smoke.mjs",
     "test:update-ui": "node scripts/e2e-update-ui.mjs",
-    "test:remote-restart": "node scripts/e2e-remote-restart.mjs"
+    "test:remote-restart": "node scripts/e2e-remote-restart.mjs",
+    "test:agent-models": "node scripts/e2e-host-agent-models.mjs"
   },
   "dependencies": {
     "github-markdown-css": "5.9.0",

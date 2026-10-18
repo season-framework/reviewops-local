@@ -219,7 +219,8 @@ try {
   check('Top-right refresh, full-screen, and close icons support mouse, keyboard, and native full-screen changes');
 
   const group = await invoke('group.save', { name: 'Windows 설치 검사' });
-  const service = await invoke('service.save', { name: 'Windows 로컬 폴더', groupId: group.id, kind: 'local', rootPath: filesPath });
+  const registeredModels = [{id:'windows-fixture-model',label:'Windows fixture model',reasoning:['low','high'],defaultReasoningEffort:'high'}];
+  const service = await invoke('service.save', { name: 'Windows 로컬 폴더', groupId: group.id, kind: 'local', rootPath: filesPath, agentModels:registeredModels });
   const project = await invoke('project.save', { name: 'Windows 저장 검사', groupId: group.id, serviceIds: [service.id], description: 'Windows 설치 후 저장한 프로젝트입니다.' });
   const projectFile = await invoke('files.read', { serviceId: service.id, path: 'windows-fixture.txt' });
   assert.match(JSON.stringify(projectFile), /WINDOWS_LOCAL_PROJECT_FILE/);
@@ -236,6 +237,8 @@ try {
   const restored = await invoke('snapshot');
   assert.equal(restored.projects.find(item => item.id === project.id).name, project.name);
   assert.equal(restored.services.find(item => item.id === service.id).rootPath, filesPath);
+  assert.deepEqual(restored.services.find(item => item.id === service.id).agentModels, registeredModels);
+  check('Manual agent models and supported reasoning levels persist through Windows restart');
   assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
   await closeWindow();
   assert.deepEqual(report.rendererErrors, []);
