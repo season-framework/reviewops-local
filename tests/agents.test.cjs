@@ -430,6 +430,7 @@ test('SSH stop failures keep observing the running job and never report a confir
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
  const group=Number(await fs.readFile(`/tmp/reviewops-agent-${job.id}/pid`,'utf8'));
  t.after(async()=>{killFixtureProcess(group,true);killFixtureProcess(pid);await fs.rm(`/tmp/reviewops-agent-${job.id}`,{recursive:true,force:true});});
+ await updateReady(f.manager,job.id);
  await assert.rejects(f.manager.cancel(job.id),{code:'AGENT_STOP_UNCONFIRMED'});
  const result=f.manager.read(job.id);assert.equal(result.status,'running');assert.equal(result.cancelRequested,true);assert.equal(result.terminationConfirmed,false);assert.equal(result.errorCode,'AGENT_STOP_UNCONFIRMED');assert.equal(f.manager.hasBlockingJobs,true);
  assert.doesNotThrow(()=>process.kill(pid,0));
@@ -439,9 +440,24 @@ test('SSH stop failures keep observing the running job and never report a confir
 test('SSH cancellation can be retried after an unconfirmed stop without losing the running job',async t=>{
  const f=await remoteFixture(t,{rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
  const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ await updateReady(f.manager,job.id);
  await assert.rejects(f.manager.cancel(job.id),{code:'AGENT_STOP_UNCONFIRMED'});
  assert.equal(f.manager.read(job.id).status,'running');assert.doesNotThrow(()=>process.kill(pid,0));
  const result=await f.manager.cancel(job.id);assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);assert.equal(result.error,'');
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
+ assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
+});
+
+test('SSH cancellation before its control exists rejects a later failed stop and accepts a retry',async t=>{
+ const f=await remoteFixture(t,{holdLaunchResponse:true,rejectStopOnce:true,managerOptions:{remotePollMs:20}}),job=f.manager.start({config:f.config,settings:f.settings,prompt:'WAIT_FOR_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ assert.equal(f.manager.read(job.id).remoteExecution.ready,false);assert.equal(f.manager.hasBlockingJobs,true);
+ const cancelling=f.manager.cancel(job.id);
+ f.releaseLaunchResponse();
+ await assert.rejects(cancelling,{code:'AGENT_STOP_UNCONFIRMED'});
+ assert.equal(f.manager.read(job.id).status,'running');assert.equal(f.manager.read(job.id).terminationConfirmed,false);assert.doesNotThrow(()=>process.kill(pid,0));
+ const result=await f.manager.cancel(job.id);
+ assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);assert.equal(result.error,'');
  await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
  assert.equal(await fs.readFile(path.join(f.root,'request-starts'),'utf8'),'1');
 });
