@@ -62,8 +62,12 @@ async function peInfo(file) {
 }
 async function windowsFileInfo(file) {
   const script = "$ErrorActionPreference='Stop'; $item=Get-Item -LiteralPath $env:REVIEWOPS_VERIFY_BINARY; $signature=Get-AuthenticodeSignature -LiteralPath $item.FullName; [pscustomobject]@{FileVersion=$item.VersionInfo.FileVersion;ProductVersion=$item.VersionInfo.ProductVersion;ProductName=$item.VersionInfo.ProductName;SignatureStatus=[string]$signature.Status} | ConvertTo-Json -Compress";
+  const env = { ...process.env, REVIEWOPS_VERIFY_BINARY: file };
+  // Windows PowerShell must build its own module paths instead of inheriting
+  // incompatible PowerShell 7 modules from the workflow's parent pwsh process.
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
   const { stdout } = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-    env: { ...process.env, REVIEWOPS_VERIFY_BINARY: file }, windowsHide: true, timeout: 30000,
+    env, windowsHide: true, timeout: 30000,
   });
   return JSON.parse(stdout.trim());
 }
