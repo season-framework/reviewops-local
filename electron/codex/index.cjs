@@ -123,6 +123,7 @@ function registerHandlers(ipcMain = options.ipcMain) {
         await fs.writeFile(settingsPath, JSON.stringify({ path: found.path }), { mode: 0o600 });
         await setupService(found);
         publish();
+        options.onRuntimeChange?.();
         return state();
       } finally { changingRuntime = false; }
     },

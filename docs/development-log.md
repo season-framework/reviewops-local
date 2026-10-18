@@ -1,5 +1,17 @@
 # Release history
 
+## 1.2.6
+
+- Collect host model catalogs at startup and every hour by default, and keep them across restarts.
+- Read saved model and reasoning choices in review agents without live host discovery.
+- Show model catalogs, collection status, last collection time, and refresh actions in host management.
+- Configure model collection and app update intervals in Settings → Automatic checks.
+- Organize settings into General, Automatic checks, and Data management with responsive navigation.
+- Retain the last successful catalog on failures and isolate catalogs by host connection and executable.
+- Refresh related catalogs when login accounts change and cancel background metadata collection during shutdown.
+
+Validation: 642 unit checks; 9 model-selector, 18 agent, 10 settings, 9 update, and 7 translation UI checks. Translation checks cover all 12 supported languages.
+
 ## 1.2.5
 
 - Check for updates immediately at app startup and every ten minutes while the app is running.

@@ -49,13 +49,13 @@ Release builds are ad hoc signed and are **not Apple-notarized**. If macOS block
 Each release includes SHA-256 checksums. To check a Windows installer in PowerShell:
 
 ```powershell
-Get-FileHash .\ReviewOps-1.2.4-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\ReviewOps-1.2.6-windows-x64.exe -Algorithm SHA256
 ```
 
 To check a macOS installer:
 
 ```sh
-shasum -a 256 ReviewOps-1.2.4-arm64.dmg
+shasum -a 256 ReviewOps-1.2.6-arm64.dmg
 ```
 
 Compare the result with the checksum published in that release.
@@ -75,7 +75,7 @@ Drag the logo or an empty area of the tab bar to move the window. The Home tab s
 
 Codex CLI must be installed and signed in on the computer where a task will run. Local projects use Codex on your computer; SSH projects use Codex on the selected host. Configure the executable, model, reasoning level, and instructions in **Project → Settings → Agent**.
 
-The review Agent panel loads models, supported reasoning levels, and defaults from the selected computer or SSH host. If the host cannot return a list, register models and their reasoning levels in **Project → Settings → Agent → Register models**. Registered models are saved with the project connection and included in backups.
+The app collects models, supported reasoning levels, and defaults from your computer and saved SSH hosts at startup and every hour by default. Review agents read the saved catalog immediately without connecting to the host again. Host management shows each catalog, its last collection time, and a refresh action. Failed collection keeps the last successful catalog. Change the interval in **Settings → Automatic checks**. If no saved catalog is available, register models and their reasoning levels in **Project → Settings → Agent → Register models**. Registered models are saved with the project connection and included in backups.
 
 Agent commands run as:
 
@@ -121,7 +121,7 @@ Deleting a group removes its projects, reviews, history, and attachments. Deleti
 
 ## Updates
 
-On macOS, ReviewOps checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) immediately at startup and every ten minutes while the app is running, when automatic checks are enabled. No GitHub account or token is needed in the app. An update notification appears at the bottom of the sidebar. Select it to download, verify, install, and restart in one action. The same action is available in Settings. Enabling automatic checks also checks immediately.
+On macOS, ReviewOps checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) immediately at startup and every ten minutes by default while the app is running, when automatic checks are enabled. Change the interval in **Settings → Automatic checks**. No GitHub account or token is needed in the app. An update notification appears at the bottom of the sidebar. Select it to download, verify, install, and restart in one action. The same action is available in Settings. Enabling automatic checks also checks immediately.
 
 The updater selects the build for your Mac, checks its declared size and SHA-256 hash, verifies the app bundle, and replaces the application before restarting. Project data is kept outside the application bundle. SSH agent tasks continue on the server while the app restarts, and the app reconnects to their output. Local tasks, terminal sessions, login operations, and file transfers must finish before installation. Remote agent execution requires Linux with bash, nohup, and setsid. The website is an introduction and download page; the update feed comes directly from GitHub Releases.
 

@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
     ipcRenderer.on('reviewops:update-state', listener);
     return () => ipcRenderer.removeListener('reviewops:update-state', listener);
   },
+  onModelCacheState: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, state) => callback(state);
+    ipcRenderer.on('reviewops:model-cache-state', listener);
+    return () => ipcRenderer.removeListener('reviewops:model-cache-state', listener);
+  },
   onWindowState: callback => {
     if (typeof callback !== 'function') throw new TypeError('창 상태를 받을 함수를 지정하십시오.');
     const listener = (_event,state) => callback({maximized:!!state.maximized,fullScreen:!!state.fullScreen});

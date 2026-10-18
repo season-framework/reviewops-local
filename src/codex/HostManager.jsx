@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { AlertCircle, ArrowRightLeft, ArrowUpCircle, Check, ChevronDown, ChevronRight, Copy, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, KeyRound, Loader2, Pencil, Plus, RefreshCw, Terminal, Trash2, X } from 'lucide-react';
 import { HostFiles } from './HostFiles';
 import { ActionButton } from './ActionButton';
+import {ModelCatalog,cacheModels,cacheTime,useModelCacheState} from '../ModelCacheSettings.jsx';
 import './host-manager.css';
 
 const emptyState = { configPath: '', revision: '', hosts: [], groups: [], refresh: { running: false }, batchUpgrade: { running: false, hostIds: [] } };
@@ -203,6 +204,9 @@ function HostDetails({ host, details, loading, error, keyError, keyResult, keyHi
 }
 
 export function HostManager({ bridge, isDemo = false }) {
+  const {state:modelState,error:modelStateError,command:modelCommand}=useModelCacheState();
+  const [modelPending,setModelPending]=useState(''),[modelError,setModelError]=useState('');
+  const modelBusy=useRef(false);
   const [state, setState] = useState(emptyState);
   const [loaded, setLoaded] = useState(false);
   const [notice, setNotice] = useState('');
@@ -384,7 +388,9 @@ export function HostManager({ bridge, isDemo = false }) {
     const unsubscribe = bridge?.onState?.(apply);
     return () => { mounted.current = false; request.current++; unsubscribe?.(); if (activeLoginHost.current) bridge?.cancelCodexLogin?.(activeLoginHost.current).catch(() => {}); };
   }, [bridge]);
-  const host = ['details', 'form', 'upgrade', 'delete', 'login'].includes(modal?.type) && modal?.id ? state.hosts.find(item => item.id === modal.id) || (modal.type === 'details' && details?.host?.id === modal.id ? details.host : null) : null;
+  const host = ['details', 'form', 'upgrade', 'delete', 'login', 'models'].includes(modal?.type) && modal?.id ? state.hosts.find(item => item.id === modal.id) || (modal.type === 'details' && details?.host?.id === modal.id ? details.host : null) : null;
+  const modelTarget=id=>modelState?.targets?.find(target=>target.id===`host:${id}`);
+  const refreshModels=async id=>{if(modelBusy.current)return;modelBusy.current=true;setModelPending(id);setModelError('');try{await modelCommand('refresh',{id:`host:${id}`})}catch(error){if(mounted.current)setModelError(error.message||t('모델 목록을 불러오지 못했습니다.'))}finally{modelBusy.current=false;if(mounted.current)setModelPending('')}};
   activeLoginHost.current = modal?.type === 'login' && (loginActive(host?.login) || action === 'startLogin') ? host.id : null;
   const close = async () => {
     if (action) return;
@@ -588,6 +594,7 @@ export function HostManager({ bridge, isDemo = false }) {
     requestAnimationFrame(() => document.querySelector(`.host-file-button[data-host-id="${CSS.escape(id)}"]`)?.focus());
   };
   const renderHost = item => {
+        const catalog=modelTarget(item.id),collectedAt=cacheTime(catalog?.cachedAt||catalog?.updatedAt);
         const upgrading = ['upgrade', 'upgradeCodex'].includes(item.operation?.type) && item.operation.running;
         const failed = ['offline', 'error', 'failed'].includes(item.connection?.status);
         const statusClass = `host-status ${['online', 'connected', 'ready'].includes(item.connection?.status) ? 'connected' : failed ? 'failed' : ''}`;
@@ -598,7 +605,7 @@ export function HostManager({ bridge, isDemo = false }) {
         return <tr key={item.id} data-host-id={item.id} className={`${draggedId === item.id ? 'host-dragging' : ''} ${dropTarget?.id === item.id ? (dropTarget.after ? 'host-drop-after' : 'host-drop-before') : ''}`} onDragOver={event => dragOver(event, item)} onDrop={event => drop(event, item)}>
           <td className="host-selection-cell"><input type="checkbox" aria-label={t("{0} 선택",[item.alias || item.hostPatterns])} checked={selected.has(item.id)} disabled={action === 'deleteBatch'} onChange={event => toggleSelected(item.id, event.target.checked)}/></td>
           <td className="host-drag-cell"><button type="button" className="host-drag-handle" data-host-id={item.id} aria-label={t("{0} 순서 변경",[item.alias])} title={t("드래그하거나 ↑↓ 키로 순서를 변경합니다.")} disabled={orderSaving || Boolean(modal) || Boolean(action) || !bridge?.reorderHosts} draggable={!orderSaving && !modal && !action && Boolean(bridge?.reorderHosts)} onDragStart={event => beginDrag(event, item)} onDragEnd={clearDrag} onKeyDown={event => moveByKeyboard(event, item)}><GripVertical size={15}/></button></td>
-          <td className={state.groups.length ? 'host-tree-host' : ''}><button className="host-entry" aria-label={t("{0} 호스트 정보",[item.alias])} title={item.alias || item.hostPatterns} onClick={() => openDetails(item)}><strong>{item.alias || item.hostPatterns}</strong></button></td>
+          <td className={state.groups.length ? 'host-tree-host' : ''}><button className="host-entry" aria-label={t("{0} 호스트 정보",[item.alias])} title={item.alias || item.hostPatterns} onClick={() => openDetails(item)}><strong>{item.alias || item.hostPatterns}</strong></button><div className="host-model-summary"><button type="button" className="host-model-button" aria-label={t("{0} 모델 목록",[item.alias])} onClick={()=>{setModelError('');setModal({type:'models',id:item.id})}}>{modelState?t("모델 {0}개",[cacheModels(catalog).length]):t("모델 목록")}<ChevronRight size={11}/></button><small>{modelStateError?t("모델 목록을 불러오지 못했습니다."):collectedAt?t("마지막 수집: {0}",[collectedAt]):t("아직 수집하지 않았습니다.")}</small>{catalog?.error&&<small className="has-error">{cacheModels(catalog).length?t("수집 실패 · 이전 목록 사용"):t("수집하지 못했습니다.")}</small>}</div></td>
           <td><span className="host-address" title={address}>{address}</span></td>
           <td>{failed && item.connection?.message ? <HostErrorPopover label={t("{0} 접속 실패 상세",[item.alias])} title={t("접속 실패")} message={item.connection.message} className={statusClass}>{status}</HostErrorPopover> : <span className={statusClass}>{status}</span>}</td>
           <td className="numeric"><strong className="host-version">{item.codex?.available === false ? t("설치 없음") : text(item.codex?.version)}</strong></td>
@@ -648,6 +655,7 @@ export function HostManager({ bridge, isDemo = false }) {
     <div className="table-scroll host-table-scroll"><table className="host-table" aria-label={t("호스트 목록")} aria-busy={orderSaving}><thead><tr><th className="host-selection-col"><SelectAllHosts checked={allSelected} mixed={selectedHosts.length > 0 && !allSelected} disabled={!state.hosts.length || action === 'deleteBatch'} onChange={event => setSelectedIds(event.target.checked ? state.hosts.map(host => host.id) : [])}/></th><th className="host-drag-col" aria-label={t("순서")}/><th className="host-name-col">{t("호스트")}</th><th className="host-address-col">{t("접속 주소")}</th><th className="host-status-col">{t("접속 상태")}</th><th className="host-version-col numeric">{t("Codex 버전")}</th><th className="host-account-col">{t("로그인 계정")}</th><th className="host-actions-col">{t("작업")}</th></tr></thead>
       <tbody>{state.groups.length ? <>{state.groups.map(group => renderGroup(group.id, group))}{renderGroup(null)}</> : visibleHosts.map(renderHost)}{!state.hosts.length && <tr><td colSpan={8} className="empty">{bridge && !loaded ? t("호스트 목록을 불러오는 중입니다.") : t("등록된 호스트가 없습니다.")}</td></tr>}</tbody>
     </table></div>
+    {modal?.type==='models'&&host&&<HostModal wide title={t("{0} 모델 목록",[host.alias])} onClose={close} footer={<><button type="button" className="button" disabled={!connectable(host)||Boolean(modelPending)||modelState?.refreshing} onClick={()=>refreshModels(host.id)}><RefreshCw size={14}/>{modelPending===host.id||modelState?.refreshing?t("수집 중"):t("지금 수집")}</button><button type="button" className="button" onClick={close}>{t("닫기")}</button></>}>{(modelError||modelStateError)&&<p className="host-inline-error" role="alert">{t(modelError||modelStateError)}</p>}<ModelCatalog target={modelTarget(host.id)}/></HostModal>}
     {modal?.type === 'batchUpgrade' && <HostModal alert title={t("선택 호스트 업그레이드")} onClose={close} footer={<><button className="button" onClick={close}>{t("취소")}</button><button className="button primary" disabled={batchRunning || !batchModalHosts.length} onClick={confirmBatchUpgrade}>{t("업그레이드")}</button></>}><p>{t("선택한 호스트의 Codex를 최신 버전으로 업그레이드합니다. 모든 대상의 업그레이드를 동시에 시작합니다. 호스트별 처리 결과는 목록에 표시됩니다.")}</p>{renderBatchList()}</HostModal>}
     {modal?.type === 'batchDelete' && <HostModal alert title={t("선택 호스트 삭제")} onClose={close} footer={<><button className="button" disabled={Boolean(action)} onClick={close}>{t("취소")}</button><button className="button danger" disabled={Boolean(action) || !batchModalHosts.length || batchModalBusy} onClick={confirmBatchDelete}>{action === 'deleteBatch' ? t("삭제 중") : t("호스트 삭제")}</button></>}><p>{t("선택한 호스트를 SSH 설정 파일에서 삭제합니다. remote-mgmt 목록에서도 삭제됩니다.")}</p>{renderBatchList()}{batchModalBusy && <p className="host-inline-error" role="alert">{t("작업 중인 호스트가 있습니다. 작업 종료 후 삭제하십시오.")}</p>}</HostModal>}
     {modal?.type === 'details' && host && <HostModal wide title={t("{0} 호스트 정보",[host.alias])} onClose={close} tabs={<HostTabs active={detailTab} onChange={setDetailTab} idPrefix={tabsId} filesDisabled={!connectable(host)}/>} footer={<><button className="button danger" disabled={Boolean(action) || busy(host) || orderSaving} onClick={() => { request.current++; setPassword(''); setModal({ type: 'delete', id: host.id, revision: state.revision }); }}><Trash2 size={14}/>{t("호스트 삭제")}</button><button className="button" disabled={Boolean(action) || busy(host) || orderSaving} onClick={() => openForm(host)}><Pencil size={14}/>{t("접속 정보 수정")}</button><button className="button" disabled={Boolean(action)} onClick={close}>{t("닫기")}</button></>}>

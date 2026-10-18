@@ -13,6 +13,8 @@ const { MAX_FILE_BYTES, mimeType, describeBytes, listLocal, readLocal, inside } 
 const { createHtmlPreview, htmlPreviewResponse } = require('./html-preview.cjs');
 const {readAgentOutput} = require('./agent-files.cjs');
 const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
+const {createModelCache} = require('./model-cache.cjs');
+const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
@@ -25,7 +27,7 @@ const dialog=appLanguage.dialog(nativeDialog);
 protocol.registerSchemesAsPrivileged([{ scheme: 'reviewops', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const devUrl = !app.isPackaged ? process.env.REVIEWOPS_DEV_URL : null;
 const attachmentPath = path.join(dataPath, 'attachments');
-let window, store, vault, browsers, agents, codexManager, updater;
+let window, store, vault, browsers, agents, codexManager, updater, modelCache;
 let seasonIntegration, pendingSeasonReview, pendingSeasonDisplay, seasonUpdateTimer;
 const agentJobs = new Map();
 let quitting = false;
@@ -65,6 +67,38 @@ function stageScreenshot(payload) {
 function agentSettings(service) {
   return {binary:service.agentBinary||'codex',workPath:service.agentWorkPath||service.rootPath,model:service.agentModel||'',reasoningEffort:service.agentReasoningEffort||'',instructions:service.agentInstructions||''};
 }
+function modelTargets(additional = []) {
+  const snapshot=store?.snapshot();
+  const services=[...(snapshot?.projects||[]).map(project=>project.connection).filter(Boolean),...additional];
+  return createModelTargets({hostState:codexManager?.hostState?.()||{},services,localBinary:codexManager?.accountState?.()?.runtime?.path||'codex',localProfile:process.env.CODEX_HOME||''});
+}
+function cachedAgentModels(service) {
+  const id=modelTargets([service]).serviceIds.get(service.id);
+  const cached=id&&modelCache?.get(id);
+  const value=cached||{models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:'',cachedAt:null,cacheStatus:'empty',refreshing:false};
+  return !value.models?.length&&service.agentModels?.length?{...value,models:service.agentModels,modelSource:'manual'}:value;
+}
+function refreshServiceModels(serviceId) {
+  const catalog=modelTargets();
+  invalidateModelAccount(catalog.serviceIds.get(serviceId),catalog.targets);
+}
+function invalidateModelAccount(id, targets=modelTargets().targets) {
+  const owner=targets.find(target=>target.id===id);
+  if(owner&&modelCache)for(const target of targets)if(target.accountScope===owner.accountScope)modelCache.invalidate(target.id).catch(()=>{});
+}
+function startModelCache() {
+  modelCache?.close();
+  modelCache=createModelCache({dataPath,listTargets:()=>modelTargets().targets,collect:async target=>{const config=target.config.kind==='ssh'&&!target.config.hostAlias?{...target.config,...credentialValues(target.config)}:target.config;return agentManager().environment(config,target.settings);},onChange:state=>{if(window&&!window.isDestroyed())window.webContents.send('reviewops:model-cache-state',state);}});
+  modelCache.start().catch(()=>{});
+}
+const completedHostLogins=new Map();
+function reconcileHostModels(snapshot) {
+  modelCache?.reconcile();
+  for(const host of snapshot?.hosts||[])if(host.login?.status==='completed'&&completedHostLogins.get(host.id)!==host.login.attemptId) {
+    completedHostLogins.set(host.id,host.login.attemptId);
+    invalidateModelAccount('host:'+host.id);
+  }
+}
 function agentExecutionScope(service, settings) {
   const remote=service.kind==='ssh';
   return 'target-v2:'+digest(JSON.stringify([service.kind,remote?service.host:'',remote?service.port:0,remote?service.username:'',remote?service.hostAlias||'':'',remote?service.sshConfigPath||'':'',settings.workPath,settings.binary,settings.model]));
@@ -93,6 +127,7 @@ function agentManager() {
     if(job.status!=='running'){
       operations.delete(`agent:${job.id}`);
       if(job.kind==='agent')agentJobs.delete(job.id);
+      if(job.kind==='login'&&job.status==='completed')refreshServiceModels(job.serviceId);
     }
   }});
   return agents;
@@ -164,6 +199,7 @@ async function agentAction(action,payload) {
   if(action==='agent.materials')return agentMaterials(payload.reviewId);
   if(action==='agent.instructionExport')return exportInstruction(payload.reviewId);
   if(action==='agent.transfer')return store.transferAgentResponse(payload.runId);
+  if(action==='agent.models')return cachedAgentModels(serviceById(payload.serviceId||(payload.projectId?store.project(payload.projectId).connection?.id:null)));
   if(action==='agent.fileRead')return readAgentFile(payload);
   if(action==='agent.fileExport') {
     if(typeof payload.path!=='string'||!payload.path)throw new Error('저장할 작업 파일을 선택하십시오.');
@@ -204,6 +240,7 @@ async function agentAction(action,payload) {
     try{
       const environment=await manager[action==='agent.environment'?'environment':'logout'](service,settings);
       if(action==='agent.environment'&&!environment.models?.length&&service.agentModels?.length)return {...environment,models:service.agentModels,modelSource:'manual'};
+      if(action==='agent.logout')refreshServiceModels(service.id);
       return environment;
     }
     catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
@@ -528,6 +565,14 @@ async function dispatch(action, payload = {}) {
     if (!method) throw new Error('Unsupported update action.');
     return updater[method](payload);
   }
+  if (action.startsWith('modelCache.')) {
+    if (!modelCache) throw new Error('모델 목록을 준비하고 있습니다.');
+    if (updater?.installing && action!=='modelCache.state') throw new Error('ReviewOps is restarting to install an update.');
+    if (action==='modelCache.state') return modelCache.snapshot();
+    if (action==='modelCache.configure') return modelCache.configure(payload);
+    if (action==='modelCache.refresh') { await modelCache.refresh(payload.id); return modelCache.snapshot(); }
+    throw new Error('지원하지 않는 모델 목록 요청입니다.');
+  }
   if (updater?.installing && !['snapshot','app.info','integration.pending','integration.displayed'].includes(action) && !windowActions.has(action)) throw new Error('ReviewOps is restarting to install an update.');
   if (action === 'integration.pending') return pendingSeasonReview || null;
   if (action === 'integration.displayed') {
@@ -806,20 +851,23 @@ else {
       if(!trustedSender(event)) return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       try {
         let result;
-        if ((typeof action === 'string' && action.startsWith('browser.')) || windowActions.has(action) || ['update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
         }
-        return {ok:true,data:await result};
+        const data=await result;
+        if(['project.save','project.delete','service.save','service.delete','group.delete','backup.import','ssh.trust'].includes(action))modelCache?.reconcile();
+        return {ok:true,data};
       }
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }
     });
     updateNativeMenu();
     updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>{if(window&&!window.isDestroyed())window.webContents.send('reviewops:update-state',state);}});
     updater.start();
-    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:()=>window,trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG});
+    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:()=>window,trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
     codexManager.registerHandlers(ipcMain);
+    startModelCache();
     createWindow();
     // Season AI currently connects through a Unix socket. Windows can use the
     // standalone app without starting this optional integration.
@@ -847,8 +895,9 @@ else {
     event.preventDefault();
     if(stoppingAgents)return;
     stoppingAgents=true;
+    modelCache?.close();
     terminals.closeAll();
-    Promise.all([agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;dialog.showErrorBox('에이전트 종료 오류',error.message);});
+    Promise.all([agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
-  app.on('will-quit',()=>{updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});browsers?.closeAll();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
+  app.on('will-quit',()=>{modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});browsers?.closeAll();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
 }

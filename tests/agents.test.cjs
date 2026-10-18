@@ -13,6 +13,7 @@ const { createAgentManager, normalizeSettings, buildArguments, modelOptions } = 
 const { fingerprintOf } = require('../electron/ssh.cjs');
 const remoteAgent = require('../electron/remote-agent.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
+const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 async function eventually(check) {for(let attempt=0;attempt<200;attempt++){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
 async function completed(manager,id){return eventually(()=>{const job=manager.read(id);return ['completed','failed','cancelled'].includes(job.status)?job:null;});}
 async function updateReady(manager,id){return eventually(()=>{const job=manager.read(id);return job.status==='running'&&job.remoteExecution?.ready&&manager.hasBlockingJobs===false?job:null;});}
@@ -684,6 +685,76 @@ for(const kind of ['local','ssh'])for(const outcome of ['completed','failed','ca
  await eventually(async()=>{try{await fs.access(record.files[0].path);return false;}catch{return true;}});
 });
 
+
+for(const operation of ['environment','logout'])test(`closeAll invalidates a ${operation} call waiting for local path resolution while later metadata calls still work`,async t=>{
+ const calls=[],gate=deferred(),entered=deferred();t.after(()=>gate.resolve());
+ const f=await fixture(t,{spawn(binary,args){
+  calls.push({binary,args});const child=new EventEmitter();child.stdin=new PassThrough();child.stdout=new PassThrough();child.stderr=new PassThrough();
+  setImmediate(()=>child.emit('close',1));return child;
+ }});
+ const realpath=fs.realpath;
+ const mocked=t.mock.method(fs,'realpath',async value=>{if(value===f.root){entered.resolve();await gate.promise}return realpath(value)});
+ const pending=f.manager[operation](f.config,f.settings).then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();assert.deepEqual(calls,[]);
+ gate.resolve();assert.deepEqual(await pending,{error:'AGENT_CLOSING'});assert.deepEqual(calls,[]);
+ mocked.mock.restore();
+ const fresh=await f.manager.environment(f.config,f.settings);assert.equal(fresh.installed,false);
+ assert.equal(calls.length,1);assert.deepEqual(calls[0].args,['--version']);assert.equal(f.manager.size,0);
+});
+
+test('closeAll invalidates a Windows metadata call waiting for native runtime discovery',async t=>{
+ const calls=[],gate=deferred(),entered=deferred();t.after(()=>gate.resolve());
+ const f=await fixture(t,{platform:'win32',findRuntime:async()=>{entered.resolve();await gate.promise;return {available:true,command:'C:\\Synthetic\\codex.exe',args:[]}},spawn(){calls.push('unexpected spawn');throw new Error('No process may start')}});
+ const pending=f.manager.environment(f.config,f.settings).then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();gate.resolve();
+ assert.deepEqual(await pending,{error:'AGENT_CLOSING'});assert.deepEqual(calls,[]);
+});
+
+test('Windows metadata runtime discovery cannot start its version process after closeAll completes',async t=>{
+ const calls=[],gate=deferred(),entered=deferred();t.after(()=>gate.resolve());
+ const f=await fixture(t,{platform:'win32',spawn(){calls.push('unexpected process');throw new Error('No process may start')}});
+ await fs.writeFile(f.binary,'synthetic native file');
+ const realpath=fs.realpath;
+ t.mock.method(fs,'realpath',async value=>{if(value===f.binary){entered.resolve();await gate.promise}return realpath(value)});
+ const pending=f.manager.environment(f.config,f.settings).then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();gate.resolve();
+ assert.deepEqual(await pending,{error:'AGENT_CLOSING'});assert.deepEqual(calls,[]);
+});
+
+test('Windows metadata runtime version processes participate in closeAll cleanup',async t=>{
+ const calls=[],entered=deferred(),children=new Map();let pid=55000;
+ const f=await fixture(t,{platform:'win32',spawn(command,args){
+  calls.push({command,args});const child=Object.assign(new EventEmitter(),{pid:++pid,stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough()});children.set(child.pid,child);
+  if(command==='taskkill.exe')setImmediate(()=>{children.get(Number(args[1])).emit('close',null,'SIGKILL');child.emit('close',0)});
+  else {assert.deepEqual(args,['--version']);entered.resolve()}
+  return child;
+ }});
+ await fs.writeFile(f.binary,'synthetic native file');
+ const pending=f.manager.environment(f.config,f.settings).then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();
+ assert.deepEqual(await pending,{error:'AGENT_CLOSING'});assert.equal(calls.filter(value=>value.command!=='taskkill.exe').length,1);
+ assert.equal(calls.filter(value=>value.command==='taskkill.exe').length,1);
+});
+
+test('closeAll destroys a delayed SSH metadata connection without opening a command channel',async t=>{
+ const gate=deferred(),entered=deferred(),client=new EventEmitter();let commands=0,destroyed=0;t.after(()=>gate.resolve());
+ client.exec=()=>{commands++;throw new Error('No remote command may run')};client.destroy=()=>{destroyed++;client.destroyed=true};
+ const f=await fixture(t,{connectConfig:async()=>{entered.resolve();await gate.promise;return client},spawn(){throw new Error('No process may start')}});
+ const config={id:'remote',kind:'ssh',hostAlias:'synthetic-host',sshConfigPath:path.join(f.base,'config'),rootPath:'/work'};
+ const pending=f.manager.environment(config,{binary:'codex'}).then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();assert.equal(commands,0);gate.resolve();
+ assert.deepEqual(await pending,{error:'AGENT_CLOSING'});assert.equal(commands,0);assert.equal(destroyed,1);
+});
+
+test('closeAll invalidates a delayed local session read without preventing new session reads',async t=>{
+ const gate=deferred(),entered=deferred();t.after(()=>gate.resolve());
+ const f=await fixture(t,{spawn(){throw new Error('Session reads never start a process')}}),readdir=fs.readdir;
+ const mocked=t.mock.method(fs,'readdir',async(...args)=>{entered.resolve();await gate.promise;return readdir(...args)});
+ const pending=f.manager.session(f.config,f.settings,'synthetic-session').then(value=>({value}),error=>({error:error.code}));
+ await entered.promise;await f.manager.closeAll();gate.resolve();
+ assert.deepEqual(await pending,{error:'AGENT_CLOSING'});mocked.mock.restore();
+ assert.equal((await f.manager.session(f.config,f.settings,'synthetic-session')).status,'missing');
+});
 
 for(const kind of ['local','ssh'])test(`${kind} closeAll terminates a hanging environment probe even when no agent request was created`,async t=>{
  const f=kind==='ssh'?await remoteFixture(t,{managerOptions:{commandTimeoutMs:15000}}):await fixture(t,{commandTimeoutMs:15000});await fs.writeFile(path.join(f.root,'hang-probe'),'');

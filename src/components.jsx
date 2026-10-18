@@ -2,6 +2,8 @@ import {t,localized,getLocale} from './i18n/index.js';
 import Select from './Select.jsx';
 import LanguageSettings from './LanguageSettings.jsx';
 import UpdateSettings from './UpdateSettings.jsx';
+import ModelCacheSettings from './ModelCacheSettings.jsx';
+import './settings-layout.css';
 import React, {useEffect, useRef, useState} from 'react';
 import Icon from './icons.jsx';
 
@@ -100,9 +102,22 @@ function WebPreview({service,targetUrl,onError}) {
  return <div className="web-preview"><form className="web-toolbar" onSubmit={go}><button type="button" className="icon-button" aria-label={t("새로고침")} disabled={!url} onClick={()=>setReload(n=>n+1)}><Icon name="refresh" size={15}/></button><div><Icon name="link" size={14}/><input value={input} onChange={e=>setInput(e.target.value)} placeholder={t("http://localhost:3000 또는 화면 주소")} aria-label={t("미리보기 주소")}/></div><Button type="submit" icon="arrow">{t("열기")}</Button>{url&&<button type="button" className="icon-button" aria-label={t("브라우저에서 열기")} onClick={()=>invoke('external.open',{url}).catch(e=>onError(e.message))}><Icon name="external" size={15}/></button>}</form>{url?<><iframe key={`${url}-${reload}`} className="web-frame" sandbox="allow-scripts allow-forms allow-same-origin allow-popups" src={url} title={t("검토 화면")}/><p className="web-help">{t("화면 표시를 제한한 사이트는 브라우저에서 열 수 있습니다.")}</p></>:<Empty icon="external" title={t("검토할 화면을 엽니다.")} description={t("프로젝트에 등록된 주소 또는 로컬에서 실행 중인 화면을 열 수 있습니다.")}>{input&&<Button variant="primary" icon="external" onClick={go}>{t("화면 열기")}</Button>}</Empty>}</div>
 }
 function DataSettings({data,invoke,run,reload,setToast,onBeforeRestore,onRestored}) {
- const [info,setInfo]=useState(null);
- useEffect(()=>{invoke('app.info').then(setInfo).catch(()=>{})},[]);
- return <div className="page-content settings-content"><LanguageSettings/><UpdateSettings invoke={invoke}/><section className="settings-panel"><div className="section-heading"><h2>{t("자료 저장 위치")}</h2><Button icon="folder" onClick={()=>run(()=>invoke('app.openDataFolder'))}>{t("폴더 열기")}</Button></div><p>{t("프로젝트, 리뷰와 첨부파일은 이 Mac에 저장됩니다.")}</p><code className="data-path">{info?.dataPath||t("저장 위치 불러오는 중")}</code><div className="data-counts"><span>{t("그룹")+" "}<strong>{data.groups.length}</strong></span><span>{t("프로젝트")+" "}<strong>{data.projects.length}</strong></span><span>{t("리뷰")+" "}<strong>{data.reviews.length}</strong></span><span>{t("첨부파일")+" "}<strong>{data.attachments.length}</strong></span></div></section><section className="settings-panel"><div className="section-heading"><h2>{t("백업")}</h2><Button icon="download" variant="primary" onClick={()=>run(async()=>{const result=await invoke('backup.export');if(!result?.cancelled)setToast(t("백업 파일 저장 완료"))})}>{t("백업 파일 저장")}</Button></div><p>{t("그룹, 프로젝트와 연결 설정, 리뷰, 첨부파일을 하나의 파일로 저장합니다.")}</p><p className="muted">{t("SSH 비밀번호와 키 암호는 백업에 포함되지 않습니다.")}</p></section><section className="settings-panel"><div className="section-heading"><h2>{t("백업 복원")}</h2><Button icon="upload" onClick={()=>run(async()=>{onBeforeRestore?.();const result=await invoke('backup.import');if(result?.imported){await (onRestored||reload)();setToast(t("백업 복원 완료"))}})}>{t("백업 파일 열기")}</Button></div><p>{t("백업 파일의 자료로 이 Mac의 자료를 교체합니다.")}</p><p className="muted">{t("복원할 파일을 선택한 뒤 교체 여부를 확인합니다.")}</p></section><div className="app-version"><img src="./assets/brand/reviewops-icon.svg" alt=""/><div><strong>ReviewOps</strong><span>{info?.version?t("버전 {0}",[info.version]):t("버전 정보 없음")}{info?.arch?` · ${info.arch}`:''}</span></div></div></div>
+ const [info,setInfo]=useState(null),[section,setSection]=useState(()=>{try{const value=localStorage.getItem('reviewops.settings.section');return ['general','automatic','data'].includes(value)?value:'general'}catch{return 'general'}});
+ useEffect(()=>{let live=true;invoke('app.info').then(value=>{if(live)setInfo(value)}).catch(()=>{});return()=>{live=false}},[invoke]);
+ const sections=[['general',t("일반")],['automatic',t("자동 확인")],['data',t("자료 관리")]],choose=value=>{setSection(value);try{localStorage.setItem('reviewops.settings.section',value)}catch{}};
+ const navigate=event=>{if(!['ArrowDown','ArrowUp','ArrowRight','ArrowLeft','Home','End'].includes(event.key))return;const items=[...event.currentTarget.querySelectorAll('button')],index=items.indexOf(document.activeElement);if(index<0)return;event.preventDefault();const next=event.key==='Home'?0:event.key==='End'?items.length-1:(index+(['ArrowRight','ArrowDown'].includes(event.key)?1:-1)+items.length)%items.length;items[next].focus();items[next].click()};
+ return <div className="page-content settings-content settings-layout">
+  <nav className="settings-section-menu" aria-label={t("설정 항목")} onKeyDown={navigate}>{sections.map(([key,name])=><button type="button" key={key} aria-current={section===key?'page':undefined} onClick={()=>choose(key)}>{name}<Icon name="chevron" size={14}/></button>)}</nav>
+  <div className="settings-section-content">
+   {section==='general'&&<><LanguageSettings/><div className="app-version"><img src="./assets/brand/reviewops-icon.svg" alt=""/><div><strong>ReviewOps</strong><span>{info?.version?t("버전 {0}",[info.version]):t("버전 정보 없음")}{info?.arch?` · ${info.arch}`:''}</span></div></div></>}
+   {section==='automatic'&&<><ModelCacheSettings invoke={invoke}/><UpdateSettings invoke={invoke}/></>}
+   {section==='data'&&<>
+    <section className="settings-panel"><div className="section-heading"><h2>{t("자료 저장 위치")}</h2><Button icon="folder" onClick={()=>run(()=>invoke('app.openDataFolder'))}>{t("폴더 열기")}</Button></div><p>{t("프로젝트, 리뷰와 첨부파일은 이 컴퓨터에 저장됩니다.")}</p><code className="data-path">{info?.dataPath||t("저장 위치 불러오는 중")}</code><div className="data-counts"><span>{t("그룹")} <strong>{data.groups.length}</strong></span><span>{t("프로젝트")} <strong>{data.projects.length}</strong></span><span>{t("리뷰")} <strong>{data.reviews.length}</strong></span><span>{t("첨부파일")} <strong>{data.attachments.length}</strong></span></div></section>
+    <section className="settings-panel"><div className="section-heading"><h2>{t("백업")}</h2><Button icon="download" variant="primary" onClick={()=>run(async()=>{const result=await invoke('backup.export');if(!result?.cancelled)setToast(t("백업 파일 저장 완료"))})}>{t("백업 파일 저장")}</Button></div><p>{t("그룹, 프로젝트와 연결 설정, 리뷰, 첨부파일을 하나의 파일로 저장합니다.")}</p><p className="muted">{t("SSH 비밀번호와 키 암호는 백업에 포함되지 않습니다.")}</p></section>
+    <section className="settings-panel"><div className="section-heading"><h2>{t("백업 복원")}</h2><Button icon="upload" onClick={()=>run(async()=>{onBeforeRestore?.();const result=await invoke('backup.import');if(result?.imported){await (onRestored||reload)();setToast(t("백업 복원 완료"))}})}>{t("백업 파일 열기")}</Button></div><p>{t("복원하면 현재 자료가 백업 내용으로 교체됩니다. 필요한 자료는 먼저 백업하십시오.")}</p><p className="muted">{t("복원할 파일을 선택한 뒤 교체 여부를 확인합니다.")}</p></section>
+   </>}
+  </div>
+ </div>;
 }
 
 function SSHCommand({service}) {
