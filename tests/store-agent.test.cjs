@@ -146,6 +146,27 @@ test('unfinished executions are marked interrupted after restart and completed c
   assert.equal(reopened.snapshot().activities.filter(item=>item.role==='agent').length,1);
 });
 
+test('restart preserves only confirmed remote agent jobs and backup restore still interrupts them',t=>{
+  const f=setup(t),remote=f.store.saveService({groupId:f.group.id,name:'SSH 작업',kind:'ssh',host:'example.test',username:'test',rootPath:'/tmp/project'});
+  f.store.saveProject({id:f.project.id,serviceIds:[f.service.id,remote.id]});
+  const metadata={version:1,ready:true,stdoutOffset:1024,stderrOffset:12};
+  const durable=start(f,{serviceId:remote.id,workPath:'/tmp/project',remoteExecution:metadata});
+  const preparing=start(f,{serviceId:remote.id,workPath:'/tmp/project',remoteExecution:{...metadata,ready:false}});
+  const legacy=start(f,{serviceId:remote.id,workPath:'/tmp/project'}),local=start(f,{remoteExecution:metadata});
+  assert.deepEqual(f.store.get('agent_runs',durable.id).remoteExecution,metadata);
+  assert.equal(f.store.interruptAgentRuns({preserveRemote:true}).length,3);
+  assert.equal(f.store.get('agent_runs',durable.id).status,'running');
+  for(const run of [preparing,legacy,local])assert.equal(f.store.get('agent_runs',run.id).status,'interrupted');
+  assert.equal(f.store.interruptAgentRuns().length,1);
+  assert.equal(f.store.get('agent_runs',durable.id).status,'interrupted');
+});
+
+test('remote execution metadata rejects paths, commands and invalid output offsets',t=>{
+  const f=setup(t),remote={version:1,ready:true,stdoutOffset:0,stderrOffset:0};
+  for(const change of [{version:2},{ready:1},{stdoutOffset:-1},{stderrOffset:1.1},{stdoutOffset:Number.MAX_SAFE_INTEGER+1},{directory:'/tmp/arbitrary'},{command:'anything'}])assert.throws(()=>start(f,{remoteExecution:{...remote,...change}}));
+  assert.equal(f.store.listAgentRuns().length,0);
+});
+
 test('fresh agent runs need a linked service, while unlinking preserves and permits updates to past executions', t => {
   const f=setup(t),run=start(f);
   const unlinked=f.store.saveService({groupId:f.group.id,name:'연결하지 않은 폴더',kind:'local',rootPath:f.directory});

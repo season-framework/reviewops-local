@@ -1,6 +1,7 @@
 import {t,getLocale} from './i18n/index.js';
 import React, {Fragment} from 'react';
 import Icon from './icons.jsx';
+import TimelineAttachments,{logCaptures} from './TimelineAttachments.jsx';
 import './review-timeline.css';
 
 const timestamp = value => new Date(value).getTime() || 0;
@@ -13,8 +14,10 @@ function entries(review, activities, files) {
   const firstActivity = Math.min(...activities.filter(item => item.type !== 'created').map(item => timestamp(item.createdAt)));
   const initialFiles = files.filter(file => !file.activityId && timestamp(file.createdAt) <= Math.min(timestamp(review.createdAt) + 1000, firstActivity));
   const initialIds = new Set(initialFiles.map(file => file.id));
+  const activityLogs = new Set(activities.flatMap(item=>logCaptures(item.evidence).map(capture=>capture.id)).filter(Boolean));
+  const initialLogs = logCaptures(review.evidence).filter(capture=>!capture.id||!activityLogs.has(capture.id));
   const events = [
-    {id:`start-${review.id}`,createdAt:review.createdAt,eventType:'start',body:review.body,files:initialFiles,evidence:review.evidence},
+    {id:`start-${review.id}`,createdAt:review.createdAt,eventType:'start',body:review.body,files:initialFiles,captures:initialLogs},
     ...activities.filter(item => ['comment','status','agent','agent_response'].includes(item.type)).map(item => ({...item,eventType:item.type,files:files.filter(file => file.activityId === item.id)})),
     ...files.filter(file => !file.activityId && !initialIds.has(file.id)).map(file => ({id:`file-${file.id}`,createdAt:file.createdAt,eventType:'attachment',files:[file]}))
   ].sort((a,b) => timestamp(a.createdAt) - timestamp(b.createdAt));
@@ -26,7 +29,7 @@ function entries(review, activities, files) {
   }, []);
 }
 
-export default function ReviewTimeline({review,activities,files,renderMarkdown,renderImages,renderFiles,renderEdit,onFileLink,onEditReview,onEditActivity,onShowLogCapture,editingId,busy,Status,statusLabel}) {
+export default function ReviewTimeline({review,activities,files,invoke,mutate,renderMarkdown,renderLogs,renderEdit,onFileLink,onEditReview,onEditActivity,editingId,busy,Status,statusLabel}) {
   const timeline = entries(review,activities,files);
   return <div className="original-review-timeline review-chat-timeline" role="list" aria-label={t("작업이력 대화")}>
     {timeline.map((item,index) => {
@@ -34,10 +37,9 @@ export default function ReviewTimeline({review,activities,files,renderMarkdown,r
       const system = item.role === 'system' || item.authorRole === 'system';
       const start = item.eventType === 'start';
       const fileMessage = item.eventType === 'attachment';
-      const hasLogs = item.evidence && ((item.evidence.log_captures||[]).length > 0 || ['navigation_log','input_log','network_log','console_log','fingerprint_log'].some(key=>Array.isArray(item.evidence[key])?item.evidence[key].length:Object.keys(item.evidence[key]||{}).length));
+      const captures = item.captures||logCaptures(item.evidence);
+      const hasLogs = captures.length > 0;
       const author = agent ? t("에이전트") : system ? t("시스템") : t("사용자");
-      const images = item.files.filter(file => file.mimeType?.startsWith('image/'));
-      const documents = item.files.filter(file => !file.mimeType?.startsWith('image/'));
       const showDate = index === 0 || day(item.createdAt) !== day(timeline[index-1].createdAt);
       return <Fragment key={item.id}>
         {showDate && <div className="review-chat-date"><span>{day(item.createdAt)}</span></div>}
@@ -53,13 +55,12 @@ export default function ReviewTimeline({review,activities,files,renderMarkdown,r
               {item.updatedAt && timestamp(item.updatedAt) - timestamp(item.createdAt) > 1000 && <span className="review-chat-edited" title={fullDate(item.updatedAt)}>{t("수정됨")}</span>}
               {start || (item.type === 'comment' && !agent && !system) ? <button type="button" className="review-chat-edit" aria-label={start?t("리뷰 편집"):t("작업이력 편집")} title={start?t("리뷰 편집"):t("작업이력 편집")} disabled={busy} onClick={() => start?onEditReview():onEditActivity(item)}><Icon name="edit" size={13}/><span>{t("편집")}</span></button> : null}
             </header>
-            <div className="review-chat-bubble">
+            {(editingId===item.id||item.body?.trim()||start)&&<div className="review-chat-bubble">
               {editingId === item.id ? renderEdit(item) : <>
                 {item.body?.trim() ? renderMarkdown(item.body,agent&&onFileLink?{onFileLink:path=>onFileLink(path,item.agentRunId)}:{}) : start ? <p className="review-chat-empty">{t("등록된 요청 내용이 없습니다.")}</p> : null}
-                {hasLogs&&onShowLogCapture&&<button type="button" className="review-chat-log-link" onClick={()=>onShowLogCapture(item.evidence,start)}><Icon name="file" size={13}/>{t("로그 정보 보기")}</button>}
-                {(images.length > 0 || documents.length > 0) && <section className="review-chat-attachments" aria-label={t("메시지 첨부 파일")}><div className="review-chat-attachment-label"><Icon name="attach" size={12}/><span>{t("첨부 파일")+" "}{item.files.length}{t("개")}</span></div>{images.length > 0 && renderImages(images)}{documents.length > 0 && renderFiles(documents)}</section>}
               </>}
-            </div>
+            </div>}
+            {editingId!==item.id&&<TimelineAttachments files={item.files} captures={captures} invoke={invoke} mutate={mutate} busy={busy} renderLogs={renderLogs}/>}
           </article>}
       </Fragment>;
     })}

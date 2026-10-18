@@ -13,7 +13,7 @@ const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews',
 const AGENT_STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
 const AGENT_FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const AGENT_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution'];
+const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution'];
 const LOG_FIELDS = ['navigation_log','input_log','network_log','console_log','fingerprint_log'];
 const SECRET_KEY = /^(password|passphrase|private[_-]?key|ssh[_-]?password|ssh[_-]?private[_-]?key|access[_-]?token|api[_-]?key|secret|credential)$/i;
 const MAX_ITEMS = 100000;
@@ -176,6 +176,11 @@ function agentMetadata(input, previous) {
   if(value.requestId!==undefined)value.requestId=id(value.requestId,'요청');
   if(value.retryOf!==undefined)value.retryOf=id(value.retryOf,'원본 요청');
   if(value.requestSignature!==undefined && !/^[a-f0-9]{64}$/.test(value.requestSignature))fail('에이전트 요청 정보가 올바르지 않습니다.');
+  if(value.remoteExecution!==undefined) {
+    const remote=object(value.remoteExecution,'SSH 에이전트 실행 정보');
+    if(remote.version!==1||typeof remote.ready!=='boolean'||['stdoutOffset','stderrOffset'].some(key=>!Number.isSafeInteger(remote[key])||remote[key]<0)||Object.keys(remote).some(key=>!['version','ready','stdoutOffset','stderrOffset'].includes(key)))fail('SSH 에이전트 실행 정보가 올바르지 않습니다.');
+    value.remoteExecution={version:1,ready:remote.ready,stdoutOffset:remote.stdoutOffset,stderrOffset:remote.stderrOffset};
+  }
   if(value.context!==undefined) {
     object(value.context,'에이전트 첨부 자료');
     const context=value.context;
@@ -672,11 +677,11 @@ class LocalStore {
       return {activityId:activity.id,alreadySaved:false};
     });
   }
-  interruptAgentRuns() {
+  interruptAgentRuns({preserveRemote=false}={}) {
     return this.transaction(() => {
       const pending = this.db.prepare("SELECT * FROM agent_runs WHERE status IN ('queued','running')").all().map(plain);
       const message = '앱이 다시 시작되어 실행 연결이 끊겼습니다. 작업 결과를 확인한 뒤 다시 실행하십시오.';
-      return pending.map(run => this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}]}));
+      return pending.filter(run=>!(preserveRemote&&run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready&&this.db.prepare('SELECT kind FROM services WHERE id=?').get(run.serviceId)?.kind==='ssh')).map(run => this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}]}));
     });
   }
   addAttachment(input) {

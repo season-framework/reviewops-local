@@ -45,15 +45,47 @@ test('native verification checks bundle identity, version, architecture and code
  await inspectBundle(bundle,'1.2.0','arm64',command);assert(calls.some(([name,args])=>name.endsWith('codesign')&&args.includes('--strict')));
  await assert.rejects(inspectBundle(bundle,'1.2.1','arm64',command));await assert.rejects(inspectBundle(bundle,'1.2.0','x64',command));
 });
-test('active SSH, terminal, account, host and file-transfer work blocks installation',()=>{
+test('active terminal, account, host and file-transfer work blocks installation',()=>{
  assert(!hasActiveWork({}));
  for(const state of [{operations:new Set(['job'])},{terminals:{size:1}},{codexManager:{accountState:()=>({accounts:[{status:'loggingIn'}]})}},{codexManager:{hostState:()=>({hosts:[{operation:{running:true}}]})}},{codexManager:{fileService:{operations:new Set(['job'])}}},{codexManager:{fileService:{getTransfers:()=>[{status:'running'}]}}}])assert(hasActiveWork(state));
 });
-async function managerFixture(t,{requestFailure=false}={}) {
+test('only confirmed durable SSH agents are excluded from active work',()=>{
+ const remote={kind:'agent',remoteExecution:{version:1,ready:true}};
+ const agents={hasBlockingJobs:false,read:id=>{assert.equal(id,'remote-job');return remote}};
+ const durable={operations:new Set(['agent:remote-job']),agents};
+ assert.equal(hasActiveWork(durable),false);
+ const protectedJobs=[
+  ['local agent',{kind:'agent'}],
+  ['SSH agent still starting',{kind:'agent',remoteExecution:{version:1,ready:false}}],
+  ['unconfirmed SSH agent',{kind:'agent',remoteExecution:{version:1}}],
+  ['unsupported remote execution',{kind:'agent',remoteExecution:{version:2,ready:true}}],
+  ['ordinary SSH command',{kind:'shell',remoteExecution:{version:1,ready:true}}]
+ ];
+ for(const [name,job] of protectedJobs)assert.equal(hasActiveWork({...durable,agents:{hasBlockingJobs:false,read:()=>job}}),true,name);
+ for(const [name,extra] of [
+  ['blocking agent',{agents:{...agents,hasBlockingJobs:true}}],
+  ['missing agent manager',{agents:null}],
+  ['missing job',{agents:{hasBlockingJobs:false,read:()=>{throw new Error('job missing')}}}],
+  ['active terminal',{terminals:{size:1}}],
+  ['ordinary operation',{operations:new Set(['agent:remote-job','transfer:one'])}],
+  ['account refresh',{codexManager:{accountState:()=>({refresh:{running:true},accounts:[]})}}],
+  ['account loading',{codexManager:{accountState:()=>({accounts:[{status:'loading'}]})}}],
+  ['account login',{codexManager:{accountState:()=>({accounts:[{status:'loggingIn'}]})}}],
+  ['account reset',{codexManager:{accountState:()=>({accounts:[{resetAttempt:{status:'pending'}}]})}}],
+  ['host refresh',{codexManager:{hostState:()=>({refresh:{running:true},hosts:[]})}}],
+  ['host upgrade',{codexManager:{hostState:()=>({batchUpgrade:{running:true},hosts:[]})}}],
+  ['host operation',{codexManager:{hostState:()=>({hosts:[{operation:{running:true}}]})}}],
+  ['file operation',{codexManager:{fileService:{operations:new Set(['file-job'])}}}],
+  ['file transfer',{codexManager:{fileService:{getTransfers:()=>[{status:'running'}]}}}]
+ ])assert.equal(hasActiveWork({...durable,...extra}),true,name);
+ assert.equal(hasActiveWork({...durable,codexManager:{fileService:{getTransfers:()=>[{status:'completed'}]}}}),false);
+});
+const deferred=()=>{let resolve;const promise=new Promise(done=>{resolve=done});return {promise,resolve}};
+async function managerFixture(t,{requestFailure=false,beforeRequest,beforeInspect}={}) {
  const root=await temp(t),bundle=path.join(root,'ReviewOps.app'),exe=path.join(bundle,'Contents/MacOS/ReviewOps');await fs.mkdir(path.dirname(exe),{recursive:true});await fs.writeFile(exe,'old');
  const bytes=archive(),selected={...asset,size:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')},published={...release,assets:release.assets.map(item=>item.name===asset.name?{...item,size:bytes.length}:item)},document={...manifest,artifacts:{'darwin-arm64':selected}};
- const observed={requests:[],quit:0,spawn:[],busy:false};
- const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '1.1.1',getPath:()=>exe,quit:()=>observed.quit++},dataPath:path.join(root,'data'),shell:{openExternal:async url=>{observed.url=url}},platform:'darwin',arch:'arm64',isBusy:()=>observed.busy,request:async(url,options)=>{observed.requests.push(url);if(requestFailure)throw new Error('network unavailable');if(url===RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('reviewops-update.json'))return Buffer.from(JSON.stringify(document));assert.equal(options.expectedHash,selected.sha256);assert.equal(options.expectedSize,bytes.length);await fs.writeFile(options.filename,bytes);return {size:bytes.length}},command:async(_binary,args)=>{if(args[0]==='-x'){const target=path.join(args.at(-1),'ReviewOps.app');await fs.mkdir(target,{recursive:true})}return {stdout:''}},inspect:async()=>{},spawnImpl:(...args)=>{observed.spawn.push(args);return {unref(){}}}});
+ const observed={requests:[],states:[],inspections:[],quit:0,spawn:[],busy:false,requestFailure};
+ const manager=createUpdateManager({app:{isPackaged:true,getVersion:()=> '1.1.1',getPath:()=>exe,quit:()=>observed.quit++},dataPath:path.join(root,'data'),shell:{openExternal:async url=>{observed.url=url}},platform:'darwin',arch:'arm64',isBusy:()=>observed.busy,onChange:state=>observed.states.push(state),request:async(url,options)=>{observed.requests.push(url);await beforeRequest?.(url,options);if(observed.requestFailure)throw new Error('network unavailable');if(url===RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('reviewops-update.json'))return Buffer.from(JSON.stringify(document));assert.equal(options.expectedHash,selected.sha256);assert.equal(options.expectedSize,bytes.length);await fs.writeFile(options.filename,bytes);return {size:bytes.length}},command:async(_binary,args)=>{if(args[0]==='-x'){const target=path.join(args.at(-1),'ReviewOps.app');await fs.mkdir(target,{recursive:true})}return {stdout:''}},inspect:async(bundle,version,arch)=>{observed.inspections.push({bundle,version,arch});await beforeInspect?.(observed)},spawnImpl:(...args)=>{observed.spawn.push(args);return {unref(){}}}});
  t.after(()=>manager.close());return {manager,root,observed};
 }
 test('update check/download/install waits for actual quit and preserves isolated data location',async t=>{
@@ -66,6 +98,84 @@ test('update check/download/install waits for actual quit and preserves isolated
 test('failed automatic check reports error and allows retry without installation',async t=>{
  const {manager,observed}=await managerFixture(t,{requestFailure:true});const state=await manager.check();assert.equal(state.status,'error');assert.match(state.error,/network unavailable/);assert.equal(observed.quit,0);assert.equal(observed.spawn.length,0);
  await manager.configure({automatic:false});assert.equal(manager.snapshot().automatic,false);await assert.rejects(manager.configure({automatic:'yes'}));
+});
+test('one apply checks, downloads, verifies and installs with one quit request',async t=>{
+ const {manager,observed}=await managerFixture(t);
+ const result=await manager.apply();assert.equal(result.status,'installing');assert.equal(result.availableVersion,'1.2.0');assert.equal(result.progress,100);
+ assert.deepEqual(observed.requests,[RELEASE_API,release.assets[1].browser_download_url,asset.url]);
+ assert.deepEqual(observed.states.map(state=>state.status),['checking','available','downloading','verifying','ready','installing']);
+ assert.equal(observed.inspections.length,2);assert.equal(observed.inspections[0].bundle,observed.inspections[1].bundle);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);assert.equal(observed.spawn.length,0);
+});
+test('concurrent apply calls share the whole update and never schedule duplicate installation',async t=>{
+ const entered=deferred(),gate=deferred();t.after(()=>gate.resolve());
+ const {manager,observed}=await managerFixture(t,{beforeRequest:async url=>{if(url===RELEASE_API){entered.resolve();await gate.promise}}});
+ const first=manager.apply();await entered.promise;
+ const second=manager.apply(),third=manager.apply();assert.equal(second,first);assert.equal(third,first);assert.equal(observed.requests.length,1);
+ gate.resolve();const results=await Promise.all([first,second,third]);assert.ok(results.every(state=>state.status==='installing'));
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);assert.equal(observed.requests.length,3);
+ assert.equal((await manager.apply()).status,'installing');await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);assert.equal(observed.requests.length,3);
+});
+test('apply joins an in-progress scheduled check before downloading and installing',async t=>{
+ const entered=deferred(),gate=deferred();t.after(()=>gate.resolve());
+ const {manager,observed}=await managerFixture(t,{beforeRequest:async url=>{if(url===RELEASE_API){entered.resolve();await gate.promise}}});
+ const checking=manager.check();await entered.promise;const applying=manager.apply();
+ assert.equal(manager.snapshot().status,'checking');assert.deepEqual(observed.requests,[RELEASE_API]);
+ gate.resolve();assert.equal((await checking).status,'available');assert.equal((await applying).status,'installing');
+ assert.deepEqual(observed.requests,[RELEASE_API,release.assets[1].browser_download_url,asset.url]);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('apply joins a Settings download and installs the same verified bundle',async t=>{
+ const entered=deferred(),gate=deferred();t.after(()=>gate.resolve());
+ const {manager,observed}=await managerFixture(t,{beforeRequest:async url=>{if(url===asset.url){entered.resolve();await gate.promise}}});
+ assert.equal((await manager.check()).status,'available');
+ const downloading=manager.download();await entered.promise;const applying=manager.apply();
+ assert.equal(manager.snapshot().status,'downloading');assert.equal(observed.requests.filter(url=>url===asset.url).length,1);
+ gate.resolve();assert.equal((await downloading).status,'ready');assert.equal((await applying).status,'installing');
+ assert.equal(observed.requests.length,3);assert.equal(observed.inspections.length,2);assert.equal(observed.inspections[0].bundle,observed.inspections[1].bundle);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('apply retries a failed update check without installing until the check succeeds',async t=>{
+ const {manager,observed}=await managerFixture(t,{requestFailure:true});
+ const failed=await manager.apply();assert.equal(failed.status,'error');assert.match(failed.error,/network unavailable/);assert.equal(observed.quit,0);assert.deepEqual(observed.requests,[RELEASE_API]);
+ observed.requestFailure=false;
+ assert.equal((await manager.apply()).status,'installing');
+ assert.deepEqual(observed.requests,[RELEASE_API,RELEASE_API,release.assets[1].browser_download_url,asset.url]);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('apply retries a failed archive download without repeating the successful release check',async t=>{
+ let failDownload=true;
+ const {manager,observed,root}=await managerFixture(t,{beforeRequest:async(url,options)=>{if(url===asset.url&&failDownload){failDownload=false;await fs.writeFile(options.filename,'incomplete');throw new Error('download disconnected')}}});
+ const failed=await manager.apply();assert.equal(failed.status,'error');assert.match(failed.error,/download disconnected/);assert.equal(observed.quit,0);
+ assert.equal((await fs.readdir(path.join(root,'data/updates'))).filter(name=>name.startsWith('download-')).length,0);
+ assert.equal((await manager.apply()).status,'installing');assert.deepEqual(observed.requests,[RELEASE_API,release.assets[1].browser_download_url,asset.url,asset.url]);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('apply preserves a verified download after a busy error and installs it on retry',async t=>{
+ const {manager,observed,root}=await managerFixture(t);observed.busy=true;
+ const failed=await manager.apply();assert.equal(failed.status,'error');assert.match(failed.error,/active tasks/);assert.equal(failed.availableVersion,'1.2.0');assert.equal(observed.quit,0);assert.equal(observed.requests.length,3);assert.equal(observed.inspections.length,1);
+ const verified=observed.inspections[0].bundle;assert.ok((await fs.stat(verified)).isDirectory());
+ observed.busy=false;assert.equal((await manager.apply()).status,'installing');assert.equal(observed.requests.length,3);assert.equal(observed.inspections[1].bundle,verified);
+ const pending=JSON.parse(await fs.readFile(path.join(root,'data/updates/pending.json'),'utf8'));assert.equal(path.join(pending.job,'unpacked/ReviewOps.app'),verified);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('new work started during installation verification prevents quitting and retains the verified update',async t=>{
+ const {manager,observed,root}=await managerFixture(t,{beforeInspect:async state=>{if(state.inspections.length===2)state.busy=true}});
+ const failed=await manager.apply();assert.equal(failed.status,'error');assert.match(failed.error,/active tasks/);assert.equal(manager.installing,false);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,0);manager.launchInstall();assert.equal(observed.spawn.length,0);
+ await assert.rejects(fs.stat(path.join(root,'data/updates/pending.json')),{code:'ENOENT'});
+ assert.equal(observed.requests.length,3);const verified=observed.inspections[0].bundle;assert.equal(observed.inspections[1].bundle,verified);
+ observed.busy=false;assert.equal((await manager.apply()).status,'installing');assert.equal(observed.requests.length,3);assert.equal(observed.inspections[2].bundle,verified);
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);
+});
+test('apply installs a ready update and reuses it after restart is cancelled',async t=>{
+ const {manager,observed}=await managerFixture(t);await manager.check();await manager.download();assert.equal(manager.snapshot().status,'ready');
+ const requests=[...observed.requests],verified=observed.inspections[0].bundle;
+ assert.equal((await manager.apply()).status,'installing');await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,1);assert.deepEqual(observed.requests,requests);
+ manager.cancelInstall();assert.equal(manager.snapshot().status,'ready');manager.launchInstall();assert.equal(observed.spawn.length,0);
+ assert.equal((await manager.apply()).status,'installing');await new Promise(resolve=>setImmediate(resolve));assert.equal(observed.quit,2);assert.deepEqual(observed.requests,requests);
+ assert.ok(observed.inspections.every(item=>item.bundle===verified));assert.equal(observed.inspections.length,3);
+ manager.launchInstall();assert.equal(observed.spawn.length,1);
 });
 test('streamed download enforces SHA256 and byte count and removes corrupt partial files',async t=>{
  const {download}=require('../electron/updates.cjs'),{Readable}=require('node:stream'),{EventEmitter}=require('node:events');

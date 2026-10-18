@@ -97,6 +97,19 @@ function agentManager() {
   }});
   return agents;
 }
+function restoreRemoteAgents() {
+  for(const job of store.listAgentRuns().filter(run=>run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready)) {
+    try {
+      const config=serviceById(job.serviceId,true),settings={...agentSettings(config),workPath:job.workPath,model:job.model,reasoningEffort:job.reasoningEffort};
+      if(config.kind!=='ssh'||job.sessionScope!==agentExecutionScope(config,settings))throw new Error('저장된 SSH 접속 설정이 변경되어 에이전트에 다시 연결하지 못했습니다.');
+      agentJobs.set(job.id,job);operations.add(`agent:${job.id}`);
+      agentManager().restore({job,config,settings});
+    } catch(error) {
+      operations.delete(`agent:${job.id}`);agentJobs.delete(job.id);
+      store.saveAgentRun({...job,status:'interrupted',error:error.message,finishedAt:new Date().toISOString()});
+    }
+  }
+}
 function assertNoAgent(predicate) {
   if([...agentJobs.values()].some(job=>job.status==='running'&&predicate(job)))throw new Error('에이전트 실행 또는 로그인이 끝난 후 변경하십시오.');
 }
@@ -507,7 +520,7 @@ async function dispatch(action, payload = {}) {
   if (action === 'app.language') {const result=appLanguage.setLanguage(payload.language);updateNativeMenu();return result;}
   if (action.startsWith('update.')) {
     if (!updater) throw new Error('Update settings are not ready.');
-    const method = { 'update.state':'snapshot', 'update.check':'check', 'update.download':'download', 'update.install':'install', 'update.configure':'configure', 'update.openRelease':'openRelease', 'update.rendererReady':'markHealthy' }[action];
+    const method = { 'update.state':'snapshot', 'update.check':'check', 'update.download':'download', 'update.install':'install', 'update.apply':'apply', 'update.configure':'configure', 'update.openRelease':'openRelease', 'update.rendererReady':'markHealthy' }[action];
     if (!method) throw new Error('Unsupported update action.');
     return updater[method](payload);
   }
@@ -773,8 +786,9 @@ else {
     await fsp.mkdir(attachmentPath,{recursive:true,mode:0o700});
     store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
     await cleanDeletedAttachments();
-    store.interruptAgentRuns();
+    store.interruptAgentRuns({preserveRemote:true});
     vault=createVault(path.join(dataPath,'credentials.json'));
+    restoreRemoteAgents();
     const dist=path.resolve(__dirname,'../dist');
     protocol.handle('reviewops',request=> {
       const preview=htmlPreviewResponse(request.url,request.method);if(preview)return preview;
@@ -788,7 +802,7 @@ else {
       if(!trustedSender(event)) return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       try {
         let result;
-        if ((typeof action === 'string' && action.startsWith('browser.')) || windowActions.has(action) || ['update.state','update.check','update.download','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && action.startsWith('browser.')) || windowActions.has(action) || ['update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
@@ -798,7 +812,7 @@ else {
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }
     });
     updateNativeMenu();
-    updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager}),onChange:state=>{if(window&&!window.isDestroyed())window.webContents.send('reviewops:update-state',state);}});
+    updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>{if(window&&!window.isDestroyed())window.webContents.send('reviewops:update-state',state);}});
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:()=>window,trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG});
     codexManager.registerHandlers(ipcMain);
     createWindow();
@@ -830,7 +844,7 @@ else {
     if(stoppingAgents)return;
     stoppingAgents=true;
     terminals.closeAll();
-    Promise.all([agents?.closeAll(),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;dialog.showErrorBox('에이전트 종료 오류',error.message);});
+    Promise.all([agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
   app.on('will-quit',()=>{updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});browsers?.closeAll();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
 }
