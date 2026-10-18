@@ -7,7 +7,7 @@ Release artifacts are published at `season-framework/reviewops-local`. The intro
 1. Update the version in `package.json` and `package-lock.json`.
 2. Review the changelog and public documentation. Use synthetic content for screenshots.
 3. Run `npm ci`, `npm run build`, `npm test`, and UI tests relevant to the changes.
-4. Build and inspect both Mac architectures you intend to publish. Do not publish an architecture that has not been built and checked.
+4. Build and inspect each platform and processor type you intend to publish. Do not publish a package that has not been built and checked.
 5. Confirm that source and artifacts contain no credentials, user data, host configuration, or private screenshots.
 
 ```sh
@@ -23,6 +23,14 @@ ditto -c -k --norsrc --keepParent release/mac/ReviewOps.app release/ReviewOps-1.
 ```
 
 Use the actual version for each release. Do not put application data, credentials, or installer volumes inside the ZIP. Verify the bundle's version, identifier, signature, and architecture before archiving it. Use `hdiutil verify` for each DMG and compute SHA-256 checksums for every downloadable package.
+
+## Windows installer
+
+Run `npm run package:windows` on Windows to build `ReviewOps-<version>-windows-x64.exe`. The installer applies to the current user and retains the application data folder. It includes Start menu and desktop shortcuts.
+
+The `Windows release` GitHub Actions workflow builds on a Windows runner, runs the Windows-compatible unit checks, installs the package, and checks application startup, local project persistence, and uninstallation. Download its installer, SHA-256 file, and verification report after the workflow passes. The report is a build record; publish only the installer and checksum as user downloads.
+
+Windows installers are unsigned. The macOS updater does not install Windows EXE files. Windows users download a new installer and run it with the app closed. The optional Season AI connection is macOS-only, and Windows host management uses SSH key authentication.
 
 ## Update manifest
 
@@ -55,7 +63,8 @@ The script writes the manifest and a checksum file for each ZIP. Add `darwin-x64
 
 Create a **draft** release with tag `v<version>` against the reviewed source commit. Upload:
 
-- Each verified architecture's `.dmg` and `.zip`.
+- Each verified Mac processor type's `.dmg` and `.zip`.
+- The verified Windows x64 `.exe`, when included in the release.
 - SHA-256 checksum files for the packages.
 - `reviewops-update.json`.
 - Release notes with platform support, changes, verification, and known limitations.

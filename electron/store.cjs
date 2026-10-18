@@ -67,11 +67,11 @@ function safeFilename(value) {
   if (name === '.' || name === '..' || name !== path.basename(name) || /[/\\]/.test(name)) fail('첨부 파일명이 올바르지 않습니다.');
   return name;
 }
-function absolutePath(value, label, required = false) {
+function absolutePath(value, label, required = false, paths = path) {
   const result = text(value, label, 4096, required);
   if (!result) return '';
-  if (!path.posix.isAbsolute(result) || /[\r\n]/.test(result) || result.split('/').includes('..')) fail(`${label}은 상위 폴더 이동이 없는 절대 경로로 입력하십시오.`);
-  return path.posix.normalize(result);
+  if (!paths.isAbsolute(result) || /[\r\n]/.test(result) || result.split(paths === path.posix ? '/' : /[/\\]/).includes('..')) fail(`${label}은 상위 폴더 이동이 없는 절대 경로로 입력하십시오.`);
+  return paths.normalize(result);
 }
 function safeUrl(value, label) {
   const result = text(value, label, 8192);
@@ -498,7 +498,8 @@ class LocalStore {
     const hostAlias = text(input.hostAlias ?? previous?.hostAlias, 'SSH Host', 255);
     if (hostAlias && !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(hostAlias)) fail('SSH Host 이름이 올바르지 않습니다.');
     const sshConfigPath = absolutePath(input.sshConfigPath ?? previous?.sshConfigPath, 'SSH 설정 파일 경로');
-    const rootPath = absolutePath(input.rootPath ?? previous?.rootPath ?? (kind === 'ssh' ? '/' : ''), '작업 경로', true);
+    const workPaths = kind === 'ssh' ? path.posix : path;
+    const rootPath = absolutePath(input.rootPath ?? previous?.rootPath ?? (kind === 'ssh' ? '/' : ''), '작업 경로', true, workPaths);
     if (kind === 'ssh' && (!host || !username)) fail('SSH 호스트와 사용자명을 입력하십시오.');
     if (kind === 'ssh' && authType === 'key' && !privateKeyPath) fail('SSH 키 파일을 선택하십시오.');
     let hostFingerprint = text(input.hostFingerprint ?? previous?.hostFingerprint, 'SSH 호스트 키', 120);
@@ -506,7 +507,7 @@ class LocalStore {
     if (previous && (previous.host !== host || previous.port !== port || previous.kind !== kind)) hostFingerprint = '';
     if (kind === 'local') hostFingerprint = '';
     const agentBinary = text(input.agentBinary ?? previous?.agentBinary ?? 'codex', '에이전트 실행 파일', 4096, true);
-    if (agentBinary.startsWith('/')) absolutePath(agentBinary, '에이전트 실행 파일', true);
+    if (workPaths.isAbsolute(agentBinary)) absolutePath(agentBinary, '에이전트 실행 파일', true, workPaths);
     else if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$/.test(agentBinary)) fail('에이전트 실행 파일 이름 또는 전체 경로를 입력하십시오.');
     const agentModel = text(input.agentModel ?? previous?.agentModel, '에이전트 모델', 256);
     if (/\s/.test(agentModel)) fail('에이전트 모델 이름에 공백을 사용할 수 없습니다.');
@@ -514,7 +515,7 @@ class LocalStore {
       description: text(input.description ?? previous?.description, '서비스 설명', 10000), ...metadata(input, previous), viewerWidth:integer(input.viewerWidth,previous?.viewerWidth||1440,240,7680,'화면 너비'), viewerHeight:integer(input.viewerHeight,previous?.viewerHeight||900,240,7680,'화면 높이'), viewerScale:choice(input.viewerScale,['fit','50','75','100','125','150','200'],previous?.viewerScale||'fit','화면 배율'), kind, host, port, username, authType,
       privateKeyPath, rootPath, viewerUrl: safeUrl(input.viewerUrl ?? previous?.viewerUrl, '미리보기 주소'), hostFingerprint, managedProjectId, hostAlias, sshConfigPath,
       agentEnabled:integer(input.agentEnabled,previous?.agentEnabled || 0,0,1,'에이전트 사용'),agentBinary,
-      agentWorkPath:absolutePath(input.agentWorkPath ?? previous?.agentWorkPath,'에이전트 작업 폴더'),agentModel,
+      agentWorkPath:absolutePath(input.agentWorkPath ?? previous?.agentWorkPath,'에이전트 작업 폴더',false,workPaths),agentModel,
       agentReasoningEffort:choice(input.agentReasoningEffort,AGENT_EFFORTS,previous?.agentReasoningEffort || '','에이전트 추론 수준'),
       agentInstructions:text(input.agentInstructions ?? previous?.agentInstructions,'에이전트 지침',50000) };
   }

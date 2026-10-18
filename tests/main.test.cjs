@@ -129,6 +129,7 @@ async function harness(t, options = {}) {
     if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
+      if (state.seasonError) throw new Error(state.seasonError);
       return { close: async () => { state.seasonIntegrationClosed = true; } };
     } };
     if (name.startsWith('node:')) return require(name);
@@ -140,10 +141,11 @@ async function harness(t, options = {}) {
     fs.rmSync(root, { recursive: true, force: true });
   });
   options.prepare?.({dataPath,root});
+  state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: process.platform, arch: process.arch },
-    URL, Response, Buffer, console, setImmediate, setTimeout, clearTimeout
+    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch },
+    URL, Response, Buffer, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate, setTimeout, clearTimeout
   }, { filename: MAIN_PATH, timeout: 5000 });
   await state.startup;
   assert.deepEqual(state.startupErrors, []);
@@ -171,6 +173,20 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+
+test('Windows starts the standalone app without opening the Unix-only Season AI connection', async t => {
+  const h = await harness(t, { platform: 'win32' });
+  assert.equal(h.state.seasonIntegration, undefined);
+  assert.equal(h.state.codexRegistered, true);
+  assert.equal((await h.success('snapshot')).projects.length, 0);
+});
+
+test('an unavailable optional Season AI connection leaves the app open', async t => {
+  const h = await harness(t, { platform: 'darwin', seasonError: 'fixture integration failure' });
+  assert.equal(h.state.seasonWarnings.length, 1);
+  assert.equal(h.state.window.isDestroyed(), false);
+  assert.equal((await h.success('snapshot')).groups.length, 0);
+});
 
 test('Season AI navigation preserves data and moves an already fullscreen window to the requested display', async t => {
   const h = await harness(t);

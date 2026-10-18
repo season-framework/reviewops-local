@@ -1,8 +1,8 @@
 {
   "name": "reviewops-local",
   "productName": "ReviewOps",
-  "version": "1.2.1",
-  "description": "Review websites, organize projects, and run Codex on your Mac or SSH hosts.",
+  "version": "1.2.2",
+  "description": "Review websites, organize projects, and run Codex on your computer or SSH hosts.",
   "author": "SEASON",
   "license": "MIT",
   "private": true,
@@ -45,7 +45,9 @@
     "test:i18n": "node scripts/e2e-i18n.mjs",
     "test:update-install": "node scripts/e2e-update-install.mjs",
     "test:update-packaged": "node scripts/e2e-update-packaged.mjs",
-    "release:manifest": "node scripts/create-update-manifest.mjs"
+    "release:manifest": "node scripts/create-update-manifest.mjs",
+    "package:windows": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "test:windows-release": "node scripts/windows-release-smoke.mjs"
   },
   "dependencies": {
     "github-markdown-css": "5.9.0",
@@ -107,6 +109,28 @@
           "path": "/Applications"
         }
       ]
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "ReviewOps-${version}-windows-${arch}.${ext}",
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": false,
+      "deleteAppDataOnUninstall": false
     }
   },
   "repository": {

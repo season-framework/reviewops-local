@@ -7,6 +7,7 @@ const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { StringDecoder } = require('node:string_decoder');
 const { SshError, validateConfig, fingerprintOf } = require('./ssh.cjs');
+const { terminateProcessGroup } = require('./codex/host-ssh.cjs');
 
 const FINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_PROMPT = 256 * 1024;
@@ -19,13 +20,14 @@ function text(value, label, limit, fallback = '') {
   if (typeof value !== 'string' || value.length > limit || /[\0\r\n]/.test(value)) throw new SshError('AGENT_CONFIG_INVALID', `${label}이 올바르지 않습니다.`);
   return value.trim();
 }
-function normalizeSettings(input = {}, config = {}) {
+function normalizeSettings(input = {}, config = {}, platform = process.platform) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new SshError('AGENT_CONFIG_INVALID', '에이전트 설정이 올바르지 않습니다.');
   if (input.provider && input.provider !== 'codex') throw new SshError('AGENT_PROVIDER_INVALID', 'Codex 에이전트를 선택하십시오.');
   const binary = text(input.binary, '실행 파일 경로', 4096, 'codex') || 'codex';
   if (binary.startsWith('-')) throw new SshError('AGENT_CONFIG_INVALID', '실행 파일 경로가 올바르지 않습니다.');
   const workPath = text(input.workPath, '작업 폴더', 4096) || text(config.rootPath, '작업 폴더', 4096);
-  if (!path.posix.isAbsolute(workPath)) throw new SshError('AGENT_CONFIG_INVALID', '작업 폴더의 전체 경로를 입력하십시오.');
+  const workPaths = config.kind === 'local' ? (platform === 'win32' ? path.win32 : path) : path.posix;
+  if (!workPaths.isAbsolute(workPath)) throw new SshError('AGENT_CONFIG_INVALID', '작업 폴더의 전체 경로를 입력하십시오.');
   const instructions = input.instructions ?? '';
   if (typeof instructions !== 'string' || instructions.includes('\0') || instructions.length > 50000) throw new SshError('AGENT_CONFIG_INVALID', '에이전트 지침은 50000자까지 입력할 수 있습니다.');
   return {provider:'codex', binary, workPath, instructions, model:text(input.model, '모델 이름', 256), reasoningEffort:text(input.reasoningEffort, '추론 수준', 128)};
@@ -97,10 +99,12 @@ async function localSessionMetadata(home,sessionId) {
   }
   return null;
 }
-function localEnvironment(source = process.env) {
-  const home = source.HOME || os.homedir();
-  const extra = [path.join(home,'.local/bin'), path.join(home,'.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
-  const result = {...source, PATH:[...new Set([...(source.PATH || '').split(path.delimiter), ...extra].filter(Boolean))].join(path.delimiter), NO_COLOR:'1', TERM:'dumb'};
+function localEnvironment(source = process.env, platform = process.platform) {
+  const home = source.HOME || source.USERPROFILE || os.homedir();
+  const delimiter = platform === 'win32' ? ';' : path.delimiter;
+  const extra = platform === 'win32' ? [path.win32.join(source.APPDATA || path.win32.join(home,'AppData','Roaming'),'npm')] : [path.join(home,'.local/bin'), path.join(home,'.npm-global/bin'), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin'];
+  const result = {...source, PATH:[...new Set([...(source.PATH || source.Path || '').split(delimiter), ...extra].filter(Boolean))].join(delimiter), NO_COLOR:'1', TERM:'dumb'};
+  if (platform === 'win32') for (const key of Object.keys(result)) if (key !== 'PATH' && key.toUpperCase() === 'PATH') delete result[key];
   // Finder launches and test launches can inherit Electron's command-line switches.
   delete result.ELECTRON_RUN_AS_NODE;
   return result;
@@ -165,7 +169,10 @@ function modelOptions(value) {
 function createAgentManager(options = {}) {
   const jobs = new Map(), controls = new Set(), remoteConnections = new Set(), stoppingControls = new WeakMap();
   const notify = options.onUpdate || (() => {});
-  const env = localEnvironment(options.env || process.env);
+  const platform = options.platform || process.platform;
+  const env = localEnvironment(options.env || process.env, platform);
+  const normalize = (input, config) => normalizeSettings(input, config, platform);
+  const findRuntime = options.findRuntime || require('./codex/runtime.cjs').findRuntime;
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
   const killTimeoutMs = options.killTimeoutMs || 3000;
   const maxJobs = options.maxJobs || 8;
@@ -212,7 +219,7 @@ function createAgentManager(options = {}) {
     const config=input.config || {};
     if(!['local','ssh'].includes(config.kind))throw new SshError('AGENT_CONFIG_INVALID','로컬 폴더 또는 SSH 호스트를 선택하십시오.');
     if(config.kind==='ssh')validateConfig(config);
-    const settings=normalizeSettings(input.settings,config),args=buildArguments(settings,input.sessionId||'');
+    const settings=normalize(input.settings,config),args=buildArguments(settings,input.sessionId||'');
     const prompt=settings.instructions?`${settings.instructions}\n\n${input.prompt}`:input.prompt;
     if(Buffer.byteLength(prompt)>MAX_PROMPT)throw new SshError('AGENT_PROMPT_INVALID','에이전트 지침과 요청의 합계는 256 KB 이하여야 합니다.');
     const images=normalizeImages(input.images),files=normalizeFiles(input.files);
@@ -222,7 +229,7 @@ function createAgentManager(options = {}) {
   function makeJob(input, kind) {
     assertJobAvailable(input);
     const id = input.id || randomUUID();
-    const config = input.config || {}, settings = normalizeSettings(input.settings, config);
+    const config = input.config || {}, settings = normalize(input.settings, config);
     if (!['local','ssh'].includes(config.kind)) throw new SshError('AGENT_CONFIG_INVALID', '로컬 폴더 또는 SSH 호스트를 선택하십시오.');
     const data = {id, kind, reviewId:input.reviewId || '', serviceId:input.serviceId || config.id || '', status:'running', sessionId:input.sessionId || '', model:settings.model, reasoningEffort:settings.reasoningEffort, response:'', output:'', error:'', progress:[], startedAt:new Date().toISOString(), finishedAt:null, cancelRequested:false};
     const job = {data, settings, config, images:input.images || [], files:input.files || [], seen:new Map(), stdoutDecoder:new StringDecoder('utf8'), stderrDecoder:new StringDecoder('utf8'), pending:'', stderr:'', secrets:[config.password, config.passphrase]};
@@ -236,6 +243,13 @@ function createAgentManager(options = {}) {
     let root;
     try {root = await fs.realpath(settings.workPath); if (!(await fs.stat(root)).isDirectory()) throw new Error();}
     catch {throw new SshError('AGENT_WORK_PATH_INVALID', '에이전트 작업 폴더를 열 수 없습니다.');}
+    if (platform === 'win32') {
+      // npm installs a .cmd wrapper. Resolve its native Codex executable instead
+      // of sending user paths or prompts through cmd.exe.
+      const runtime = await findRuntime(/^(?:codex|codex\.exe|codex\.cmd|codex\.ps1)$/i.test(settings.binary) ? '' : settings.binary);
+      if (!runtime.available) throw new SshError('AGENT_NOT_INSTALLED', runtime.error || 'Codex CLI를 설치하거나 실행 파일을 선택하십시오.');
+      return {...settings, workPath:root, binary:runtime.command || runtime.path, launchArgs:runtime.args || []};
+    }
     return {...settings, workPath:root};
   }
   function localRun(settings, args, input = '', onData, timeoutMs = 0) {
@@ -248,11 +262,17 @@ function createAgentManager(options = {}) {
       settled = true; clearTimeout(timer); clearTimeout(killTimer); if (cancelling) {try {signal('SIGKILL');} catch {}} controls.delete(control);
       resolveDone({...result, stdout:Buffer.concat(output).toString('utf8'), stderr:Buffer.concat(errors).toString('utf8')});
     };
-    const signal = type => { if (child?.pid) try { process.kill(-child.pid, type); } catch(error) {if (error.code !== 'ESRCH') throw error;} };
+    let windowsTerminationStarted = false;
+    const signal = type => {
+      if (!child?.pid) return;
+      if (platform === 'win32') {
+        if (!windowsTerminationStarted) { windowsTerminationStarted = true; terminateProcessGroup(child, platform, spawnProcess); }
+      } else try { process.kill(-child.pid, type); } catch(error) {if (error.code !== 'ESRCH') throw error;}
+    };
     const control = {done, cancel:async() => {if (settled) return done; cancelling = true; signal('SIGTERM'); killTimer = setTimeout(() => {try {signal('SIGKILL');} catch {}}, killTimeoutMs); killTimer.unref?.(); return done;}, close:() => {try {signal('SIGKILL');} catch {}return done;}};
     controls.add(control);
     try {
-      child = spawnProcess(settings.binary, args, {cwd:settings.workPath, env, shell:false, detached:true, stdio:['pipe','pipe','pipe']});
+      child = spawnProcess(settings.binary, [...(settings.launchArgs || []), ...args], {cwd:settings.workPath, env, shell:false, detached:platform !== 'win32', windowsHide:true, stdio:['pipe','pipe','pipe']});
       const consume = (target, chunk, stderr) => {bytes += chunk.length; if (bytes <= MAX_OUTPUT) target.push(Buffer.from(chunk)); onData?.(chunk, stderr);};
       child.stdout.on('data', chunk => consume(output, chunk, false)); child.stderr.on('data', chunk => consume(errors, chunk, true));
       child.once('error', error => finishProcess({code:null, error:error.code==='ENOENT'?'Codex 실행 파일을 찾을 수 없습니다. 설치 후 실행 파일 경로를 지정하십시오.':error.code==='EACCES'?'Codex 실행 파일에 실행 권한이 없습니다. 파일 권한을 확인하십시오.':error.message, terminationConfirmed:true}));
@@ -438,7 +458,7 @@ function createAgentManager(options = {}) {
   return {
     async session(config,settings={},sessionId='') {
       if(typeof sessionId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId))throw new SshError('AGENT_SESSION_INVALID','에이전트 세션 정보가 올바르지 않습니다.');
-      const normalized=normalizeSettings(settings,config);let metadata;
+      const normalized=normalize(settings,config);let metadata;
       if(config.kind==='local')metadata=await localSessionMetadata(env.CODEX_HOME || path.join(env.HOME || os.homedir(),'.codex'),sessionId);
       else {
         const {client}=await connectRemote(config);
@@ -452,7 +472,7 @@ function createAgentManager(options = {}) {
       const changed=Boolean(metadata?.model&&normalized.model&&metadata.model!==normalized.model);
       return {available:Boolean(metadata)&&!changed,sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:!metadata?'missing':changed?'model_changed':'available',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':changed?'저장된 세션과 선택한 모델이 달라 새 대화로 실행합니다.':metadata.model?'저장된 세션 파일과 모델을 확인했습니다.':'저장된 세션 파일을 찾았습니다. 모델 정보는 기록되어 있지 않습니다.'};
     },
-    environment(config,settings={}){return probe(config,normalizeSettings(settings,config));},
+    environment(config,settings={}){return probe(config,normalize(settings,config));},
     validateStart(input){prepareStart(input);},
     start(input){
       const {settings,args,prompt,images,files}=prepareStart(input);
@@ -461,7 +481,7 @@ function createAgentManager(options = {}) {
     login(input){const job=makeJob(input,'login');queueMicrotask(()=>execute(job,'',['login','--device-auth']));return publicJob(job);},
     async logout(config,settings={}){
       if([...jobs.values()].some(job=>job.data.serviceId===config.id&&!FINAL.has(job.data.status)))throw new SshError('AGENT_BUSY','진행 중인 에이전트 작업을 종료한 뒤 로그아웃하십시오.');
-      const normalized=normalizeSettings(settings,config);let result;
+      const normalized=normalize(settings,config);let result;
       if(config.kind==='local')result=await localRun(await prepareLocal(normalized),['logout'],'',null,commandTimeoutMs).done;
       else result=await remoteCommand(config,normalized,['logout']);
       if(result.code!==0)throw new SshError('AGENT_LOGOUT_FAILED',result.error||clean(result.stderr)||'Codex 로그아웃을 완료하지 못했습니다.');return probe(config,normalized);

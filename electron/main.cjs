@@ -802,13 +802,15 @@ else {
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:()=>window,trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG});
     codexManager.registerHandlers(ipcMain);
     createWindow();
-    seasonIntegration = await require('./season-integration.cjs').createSeasonIntegration({
+    // Season AI currently connects through a Unix socket. Windows can use the
+    // standalone app without starting this optional integration.
+    if (process.platform !== 'win32') try { seasonIntegration = await require('./season-integration.cjs').createSeasonIntegration({
       dataPath, workspaceRoot: path.join(app.getPath('appData'), 'Season AI', 'reviewops-workspace'), showReview: showSeasonReview,
       dispatch: (action, payload) => {
         if (['snapshot', 'agent.read', 'agent.cancel'].includes(action)) return dispatch(action, payload);
         const result = actionQueue.then(() => dispatch(action, payload)); actionQueue = result.catch(() => {}); return result;
       }
-    });
+    }); } catch (error) { console.warn('Season AI 연결을 시작하지 못했습니다:', error.message); }
     updater.start();
     app.on('activate',()=> {if(!window)createWindow();});
   }).catch(error=> { dialog.showErrorBox('ReviewOps 실행 오류',error.message); app.quit(); });

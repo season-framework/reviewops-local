@@ -15,6 +15,16 @@ async function fixture(t) {
   return {root,work,config:{kind:'local',rootPath:work}};
 }
 
+test('Windows agent links retain drive letters, file URLs and nested document paths', () => {
+  const root = 'C:\\Users\\Operator\\Project', base = root + '\\docs\\current.md';
+  assert.deepEqual(filePathVariants(root + '\\result.md:42', path.win32), [root + '\\result.md', root + '\\result.md:42']);
+  assert.equal(filePathVariants('file:///C:/Users/Operator/Project/result%20file.md#L8', path.win32)[0], root + '\\result file.md');
+  assert.deepEqual(agentFileCandidates(root, '.\\next.md', base, '', path.win32), [root + '\\docs\\next.md', root + '\\next.md']);
+  assert.equal(agentFileCandidates(root, root + '\\result.md:42', undefined, '', path.win32)[0], root + '\\result.md');
+  assert.equal(agentFileCandidates('\\\\server\\share\\project', 'result.md', undefined, '', path.win32)[0], '\\\\server\\share\\project\\result.md');
+  assert.throws(() => agentFileCandidates('C:\\project', 'result.md'), /작업 폴더/);
+});
+
 test('the saved ReviewOps development-log link strips its line number',async t=>{
   const {work,config}=await fixture(t);
   await fs.writeFile(path.join(work,'docs/development-log.md'),'# 배포 재시도 기록');

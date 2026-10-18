@@ -1,15 +1,27 @@
 # ReviewOps 사용 안내
 
-ReviewOps는 프로젝트의 리뷰, 스크린샷, 파일과 Codex 작업을 Mac에서 관리하는 앱입니다. ReviewOps 서버와 계정은 필요하지 않습니다. 프로젝트는 그룹 안에서 관리하며, 각 프로젝트에 로컬 폴더 또는 SSH 호스트를 연결합니다.
+ReviewOps는 프로젝트의 리뷰, 스크린샷, 파일과 Codex 작업을 컴퓨터에서 관리하는 앱입니다. ReviewOps 서버와 계정은 필요하지 않습니다. 프로젝트는 그룹 안에서 관리하며, 각 프로젝트에 로컬 폴더 또는 SSH 호스트를 연결합니다.
 
 ## 설치
+
+Windows 10/11 x64와 macOS 13 이상에서 사용할 수 있습니다.
+
+### Windows
+
+1. [최신 릴리스](https://github.com/season-framework/reviewops-local/releases/latest)에서 `ReviewOps-<버전>-windows-x64.exe`를 내려받습니다.
+2. 설치 파일을 실행하고 설치 폴더를 선택합니다. 사용 중인 Windows 계정에 설치됩니다.
+3. 시작 메뉴 또는 바탕 화면의 ReviewOps를 실행합니다.
+
+Windows 설치 파일에는 코드 서명이 포함되지 않습니다. 앱을 업데이트하거나 제거해도 프로젝트 자료는 보관합니다.
+
+### macOS
 
 1. [최신 릴리스](https://github.com/season-framework/reviewops-local/releases/latest)에서 Mac에 맞는 DMG를 내려받습니다.
 2. Apple Silicon Mac은 `arm64`, Intel Mac은 `x64` 파일을 선택합니다.
 3. DMG를 열고 ReviewOps를 Applications로 드래그합니다.
 4. 응용 프로그램 폴더에서 ReviewOps를 실행합니다.
 
-macOS 13 이상이 필요합니다. 현재 Apple 공증은 포함하지 않습니다. 처음 실행할 때 macOS가 차단하면 [Apple의 실행 안내](https://support.apple.com/ko-kr/102445)를 따르십시오.
+macOS 13 이상이 필요합니다. Apple 공증은 포함하지 않습니다. 처음 실행할 때 macOS가 차단하면 [Apple의 실행 안내](https://support.apple.com/ko-kr/102445)를 따르십시오.
 
 ## 프로젝트 연결
 
@@ -31,7 +43,7 @@ macOS 13 이상이 필요합니다. 현재 Apple 공증은 포함하지 않습�
 
 ## Codex 작업
 
-로컬 작업은 Mac의 Codex CLI로, SSH 작업은 선택한 서버의 Codex CLI로 실행합니다. 작업할 환경에 Codex를 설치하고 로그인해야 합니다. **프로젝트 → 설정 → 에이전트**에서 실행 파일, 모델, 작업 지침을 지정합니다.
+로컬 작업은 이 컴퓨터의 Codex CLI로, SSH 작업은 선택한 서버의 Codex CLI로 실행합니다. 작업할 환경에 Codex를 설치하고 로그인해야 합니다. **프로젝트 → 설정 → 에이전트**에서 실행 파일, 모델, 작업 지침을 지정합니다.
 
 리뷰의 **에이전트**에서 요청과 첨부 자료를 전송합니다. 작업이 시작되면 리뷰 상태가 **진행**으로 바뀝니다. 응답의 파일 링크는 실행 당시 연결과 작업 폴더에서 엽니다.
 
@@ -47,14 +59,16 @@ macOS 13 이상이 필요합니다. 현재 Apple 공증은 포함하지 않습�
 
 설정의 언어 선택 목록에서 언어 이름을 검색하여 화면 언어를 바꿀 수 있습니다. 영어, 한국어, 일본어, 중국어 간체·번체, 스페인어, 프랑스어, 독일어, 브라질 포르투갈어, 이탈리아어, 러시아어, 베트남어를 지원합니다. 일부 기술 메시지는 영어로 표시됩니다. 작성한 내용과 외부 웹사이트는 번역하지 않습니다.
 
-앱 업데이트는 공개 GitHub Releases에서 확인합니다. GitHub 계정이나 토큰을 앱에 입력할 필요가 없습니다. 설정에서 업데이트를 확인하고 다운로드와 설치를 선택합니다. 파일을 검사한 뒤 앱을 교체하고 다시 시작하며 프로젝트 자료는 유지합니다.
+macOS 앱 업데이트는 공개 GitHub Releases에서 확인합니다. GitHub 계정이나 토큰을 앱에 입력할 필요가 없습니다. 설정에서 업데이트를 확인하고 다운로드와 설치를 선택합니다. 파일을 검사한 뒤 앱을 교체하고 다시 시작하며 프로젝트 자료는 유지합니다.
+
+Windows에서는 최신 설치 파일을 내려받아 앱을 종료한 뒤 다시 설치합니다. 앱 안에서 업데이트를 설치하는 기능과 Season AI 연결은 Windows에서 지원하지 않습니다. 호스트관리의 SSH 연결은 키 인증을 사용합니다.
 
 ## 자료 보관과 삭제
 
-기본 저장 위치는 `~/Library/Application Support/ReviewOps Local/`입니다. 이전 설치의 자료를 계속 사용하도록 기존 폴더 이름을 유지합니다.
+macOS 저장 위치는 `~/Library/Application Support/ReviewOps Local/`, Windows 저장 위치는 `%APPDATA%\ReviewOps Local\`입니다. 이전 설치의 자료를 계속 사용하도록 기존 폴더 이름을 유지합니다.
 
 **설정 → 백업 파일 저장**에서 프로젝트 자료와 첨부를 JSON으로 백업합니다. SSH 비밀번호, 키 암호, Codex 로그인 정보와 외부 사이트 쿠키는 이 백업에 포함하지 않습니다. 전체 자료를 옮기려면 앱을 종료한 뒤 데이터 폴더를 보관합니다.
 
 그룹과 프로젝트를 삭제하려면 이름을 입력해야 합니다. 그룹 삭제 시 내부 프로젝트, 리뷰, 작업이력과 첨부도 삭제합니다. 프로젝트 삭제 시 해당 리뷰와 첨부 자료를 함께 삭제합니다. SSH 호스트와 Codex 계정은 별도로 관리합니다.
 
-문제는 [Issues](https://github.com/season-framework/reviewops-local/issues)에 앱 버전, macOS 버전, 재현 순서를 적어 등록하십시오. 토큰, 비밀번호, 개인 키와 실제 프로젝트 자료는 포함하지 마십시오.
+문제는 [Issues](https://github.com/season-framework/reviewops-local/issues)에 앱 버전, 운영체제 버전, 재현 순서를 적어 등록하십시오. 토큰, 비밀번호, 개인 키와 실제 프로젝트 자료는 포함하지 마십시오.

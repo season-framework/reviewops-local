@@ -6,6 +6,8 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 const { Server, utils } = require('ssh2');
 const { createAgentManager, normalizeSettings, buildArguments, modelOptions } = require('../electron/agents.cjs');
 const { fingerprintOf } = require('../electron/ssh.cjs');
@@ -51,6 +53,37 @@ test('agent arguments bypass approvals and sandbox for fresh and resumed CLI req
  assert.throws(()=>buildArguments(settings,'bad;id'),{code:'AGENT_SESSION_INVALID'});
  assert.throws(()=>normalizeSettings({workPath:'relative'},{}),{code:'AGENT_CONFIG_INVALID'});
  assert.throws(()=>normalizeSettings({provider:'unknown',workPath:'/tmp'},{}),{code:'AGENT_PROVIDER_INVALID'});
+});
+
+test('Windows agent workspaces accept drive and share paths while SSH keeps server paths', () => {
+ for(const workPath of ['C:\\Users\\Operator\\work', '\\\\server\\share\\work']) assert.equal(normalizeSettings({workPath},{kind:'local'},'win32').workPath,workPath);
+ assert.equal(normalizeSettings({workPath:'/srv/work'},{kind:'ssh'},'win32').workPath,'/srv/work');
+ assert.throws(()=>normalizeSettings({workPath:'C:\\work'},{kind:'ssh'},'win32'),{code:'AGENT_CONFIG_INVALID'});
+ assert.throws(()=>normalizeSettings({workPath:'relative'},{kind:'local'},'win32'),{code:'AGENT_CONFIG_INVALID'});
+});
+
+test('Windows local agents resolve npm wrappers and cancel the whole process tree without a shell', async t => {
+ const calls=[],resolved=[],children=new Map();let nextPid=45000;
+ const spawnImpl=(command,args,options)=>{
+  calls.push({command,args,options});
+  const child=Object.assign(new EventEmitter(),{pid:++nextPid,stdout:new PassThrough(),stderr:new PassThrough(),stdin:new PassThrough()});children.set(child.pid,child);
+  if(command==='taskkill.exe')setImmediate(()=>{children.get(Number(args[1])).emit('close',null,'SIGKILL');child.emit('close',0);});
+  else if(args[0]==='--version')setImmediate(()=>{child.stdout.write('codex-cli 0.161.0\n');child.emit('close',0);});
+  else if(args[0]==='login')setImmediate(()=>child.emit('close',0));
+  else child.stdin.on('finish',()=>child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'windows-thread'})+'\n'));
+  return child;
+ };
+ const f=await fixture(t,{platform:'win32',env:{Path:'C:\\Windows\\System32',APPDATA:'C:\\Users\\Operator\\AppData\\Roaming'},spawn:spawnImpl,findRuntime:async custom=>{resolved.push(custom);return{available:true,path:'C:\\Codex\\codex.exe',command:'C:\\Codex\\codex.exe',args:[]};}});
+ const binary='C:\\Users\\Operator\\AppData\\Roaming\\npm\\codex.cmd';
+ const job=f.manager.start({config:f.config,settings:{...f.settings,binary},prompt:'Keep running until cancelled'});
+ await eventually(()=>f.manager.read(job.id).sessionId==='windows-thread');
+ const stopped=await f.manager.cancel(job.id);
+ assert.equal(stopped.status,'cancelled');assert.equal(stopped.terminationConfirmed,true);
+ assert.ok(resolved.length>=2);assert.ok(resolved.every(value=>value===binary));
+ const cliCalls=calls.filter(call=>call.command!=='taskkill.exe');
+ assert.ok(cliCalls.every(call=>call.command==='C:\\Codex\\codex.exe'&&call.options.shell===false&&call.options.windowsHide===true&&call.options.detached===false));
+ assert.equal(cliCalls[0].options.env.Path,undefined);assert.match(cliCalls[0].options.env.PATH,/C:\\Windows\\System32;C:\\Users\\Operator\\AppData\\Roaming\\npm/);
+ const kill=calls.find(call=>call.command==='taskkill.exe');assert.deepEqual(kill.args.slice(2),['/T','/F']);assert.equal(kill.options.shell,false);
 });
 
 test('agent preflight shares start validation without creating a job, process or SSH connection',async()=>{

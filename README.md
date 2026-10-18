@@ -10,7 +10,7 @@
 
 *Illustrative interface with sample data. No real project or account data is shown.*
 
-ReviewOps brings a website viewer, review conversations, attachments, and agent tasks into one macOS app. Organize projects inside groups and connect each project to a local folder or a saved SSH host. Review data is stored on your Mac. No ReviewOps server or ReviewOps login is required.
+ReviewOps brings a website viewer, review conversations, attachments, and agent tasks into one desktop app. Organize projects inside groups and connect each project to a local folder or a saved SSH host. Review data is stored on your computer. No ReviewOps server or ReviewOps login is required.
 
 ## Features
 
@@ -26,7 +26,18 @@ The core interface supports **English, Korean, Japanese, Simplified Chinese, Tra
 
 ## Install
 
-Requires **macOS 13 or later**. Windows and Linux installers are not currently provided.
+Supports **macOS 13 or later** and **Windows 10/11 x64**. Linux installers are not provided.
+
+### Windows
+
+1. Open the [latest release](https://github.com/season-framework/reviewops-local/releases/latest).
+2. Download `ReviewOps-<version>-windows-x64.exe`.
+3. Run the installer and choose an installation folder. Installation applies to your Windows account.
+4. Open ReviewOps from the Start menu or desktop shortcut.
+
+The Windows installer is unsigned. Project data is kept when updating or uninstalling the app.
+
+### macOS
 
 1. Open the [latest release](https://github.com/season-framework/reviewops-local/releases/latest).
 2. Download the `.dmg` matching your Mac: **arm64** for Apple Silicon or **x64** for Intel. You can find your chip in **Apple menu → About This Mac**.
@@ -35,10 +46,16 @@ Requires **macOS 13 or later**. Windows and Linux installers are not currently p
 
 Release builds are ad hoc signed and are **not Apple-notarized**. If macOS blocks the first launch, follow [Apple's instructions for opening an app from an unidentified developer](https://support.apple.com/en-us/102445). Do not disable Gatekeeper system-wide.
 
-Each release includes SHA-256 checksums. To verify a downloaded installer:
+Each release includes SHA-256 checksums. To check a Windows installer in PowerShell:
+
+```powershell
+Get-FileHash .\ReviewOps-1.2.2-windows-x64.exe -Algorithm SHA256
+```
+
+To check a macOS installer:
 
 ```sh
-shasum -a 256 ReviewOps-1.2.0-arm64.dmg
+shasum -a 256 ReviewOps-1.2.2-arm64.dmg
 ```
 
 Compare the result with the checksum published in that release.
@@ -56,7 +73,7 @@ Drag the logo or an empty area of the tab bar to move the window. The Home tab s
 
 ### Using Codex
 
-Codex CLI must be installed and signed in on the computer where a task will run. Local projects use Codex on your Mac; SSH projects use Codex on the selected host. Configure the executable, model, reasoning level, and instructions in **Project → Settings → Agent**.
+Codex CLI must be installed and signed in on the computer where a task will run. Local projects use Codex on your computer; SSH projects use Codex on the selected host. Configure the executable, model, reasoning level, and instructions in **Project → Settings → Agent**.
 
 Agent commands run as:
 
@@ -70,7 +87,7 @@ Codex account profiles in ReviewOps are separate from the default Codex login. A
 
 ### Using SSH
 
-Host management reads `~/.ssh/config` and its included files, including `IdentityFile` and `ProxyJump`. Registered hosts can be selected by multiple projects. The app checks host keys and does not accept an unknown or changed key automatically. On macOS, its SSH commands use `UseKeychain=no`.
+Host management reads `~/.ssh/config` and its included files, including `IdentityFile` and `ProxyJump`. Registered hosts can be selected by multiple projects. The app checks host keys and does not accept an unknown or changed key automatically. On macOS, its SSH commands use `UseKeychain=no`. Windows host management uses SSH keys; password prompts are not supported there.
 
 Host file management supports browsing, preview, upload, download, rename, move, and delete. The project terminal is available for SSH connections.
 
@@ -78,9 +95,10 @@ Host file management supports browsing, preview, upload, download, rename, move,
 
 ReviewOps stores project and review data under:
 
-```text
-~/Library/Application Support/ReviewOps Local/
-```
+| Platform | Data folder |
+| --- | --- |
+| macOS | `~/Library/Application Support/ReviewOps Local/` |
+| Windows | `%APPDATA%\ReviewOps Local\` |
 
 The historic folder name is retained so existing installations keep their data.
 
@@ -101,13 +119,15 @@ Deleting a group removes its projects, reviews, history, and attachments. Deleti
 
 ## Updates
 
-ReviewOps automatically checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) for new versions. No GitHub account or token is needed in the app. You can check for updates in Settings and choose when to download and install.
+On macOS, ReviewOps automatically checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) for new versions. No GitHub account or token is needed in the app. You can check for updates in Settings and choose when to download and install.
 
 The updater selects the build for your Mac, checks its declared size and SHA-256 hash, verifies the app bundle, and replaces the application before restarting. Project data is kept outside the application bundle. Updates are not installed while agent tasks are running. The website is an introduction and download page; the update feed comes directly from GitHub Releases.
 
+On Windows, download the newer Windows installer from GitHub Releases, close ReviewOps, and run the installer again. Project data is stored separately and retained. Windows does not yet support installation through the in-app updater. The optional Season AI connection is available on macOS only.
+
 ## Development
 
-Use **Node.js 24 or later**, npm, and macOS for Electron packaging.
+Use **Node.js 24 or later** and npm on macOS or Windows. Build each installer on its matching operating system.
 
 ```sh
 git clone https://github.com/season-framework/reviewops-local.git
@@ -133,6 +153,8 @@ Create installers:
 ```sh
 npm run package
 npm run package:intel
+# Run on Windows:
+npm run package:windows
 ```
 
 Build output is written to `release/`. The [release guide](docs/releasing.md) covers update ZIPs, checksums, release publication, and GitHub Pages deployment.
@@ -148,7 +170,7 @@ Build output is written to `release/`. The [release guide](docs/releasing.md) co
 
 ## Contributing and support
 
-Report reproducible problems in [Issues](https://github.com/season-framework/reviewops-local/issues). Include the app version, macOS version, chip type, steps, and a sanitized screenshot or log. Never include tokens, private keys, account credentials, or real project attachments.
+Report reproducible problems in [Issues](https://github.com/season-framework/reviewops-local/issues). Include the app version, operating system version, processor type, steps, and a sanitized screenshot or log. Never include tokens, private keys, account credentials, or real project attachments.
 
 For vulnerabilities, follow [SECURITY.md](SECURITY.md). Pull requests are welcome; see [CONTRIBUTING.md](CONTRIBUTING.md).
 
