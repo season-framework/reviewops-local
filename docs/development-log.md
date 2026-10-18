@@ -1,5 +1,12 @@
 # Release history
 
+## 1.2.5
+
+- Check for updates immediately at app startup and every ten minutes while the app is running.
+- Start checks independently of account and host initialization, and check immediately when automatic checks are enabled again.
+- Keep new sidebar notifications when an older initial state response arrives later.
+- Reuse in-progress checks and stop scheduled checks when the app exits.
+
 ## 1.2.4
 
 - Load model choices, supported reasoning levels, and defaults when opening a review agent or its settings.

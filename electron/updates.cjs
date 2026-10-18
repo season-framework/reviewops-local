@@ -14,6 +14,7 @@ const REPOSITORY = 'season-framework/reviewops-local';
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases`;
 const RELEASE_API = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 const MAX_DOWNLOAD = 512 * 1024 ** 2;
+const CHECK_INTERVAL = 10 * 60 * 1000;
 const IDENTIFIER = 'kr.co.season.reviewops.local';
 function versionParts(value) {
   if (typeof value !== 'string' || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value)) throw new Error('The release version is invalid.');
@@ -140,7 +141,7 @@ async function pruneUpdateCache(root, protectedJobs = []) {
 }
 function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platform = process.platform, arch = process.arch, onChange = () => {}, request = download, command = run, inspect = inspectBundle, spawnImpl = spawn }) {
   const version = app.getVersion(), root = path.join(dataPath, 'updates'), preferences = path.join(root, 'settings.json'), pendingFile = path.join(root, 'pending.json');
-  let automatic = true, running = false, ready = null, scheduled = null, interval = null, pendingInstall = null, status = 'idle', error = '', release = null, progress = 0, checkedAt = null;
+  let automatic = true, running = false, ready = null, interval = null, pendingInstall = null, status = 'idle', error = '', release = null, progress = 0, checkedAt = null;
   try { automatic = JSON.parse(fs.readFileSync(preferences, 'utf8')).automatic !== false; } catch { /* New installations use automatic checks. */ }
   try { const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8')); if (typeof pending.job === 'string' && path.dirname(pending.job) === root && fs.readFileSync(path.join(pending.job, 'result'), 'utf8').trim() === 'failed') { status = 'error'; error = 'The update could not start. The previous version was restored.'; } } catch { /* No previous installation result. */ }
   const supported = platform === 'darwin' && app.isPackaged && ['arm64','x64'].includes(arch) && /^\d+\.\d+\.\d+$/.test(version);
@@ -153,7 +154,10 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
     get installing() { return status === 'installing'; },
     async configure(payload) {
       if (typeof payload.automatic !== 'boolean') throw new Error('Choose whether to check for updates automatically.');
-      await privateRoot(); atomicWrite(preferences, JSON.stringify({ automatic: payload.automatic })); automatic = payload.automatic; emit(); return snapshot();
+      const enabled = payload.automatic && !automatic;
+      await privateRoot(); atomicWrite(preferences, JSON.stringify({ automatic: payload.automatic })); automatic = payload.automatic; emit();
+      if (enabled && interval !== null) return manager.check();
+      return snapshot();
     },
     async check() {
       if (!supported) return snapshot();
@@ -236,12 +240,12 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
     },
     openRelease() { return shell.openExternal(release?.releaseUrl || RELEASES_URL); },
     start() {
-      if (!supported) return;
+      if (!supported || interval !== null) return;
       pruneUpdateCache(root, [ready?.job]).catch(() => {});
-      scheduled = setTimeout(() => { if (automatic) manager.check().catch(() => {}); }, 20000); scheduled.unref?.();
-      interval = setInterval(() => { if (automatic) manager.check().catch(() => {}); }, 6 * 60 * 60 * 1000); interval.unref?.();
+      if (automatic) manager.check().catch(() => {});
+      interval = setInterval(() => { if (automatic) manager.check().catch(() => {}); }, CHECK_INTERVAL); interval.unref?.();
     },
-    close() { clearTimeout(scheduled); clearInterval(interval); }
+    close() { clearInterval(interval); interval = null; }
   };
   // All callers share the current operation. A sidebar click can safely join a
   // scheduled check or a Settings download without starting a second request.

@@ -22,6 +22,20 @@ const finish=patch=>app.evaluate(({BrowserWindow},patch)=>{
  fixture.resolve?.({ok:true,data:{...fixture.state}});fixture.resolve=null;
 },patch);
 const calls=()=>app.evaluate(()=>globalThis.updateUiFixture.calls);
+const pendingStates=()=>app.evaluate(()=>globalThis.updateUiFixture.pendingStates.length);
+const holdInitialState=()=>app.evaluate(()=>{
+ const fixture=globalThis.updateUiFixture;
+ Object.assign(fixture.state,{availableVersion:'',status:'idle',progress:0,error:''});fixture.holdState=true;
+});
+const releaseInitialState=async()=>{
+ await app.evaluate(()=>{
+  const fixture=globalThis.updateUiFixture;fixture.holdState=false;
+  for(const pending of fixture.pendingStates.splice(0))pending.resolve({ok:true,data:pending.state});
+ });
+ // A later IPC reply and animation frame let React render the delayed reply.
+ await page.evaluate(()=>window.reviewops.invoke('update.state'));
+ await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(resolve)));
+};
 const settle=async()=>{
  await page.mouse.move(500,50);
  await page.locator('.sidebar-brand img').evaluate(image=>image.decode());
@@ -53,10 +67,14 @@ try{
  await app.evaluate(({BrowserWindow,ipcMain})=>{
   const host=BrowserWindow.getAllWindows().find(window=>window.webContents.getURL().startsWith('reviewops://app/'));host.setSize(1200,850);
   const original=ipcMain._invokeHandlers.get('reviewops:invoke');
-  globalThis.updateUiFixture={state:{supported:true,version:'1.2.2',availableVersion:'',status:'current',automatic:false,progress:0,error:''},calls:0,resolve:null};
+  globalThis.updateUiFixture={state:{supported:true,version:'1.2.2',availableVersion:'',status:'current',automatic:false,progress:0,error:''},calls:0,resolve:null,holdState:false,pendingStates:[]};
   ipcMain.removeHandler('reviewops:invoke');ipcMain.handle('reviewops:invoke',async(event,action,payload)=>{
    const fixture=globalThis.updateUiFixture;
-   if(action==='update.state')return {ok:true,data:{...fixture.state}};
+   if(action==='update.state'){
+    const state={...fixture.state};
+    if(fixture.holdState)return new Promise(resolve=>fixture.pendingStates.push({resolve,state}));
+    return {ok:true,data:state};
+   }
    if(action==='update.apply'){fixture.calls++;return new Promise(resolve=>{fixture.resolve=resolve})}
    if(action.startsWith('update.'))return {ok:true,data:{...fixture.state}};
    return original(event,action,payload);
@@ -64,6 +82,27 @@ try{
   host.webContents.send('reviewops:update-state',{...globalThis.updateUiFixture.state});
  });
  await expect(update()).toHaveCount(0);
+
+ await app.evaluate(()=>Object.assign(globalThis.updateUiFixture.state,{availableVersion:'1.2.3',status:'available'}));
+ await page.reload();await expect(page.getByRole('heading',{name:'홈',exact:true})).toBeVisible();
+ await expect(update()).toBeVisible();await expect(update()).toHaveAttribute('aria-label','업데이트 설치 · 새 버전 1.2.3');
+ passed('렌더러가 열리기 전에 발견한 새 버전을 초기 조회로 표시');
+
+ await holdInitialState();await page.reload();await expect.poll(pendingStates).toBe(1);
+ await publish({availableVersion:'1.2.3',status:'available'});await expect(update()).toBeVisible();
+ await releaseInitialState();await expect(update()).toHaveAttribute('aria-label','업데이트 설치 · 새 버전 1.2.3');await expect(update()).toBeEnabled();
+ passed('새 버전 이벤트 뒤에 도착한 초기 idle 응답이 사이드 메뉴 알림을 지우지 않음');
+
+ await holdInitialState();await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();await expect.poll(pendingStates).toBe(1);
+ await publish({availableVersion:'1.2.3',status:'available'});await expect(settings().getByRole('button',{name:'업데이트 설치',exact:true})).toBeVisible();
+ await releaseInitialState();await expect(settings().getByRole('button',{name:'업데이트 설치',exact:true})).toBeVisible();await expect(settings().getByRole('status')).toContainText('새 버전을 사용할 수 있습니다.');
+ passed('설정에서도 새 버전 이벤트 뒤에 도착한 초기 idle 응답을 무시');
+
+ await publish({status:'checking'});await expect(update()).toBeVisible();await expect(update()).toBeDisabled();await expect(settings().getByRole('status')).toContainText('업데이트 확인 중');
+ await publish({status:'available'});await expect(update()).toBeEnabled();await expect(settings().getByRole('button',{name:'업데이트 설치',exact:true})).toBeEnabled();
+ await page.getByRole('button',{name:'설정 닫기',exact:true}).click();
+ passed('주기 확인 상태 이벤트 중에도 새 버전 알림을 유지하고 확인 후 설치 버튼을 다시 활성화');
+
  await publish({availableVersion:'1.2.3',status:'available'});
  await expect(update()).toBeVisible();await expect(update()).toBeEnabled();
  await expect(update()).toHaveAttribute('aria-label','업데이트 설치 · 새 버전 1.2.3');

@@ -817,6 +817,7 @@ else {
     });
     updateNativeMenu();
     updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>{if(window&&!window.isDestroyed())window.webContents.send('reviewops:update-state',state);}});
+    updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:()=>window,trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG});
     codexManager.registerHandlers(ipcMain);
     createWindow();
@@ -829,7 +830,6 @@ else {
         const result = actionQueue.then(() => dispatch(action, payload)); actionQueue = result.catch(() => {}); return result;
       }
     }); } catch (error) { console.warn('Season AI 연결을 시작하지 못했습니다:', error.message); }
-    updater.start();
     app.on('activate',()=> {if(!window)createWindow();});
   }).catch(error=> { dialog.showErrorBox('ReviewOps 실행 오류',error.message); app.quit(); });
   app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});

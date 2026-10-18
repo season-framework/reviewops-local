@@ -12,7 +12,7 @@ export default function UpdateSettings({invoke=invokeUpdate}) {
  useLocale();
  const [state,setState]=useState(null),[error,setError]=useState(''),[pending,setPending]=useState(false);
  const actionPending=useRef(false);
- useEffect(()=>{let active=true;invoke('update.state').then(value=>{if(active)setState(value)}).catch(failure=>{if(active)setError(failure.message)});const stop=window.reviewops?.onUpdateState?.(value=>{if(active)setState(value)});return()=>{active=false;stop?.()}},[invoke]);
+ useEffect(()=>{let active=true,updated=false;const stop=window.reviewops?.onUpdateState?.(value=>{updated=true;if(active)setState(value)});invoke('update.state').then(value=>{if(active&&!updated)setState(value)}).catch(failure=>{if(active&&!updated)setError(failure.message)});return()=>{active=false;stop?.()}},[invoke]);
  const action=async(name,payload)=>{if(actionPending.current)return;actionPending.current=true;setPending(true);setError('');try{const result=await invoke(`update.${name}`,payload);if(result?.status)setState(result)}catch(failure){setError(failure.message)}finally{actionPending.current=false;setPending(false)}};
  const working=pending||['checking','downloading','verifying','installing'].includes(state?.status);
  const progress=Math.max(0,Math.min(100,Number(state?.progress)||0));
