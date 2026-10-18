@@ -1,0 +1,97 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Expected release tag, such as v1.2.3 (optional)
+        required: false
+        type: string
+  push:
+    branches:
+      - codex/windows-installer
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    name: Existing unit tests on macOS
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  windows:
+    name: Build, install, and verify Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      REVIEWOPS_RELEASE_TAG: ${{ inputs.release_tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          architecture: x64
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Run Windows-compatible unit tests
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force test-results | Out-Null
+          # Other suites require POSIX fixture paths, permission modes, shells,
+          # or a local SFTP server. The regression job runs the entire suite.
+          $testFiles = @(
+            'tests/codex-backend-reset-selection.test.cjs',
+            'tests/codex-backend-rpc.test.cjs',
+            'tests/codex-backend-statistics.test.cjs',
+            'tests/codex-host-device-auth.test.cjs',
+            'tests/codex-host-file-handlers.test.cjs',
+            'tests/codex-native-architecture.test.cjs',
+            'tests/codex-sftp-client.test.cjs',
+            'tests/i18n.test.cjs',
+            'tests/markdown-inline.test.cjs'
+          )
+          node --test --test-reporter=spec @testFiles 2>&1 | Tee-Object -FilePath test-results/windows-unit-tests.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build Windows installer
+        run: npm run package:windows
+      - name: Verify package and installed application
+        run: npm run test:windows-release
+      - name: Upload verified installer and report
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: ReviewOps-windows-x64
+          path: |
+            release/ReviewOps-*-windows-x64.exe
+            release/ReviewOps-*-windows-x64.exe.sha256
+            test-results/windows-release.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+      - name: Upload Windows verification diagnostics
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Windows-verification-diagnostics
+          path: test-results/windows-*
+          if-no-files-found: warn
+          retention-days: 14
