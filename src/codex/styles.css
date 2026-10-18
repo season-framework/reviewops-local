@@ -1,0 +1,89 @@
+.codex-management { font-family: -apple-system, BlinkMacSystemFont, 'Apple SD Gothic Neo', sans-serif; color: var(--text); background: var(--surface); font-synthesis: none; -webkit-font-smoothing: antialiased; }
+.codex-management, .codex-management * { box-sizing: border-box; } .codex-management { margin: 0; } .codex-management button:where(:not(.reviewops-select-trigger):not(.reviewops-popup-menu button)), .codex-management input:where(:not([data-select-search])) { font: inherit; }
+.codex-management button:where(:not(.reviewops-select-trigger):not(.reviewops-popup-menu button)) { cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.codex-management button:disabled:where(:not(.reviewops-select-trigger):not(.reviewops-popup-menu button)) { cursor: default; opacity: .4; }
+.codex-management button:focus-visible:where(:not(.reviewops-select-trigger):not(.reviewops-popup-menu button)), .codex-management input:focus-visible:where(:not([data-select-search])) { outline: 3px solid var(--accent-border); outline-offset: 2px; }
+.codex-management h1, .codex-management h2, .codex-management p { margin: 0; } .codex-management small { display: block; font-size: 11px; color: var(--muted); line-height: 1.6; }
+.codex-management .account-app { padding: 25px 28px 48px; max-width: 1600px; margin: 0 auto; }
+.codex-management .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 20px; }
+.codex-management h1 { font-size: 22px; font-weight: 650; display: flex; align-items: center; gap: 10px; } .codex-management h1 span { font-size: 13px; font-weight: 400; color: var(--muted); }
+.codex-management .toolbar-actions { display: flex; align-items: center; gap: 8px; }
+.codex-management .button { min-height: 34px; padding: 0 12px; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; font-size: 12px; font-weight: 500; white-space: nowrap; }
+.codex-management .button:hover:not(:disabled) { background: var(--hover); } .codex-management .button.primary { background: var(--accent); border-color: var(--accent); color: #fff; } .codex-management .button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+.codex-management .button.small { min-height: 29px; padding: 0 9px; } .codex-management .button.danger { background: #ad4747; border-color: #ad4747; color: #fff; }
+.codex-management .icon-button { width: 28px; height: 29px; border: 0; border-radius: 5px; padding: 0; color: var(--muted); background: transparent; } .codex-management .icon-button:hover:not(:disabled) { background: var(--hover); }
+.codex-management .action-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; gap: 0; flex-shrink: 0; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--muted); }
+.codex-management .action-button > svg { width: 16px; height: 16px; flex-shrink: 0; }
+.codex-management .action-tooltip { position: fixed; z-index: 1100; padding: 7px 10px; border: 1px solid #d6e1d9; border-radius: 6px; background: var(--surface); color: var(--text); box-shadow: 0 4px 16px #23372a20; pointer-events: none; font-size: 11px; font-weight: 500; line-height: 1.5; text-align: center; overflow-wrap: anywhere; }
+.codex-management .text-button { border: 0; padding: 3px 0; background: transparent; color: var(--accent-ink); font-size: 12px; white-space: nowrap; }
+.codex-management .table-scroll { overflow-x: auto; padding-bottom: 145px; }
+.codex-management table { width: 100%; min-width: 940px; border-collapse: collapse; table-layout: fixed; text-align: left; font-size: 13px; }
+.codex-management th { height: 38px; color: var(--muted); font-size: 12px; font-weight: 500; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--app); }
+.codex-management td, .codex-management th { padding: 12px 15px; } .codex-management td { border-bottom: 1px solid var(--border); vertical-align: middle; } .codex-management tr.selected { background: var(--accent-soft); }
+.codex-management .check-col { width: 40px; } .codex-management .account-col { width: 27%; } .codex-management .usage-col { width: 32%; } .codex-management .balance-col { width: 10%; } .codex-management .reset-col { width: 21%; } .codex-management .actions-col { width: 83px; }
+.codex-management input[type=checkbox] { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); vertical-align: middle; cursor: pointer; }
+.codex-management .account-name { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; line-height: 1.6; } .codex-management .account-name strong { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
+.codex-management .account-info { display: block; padding: 0; text-align: left; border: 0; border-radius: 3px; background: transparent; color: inherit; max-width: 100%; }
+.codex-management .account-info .email { display: block; }
+.codex-management .account-info:hover .account-name strong { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.codex-management .numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .plan { font-size: 10px; color: #607c6b; background: var(--accent-soft); padding: 1px 5px; border-radius: 3px; }
+.codex-management .email { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; line-height: 1.8; } .codex-management .account-status { margin-top: 2px; }
+.codex-management .usage-windows { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.codex-management .usage-value { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px; line-height: 1.7; white-space: nowrap; } .codex-management .usage-value span { font-size: 11px; color: #607568; } .codex-management .usage-value span:first-child { margin-right: auto; }
+.codex-management .usage-value strong { font-size: 14px; font-weight: 600; color: var(--accent-ink); } .codex-management .usage-value.low strong { color: #bf5345; } .codex-management .usage-cell small { margin-top: 3px; font-size: 11px; white-space: nowrap; }
+.codex-management .usage-value strong { min-width: 40px; text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .usage-cell small { text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .usage-list > div + div { margin-top: 10px; } .codex-management .bucket-name { font-size: 11px; color: #5e6e65; margin-bottom: 3px; }
+.codex-management .credit-balance { font-size: 14px; font-weight: 550; font-variant-numeric: tabular-nums; } .codex-management .reset-cell { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.codex-management .credit-value { display: flex; align-items: baseline; gap: 3px; min-width: 24px; } .codex-management .credit-value b { font-size: 14px; font-weight: 550; } .codex-management .credit-value span { font-size: 11px; color: #718277; }
+.codex-management .credit-balance { display: block; text-align: right; }
+.codex-management .reset-cell { display: grid; grid-template-columns: minmax(30px, 1fr) auto; }
+.codex-management .credit-value { justify-content: flex-end; text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .credit-value b { display: inline-block; text-align: right; min-width: 24px; }
+.codex-management .reset-cell > .action-button { min-width: 30px; }
+.codex-management .account-actions { position: relative; display: flex; gap: 2px; justify-content: flex-end; }
+.codex-management .dropdown { position: absolute; top: 33px; right: 0; z-index: 10; }
+.codex-management .empty { display: table-cell; min-height: 0; padding: 24px; text-align: center; height: 100px; color: #7a8880; }
+.codex-management .selection-bar { display: flex; align-items: center; gap: 8px; background: var(--accent-soft); padding: 9px 12px; margin-bottom: 12px; border-radius: 5px; font-size: 12px; } .codex-management .selection-bar > span { margin-right: 8px; } .codex-management .deselect { margin-left: auto; color: var(--muted); }
+.codex-management .notice { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; align-items: center; gap: 12px; padding: 10px 14px; max-width: 85vw; border: 1px solid #e8c6bd; border-radius: 7px; background: #fff6f1; box-shadow: 0 3px 15px #452b1620; color: #934f3f; font-size: 12px; }
+.codex-management .runtime-notice { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 12px; margin-bottom: 15px; background: #fff9ed; border-radius: 6px; font-size: 12px; }
+.codex-management .row-error, .codex-management .row-result { font-size: 11px; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; } .codex-management .row-error { color: #ad5547; } .codex-management .row-result { color: #507562; }
+.codex-management .muted { font-size: 12px; color: var(--muted); } .codex-management .demo-badge { font-size: 11px; color: #94743e; padding: 4px 7px; background: #fff3d9; border-radius: 4px; }
+.codex-management .modal-backdrop { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: #182d284a; z-index: 100; }
+.codex-management .modal { width: 430px; max-height: calc(100vh - 48px); overflow: auto; border-radius: 10px; background: var(--surface); box-shadow: 0 20px 70px #12291d30; }
+.codex-management .modal.wide { width: min(960px, calc(100vw - 48px)); display: flex; flex-direction: column; overflow: hidden; }
+.codex-management .modal.wide .modal-body { min-height: 0; overflow: auto; }
+.codex-management .modal.wide .modal-heading, .codex-management .modal.wide .modal-footer { flex-shrink: 0; }
+.codex-management .modal-heading { display: flex; align-items: center; justify-content: space-between; padding: 15px 20px; border-bottom: 1px solid var(--border); } .codex-management .modal-heading h2 { font-size: 16px; font-weight: 600; }
+.codex-management .modal-body { padding: 20px; font-size: 13px; line-height: 1.8; } .codex-management .modal-footer { border-top: 1px solid var(--border); display: flex; justify-content: flex-end; gap: 8px; padding: 14px 20px; }
+.codex-management .modal label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+.codex-management .modal input:not([type=checkbox]):not([data-select-search]) { display: block; width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); color: var(--text); font-size: 13px; } .codex-management .modal .reviewops-select { display: block; width: 100%; } .codex-management .modal input + label { margin-top: 15px; }
+.codex-management .reset-account-list { border: 1px solid #e3eae5; border-radius: 5px; margin: 15px 0; max-height: 210px; overflow: auto; } .codex-management .reset-account-list > div { padding: 10px 12px; border-bottom: 1px solid #e9efea; } .codex-management .reset-account-list > div:last-child { border-bottom: 0; }
+.codex-management .reset-account-list strong, .codex-management .reset-account-list span { display: block; overflow-wrap: anywhere; } .codex-management .reset-account-list strong { font-size: 13px; font-weight: 550; } .codex-management .reset-account-list span { font-size: 12px; color: #76877b; }
+.codex-management .device-code { margin-top: 14px; padding: 13px; border: 1px dashed #b4cdbd; background: #f4f8f5; border-radius: 5px; text-align: center; font-size: 25px; letter-spacing: 2px; }
+.codex-management .login-spinner { display: block; margin: 15px auto 0; color: #779e88; } .codex-management .launch-screen { max-width: 500px; margin: 100px auto; padding: 25px; line-height: 2; } .codex-management .launch-screen p { margin: 15px 0; }
+.codex-management .spin { animation: codex-spin 1.2s linear infinite; } @keyframes codex-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1050px) { .codex-management .account-app { padding: 20px 18px; } }
+@media (prefers-reduced-motion: reduce) { .codex-management .spin { animation: none; } }
+
+.codex-management .manager-layout { display: flex; min-height: 100vh; }
+.codex-management .manager-sidebar { width: 190px; flex: 0 0 190px; padding: 28px 15px; border-right: 1px solid #e5ece7; background: #f5f8f6; position: sticky; top: 0; height: 100vh; }
+.codex-management .manager-brand { padding: 0 13px 28px; }
+.codex-management .manager-brand > span { display: block; color: var(--text); font-weight: 700; font-size: 21px; letter-spacing: -.6px; }
+.codex-management .manager-brand small { font-size: 11px; color: #738579; margin-top: 1px; }
+.codex-management .manager-sidebar nav { display: flex; flex-direction: column; gap: 6px; }
+.codex-management .manager-sidebar nav button { justify-content: flex-start; gap: 11px; padding: 12px 13px; border: 0; border-radius: 7px; font-size: 13px; font-weight: 500; color: #6a7c70; background: transparent; }
+.codex-management .manager-sidebar nav button:hover { background: #eaf1ec; }
+.codex-management .manager-sidebar nav button.active { background: var(--accent-soft); color: var(--accent-ink); font-weight: 600; }
+.codex-management .manager-content { flex: 1; min-width: 0; }
+@media (max-width: 1100px) { .codex-management .manager-sidebar { width: 156px; flex-basis: 156px; padding: 24px 10px; } .codex-management .manager-brand { padding-left: 10px; } .codex-management .manager-sidebar nav button { padding: 12px 10px; gap: 8px; } }
+@media (max-width: 600px) { .codex-management .manager-sidebar { width: 60px; flex-basis: 60px; padding: 20px 7px; } .codex-management .manager-brand { padding: 0 0 22px; text-align: center; } .codex-management .manager-brand > span { font-size: 12px; letter-spacing: -.4px; } .codex-management .manager-brand small { display: none; } .codex-management .manager-sidebar nav button { padding: 12px 7px; flex-direction: column; gap: 6px; font-size: 9px; } }
+
+.codex-management-page { min-width: 0; min-height: 0; flex: 1; width: 100%; height: 100%; overflow: auto; background: var(--surface); }
+.codex-management-portal { display: contents; }
+.codex-management .manager-content { min-height: 100%; }
+
+.codex-management .host-file-app { height: 100%; }
+
+.codex-management { font-family: inherit; }

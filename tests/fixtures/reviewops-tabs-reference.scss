@@ -1,0 +1,155 @@
+// Shared application-owned tabs; compact headers opt into the text variant.
+// Opt in explicitly: filters, navigation menus and embedded document/editor UI
+// must not acquire tab styling through a generic button or ARIA selector.
+:root {
+    --reviewops-tab-height: 40px;
+    --reviewops-tab-radius: 0px;
+    --reviewops-tab-font-size: 14px;
+    --reviewops-tab-padding-inline: 14px;
+    --reviewops-tab-strip-inset: 0px;
+}
+
+.reviewops-tab-strip {
+    min-width: 0;
+    gap: 0;
+    border: 0;
+    border-radius: 0;
+    padding: var(--reviewops-tab-strip-inset);
+    background: transparent;
+    outline: none;
+    box-shadow: inset 0 -1px 0 var(--reviewops-border);
+}
+
+:is(.reviewops-tab, .reviewops-feature-tab, .reviewops-tab-item) {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: var(--reviewops-tab-height);
+    margin-block: 0;
+    border: 0;
+    border-radius: var(--reviewops-tab-radius);
+    padding: 8px var(--reviewops-tab-padding-inline);
+    background: transparent;
+    color: var(--reviewops-muted);
+    box-shadow: none;
+    font-family: inherit;
+    font-size: var(--reviewops-tab-font-size);
+    font-weight: 600;
+    line-height: 1.4;
+    text-decoration: none;
+    white-space: nowrap;
+    transition: background-color 120ms, color 120ms;
+
+    &:hover { background: var(--reviewops-sidebar-surface); color: var(--reviewops-text); }
+    &:is(.is-active, [aria-selected='true'], [aria-pressed='true']) {
+        background: transparent;
+        outline: none;
+        color: var(--reviewops-accent-ink);
+        // An inset line keeps the label and close target at their full height.
+        box-shadow: inset 0 -2px 0 var(--reviewops-accent-ink);
+    }
+    &:disabled, &[aria-disabled='true'] { cursor: not-allowed; opacity: .5; }
+}
+
+:is(.reviewops-tab, .reviewops-feature-tab) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    cursor: pointer;
+}
+
+// Group tabs share a row with their page title and use text for selection.
+.reviewops-tab-strip.reviewops-tab-strip--text {
+    box-shadow: none;
+
+    > .reviewops-tab,
+    > .relative > .reviewops-tab {
+        background: transparent;
+        box-shadow: none;
+        font-variant-numeric: tabular-nums;
+
+        &:hover { background: transparent; color: var(--reviewops-text); }
+        &:is(.is-active, [aria-selected='true'], [aria-pressed='true']) {
+            background: transparent;
+            box-shadow: none;
+            color: var(--reviewops-accent-ink);
+            font-weight: 700;
+        }
+    }
+}
+
+// Closable tabs keep their own width, drag handle, title truncation and actions.
+.reviewops-tab-item {
+    height: var(--reviewops-tab-height);
+    padding: 0;
+}
+.reviewops-tab-label {
+    display: inline-flex;
+    min-width: 0;
+    height: 100%;
+    flex: 1 1 auto;
+    align-items: center;
+    gap: 6px;
+    border: 0;
+    padding: 8px var(--reviewops-tab-padding-inline);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+.reviewops-tab-close {
+    display: inline-flex;
+    width: 32px;
+    height: 100%;
+    flex: 0 0 32px;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: var(--reviewops-tab-radius);
+    padding: 0;
+    background: transparent;
+    color: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    &:hover { background: var(--reviewops-sidebar-surface); color: var(--reviewops-text); }
+}
+.reviewops-tab-count {
+    display: inline-flex;
+    min-width: 20px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    border-radius: 999px;
+    padding: 1px 5px;
+    background: var(--reviewops-panel-surface);
+    color: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    line-height: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+// Use the same visible focus for project, administrator, modal and file tabs.
+:is(.reviewops-tab, .reviewops-feature-tab):focus-visible,
+.reviewops-layout-shell :is(.reviewops-tab, .reviewops-feature-tab):focus-visible,
+.reviewops-tab-item:has(> .reviewops-tab-label:focus-visible) {
+    outline: 2px solid var(--reviewops-focus);
+    outline-offset: -2px;
+}
+:is(.reviewops-tab-label, .reviewops-tab-close):focus-visible {
+    outline: 2px solid var(--reviewops-focus);
+    outline-offset: -2px;
+}
+
+@media (max-width: 1023px) {
+    :root {
+        --reviewops-tab-height: 44px;
+        --reviewops-tab-font-size: 13px;
+        --reviewops-tab-padding-inline: 10px;
+    }
+    .reviewops-tab-close { width: 44px; flex-basis: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+    :is(.reviewops-tab, .reviewops-feature-tab, .reviewops-tab-item) { transition: none; }
+}

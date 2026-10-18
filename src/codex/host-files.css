@@ -1,0 +1,133 @@
+.codex-management .host-app.host-file-app { width: 100%; max-width: none; margin: 0; padding: 0; }
+.codex-management .host-files { min-width: 0; height: 100%; min-height: 480px; display: flex; flex-direction: column; overflow: hidden; font-size: 12px; color: #34383d; background: var(--surface); }
+.codex-management .host-files [hidden] { display: none !important; }
+.codex-management .host-files-header { display: flex; flex-wrap: nowrap; align-items: center; gap: 8px; height: 48px; min-height: 48px; padding: 8px 10px; border-bottom: 1px solid #d8dadd; background: linear-gradient(#fafafa, #f0f0f2); }
+.codex-management .host-files-navigation, .codex-management .host-files-actions, .codex-management .host-files-header-end { display: flex; flex-wrap: nowrap; align-items: center; gap: 3px; flex-shrink: 0; }
+.codex-management .host-files-navigation { padding-right: 7px; border-right: 1px solid #d8dadd; }
+.codex-management .host-files-actions { padding-left: 1px; }
+.codex-management .host-files .button { min-height: 30px; height: 30px; padding: 0 10px; gap: 5px; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+.codex-management .host-files .action-button { width: 28px; min-width: 28px; height: 28px; min-height: 28px; padding: 0; gap: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #5a5e65; }
+.codex-management .host-files .action-button:hover:not(:disabled), .codex-management .host-files .action-button[aria-expanded=true] { background: #e2e3e5; border-color: #d5d6d9; }
+.codex-management .host-files .action-button.primary { border-color: transparent; background: transparent; color: #5a5e65; }
+.codex-management .host-files .action-button.primary:hover:not(:disabled) { background: #e2e3e5; }
+.codex-management .host-files .action-button.host-files-delete { color: #a15e5b; }
+.codex-management .host-files .action-button:focus-visible { outline: 2px solid #76a8e1; outline-offset: 1px; }
+.codex-management .host-files-navigator { display: flex; align-items: center; min-width: 130px; flex: 1; position: relative; height: 30px; border: 1px solid #d4d6d9; border-radius: 5px; background: var(--surface); }
+.codex-management .host-files-navigator:focus-within { border-color: #6b9fdf; box-shadow: 0 0 0 2px #b7d3f566; }
+.codex-management .host-files-navigator-host { max-width: 100px; flex-shrink: 0; padding: 0 8px; border-right: 1px solid #e4e5e7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #777d86; font-size: 11px; }
+.codex-management .host-files input:not([type=checkbox]) { min-width: 0; padding: 7px 10px; border: 1px solid #d9dce0; border-radius: 5px; background: var(--surface); color: #363b42; font-size: 12px; }
+.codex-management .host-files input.host-files-navigator-input { flex: 1; width: 100%; min-width: 0; height: 28px; padding: 0 7px; border: 0; border-radius: 0; outline: 0; background: transparent; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; text-overflow: ellipsis; }
+.codex-management .host-files-navigator-toggle { display: flex; align-items: center; justify-content: center; width: 24px; min-width: 24px; height: 24px; flex-shrink: 0; margin-right: 2px; padding: 0; border: 0; border-radius: 3px; background: transparent; color: #727780; }
+.codex-management .host-files-navigator-toggle:hover:not(:disabled), .codex-management .host-files-navigator-toggle[aria-expanded=true] { background: #eceef0; }
+.codex-management .host-files-navigator-toggle:focus-visible { outline: 2px solid #76a8e1; outline-offset: 1px; }
+.codex-management .host-files-navigator-menu, .codex-management .host-files-menu-popup { position: absolute; top: 35px; z-index: 120; min-width: 180px; max-width: min(380px, calc(100vw - 190px)); max-height: min(360px, calc(100dvh - 60px)); overflow: auto; }
+.codex-management .host-files-navigator-menu { left: 0; min-width: 100%; }
+.codex-management .host-files-menu { position: relative; }
+.codex-management .host-files-menu-popup { right: 0; }
+.codex-management .host-files-navigator-menu button, .codex-management .host-files-menu-popup button { display: flex; align-items: center; justify-content: flex-start; width: 100%; white-space: nowrap; }
+.codex-management .host-files-navigator-menu button > span { overflow: hidden; text-overflow: ellipsis; }
+.codex-management .host-files-menu-check { width: 16px; height: 16px; flex-shrink: 0; }
+.codex-management .host-files-search-control { display: flex; align-items: center; flex-shrink: 0; gap: 2px; max-width: 160px; }
+.codex-management .host-files .host-files-search-control input { width: 125px; height: 28px; padding: 0 7px; font-size: 11px; background: var(--surface); }
+.codex-management .host-files-upload-menu .host-files-menu-popup { min-width: 150px; }
+.codex-management .host-files-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr); }
+.codex-management .host-files.inspector-open .host-files-layout { grid-template-columns: minmax(0, 1fr) 240px; }
+.codex-management .host-files-content { min-width: 0; min-height: 0; display: flex; flex-direction: column; padding: 0; position: relative; }
+.codex-management .host-files-sidebar { display: none; min-width: 0; min-height: 0; padding: 17px 16px; border-left: 1px solid #dedfe2; overflow: auto; overflow-wrap: anywhere; background: #fafafa; }
+.codex-management .host-files.inspector-open .host-files-sidebar { display: block; }
+.codex-management .host-files-sidebar-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 17px; }
+.codex-management .host-files-sidebar h2 { font-size: 12px; margin: 0; font-weight: 600; }
+.codex-management .host-files-sidebar h3 { font-size: 13px; margin: 0 0 8px; font-weight: 600; }
+.codex-management .host-files-inspector-icon { height: 54px; color: #7e9dbf; }
+.codex-management .host-files-inspector h3 { font-size: 15px; line-height: 1.6; color: #34383d; overflow-wrap: anywhere; }
+.codex-management .host-files-inspector p { line-height: 1.7; color: #858a92; font-size: 11px; }
+.codex-management .host-files-inspector dl { margin: 17px 0; font-size: 11px; }
+.codex-management .host-files-inspector dl > div { display: flex; justify-content: space-between; gap: 10px; padding: 7px 0; }
+.codex-management .host-files-inspector dt { color: #8b9098; flex-shrink: 0; }
+.codex-management .host-files-inspector dd { margin: 0; }
+.codex-management .host-files-location { overflow-wrap: anywhere; }
+.codex-management .host-files-selected-names { margin: 15px 0; padding-left: 16px; max-height: 180px; overflow: auto; font-size: 11px; line-height: 1.9; color: #77808a; }
+.codex-management .host-files-host-summary { padding-top: 17px; margin-top: 20px; border-top: 1px solid #e1e2e5; }
+.codex-management .host-files-host-summary h3 { color: #858a92; font-size: 11px; }
+.codex-management .host-files-host-summary strong { display: block; font-size: 12px; font-weight: 550; }
+.codex-management .host-files-host-summary p { margin-top: 5px; color: #8b9098; font-size: 11px; }
+.codex-management .host-files-inspector-toggle { display: inline-flex; }
+.codex-management .host-files input[type=checkbox] { width: 13px; height: 13px; accent-color: #4385d3; cursor: pointer; margin: 0; }
+.codex-management .host-files-table-scroll { min-width: 0; min-height: 0; flex: 1; overflow: auto; margin: 0; border: 0; border-radius: 0; overscroll-behavior: contain; }
+.codex-management .host-files-table { width: 100%; min-width: 420px; margin: 0; table-layout: fixed; border-collapse: collapse; }
+.codex-management .host-files-table th { position: sticky; top: 0; z-index: 1; height: 32px; padding: 7px 10px; border-top: 0; border-bottom: 1px solid #e0e1e4; background: #f6f6f7; color: #777d86; text-align: left; font-size: 11px; font-weight: 500; white-space: nowrap; }
+.codex-management .host-files-table td { height: 34px; padding: 7px 10px; border-bottom: 0; font-size: 11px; white-space: nowrap; }
+.codex-management .host-files-table th.numeric, .codex-management .host-files-table td.numeric { text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .host-files-table th:first-child { width: 34px; }
+.codex-management .host-files-table th:nth-child(2) { width: auto; }
+.codex-management .host-files-table th:nth-child(3) { width: 90px; }
+.codex-management .host-files-table th:nth-child(4) { width: 155px; }
+.codex-management .host-files-table tbody tr:nth-child(even) { background: #f7f7f8; }
+.codex-management .host-files-table tbody tr:hover { background: #eef2f6; }
+.codex-management .host-files-table tbody tr.selected { background: #dceaf9; }
+.codex-management .host-files-table tr.drop-target { background: #d5e7fa; box-shadow: inset 0 0 0 2px #4385d3; }
+.codex-management .host-files-table td.empty { text-align: center; padding: 50px 15px; color: #91959d; }
+.codex-management .host-files-name { display: flex; align-items: center; justify-content: flex-start; gap: 8px; padding: 0; border: 0; background: transparent; color: #374553; font-size: 12px; width: 100%; min-width: 0; text-align: left; }
+.codex-management .host-files-name svg { flex-shrink: 0; color: #6e9bd0; }
+.codex-management .host-files-name span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-management .host-files-name:hover:not(:disabled) { color: #225c9d; }
+.codex-management .host-files-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; border-bottom: 1px solid #edcdc1; font-size: 12px; line-height: 1.6; background: #fff2ed; color: #a55742; overflow-wrap: anywhere; }
+.codex-management .host-files-error button { color: inherit; }
+.codex-management .host-files-notice { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 6px; max-width: 90%; margin: 0; padding: 8px 12px; border: 1px solid #d7dfda; border-radius: 6px; font-size: 11px; line-height: 1.6; color: #51725d; background: #f4faf6; box-shadow: 0 3px 12px #283a2c15; }
+.codex-management .host-files-form { max-height: 65%; overflow: auto; margin: 8px 10px; padding: 14px; border: 1px solid #d3d7dc; border-radius: 6px; background: #fafafa; flex-shrink: 0; }
+.codex-management .host-files-form.danger { border-color: #e8c9bd; background: #fff8f4; }
+.codex-management .host-files-form h3 { font-size: 14px; margin: 0 0 9px; font-weight: 600; }
+.codex-management .host-files-form p { color: #858a92; font-size: 12px; line-height: 1.6; margin-bottom: 8px; }
+.codex-management .host-files-form label { display: flex; flex-direction: column; gap: 7px; font-size: 12px; color: #68717c; }
+.codex-management .host-files-form input { min-height: 32px; height: 32px; width: 100%; }
+.codex-management .host-files-form ul { margin: 7px 0 12px; padding-left: 17px; max-height: 72px; overflow: auto; font-size: 11px; color: #7b828b; }
+.codex-management .host-files-form-actions { display: flex; justify-content: flex-end; gap: 7px; margin-top: 14px; }
+.codex-management .host-files-breadcrumbs { display: flex; align-items: center; gap: 3px; overflow: auto; min-width: 0; flex: 1; }
+.codex-management .host-files-breadcrumbs > svg { flex-shrink: 0; color: #9ba5b0; }
+.codex-management .host-files-breadcrumbs button { border: 0; padding: 5px 6px; border-radius: 4px; background: transparent; color: #657486; font-size: 12px; white-space: nowrap; }
+.codex-management .host-files-breadcrumbs button:hover:not(:disabled) { background: #edf0f4; }
+.codex-management .host-files-breadcrumbs button[aria-current] { color: #374b65; font-weight: 600; }
+.codex-management .host-files-picker-location { display: flex; align-items: center; gap: 3px; margin-bottom: 6px; }
+.codex-management .host-files-picker-folders { border: 1px solid #dce7df; border-radius: 5px; max-height: 185px; min-height: 90px; overflow: auto; background: var(--surface); }
+.codex-management .host-files-picker-folders > p { padding: 22px 12px; margin: 0; font-size: 11px; }
+.codex-management .host-files-picker-folders > button { width: 100%; padding: 9px 11px; border: 0; border-bottom: 1px solid #edf2ee; background: var(--surface); justify-content: flex-start; color: #53735f; font-size: 12px; }
+.codex-management .host-files-picker-folders > button:hover:not(:disabled) { background: #eef6f0; }
+.codex-management .host-files-picker-folders > button span { flex: 1; text-align: left; }
+.codex-management .host-files-picker-target { display: flex; justify-content: space-between; gap: 10px; padding: 10px 0 4px; font-size: 11px; color: #7c9183; }
+.codex-management .host-files-picker-target strong { margin-left: 7px; color: #446850; }
+.codex-management .host-files-picker-path { display: flex; align-items: center; gap: 7px; }
+.codex-management .host-files-transfers { margin-top: 22px; border-top: 1px solid #e1ebe5; padding-top: 20px; }
+.codex-management .host-files-transfers h3 { font-size: 12px; margin: 0 0 11px; font-weight: 600; }
+.codex-management .host-files-transfers ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; max-height: 400px; overflow: auto; }
+.codex-management .host-files-transfers li { padding: 10px; border: 1px solid #dfe9e2; border-radius: 6px; background: #f9fcfa; }
+.codex-management .host-files-transfer-heading { display: flex; gap: 9px; align-items: center; font-size: 10px; color: #87958d; }
+.codex-management .host-files-transfer-heading strong { font-size: 11px; color: #4c6a56; }
+.codex-management .host-files-transfer-heading .action-button { margin-left: auto; width: 24px; min-width: 24px; height: 24px; min-height: 24px; padding: 0; }
+.codex-management .host-files-transfer-file { margin: 6px 0; font-size: 11px; color: #6c8272; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-management .host-files-transfer-size { font-size: 10px; color: #8a9b90; line-height: 1.6; }
+.codex-management .host-files-transfers progress { display: block; margin-top: 7px; width: 100%; height: 4px; accent-color: #388763; }
+.codex-management .host-files-transfer-error { font-size: 11px; color: #b16851; margin-top: 7px; overflow-wrap: anywhere; }
+.codex-management .host-files-transfer-message { font-size: 10px; color: #6c8173; margin-top: 7px; line-height: 1.6; overflow-wrap: anywhere; }
+.codex-management .host-files-transfers li.error { border-color: #ead1c7; background: #fff8f4; }
+.codex-management .host-files-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.codex-management .host-files-launcher { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 35px 15px; color: #6c8c76; }
+.codex-management .host-files-launcher h3 { font-size: 16px; margin: 0; color: #385541; }
+.codex-management .host-files-launcher p { font-size: 12px; color: #819287; }
+
+@media (max-width: 1100px) {
+  .codex-management .host-files-header { gap: 5px; padding: 8px 6px; }
+  .codex-management .host-files-navigation, .codex-management .host-files-actions, .codex-management .host-files-header-end { gap: 2px; }
+  .codex-management .host-files-navigation { padding-right: 4px; }
+  .codex-management .host-files-header .action-button { width: 26px; min-width: 26px; height: 28px; min-height: 28px; }
+  .codex-management .host-files-navigator-host { display: none; }
+  .codex-management .host-files-navigator-toggle { width: 22px; min-width: 22px; }
+  .codex-management .host-files .host-files-search-control input { width: 100px; }
+  .codex-management .host-files.inspector-open .host-files-layout { grid-template-columns: minmax(0, 1fr) 220px; }
+}
+@media (max-width: 700px) {
+  .codex-management .host-files-header { gap: 3px; padding-left: 4px; padding-right: 4px; overflow-x: auto; }
+  .codex-management .host-files-header .action-button { width: 24px; min-width: 24px; }
+  .codex-management .host-files-navigator { min-width: 120px; }
+  .codex-management .host-files.inspector-open .host-files-layout { grid-template-columns: minmax(0, 1fr) 190px; }
+  .codex-management .host-files-sidebar { padding: 12px; }
+}

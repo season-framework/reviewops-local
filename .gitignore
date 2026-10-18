@@ -1,0 +1,23 @@
+node_modules/
+dist/
+release/
+test-results/
+.DS_Store
+*.log
+.local-data/
+
+# Local credentials and unpublished user data
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+credentials.json
+auth.json
+recovery/

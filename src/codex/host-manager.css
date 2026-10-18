@@ -1,0 +1,177 @@
+.codex-management .host-app { padding: 25px 28px 48px; max-width: 1600px; margin: 0 auto; }
+.codex-management .host-app .toolbar { align-items: center; gap: 16px; margin-bottom: 16px; }
+.codex-management .host-toolbar-title { flex: 1; min-width: 0; }
+.codex-management .host-title-line { display: flex; align-items: center; gap: 10px; }
+.codex-management .host-app .toolbar-actions { flex-wrap: nowrap; flex-shrink: 0; gap: 6px; min-width: 0; }
+.codex-management .host-toolbar-actions .action-button { width: 30px; min-width: 30px; min-height: 30px; height: 30px; padding: 0; gap: 0; border-radius: 6px; }
+.codex-management .host-config-path { color: var(--muted); font-size: 11px; margin-top: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.5; }
+.codex-management .host-config-path code { font: inherit; color: var(--muted); margin-left: 7px; }
+.codex-management .host-table { min-width: 900px; }
+.codex-management .host-table-scroll { padding-bottom: 20px; }
+.codex-management .host-drag-col { width: 32px; } .codex-management .host-name-col { width: 12%; } .codex-management .host-address-col { width: 18%; } .codex-management .host-status-col { width: 96px; } .codex-management .host-version-col { width: 102px; } .codex-management .host-actions-col { width: 204px; }
+.codex-management .host-table td, .codex-management .host-table th { padding: 7px 10px; white-space: nowrap; }
+.codex-management .host-table tbody tr { height: 44px; }
+.codex-management .host-table tbody tr:hover { background: #fafcfb; }
+.codex-management .host-table td { height: 44px; }
+.codex-management .host-table .host-drag-cell { padding: 7px 2px; }
+.codex-management .host-entry { display: block; width: 100%; max-width: 100%; border: 0; padding: 0; background: none; color: var(--text); text-align: left; }
+.codex-management .host-entry strong { display: block; font-size: 12px; font-weight: 600; line-height: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-management .host-entry:hover strong { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.codex-management .host-address { display: block; color: var(--muted); font-size: 11px; line-height: 24px; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.codex-management .host-status { display: inline-flex; align-items: center; gap: 5px; padding: 3px 6px; background: #f1f4f2; color: #77867d; border-radius: 4px; font-size: 11px; line-height: 18px; white-space: nowrap; }
+.codex-management .host-status.connected { background: #edf7f0; color: #2a7c50; } .codex-management .host-status.failed { background: #fff0eb; color: #a95849; }
+.codex-management .host-error-trigger { border: 0; font: inherit; text-align: left; }
+.codex-management .host-error-trigger.host-status { font-size: 11px; cursor: help; }
+.codex-management .host-error-trigger.host-status:hover { box-shadow: inset 0 0 0 1px #e4b3a5; }
+.codex-management .host-version { display: block; font-size: 12px; font-weight: 550; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.codex-management .host-account { display: block; min-width: 0; font-size: 12px; line-height: 24px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.codex-management .host-account-error { display: flex; align-items: center; gap: 5px; max-width: 100%; padding: 0; color: #a95849; background: transparent; cursor: help; }
+.codex-management .host-account-error svg { flex-shrink: 0; }
+.codex-management .host-row-actions { display: flex; justify-content: flex-end; align-items: center; gap: 4px; }
+.codex-management .host-table td:last-child { padding-left: 8px; padding-right: 8px; }
+.codex-management .host-row-actions .action-button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; }
+.codex-management .host-row-actions > button, .codex-management .host-row-actions .host-error-trigger { flex-shrink: 0; }
+.codex-management .host-operation-error { width: 18px; height: 28px; padding: 0; color: #a95849; background: transparent; cursor: help; }
+.codex-management .host-drag-handle { width: 27px; height: 28px; border: 0; border-radius: 4px; padding: 0; background: transparent; color: #99a79f; cursor: grab; }
+.codex-management .host-drag-handle:hover:not(:disabled) { background: #eaf1ec; color: #4c715c; }
+.codex-management .host-drag-handle:active:not(:disabled) { cursor: grabbing; }
+.codex-management .host-table tbody tr.host-dragging { opacity: .42; }
+.codex-management .host-table tbody tr.host-drop-before td { box-shadow: inset 0 2px #258569; }
+.codex-management .host-table tbody tr.host-drop-after td { box-shadow: inset 0 -2px #258569; }
+.codex-management .host-table tbody tr.host-drop-before, .codex-management .host-table tbody tr.host-drop-after { background: #eef7f1; }
+.codex-management .host-error-popover { position: fixed; z-index: 1000; padding: 12px 14px; border: 1px solid #dfc4bc; border-radius: 7px; background: #fffaf8; color: #784d41; box-shadow: 0 7px 26px #23372a24; overflow: auto; font-size: 12px; line-height: 1.7; }
+.codex-management .host-error-popover strong { display: block; font-size: 11px; margin-bottom: 5px; color: #a25747; }
+.codex-management .host-error-popover p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.codex-management .host-order-announcement { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.codex-management .host-modal { width: 580px; }
+.codex-management .host-modal.wide { width: min(940px, calc(100vw - 48px)); height: min(690px, calc(100vh - 48px)); }
+.codex-management .host-modal .modal-heading, .codex-management .host-modal .modal-footer, .codex-management .host-detail-tabs { flex-shrink: 0; }
+.codex-management .host-modal .modal-body { padding: 20px 24px; }
+.codex-management .host-modal.wide .modal-body { flex: 1; min-height: 0; overflow: auto; }
+.codex-management .host-detail-tabs { display: flex; align-items: center; gap: 7px; padding: 10px 20px; border-bottom: 1px solid #e4ebe6; background: #f8faf9; }
+.codex-management .host-detail-tabs > button { display: inline-flex; align-items: center; gap: 6px; min-height: 35px; padding: 8px 14px; border: 1px solid transparent; border-radius: 5px; background: transparent; color: #617367; font-size: 12px; font-weight: 550; }
+.codex-management .host-detail-tabs > button:hover { background: var(--hover); }
+.codex-management .host-detail-tabs > button[aria-selected="true"] { border-color: #2d6852; background: #2d6852; color: #fff; }
+.codex-management .host-detail-tabs > button:focus-visible { outline: 2px solid #25856a; outline-offset: 2px; }
+.codex-management .host-details [role="tabpanel"]:focus-visible { outline: 2px solid #72a38a; outline-offset: 6px; }
+.codex-management .host-details [role="tabpanel"] > section + section { border-top: 1px solid #e6eee8; padding-top: 21px; margin-top: 22px; }
+.codex-management .host-details h3 { font-size: 13px; font-weight: 650; line-height: 1.6; color: #345641; display: flex; align-items: center; gap: 7px; margin: 0 0 13px; }
+.codex-management .host-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px 28px; margin: 0; }
+.codex-management .host-info-grid > div, .codex-management .host-key-info > div { min-width: 0; }
+.codex-management .host-details dt, .codex-management .host-confirm-info dt { font-size: 11px; color: #74867a; line-height: 1.7; }
+.codex-management .host-details dd { font-size: 12px; margin: 3px 0 0; color: #334d3d; overflow-wrap: anywhere; }
+.codex-management .host-info-full { grid-column: 1 / -1; }
+.codex-management .host-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px !important; }
+.codex-management .host-section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; }
+.codex-management .host-section-heading h3 { margin: 0; } .codex-management .host-section-heading h4 { margin: 0; font-size: 12px; font-weight: 600; }
+.codex-management .host-key-local { display: inline-flex; flex-shrink: 0; align-items: center; gap: 3px; color: #24744a; border-radius: 4px; background: #def1e4; padding: 2px 6px; font-size: 10px; }
+.codex-management .host-key-controls { border: 1px solid #e0e9e2; border-radius: 7px; padding: 15px; background: var(--surface); }
+.codex-management .host-key-target-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.codex-management .host-key-target-grid > div { min-width: 0; }
+.codex-management .host-key-target { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-height: 38px; padding: 7px 10px; border: 1px solid #dce6df; border-radius: 5px; background: #f6f9f7; font-size: 12px; line-height: 1.5; }
+.codex-management .host-key-target strong { font-weight: 600; overflow-wrap: anywhere; }
+.codex-management .host-key-target span { color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
+.codex-management .host-password-input { position: relative; }
+.codex-management .host-password-input input { padding-right: 36px !important; }
+.codex-management .host-password-input > button { position: absolute; top: 5px; right: 5px; width: 28px; height: 28px; padding: 5px; color: #829086; }
+.codex-management .host-password-field label .muted { font-size: 11px; }
+.codex-management .host-password-note { color: #78877d; font-size: 10px; line-height: 1.5; margin-top: 7px; }
+.codex-management .host-key-buttons { display: flex; gap: 7px; margin-top: 13px; flex-wrap: wrap; }
+.codex-management .host-key-status-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 12px; margin-top: 13px; padding: 9px 11px; border: 1px solid #dfe7e1; border-radius: 5px; background: #f6f8f7; color: #687b6f; line-height: 1.6; font-size: 11px; }
+.codex-management .host-key-status-banner strong { font-size: 11px; font-weight: 650; }
+.codex-management .host-key-status-banner.registered { border-color: #bfe0c8; color: #34784c; background: #edf8f0; }
+.codex-management .host-loading { display: flex; align-items: center; gap: 7px; font-size: 12px; color: #6b8a75; margin: 0 0 14px; }
+.codex-management .host-key-controls .host-loading { margin: 12px 0 0; }
+.codex-management .host-inline-error { margin: 0 0 15px; font-size: 12px; color: #ad5547; overflow-wrap: anywhere; }
+.codex-management .host-key-controls .host-inline-error { margin: 12px 0 0; }
+.codex-management .host-key-workspace { display: grid; grid-template-columns: 1fr 1fr; align-items: start; gap: 15px; margin-top: 16px; }
+.codex-management .host-key-workspace > section { min-width: 0; border: 1px solid #e0e9e2; border-radius: 7px; overflow: hidden; }
+.codex-management .host-key-workspace > section > .host-section-heading { margin: 0; padding: 11px 14px; border-bottom: 1px solid #e0e9e2; }
+.codex-management .host-key-workspace h3 { font-size: 12px; }
+.codex-management .host-server-key-body { padding: 10px; }
+.codex-management .host-authorized-keys ul { list-style: none; margin: 0; padding: 0; }
+.codex-management .host-authorized-keys li { padding: 11px; border: 1px solid #e4ebe6; border-radius: 5px; margin-bottom: 8px; }
+.codex-management .host-authorized-keys li:last-child { margin-bottom: 0; }
+.codex-management .host-authorized-keys li.matches-local { border-color: #67ba83; background: #f0f9f2; box-shadow: 0 0 0 1px #c5e8d0; }
+.codex-management .host-authorized-keys li > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.codex-management .host-authorized-keys li strong { font-weight: 550; font-size: 12px; overflow-wrap: anywhere; }
+.codex-management .host-authorized-keys li code { display: block; font: 10px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: #728476; overflow-wrap: anywhere; margin-top: 4px; }
+.codex-management .host-authorized-keys li p { margin-top: 6px; color: #3e8055; font-size: 10px; }
+.codex-management .host-key-empty { padding: 19px 12px; border: 1px dashed #dce6df; border-radius: 5px; text-align: center; font-size: 11px; line-height: 1.7; }
+.codex-management .host-key-workspace .host-local-key-panel { border-color: #2b4939; background: #193024; }
+.codex-management .host-local-key-panel > .host-section-heading { border-color: #304d3d !important; }
+.codex-management .host-local-key-panel h3, .codex-management .host-local-key-panel h4 { color: #edf5f0; }
+.codex-management .host-local-key-body { padding: 13px 14px; }
+.codex-management .host-key-info { margin: 0 0 13px; display: grid; gap: 10px; }
+.codex-management .host-local-key-panel dt { color: #9bb5a5; font-size: 10px; }
+.codex-management .host-local-key-panel dd { color: #d3e4da; font-size: 10px; }
+.codex-management .host-public-key-preview { display: block; width: 100%; height: 96px; min-height: 80px; padding: 10px; border: 1px solid #3c5948; border-radius: 5px; background: #14271d; font: 10px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace; color: #cadfd2; resize: vertical; }
+.codex-management .host-key-generate { margin: 10px 0 15px; }
+.codex-management .host-key-generate p { color: #b0cabb; font-size: 11px; margin-bottom: 8px; }
+.codex-management .host-key-result { border-top: 1px solid #355140; margin-top: 14px; padding-top: 12px; }
+.codex-management .host-key-source { border-top: 1px solid #355140; margin-top: 14px; padding-top: 12px; }
+.codex-management .host-key-source h4, .codex-management .host-key-result h4 { font-size: 11px; font-weight: 600; margin: 0 0 9px; }
+.codex-management .host-key-result > p { color: #97b4a3; font-size: 10px; line-height: 1.7; }
+.codex-management .host-key-result ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px; }
+.codex-management .host-key-result li { display: grid; grid-template-columns: 58px minmax(0, 1fr); gap: 8px; font-size: 10px; line-height: 1.6; color: #c7ddd0; overflow-wrap: anywhere; }
+.codex-management .host-key-result time { color: #88a694; font-variant-numeric: tabular-nums; text-align: right; }
+.codex-management .host-form { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; }
+.codex-management .host-form-full { grid-column: 1 / -1; }
+.codex-management .host-form p { font-size: 11px; line-height: 1.7; margin-top: 2px; }
+.codex-management .host-confirm-info { margin: 17px 0 0; display: grid; gap: 10px; }
+.codex-management .host-confirm-info > div { display: grid; grid-template-columns: 115px 1fr; gap: 10px; }
+.codex-management .host-confirm-info dd { margin: 0; font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 1280px) { .codex-management .host-app .toolbar { flex-direction: column; align-items: stretch; gap: 12px; } .codex-management .host-app .toolbar-actions { width: 100%; justify-content: flex-end; } }
+@media (max-width: 1050px) { .codex-management .host-app { padding: 20px 18px; } }
+@media (max-width: 960px) { .codex-management .host-key-workspace { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .codex-management .host-info-grid, .codex-management .host-form, .codex-management .host-key-target-grid { grid-template-columns: 1fr; } .codex-management .host-modal { max-width: calc(100vw - 32px); } .codex-management .host-modal .modal-body { padding: 16px; } .codex-management .host-modal .modal-footer { flex-wrap: wrap; } .codex-management .host-detail-tabs { padding: 9px 16px; } .codex-management .host-key-controls { padding: 12px; } }
+
+.codex-management .host-config-error { padding: 12px 15px; margin-bottom: 15px; border: 1px solid #eacfc6; border-radius: 6px; background: #fff5f1; color: #a25747; font-size: 12px; overflow-wrap: anywhere; }
+
+.codex-management .host-table tbody tr.host-group-row, .codex-management .host-table tbody tr.host-group-row td { height: 38px; }
+.codex-management .host-table tbody tr.host-group-row { background: #f3f7f4; }
+.codex-management .host-group-row td { padding: 4px 10px; border-bottom: 1px solid #e1e9e4; }
+.codex-management .host-group-header { display: flex; align-items: center; gap: 9px; min-height: 30px; }
+.codex-management .host-group-toggle, .codex-management .host-ungrouped-label { display: inline-flex; align-items: center; gap: 7px; min-width: 0; border: 0; background: transparent; color: #476652; padding: 0; font-size: 12px; line-height: 26px; }
+.codex-management .host-group-toggle { cursor: pointer; }
+.codex-management .host-group-toggle:hover:not(:disabled) { color: var(--accent); }
+.codex-management .host-group-toggle strong, .codex-management .host-ungrouped-label strong { max-width: 560px; overflow: hidden; text-overflow: ellipsis; }
+.codex-management .host-ungrouped-label { padding-left: 22px; }
+.codex-management .host-group-count { color: #7b8e81; font-size: 11px; }
+.codex-management .host-group-actions { display: flex; align-items: center; gap: 2px; margin-left: auto; }
+.codex-management .host-group-actions .action-button { width: 30px; height: 30px; color: #7f9487; }
+.codex-management .host-table tbody tr.host-group-drop { background: #e4f2e8; box-shadow: inset 0 0 0 2px #258569; }
+.codex-management .host-table .host-tree-host { padding-left: 28px; }
+.codex-management .host-tree-host .host-entry { position: relative; }
+.codex-management .host-tree-host .host-entry::before { content: ''; position: absolute; left: -13px; top: 2px; width: 8px; height: 11px; border-left: 1px solid #cadacf; border-bottom: 1px solid #cadacf; }
+.codex-management .host-device-login { display: grid; gap: 15px; border: 1px solid #dce7df; border-radius: 6px; padding: 15px; margin-top: 20px; background: #f7faf8; }
+.codex-management .host-login-url, .codex-management .host-login-code { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.codex-management .host-login-url > span, .codex-management .host-login-code > span { flex-basis: 100%; font-size: 11px; color: #718577; }
+.codex-management .host-login-url code { flex-basis: 100%; font: 11px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace; color: #526e5b; white-space: normal; overflow-wrap: anywhere; }
+.codex-management .host-login-code > strong { letter-spacing: .1em; font-size: 21px; color: #28513c; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.codex-management .host-login-status { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; margin-top: 17px; color: #718577; font-size: 12px; line-height: 1.7; }
+.codex-management .host-device-login .host-login-status { margin: 0; }
+.codex-management .host-login-status.completed { color: #287e50; background: #ecf7ef; border-radius: 5px; padding: 12px; }
+.codex-management .host-login-status.completed > strong { flex-basis: 100%; padding-left: 23px; overflow-wrap: anywhere; }
+.codex-management .host-login-error { margin-top: 17px; }
+
+.codex-management .host-selection-col { width: 34px; }
+.codex-management .host-table .host-selection-col, .codex-management .host-table .host-selection-cell { padding-left: 10px; padding-right: 8px; text-align: center; }
+.codex-management .host-selected-count { color: #647e6e; font-size: 11px; margin-right: 3px; font-variant-numeric: tabular-nums; white-space: nowrap; flex-shrink: 0; }
+.codex-management .host-batch-progress { display: flex; align-items: center; gap: 6px; margin: 0 0 12px; font-size: 11px; line-height: 1.5; color: #6c8776; }
+.codex-management .host-batch-list { margin-top: 18px; }
+.codex-management .host-batch-count { font-size: 12px; color: #6a8071; margin: 0 0 8px; }
+.codex-management .host-batch-list ul { max-height: 220px; overflow: auto; padding: 0; margin: 0; list-style: none; border: 1px solid #dfe8e2; border-radius: 5px; }
+.codex-management .host-batch-list li { display: flex; align-items: baseline; gap: 12px; justify-content: space-between; padding: 9px 12px; font-size: 12px; line-height: 1.5; }
+.codex-management .host-batch-list li + li { border-top: 1px solid #e7eee9; }
+.codex-management .host-batch-list li strong { font-weight: 550; overflow-wrap: anywhere; }
+.codex-management .host-batch-list li span { color: #7e9085; font-size: 11px; overflow-wrap: anywhere; text-align: right; }
+.codex-management .host-batch-result { padding: 10px 12px; margin: 0 0 13px; border: 1px solid #cce3d3; background: #f0f8f3; border-radius: 5px; color: #37734d; }
+.codex-management .host-batch-result.has-failures { border-color: #e5c9bc; background: #fff8f2; color: #996447; }
+.codex-management .host-batch-result-heading { display: flex; gap: 10px; align-items: center; justify-content: space-between; font-size: 12px; line-height: 1.5; }
+.codex-management .host-batch-result-heading .icon-button { width: 24px; height: 24px; flex-shrink: 0; }
+.codex-management .host-batch-result ul { list-style: none; padding: 8px 0 0; margin: 7px 0 0; border-top: 1px solid #ecdacc; max-height: 200px; overflow: auto; }
+.codex-management .host-batch-result li { display: grid; grid-template-columns: minmax(100px, 180px) minmax(0, 1fr); gap: 12px; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+.codex-management .host-batch-result li + li { margin-top: 5px; }
+.codex-management .host-batch-result li strong { font-weight: 550; }
+@media (max-width: 600px) { .codex-management .host-batch-result li { grid-template-columns: 1fr; gap: 0; } .codex-management .host-batch-progress { margin-left: 0; } }

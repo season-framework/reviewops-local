@@ -1,0 +1,39 @@
+name: Bug report
+description: Report a reproducible problem in ReviewOps.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "Do not include passwords, tokens, SSH keys, account emails, or private project data. Report vulnerabilities through SECURITY.md."
+  - type: input
+    id: version
+    attributes:
+      label: ReviewOps version
+      placeholder: 1.2.0
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: macOS version and chip
+      placeholder: macOS version, Apple Silicon or Intel
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Describe the smallest sequence that reproduces the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: details
+    attributes:
+      label: Sanitized screenshots or logs
+      description: Remove personal and confidential information before attaching files.

@@ -1,0 +1,49 @@
+.codex-management .account-details { font-size: 12px; line-height: 1.65; }
+.codex-management .details-topline { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 17px; }
+.codex-management .details-email { color: var(--muted); overflow-wrap: anywhere; }
+.codex-management .details-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; border-bottom: 1px solid #e0e8e3; margin-bottom: 16px; padding-bottom: 10px; }
+.codex-management .details-tabs { display: flex; gap: 4px; }
+.codex-management .details-tabs button { border: 0; background: transparent; padding: 7px 10px; font-size: 12px; border-radius: 5px; color: #718177; white-space: nowrap; }
+.codex-management .details-tabs button[aria-selected=true] { background: #edf5f0; color: #216548; font-weight: 600; }
+.codex-management .details-filters { display: flex; gap: 7px; }
+.codex-management .modal .account-details .reviewops-select { width: auto; --select-height: 32px; --select-font-size: 12px; }
+.codex-management .details-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); column-gap: 24px; row-gap: 10px; margin: 0 0 16px; }
+.codex-management .details-summary > div { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding-bottom: 8px; border-bottom: 1px solid #edf1ee; }
+.codex-management .details-summary dt { font-size: 11px; color: #75847b; }
+.codex-management .details-summary dd { margin: 0; text-align: right; font-size: 15px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.codex-management .details-summary dd small { display: inline; font-weight: 400; margin-left: 4px; }
+.codex-management .details-chart { display: block; width: 100%; max-height: 190px; margin: 4px 0 10px; overflow: visible; }
+.codex-management .chart-grid { stroke: #e9efeb; stroke-width: 1; }
+.codex-management .chart-label { fill: #7b8980; font: 11px -apple-system, BlinkMacSystemFont, sans-serif; font-variant-numeric: tabular-nums; }
+.codex-management .chart-bar { fill: #51a488; }
+.codex-management .chart-line { fill: none; stroke: #399374; stroke-width: 2; stroke-linejoin: round; }
+.codex-management .chart-point { fill: #399374; }
+.codex-management .chart-missing { fill: #aebcb2; font-size: 10px; }
+.codex-management .details-note { font-size: 11px; color: var(--muted); line-height: 1.6; }
+.codex-management .details-table-scroll { overflow: auto; border-bottom: 1px solid #e8eee9; margin-top: 9px; }
+.codex-management .token-history-scroll, .codex-management .quota-history-scroll { max-height: 230px; }
+.codex-management .reset-history-scroll { max-height: 210px; }
+.codex-management .account-details .details-table { min-width: 0; font-size: 12px; width: 100%; }
+.codex-management .details-table th { position: sticky; top: 0; z-index: 1; font-size: 11px; height: 32px; }
+.codex-management .details-table th, .codex-management .details-table td { padding: 8px 12px; }
+.codex-management .details-table .details-number, .codex-management .details-table .details-date { text-align: right; font-variant-numeric: tabular-nums; }
+.codex-management .details-table .details-date { width: 45%; }
+.codex-management .details-table small { font-size: 10px; }
+.codex-management .details-section { margin-top: 22px; border-top: 1px solid #e2e9e4; padding-top: 14px; }
+.codex-management .details-section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.codex-management .details-section h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.codex-management .details-empty { padding: 28px 12px; text-align: center; color: #7a8880; font-size: 12px; background: #f8faf9; border-radius: 5px; }
+.codex-management .details-section > .details-empty { margin-top: 9px; padding: 18px 12px; }
+.codex-management .details-error { font-size: 12px; color: #a64f40; padding: 9px 11px; margin: 0 0 12px; background: #fff6f2; border-radius: 5px; overflow-wrap: anywhere; }
+.codex-management .details-updated { margin-top: 7px; text-align: right; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
+.codex-management .quota-heading { display: flex; align-items: center; justify-content: space-between; gap: 15px; margin-bottom: 12px; }
+.codex-management .quota-heading .reviewops-select { max-width: 45%; }
+@media (max-width: 680px) {
+  .codex-management .details-controls { align-items: stretch; flex-direction: column; }
+  .codex-management .details-filters { justify-content: flex-end; }
+  .codex-management .details-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 15px; }
+  .codex-management .details-section-heading, .codex-management .quota-heading { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .codex-management .quota-heading .reviewops-select { max-width: 100%; }
+  .codex-management .details-table th, .codex-management .details-table td { padding: 8px; }
+  .codex-management .quota-history-scroll .details-table { min-width: 460px; }
+}

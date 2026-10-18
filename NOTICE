@@ -1,0 +1,28 @@
+ReviewOps
+Copyright (c) 2026 ReviewOps contributors
+
+ReviewOps adapts the MIT-licensed ReviewOps interface and original artwork,
+source snapshot commit
+e5b1e7290b47f3c2276c8f20ae6ecef2c93e570a (2026-10-17).
+The application and original artwork are licensed under MIT; see LICENSE.
+This is an independent local desktop implementation. It does not include the
+Spring server, its account system, server configuration or production data.
+
+SUIT font is Copyright (c) 2022 SUNN, SIL Open Font License 1.1.
+The original license accompanies the font in public/assets.
+The group list icons use Font Awesome Free 6.7.2
+by Fonticons, Inc. SVG paths are reproduced as inline React SVGs.
+Icons are licensed under CC BY 4.0:
+https://fontawesome.com/license/free
+https://creativecommons.org/licenses/by/4.0/
+React, React DOM, scheduler, xterm.js and its fit addon are MIT licensed.
+ssh2 and its runtime dependencies retain their supplied licenses.
+Electron includes Chromium and Node.js, and distributes their respective
+licenses in the application bundle. Other bundled dependency licenses are in
+THIRD-PARTY-NOTICES.txt.
+
+Account and SSH host management code is adapted from the user-provided
+Codex Account Manager 0.3.4 project and included under this project's MIT
+license. The original project is preserved separately.
+Lucide icons, react-markdown, remark-gfm and their bundled dependencies
+retain their supplied licenses in THIRD-PARTY-NOTICES.txt.

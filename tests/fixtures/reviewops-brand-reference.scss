@@ -1,0 +1,61 @@
+// ReviewOps CI: the logo orange anchors the palette; darker action tones keep small text readable.
+:root {
+    --reviewops-brand-50: 255 248 244;
+    --reviewops-brand-100: 255 241 235;
+    --reviewops-brand-200: 246 201 185;
+    --reviewops-brand-300: 255 172 145;
+    --reviewops-brand-400: 255 129 94;
+    --reviewops-brand-500: 255 89 51;
+    --reviewops-brand-600: 196 61 28;
+    --reviewops-brand-700: 168 50 22;
+    --reviewops-brand-800: 158 48 23;
+    --reviewops-brand-900: 119 37 18;
+    --reviewops-brand-950: 67 24 15;
+
+    --reviewops-brand: rgb(var(--reviewops-brand-500));
+    --reviewops-accent: rgb(var(--reviewops-brand-600));
+    --reviewops-accent-hover: rgb(var(--reviewops-brand-700));
+    --reviewops-accent-ink: rgb(var(--reviewops-brand-800));
+    --reviewops-accent-soft: rgb(var(--reviewops-brand-100));
+    --reviewops-accent-subtle: rgb(var(--reviewops-brand-50));
+    --reviewops-accent-border: rgb(var(--reviewops-brand-200));
+    --reviewops-focus: var(--reviewops-accent);
+    --reviewops-focus-on-dark: rgb(var(--reviewops-brand-400));
+    --reviewops-text: #292522;
+    --reviewops-muted: #6b625b;
+    --reviewops-border: #ded8d2;
+    --reviewops-app-surface: #f7f5f2;
+    --reviewops-panel-surface: #ffffff;
+    --reviewops-input-surface: #ffffff;
+    --reviewops-hover-surface: #eee8e2;
+    --reviewops-tabbar-surface: #e8e1da;
+    --reviewops-sidebar-surface: #f0eae4;
+    --reviewops-sidebar-dark: #262320;
+    --reviewops-sidebar-dark-hover: #36302a;
+    --reviewops-tooltip-surface: #262320;
+    --reviewops-tooltip-text: #ffffff;
+}
+
+:root[data-reviewops-theme='dark'] {
+    --reviewops-brand-50: 45 33 26;
+    --reviewops-brand-100: 60 39 29;
+    --reviewops-brand-200: 121 70 47;
+    --reviewops-text: #f1e9e3;
+    --reviewops-muted: #c4b7ae;
+    --reviewops-border: #584c43;
+    --reviewops-app-surface: #171513;
+    --reviewops-panel-surface: #211e1b;
+    --reviewops-input-surface: #29241f;
+    --reviewops-hover-surface: #332b25;
+    --reviewops-tabbar-surface: #2c2621;
+    --reviewops-sidebar-surface: #24201c;
+    --reviewops-accent-hover: #a83216;
+    --reviewops-accent-ink: #ffb894;
+    --reviewops-accent-soft: #3c271d;
+    --reviewops-accent-subtle: #2d211a;
+    --reviewops-accent-border: #79462f;
+    --reviewops-focus: #ff9a73;
+    --reviewops-focus-on-dark: #ff9a73;
+    --reviewops-tooltip-surface: #eee4dc;
+    --reviewops-tooltip-text: #262320;
+}

@@ -1,0 +1,120 @@
+{
+  "name": "reviewops-local",
+  "productName": "ReviewOps",
+  "version": "1.2.0",
+  "description": "Review websites, organize projects, and run Codex on your Mac or SSH hosts.",
+  "author": "SEASON",
+  "license": "MIT",
+  "private": true,
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "start": "electron .",
+    "build": "node scripts/licenses.mjs && vite build && node scripts/copy-locales.mjs",
+    "test": "node --test tests/*.test.cjs",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:ssh-ui": "node scripts/e2e-ssh.mjs",
+    "package": "npm run build && electron-builder --mac dmg --arm64 --publish never",
+    "package:intel": "npm run build && electron-builder --mac dmg --x64 --publish never",
+    "test:navigation": "node scripts/e2e-navigation.mjs",
+    "test:project": "node scripts/e2e-project.mjs",
+    "test:registration": "node scripts/e2e-registration.mjs",
+    "test:browser": "node scripts/e2e-browser.mjs",
+    "test:browser-ui": "node scripts/e2e-browser-ui.mjs",
+    "test:branding": "node scripts/test-branding.mjs",
+    "test:screenshots": "node scripts/e2e-screenshots.mjs",
+    "test:agents": "node scripts/e2e-agents.mjs",
+    "test:history": "node scripts/e2e-history.mjs",
+    "test:agent-quit": "node scripts/e2e-agent-quit.mjs",
+    "test:resource-lists": "node scripts/e2e-resource-lists.mjs",
+    "test:review-registration": "node scripts/e2e-review-registration.mjs",
+    "test:agent-composer": "node scripts/e2e-agent-composer.mjs",
+    "test:browser-evidence": "node scripts/e2e-browser-evidence.mjs",
+    "test:groups-list": "node scripts/e2e-groups-list.mjs",
+    "test:window-controls": "node scripts/e2e-window-controls.mjs",
+    "test:tab-reorder": "node scripts/e2e-tab-reorder.mjs",
+    "test:viewer-toolbar": "node scripts/e2e-viewer-toolbar.mjs",
+    "test:agent-files": "node scripts/e2e-agent-files.mjs",
+    "test:tab-ui": "node scripts/e2e-tab-ui.mjs",
+    "test:agent-start": "node scripts/e2e-agent-start.mjs",
+    "test:deletion": "node scripts/e2e-deletion.mjs",
+    "test:project-connections": "node scripts/e2e-project-connections.mjs",
+    "test:account-import": "node scripts/e2e-account-import.mjs",
+    "test:selects": "node scripts/e2e-selects.mjs",
+    "check:publication": "node scripts/check-publication.mjs",
+    "test:i18n": "node scripts/e2e-i18n.mjs",
+    "test:update-install": "node scripts/e2e-update-install.mjs",
+    "test:update-packaged": "node scripts/e2e-update-packaged.mjs",
+    "release:manifest": "node scripts/create-update-manifest.mjs"
+  },
+  "dependencies": {
+    "github-markdown-css": "5.9.0",
+    "lucide-react": "0.577.0",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1",
+    "ssh2": "1.17.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/xterm": "6.0.0",
+    "electron": "44.9.0",
+    "electron-builder": "26.15.3",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "vite": "8.3.4"
+  },
+  "build": {
+    "appId": "kr.co.season.reviewops.local",
+    "productName": "ReviewOps",
+    "artifactName": "ReviewOps-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json",
+      "LICENSE",
+      "NOTICE",
+      "THIRD-PARTY-NOTICES.txt"
+    ],
+    "asar": true,
+    "npmRebuild": false,
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "identity": "-",
+      "hardenedRuntime": false,
+      "minimumSystemVersion": "13.0"
+    },
+    "dmg": {
+      "title": "ReviewOps",
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "contents": [
+        {
+          "x": 135,
+          "y": 175
+        },
+        {
+          "x": 405,
+          "y": 175,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/season-framework/reviewops-local.git"
+  },
+  "homepage": "https://season-framework.github.io/reviewops-local/",
+  "bugs": {
+    "url": "https://github.com/season-framework/reviewops-local/issues"
+  }
+}

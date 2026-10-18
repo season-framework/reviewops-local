@@ -1,0 +1,7 @@
+.reviewops-work-issue-toggle { display: flex; flex: 0 0 auto; gap: 2px; border: 1px solid var(--reviewops-border); border-radius: 999px; padding: 3px; background: var(--reviewops-app-surface); }
+.reviewops-work-issue-toggle button { min-height: 36px; flex: 1; border: 1px solid transparent; border-radius: 999px; padding: 4px 12px; color: var(--reviewops-muted); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.reviewops-work-issue-toggle button:hover { color: var(--reviewops-accent-ink); }
+.reviewops-work-issue-toggle button.is-active { border-color: var(--reviewops-accent-border); background: var(--reviewops-accent-soft); color: var(--reviewops-accent-ink); }
+.reviewops-work-issue-toggle button:focus-visible { outline: 2px solid var(--reviewops-focus); outline-offset: -2px; }
+
+@media (max-width: 1023px) { .reviewops-work-issue-toggle button { min-height: 44px; } }

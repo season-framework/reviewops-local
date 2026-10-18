@@ -1,0 +1,130 @@
+/* ReviewOps angular/styles/_tabs.scss. Apply only to application-owned tabs. */
+:root {
+  --reviewops-tab-height: 40px;
+  --reviewops-tab-font-size: 14px;
+  --reviewops-tab-padding-inline: 14px;
+  --reviewops-tab-focus: var(--accent);
+}
+:root[data-theme=dark] { --reviewops-tab-focus: #ff9a73; }
+
+.reviewops-tab-strip {
+  min-width: 0;
+  gap: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  outline: none;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+
+:is(.reviewops-tab,.reviewops-tab-item) {
+  box-sizing: border-box;
+  min-width: 0;
+  min-height: var(--reviewops-tab-height);
+  margin-block: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 8px var(--reviewops-tab-padding-inline);
+  background: transparent;
+  color: var(--muted);
+  box-shadow: none;
+  font-family: inherit;
+  font-size: var(--reviewops-tab-font-size);
+  font-weight: 600;
+  line-height: 1.4;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: background-color 120ms,color 120ms;
+}
+.reviewops-tab {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+:is(.reviewops-tab,.reviewops-tab-item):hover { background: var(--sidebar); color: var(--text); }
+:is(.reviewops-tab,.reviewops-tab-item):is(.is-active,[aria-selected=true],[aria-pressed=true]) {
+  background: transparent;
+  outline: none;
+  color: var(--accent-ink);
+  box-shadow: inset 0 -2px 0 var(--accent-ink);
+}
+:is(.reviewops-tab,.reviewops-tab-item):is(:disabled,[aria-disabled=true]) { cursor: not-allowed; opacity: .5; }
+
+.reviewops-tab-strip--text { box-shadow: none; }
+.reviewops-tab-strip--text > .reviewops-tab {
+  background: transparent;
+  box-shadow: none;
+  font-variant-numeric: tabular-nums;
+}
+.reviewops-tab-strip--text > .reviewops-tab:hover { background: transparent; color: var(--text); }
+.reviewops-tab-strip--text > .reviewops-tab:is(.is-active,[aria-selected=true],[aria-pressed=true]) {
+  background: transparent;
+  box-shadow: none;
+  color: var(--accent-ink);
+  font-weight: 700;
+}
+
+.reviewops-tab-item { height: var(--reviewops-tab-height); padding: 0; }
+.reviewops-tab-label {
+  display: inline-flex;
+  min-width: 0;
+  height: 100%;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: 6px;
+  border: 0;
+  padding: 8px var(--reviewops-tab-padding-inline);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.reviewops-tab-close {
+  display: inline-flex;
+  width: 32px;
+  height: 100%;
+  flex: 0 0 32px;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.reviewops-tab-close:hover { background: var(--sidebar); color: var(--text); }
+.reviewops-tab-count {
+  display: inline-flex;
+  min-width: 20px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: var(--surface);
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 18px;
+  font-variant-numeric: tabular-nums;
+}
+.reviewops-tab:focus-visible,
+.reviewops-tab-item:has(>.reviewops-tab-label:focus-visible),
+:is(.reviewops-tab-label,.reviewops-tab-close):focus-visible { outline: 2px solid var(--reviewops-tab-focus); outline-offset: -2px; }
+
+@media(max-width:1023px) {
+  :root { --reviewops-tab-height: 44px; --reviewops-tab-font-size: 13px; --reviewops-tab-padding-inline: 10px; }
+  .reviewops-tab-close { width: 44px; flex-basis: 44px; }
+  .reviewops-tab-strip--desktop-text { box-shadow: inset 0 -1px 0 var(--border); }
+  .reviewops-tab-strip--desktop-text > .reviewops-tab { font-variant-numeric: normal; }
+  .reviewops-tab-strip--desktop-text > .reviewops-tab:hover { background: var(--sidebar); }
+  .reviewops-tab-strip--desktop-text > .reviewops-tab:is(.is-active,[aria-selected=true],[aria-pressed=true]) { background: transparent; font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent-ink); }
+}
+@media(prefers-reduced-motion:reduce) { :is(.reviewops-tab,.reviewops-tab-item) { transition: none; } }

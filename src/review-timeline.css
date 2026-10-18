@@ -1,0 +1,77 @@
+/* Include the app's 7px scrollbar in the composer's matching outer inset. */
+.original-review-panel .original-review-history-scroll {
+  scrollbar-gutter: stable;
+  padding-inline-end: 13px;
+}
+.original-review-timeline.review-chat-timeline {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 20px;
+  max-width: 960px;
+  padding-block: 2px 20px;
+  container-type: inline-size;
+}
+@media (max-width:1100px) {
+  .original-review-panel .original-review-history-scroll {padding-inline-end:5px;}
+}
+.review-chat-date {display:flex;align-items:center;gap:14px;justify-content:center;color:var(--review-muted);font-size:11px;line-height:1.5;}
+.review-chat-date::before,.review-chat-date::after {content:"";height:1px;background:var(--border);flex:1;}
+.review-chat-date span {white-space:nowrap;}
+.review-chat-message {display:flex;flex-direction:column;align-self:stretch;width:100%;max-width:none;min-width:0;}
+.review-chat-message-header {display:flex;flex-wrap:wrap;align-items:center;gap:6px;min-width:0;min-height:29px;padding:0 4px 6px;}
+.review-chat-message-header strong {font-size:12px;font-weight:650;color:var(--text);}
+.review-chat-avatar {display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;width:25px;height:25px;border-radius:50%;background:#e3e9f0;color:#52657a;}
+.is-agent .review-chat-avatar {background:#e0e7ff;color:#4f46a1;}
+.review-chat-kind {font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;line-height:1.4;color:var(--review-muted);background:var(--surface);}
+.review-chat-message-header time,.review-chat-edited {font-size:10px;line-height:1.6;color:var(--review-muted);}
+.review-chat-message-header time {margin-left:2px;}
+.review-chat-edit {display:inline-flex;gap:4px;align-items:center;margin-left:auto;min-height:25px;padding:3px 5px;border-radius:4px;color:var(--review-muted);font-size:11px;white-space:nowrap;}
+.review-chat-edit:hover:not(:disabled) {background:var(--hover);color:var(--text);}
+.review-chat-bubble {min-width:0;padding:14px 16px;border:1px solid #dce3eb;border-radius:7px;background:var(--surface);box-shadow:0 1px 3px #1e293b05;}
+.review-chat-bubble .original-review-markdown {font-size:13px;line-height:1.8;}
+.review-chat-bubble .original-review-markdown :is(h2,h3,h4,h5,h6) {color:var(--text);}
+.review-chat-bubble .original-review-markdown>:first-child {margin-top:0;}
+.review-chat-bubble .original-review-markdown>:last-child {margin-bottom:0;}
+.review-chat-bubble .original-review-markdown code {background:#e7ecf2;}
+.review-chat-bubble .original-review-markdown pre {background:var(--app);border-color:var(--border);}
+.review-chat-bubble .original-review-markdown pre code {background:transparent;}
+.review-chat-empty {color:var(--review-muted);font-size:12px;line-height:1.7;}
+.review-chat-attachments {min-width:0;}
+.original-review-markdown+.review-chat-attachments {margin-top:14px;padding-top:12px;border-top:1px solid var(--border);}
+.review-chat-attachment-label {display:flex;align-items:center;gap:5px;font-size:10px;color:var(--review-muted);margin-bottom:8px;}
+.review-chat-attachments .original-review-activity-images {margin-top:0;gap:10px;grid-template-columns:repeat(auto-fill,minmax(min(100%,180px),1fr));}
+.review-chat-attachments .original-review-screenshot {padding:5px;border:1px solid var(--border);border-radius:7px;background:var(--surface);}
+.review-chat-attachments .original-review-screenshot-preview {border-radius:3px;}
+.review-chat-attachments .original-review-screenshot figcaption {padding:7px 4px 4px;gap:1px;}
+.review-chat-attachments .original-review-screenshot figcaption strong {font-size:11px;}
+.review-chat-attachments .original-review-screenshot figcaption span {font-size:10px;}
+.review-chat-event {display:flex;flex-wrap:wrap;align-items:center;justify-content:center;gap:6px;align-self:center;max-width:100%;color:var(--review-muted);font-size:11px;line-height:1.6;padding:3px 8px;}
+.review-chat-event>svg {flex-shrink:0;}
+.review-chat-event-label {font-weight:600;}
+.review-chat-event time {font-size:10px;margin-left:3px;}
+.review-chat-event .original-review-status {padding:2px 6px;font-size:10px;}
+.review-chat-file-list {display:flex;flex-direction:column;gap:7px;list-style:none;padding:0;margin:0;min-width:0;}
+.original-review-image-grid+.review-chat-file-list {margin-top:10px;}
+.review-chat-file {display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;padding:9px 10px;border:1px solid var(--border);background:var(--surface);border-radius:7px;min-width:0;}
+.review-chat-file>svg {flex-shrink:0;color:var(--review-muted);}
+.review-chat-file-info {flex:1;min-width:100px;}
+.review-chat-file-info>button {display:block;max-width:100%;padding:0;color:var(--review-text);font-weight:600;font-size:12px;line-height:1.6;text-align:left;overflow-wrap:anywhere;}
+.review-chat-file-info>button:hover {text-decoration:underline;}
+.review-chat-file-info>small {font-size:10px;color:var(--review-muted);line-height:1.6;}
+.review-chat-file-actions {display:flex;gap:3px;margin-left:auto;}
+.review-chat-file-actions button {display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:4px;color:var(--review-muted);}
+.review-chat-file-actions button:hover:not(:disabled) {color:var(--text);background:var(--hover);}
+:root[data-theme=dark] .review-chat-bubble {border-color:#414950;background:var(--surface);}
+:root[data-theme=dark] .review-chat-avatar {background:#353f49;color:#c0ccd8;}
+:root[data-theme=dark] .is-agent .review-chat-avatar {background:#383554;color:#c6c2ff;}
+:root[data-theme=dark] .review-chat-bubble .original-review-markdown code {background:var(--hover);}
+:root[data-theme=dark] .review-chat-bubble .original-review-markdown pre code {background:transparent;}
+@container (max-width:420px) {
+  .review-chat-message {width:100%;}
+  .review-chat-bubble {padding:12px;}
+  .review-chat-message-header {gap:5px;padding-inline:1px;}
+  .review-chat-edit span {display:none;}
+  .review-chat-event {gap:4px;padding-inline:0;}
+  .review-chat-event-label {display:none;}
+}
