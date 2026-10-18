@@ -129,6 +129,27 @@ test('unsupported environments do not make scheduled update requests',async t=>{
  const {manager,observed}=await managerFixture(t,{platform:'win32'});
  manager.start();t.mock.timers.tick(20*60*1000);await settleCheck();assert.deepEqual(observed.requests,[]);
 });
+test('changing update interval replaces the timer without a duplicate startup check',async t=>{
+ t.mock.timers.enable({apis:['setInterval']});
+ const {manager,observed}=await managerFixture(t);manager.start();await settleCheck();
+ assert.equal((await manager.configure({intervalMinutes:3})).intervalMinutes,3);assert.equal(observed.requests.length,2);
+ t.mock.timers.tick(3*60*1000-1);await settleCheck();assert.equal(observed.requests.length,2);
+ t.mock.timers.tick(1);await settleCheck();assert.equal(observed.requests.length,4);
+ t.mock.timers.tick(3*60*1000);await settleCheck();assert.equal(observed.requests.length,6);
+});
+test('update interval and automatic preference persist together and validate partial changes',async t=>{
+ const {manager,root}=await managerFixture(t,{automatic:false});
+ await manager.configure({intervalMinutes:45});assert.equal(manager.snapshot().automatic,false);
+ await manager.configure({automatic:true});assert.equal(manager.snapshot().intervalMinutes,45);
+ const saved=JSON.parse(await fs.readFile(path.join(root,'data/updates/settings.json'),'utf8'));assert.deepEqual(saved,{automatic:true,intervalMinutes:45});
+ const restored=createUpdateManager({app:{getVersion:()=> '1.1.1',isPackaged:true},dataPath:path.join(root,'data'),platform:'darwin',arch:'arm64'});t.after(()=>restored.close());assert.equal(restored.snapshot().intervalMinutes,45);
+ for(const intervalMinutes of [0,-1,1441,1.5,'10',null,Infinity])await assert.rejects(manager.configure({intervalMinutes}));
+ await assert.rejects(manager.configure({}));assert.equal(manager.snapshot().intervalMinutes,45);
+});
+test('invalid saved intervals fall back to ten minutes without changing the automatic preference',async t=>{
+ const root=await temp(t);await fs.mkdir(path.join(root,'updates'));await fs.writeFile(path.join(root,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:0}));
+ const manager=createUpdateManager({app:{getVersion:()=> '1.1.1',isPackaged:true},dataPath:root,platform:'darwin',arch:'arm64'});t.after(()=>manager.close());assert.equal(manager.snapshot().intervalMinutes,10);assert.equal(manager.snapshot().automatic,false);
+});
 test('update check/download/install waits for actual quit and preserves isolated data location',async t=>{
  const {manager,observed,root}=await managerFixture(t);assert.equal((await manager.check()).status,'available');assert.equal((await manager.download()).status,'ready');
  observed.busy=true;await assert.rejects(manager.install(),/active tasks/);observed.busy=false;

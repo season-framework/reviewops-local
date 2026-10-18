@@ -1,6 +1,7 @@
 import React, {useEffect, useRef, useState} from 'react';
 import Icon from './icons.jsx';
 import {t, useLocale} from './i18n/index.js';
+import RefreshIntervalField,{intervalValue} from './RefreshIntervalField.jsx';
 import './update-settings.css';
 const messages = {
  idle:'업데이트를 확인할 수 있습니다.', checking:'업데이트 확인 중', current:'최신 버전입니다.',
@@ -10,16 +11,21 @@ const messages = {
 const invokeUpdate=(action,payload)=>window.reviewops.invoke(action,payload);
 export default function UpdateSettings({invoke=invokeUpdate}) {
  useLocale();
- const [state,setState]=useState(null),[error,setError]=useState(''),[pending,setPending]=useState(false);
- const actionPending=useRef(false);
- useEffect(()=>{let active=true,updated=false;const stop=window.reviewops?.onUpdateState?.(value=>{updated=true;if(active)setState(value)});invoke('update.state').then(value=>{if(active&&!updated)setState(value)}).catch(failure=>{if(active&&!updated)setError(failure.message)});return()=>{active=false;stop?.()}},[invoke]);
- const action=async(name,payload)=>{if(actionPending.current)return;actionPending.current=true;setPending(true);setError('');try{const result=await invoke(`update.${name}`,payload);if(result?.status)setState(result)}catch(failure){setError(failure.message)}finally{actionPending.current=false;setPending(false)}};
+ const [state,setState]=useState(null),[error,setError]=useState(''),[pending,setPending]=useState(false),[minutes,setMinutes]=useState('10'),[saved,setSaved]=useState(false);
+ const actionPending=useRef(false),revision=useRef(0),previous=useRef(null);
+ useEffect(()=>{let active=true;const before=revision.current,stop=window.reviewops?.onUpdateState?.(value=>{revision.current++;if(active)setState(value)});invoke('update.state').then(value=>{if(active&&before===revision.current)setState(value)}).catch(failure=>{if(active&&before===revision.current)setError(failure.message)});return()=>{active=false;stop?.()}},[invoke]);
+ useEffect(()=>{if(!state)return;const next=String(state.intervalMinutes??10),prior=previous.current;setMinutes(current=>prior===null||current===prior?next:current);previous.current=next},[state?.intervalMinutes]);
+ const action=async(name,payload)=>{if(actionPending.current)return;actionPending.current=true;setPending(true);setError('');setSaved(false);const before=revision.current;try{const result=await invoke(`update.${name}`,payload);if(result?.status&&before===revision.current){revision.current++;setState(result)}if(name==='configure'&&payload?.intervalMinutes!==undefined){setMinutes(String(payload.intervalMinutes));setSaved(true)}}catch(failure){setError(failure.message)}finally{actionPending.current=false;setPending(false)}};
+ const save=event=>{event.preventDefault();const value=intervalValue(minutes,1);if(value===null){setError(t('업데이트 확인 주기는 1~1440분 사이의 정수로 입력하십시오.'));return}action('configure',{intervalMinutes:value})};
  const working=pending||['checking','downloading','verifying','installing'].includes(state?.status);
  const progress=Math.max(0,Math.min(100,Number(state?.progress)||0));
  return <section className="settings-panel update-settings" aria-label={t('앱 업데이트')}>
   <div className="section-heading"><h2>{t('앱 업데이트')}</h2><button className="button" disabled={working||!state?.supported} onClick={()=>action('check')}><Icon name="refresh" size={16}/>{t('업데이트 확인')}</button></div>
   <p>{t('GitHub에 공개된 새 버전을 확인하고 설치합니다.')}</p>
   <label className="update-automatic"><input type="checkbox" checked={state?.automatic??true} disabled={!state?.supported||working} onChange={event=>action('configure',{automatic:event.target.checked})}/><span>{t('새 버전 자동 확인')}</span></label>
+  <p className="muted">{t('앱을 시작할 때 새 버전을 확인하고 설정한 간격으로 다시 확인합니다.')}</p>
+  <form className="settings-interval-form" onSubmit={save} noValidate><RefreshIntervalField label={t('앱 업데이트 확인 주기')} value={minutes} onChange={value=>{setMinutes(value);setSaved(false)}} min={1} presets={[1,5,10,30,60,360,1440]} disabled={!state?.supported||working}/><button type="submit" className="button" disabled={!state?.supported||working||String(state.intervalMinutes??10)===minutes}>{t('주기 저장')}</button></form>
+  {saved&&<p className="settings-save-note" aria-live="polite">{t('주기를 저장했습니다.')}</p>}
   <div className="update-version-row"><span>{t('설치된 버전')} <strong>{state?.version||'—'}</strong></span>{state?.availableVersion&&<span>{t('새 버전')} <strong>{state.availableVersion}</strong></span>}</div>
   {state&&!state.supported?<p className="muted">{t('자동 업데이트는 설치된 macOS 앱에서 사용할 수 있습니다.')}</p>:<p role="status" aria-live="polite">{t(messages[state?.status]||messages.idle)}{state?.status==='downloading'?` ${progress}%`:''}</p>}
   {state?.status==='downloading'&&<progress max="100" value={progress} aria-label={t('업데이트 다운로드 진행률')}/>}

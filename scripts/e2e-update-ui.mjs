@@ -1,4 +1,5 @@
 import {setTestLocale} from './test-locale.mjs';
+import {isolatedModelRuntime} from './model-cache-fixture.mjs';
 import {_electron as electron,expect} from '@playwright/test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -57,7 +58,7 @@ function readableColors({color,background}){
 }
 
 try{
- const env={...process.env,REVIEWOPS_DATA_DIR:path.join(testRoot,'data'),REVIEWOPS_SSH_CONFIG:path.join(testRoot,'ssh-config'),REVIEWOPS_CODEX_SSH_CONFIG:path.join(testRoot,'ssh-config')};
+ const env={...process.env,...isolatedModelRuntime({home:path.join(testRoot,'home'),dataPath:path.join(testRoot,'data')}),REVIEWOPS_DATA_DIR:path.join(testRoot,'data'),REVIEWOPS_SSH_CONFIG:path.join(testRoot,'ssh-config'),REVIEWOPS_CODEX_SSH_CONFIG:path.join(testRoot,'ssh-config')};
  fs.writeFileSync(env.REVIEWOPS_SSH_CONFIG,'# Isolated update UI fixture\n');
  for(const key of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[key];
  app=await electron.launch({args:process.env.REVIEWOPS_TEST_EXECUTABLE?[]:[root],executablePath:process.env.REVIEWOPS_TEST_EXECUTABLE,env,timeout:30000});
@@ -93,7 +94,7 @@ try{
  await releaseInitialState();await expect(update()).toHaveAttribute('aria-label','업데이트 설치 · 새 버전 1.2.3');await expect(update()).toBeEnabled();
  passed('새 버전 이벤트 뒤에 도착한 초기 idle 응답이 사이드 메뉴 알림을 지우지 않음');
 
- await holdInitialState();await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();await expect.poll(pendingStates).toBe(1);
+ await holdInitialState();await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();await page.locator('.settings-section-menu').getByRole('button',{name:'자동 확인',exact:true}).click();await expect.poll(pendingStates).toBe(1);
  await publish({availableVersion:'1.2.3',status:'available'});await expect(settings().getByRole('button',{name:'업데이트 설치',exact:true})).toBeVisible();
  await releaseInitialState();await expect(settings().getByRole('button',{name:'업데이트 설치',exact:true})).toBeVisible();await expect(settings().getByRole('status')).toContainText('새 버전을 사용할 수 있습니다.');
  passed('설정에서도 새 버전 이벤트 뒤에 도착한 초기 idle 응답을 무시');
@@ -126,6 +127,7 @@ try{
  await update().evaluate(node=>{node.click();node.click()});await expect.poll(calls).toBe(1);
  await publish({status:'downloading',progress:37});await expect(update()).toHaveAttribute('aria-label','다운로드 중 37% · 새 버전 1.2.3');await expect(update().locator('progress')).toHaveAttribute('value','37');
  await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();
+ await page.locator('.settings-section-menu').getByRole('button',{name:'자동 확인',exact:true}).click();
  await expect(settings().getByRole('button',{name:'업데이트 진행 중',exact:true})).toBeDisabled();await expect(settings().getByRole('status')).toContainText('37%');
  await publish({status:'verifying',progress:100});await expect(update()).toHaveAttribute('aria-label','다운로드한 앱 검사 중 · 새 버전 1.2.3');await expect(update()).toBeDisabled();
  passed('한 번 클릭으로 설치를 요청하고 다운로드·검사 중 중복 클릭과 설정 화면 재요청 차단');

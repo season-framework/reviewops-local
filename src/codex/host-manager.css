@@ -175,3 +175,12 @@
 .codex-management .host-batch-result li + li { margin-top: 5px; }
 .codex-management .host-batch-result li strong { font-weight: 550; }
 @media (max-width: 600px) { .codex-management .host-batch-result li { grid-template-columns: 1fr; gap: 0; } .codex-management .host-batch-progress { margin-left: 0; } }
+
+.codex-management .host-model-summary{display:flex;min-width:0;flex-direction:column;align-items:flex-start;gap:2px;margin:1px 0 4px;white-space:normal}
+.codex-management .host-model-button{display:inline-flex;align-items:center;gap:3px;max-width:100%;padding:2px 0;border:0;background:transparent;color:var(--accent);font-size:11px;line-height:16px;text-align:left;cursor:pointer}
+.codex-management .host-model-button:hover{text-decoration:underline;color:var(--text)}
+.codex-management .host-model-button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:2px}
+.codex-management .host-model-summary small{max-width:175px;color:var(--muted);font-size:10px;line-height:15px;overflow-wrap:anywhere}
+.codex-management .host-model-summary small.has-error{color:var(--danger,#b12d36)}
+.codex-management .host-modal .model-catalog{width:100%}
+.codex-management .host-modal.wide:has(.model-catalog){width:min(640px,calc(100vw - 32px));height:auto;max-height:calc(100vh - 48px)}

@@ -190,11 +190,18 @@ function createAgentManager(options = {}) {
   const env = localEnvironment(options.env || process.env, platform);
   const normalize = (input, config) => normalizeSettings(input, config, platform);
   const findRuntime = options.findRuntime || require('./codex/runtime.cjs').findRuntime;
+  const { createRuntimeFinder } = require('./codex/runtime.cjs');
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
   const killTimeoutMs = options.killTimeoutMs || 3000;
   const maxJobs = options.maxJobs || 8;
   const spawnProcess = options.spawn || spawn;
-  let closing = false;
+  let closing = false, metadataGeneration = 0;
+  // Metadata reads from before closeAll must stay cancelled after the manager is reused.
+  const metadataKey = Symbol('metadataGeneration');
+  const metadataSettings = settings => ({...settings, [metadataKey]: metadataGeneration});
+  function assertMetadataCurrent(settings) {
+    if (settings?.[metadataKey] !== undefined && (closing || settings[metadataKey] !== metadataGeneration)) throw new SshError('AGENT_CLOSING', '앱이 종료 중입니다.');
+  }
   function stopControl(control) {
     if (!stoppingControls.has(control)) {
       const pending = Promise.resolve().then(()=>control.cancel()).catch(error=>{stoppingControls.delete(control); throw error;});
@@ -270,13 +277,21 @@ function createAgentManager(options = {}) {
     if (platform === 'win32') {
       // npm installs a .cmd wrapper. Resolve its native Codex executable instead
       // of sending user paths or prompts through cmd.exe.
-      const runtime = await findRuntime(/^(?:codex|codex\.exe|codex\.cmd|codex\.ps1)$/i.test(settings.binary) ? '' : settings.binary);
+      const finder = !options.findRuntime && settings[metadataKey] !== undefined ? createRuntimeFinder({platform,env,execute:async(binary,args,execution)=>{
+        const result = await localRun({...settings,workPath:root,binary,launchArgs:[]},args,'',null,execution.timeout).done;
+        assertMetadataCurrent(settings);
+        if(result.code!==0)throw new Error(result.error || result.stderr || 'Codex 실행 파일을 검사하지 못했습니다.');
+        return result;
+      }}) : findRuntime;
+      const runtime = await finder(/^(?:codex|codex\.exe|codex\.cmd|codex\.ps1)$/i.test(settings.binary) ? '' : settings.binary);
+      assertMetadataCurrent(settings);
       if (!runtime.available) throw new SshError('AGENT_NOT_INSTALLED', runtime.error || 'Codex CLI를 설치하거나 실행 파일을 선택하십시오.');
       return {...settings, workPath:root, binary:runtime.command || runtime.path, launchArgs:runtime.args || []};
     }
     return {...settings, workPath:root};
   }
   function localRun(settings, args, input = '', onData, timeoutMs = 0) {
+    assertMetadataCurrent(settings);
     let child, settled = false, timer, killTimer, cancelling = false;
     let resolveDone;
     const done = new Promise(resolve => {resolveDone = resolve;});
@@ -307,11 +322,13 @@ function createAgentManager(options = {}) {
     } catch(error) {finishProcess({code:null,error:error.message,terminationConfirmed:true});}
     return control;
   }
-  async function connectRemote(configInput, allowClosing = false) {
+  async function connectRemote(configInput, allowClosing = false, metadata = null) {
+    assertMetadataCurrent(metadata);
     if(closing&&!allowClosing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
     const config = validateConfig(configInput), {Client} = options.ssh2 || require('ssh2');
     if (config.hostAlias) {
       const client = await (options.connectConfig || require('./config-ssh.cjs').connectConfig)(config, { ...(options.configSsh || {}), timeoutMs: commandTimeoutMs });
+      try { assertMetadataCurrent(metadata); } catch(error) { client.destroy(); throw error; }
       if (closing&&!allowClosing) { client.destroy(); throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.'); }
       remoteConnections.add(client); client.once('close', () => remoteConnections.delete(client));
       return { client, config };
@@ -323,12 +340,13 @@ function createAgentManager(options = {}) {
       try {if ((await fs.stat(config.privateKeyPath)).size > 65536) throw new Error(); auth.privateKey = await fs.readFile(config.privateKeyPath);if(auth.privateKey.length > 65536)throw new Error();} catch {throw new SshError('SSH_KEY_INVALID','개인 키 파일을 읽을 수 없습니다.');}
       if (config.passphrase) auth.passphrase = config.passphrase;
     } else {if (!env.SSH_AUTH_SOCK) throw new SshError('SSH_AGENT_UNAVAILABLE','SSH 에이전트를 사용할 수 없습니다. 개인 키 파일이나 비밀번호를 선택하십시오.'); auth.agent = env.SSH_AUTH_SOCK;}
+    assertMetadataCurrent(metadata);
     return new Promise((resolve,reject) => {
       const client = new Client(); remoteConnections.add(client);client.once('close',()=>remoteConnections.delete(client));let trustError, settled = false;
       const timer = setTimeout(() => fail(new SshError('SSH_TIMEOUT','SSH 연결 시간이 초과되었습니다.')), commandTimeoutMs);
       const fail = error => {if (settled) return;settled = true;clearTimeout(timer);client.destroy();reject(trustError || error);};
       client.on('error', fail); client.once('close', () => {if (!settled) fail(new SshError('SSH_CONNECTION_CLOSED','SSH 연결이 종료되었습니다.'));});
-      client.once('ready', () => {if(closing&&!allowClosing){fail(new SshError('AGENT_CLOSING','앱이 종료 중입니다.'));return;}settled = true;clearTimeout(timer);resolve({client,config});});
+      client.once('ready', () => {try { assertMetadataCurrent(metadata); } catch(error) { fail(error); return; }if(closing&&!allowClosing){fail(new SshError('AGENT_CLOSING','앱이 종료 중입니다.'));return;}settled = true;clearTimeout(timer);resolve({client,config});});
       client.connect({host:config.host, port:config.port, username:config.username, ...auth, readyTimeout:commandTimeoutMs, keepaliveInterval:5000, keepaliveCountMax:2, hostVerifier(key) {
         const fingerprint = fingerprintOf(key);
         if (!config.pinnedFingerprint) {trustError = new SshError('SSH_TRUST_REQUIRED','처음 연결하는 서버입니다. 서버 연결 검사에서 키 지문을 확인하십시오.',{host:config.host,port:config.port,fingerprint});return false;}
@@ -510,7 +528,8 @@ function createAgentManager(options = {}) {
     } finally {sftp?.end(); if(!observing)client.end();}
   }
   async function remoteRun(config, settings, args, input = '', onData, id = randomUUID(), images = [], cancelled = () => false,files=[]) {
-    const {client} = await connectRemote(config);
+    const {client} = await connectRemote(config, false, settings);
+    try { assertMetadataCurrent(settings); } catch(error) { client.destroy(); throw error; }
     let stream, settled = false, resolveDone, timer, stopping = false, pendingResult;
     const done = new Promise(resolve => {resolveDone=resolve;});
     const controlDirectory = `/tmp/reviewops-agent-${id}`;
@@ -572,6 +591,7 @@ function createAgentManager(options = {}) {
     finally{clearTimeout(timer);}
   }
   async function queryModels(config,settings) {
+    assertMetadataCurrent(settings);
     const child = new EventEmitter();
     child.stdin = new PassThrough(); child.stdout = new PassThrough(); child.stderr = new PassThrough(); child.exitCode = null;
     let control,rpc,bytes=0,limitExceeded=false,finished=false,queryFinished=false,shutdownInterrupted=false;
@@ -606,6 +626,7 @@ function createAgentManager(options = {}) {
           let cursor=null;
           const seen = new Set();
           for(let page=0;page<5;page++) {
+            assertMetadataCurrent(settings);
             const value = await rpc.request('model/list',{limit:100,includeHidden:false,...(cursor?{cursor}:{})});
             if(!value || !Array.isArray(value.data))throw new Error('Invalid model catalog');
             rows.push(...value.data.slice(0,100));
@@ -615,6 +636,7 @@ function createAgentManager(options = {}) {
           }
         } catch {modelFailed=true;rows=[];}
       } finally {clearTimeout(deadline);queryFinished=true;rpc.close();await stopControl(control).catch(()=>control.close());}
+      assertMetadataCurrent(settings);
       if(shutdownInterrupted)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
       const models = modelOptions(rows);
       return {models,...modelDefaults(models,rows,configuration),modelSource:modelFailed?'none':'host',modelError:modelFailed||limitExceeded?'호스트의 모델 목록을 읽지 못했습니다. 다시 조회하거나 사용할 모델을 직접 등록하십시오.':configurationError?'호스트의 기본 모델 설정을 읽지 못했습니다.':'',modelFailed};
@@ -625,17 +647,20 @@ function createAgentManager(options = {}) {
     }
   }
   async function availableModels(config,settings) {
+    assertMetadataCurrent(settings);
     let catalog;
     try {catalog=await queryModels(config,settings);}catch(error){if(error.code==='AGENT_CLOSING')throw error;catalog={models:[],defaultModel:'',defaultReasoningEffort:'',modelSource:'none',modelFailed:true,modelError:'호스트의 모델 목록을 읽지 못했습니다. 다시 조회하거나 사용할 모델을 직접 등록하십시오.'};}
+    assertMetadataCurrent(settings);
     if(catalog.modelFailed) {
       let value;
       if(config.kind==='local') {
         try {const file=path.join(env.CODEX_HOME || path.join(env.HOME || os.homedir(),'.codex'),'models_cache.json');if((await fs.stat(file)).size<=2*1024*1024)value=JSON.parse(await fs.readFile(file,'utf8'));}catch{}
       } else {
         if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
-        const {client}=await connectRemote(config);
-        try {const cache=await remoteSimple(client,remoteLoginCommand(`${remotePrefix}file="\${CODEX_HOME:-$HOME/.codex}/models_cache.json"\n[ -f "$file" ] && [ "$(wc -c < "$file")" -le 2097152 ] && cat "$file"`));if(cache.code===0)value=JSON.parse(cache.stdout);}catch{}finally{client.end();}
+        const {client}=await connectRemote(config, false, settings);
+        try {assertMetadataCurrent(settings);const cache=await remoteSimple(client,remoteLoginCommand(`${remotePrefix}file="\${CODEX_HOME:-$HOME/.codex}/models_cache.json"\n[ -f "$file" ] && [ "$(wc -c < "$file")" -le 2097152 ] && cat "$file"`));if(cache.code===0)value=JSON.parse(cache.stdout);}catch{}finally{client.end();}
       }
+      assertMetadataCurrent(settings);
       catalog.models=modelOptions(value);
       const defaults=modelDefaults(catalog.models,Array.isArray(value)?value:value?.models || value?.data);
       catalog.defaultModel ||= defaults.defaultModel;
@@ -646,21 +671,28 @@ function createAgentManager(options = {}) {
     return catalog;
   }
   async function probe(config, settings, includeModels = false) {
+    assertMetadataCurrent(settings);
     if (config.kind === 'local') {
       const prepared = await prepareLocal(settings);
       const version = await localRun(prepared,['--version'],'',null,commandTimeoutMs).done;
+      assertMetadataCurrent(settings);
       if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
       if (version.code !== 0) return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:prepared.workPath,models:[],error:version.error || clean(version.stderr).slice(0,2000)};
       const auth = await localRun(prepared,['login','status'],'',null,commandTimeoutMs).done;
+      assertMetadataCurrent(settings);
       const models=includeModels?await availableModels(config,prepared):{models:[]};
+      assertMetadataCurrent(settings);
       return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:prepared.workPath,...models};
     }
     const version=await remoteCommand(config,settings,['--version']);
+    assertMetadataCurrent(settings);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
     if(version.code!==0)return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:settings.workPath,models:[],error:clean(version.stderr||version.error).slice(0,2000)};
     const auth=await remoteCommand(config,settings,['login','status']);
+    assertMetadataCurrent(settings);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
     const models=includeModels?await availableModels(config,settings):{models:[]};
+    assertMetadataCurrent(settings);
     return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:settings.workPath,...models};
   }
   async function execute(job,prompt,args) {
@@ -712,21 +744,23 @@ function createAgentManager(options = {}) {
   return {
     async session(config,settings={},sessionId='') {
       if(typeof sessionId!=='string'||!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId))throw new SshError('AGENT_SESSION_INVALID','에이전트 세션 정보가 올바르지 않습니다.');
-      const normalized=normalize(settings,config);let metadata;
+      const normalized=metadataSettings(normalize(settings,config));assertMetadataCurrent(normalized);let metadata;
       if(config.kind==='local')metadata=await localSessionMetadata(env.CODEX_HOME || path.join(env.HOME || os.homedir(),'.codex'),sessionId);
       else {
-        const {client}=await connectRemote(config);
+        const {client}=await connectRemote(config, false, normalized);
         try {
+          assertMetadataCurrent(normalized);
           const script=`root="\${CODEX_HOME:-$HOME/.codex}/sessions"\n[ -d "$root" ] || exit 0\nfile=$(find "$root" -type f -name ${quote('*'+sessionId+'*.jsonl')} -print -quit)\n[ -n "$file" ] || exit 0\nhead -c 131072 "$file"\nprintf '\\n'\ntail -c 131072 "$file"`;
           const result=await remoteSimple(client,remoteLoginCommand(script));
           if(result.code!==0)throw new SshError('AGENT_SESSION_READ_FAILED','저장된 에이전트 세션을 읽지 못했습니다.');
           metadata=readSessionMetadata(result.stdout,sessionId);
         } finally {client.end();}
       }
+      assertMetadataCurrent(normalized);
       const changed=Boolean(metadata?.model&&normalized.model&&metadata.model!==normalized.model);
       return {available:Boolean(metadata)&&!changed,sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:!metadata?'missing':changed?'model_changed':'available',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':changed?'저장된 세션과 선택한 모델이 달라 새 대화로 실행합니다.':metadata.model?'저장된 세션 파일과 모델을 확인했습니다.':'저장된 세션 파일을 찾았습니다. 모델 정보는 기록되어 있지 않습니다.'};
     },
-    environment(config,settings={}){return probe(config,normalize(settings,config),true);},
+    environment(config,settings={}){return probe(config,metadataSettings(normalize(settings,config)),true);},
     validateStart(input){prepareStart(input);},
     start(input){
       const {settings,args,prompt,images,files}=prepareStart(input);
@@ -767,9 +801,10 @@ function createAgentManager(options = {}) {
     login(input){const job=makeJob(input,'login');queueMicrotask(()=>execute(job,'',['login','--device-auth']));return publicJob(job);},
     async logout(config,settings={}){
       if([...jobs.values()].some(job=>job.data.serviceId===config.id&&!FINAL.has(job.data.status)))throw new SshError('AGENT_BUSY','진행 중인 에이전트 작업을 종료한 뒤 로그아웃하십시오.');
-      const normalized=normalize(settings,config);let result;
+      const normalized=metadataSettings(normalize(settings,config));assertMetadataCurrent(normalized);let result;
       if(config.kind==='local')result=await localRun(await prepareLocal(normalized),['logout'],'',null,commandTimeoutMs).done;
       else result=await remoteCommand(config,normalized,['logout']);
+      assertMetadataCurrent(normalized);
       if(result.code!==0)throw new SshError('AGENT_LOGOUT_FAILED',result.error||clean(result.stderr)||'Codex 로그아웃을 완료하지 못했습니다.');return probe(config,normalized);
     },
     read(id){return publicJob(get(id));},
@@ -782,7 +817,7 @@ function createAgentManager(options = {}) {
       return job.done;
     },
     async closeService(serviceId){await Promise.allSettled([...jobs.values()].filter(job=>job.data.serviceId===serviceId&&!FINAL.has(job.data.status)).map(job=>this.cancel(job.data.id)));},
-    async closeAll({preserveRemote=false}={}){closing=true;try{const pending=[...jobs.values()].filter(job=>!job.doneSettled).map(job=>preserveRemote&&job.control?.durable&&job.data.remoteExecution?.ready&&!job.data.cancelRequested?job.control.detach():this.cancel(job.data.id));const stopping=[...controls].map(control=>preserveRemote&&control.durable&&!control.cancelling&&!stoppingControls.has(control)?control.detach():stopControl(control).catch(()=>control.close()));await Promise.allSettled([...pending,...stopping]);await Promise.allSettled([...remoteConnections].map(client=>client.destroy()));}finally{closing=false;}},
+    async closeAll({preserveRemote=false}={}){closing=true;metadataGeneration++;try{const pending=[...jobs.values()].filter(job=>!job.doneSettled).map(job=>preserveRemote&&job.control?.durable&&job.data.remoteExecution?.ready&&!job.data.cancelRequested?job.control.detach():this.cancel(job.data.id));const stopping=[...controls].map(control=>preserveRemote&&control.durable&&!control.cancelling&&!stoppingControls.has(control)?control.detach():stopControl(control).catch(()=>control.close()));await Promise.allSettled([...pending,...stopping]);await Promise.allSettled([...remoteConnections].map(client=>client.destroy()));}finally{closing=false;}},
     get hasBlockingJobs(){return [...jobs.values()].some(job=>!FINAL.has(job.data.status)&&(job.data.cancelRequested||!(job.control?.durable&&job.data.remoteExecution?.ready)));},
     get size(){return [...jobs.values()].filter(job=>!FINAL.has(job.data.status)).length;},
   };

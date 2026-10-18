@@ -14,7 +14,8 @@ const REPOSITORY = 'season-framework/reviewops-local';
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases`;
 const RELEASE_API = `https://api.github.com/repos/${REPOSITORY}/releases/latest`;
 const MAX_DOWNLOAD = 512 * 1024 ** 2;
-const CHECK_INTERVAL = 10 * 60 * 1000;
+const DEFAULT_INTERVAL_MINUTES = 10;
+const validInterval = value => Number.isInteger(value) && value >= 1 && value <= 1440;
 const IDENTIFIER = 'kr.co.season.reviewops.local';
 function versionParts(value) {
   if (typeof value !== 'string' || !/^\d{1,6}\.\d{1,6}\.\d{1,6}$/.test(value)) throw new Error('The release version is invalid.');
@@ -141,22 +142,28 @@ async function pruneUpdateCache(root, protectedJobs = []) {
 }
 function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platform = process.platform, arch = process.arch, onChange = () => {}, request = download, command = run, inspect = inspectBundle, spawnImpl = spawn }) {
   const version = app.getVersion(), root = path.join(dataPath, 'updates'), preferences = path.join(root, 'settings.json'), pendingFile = path.join(root, 'pending.json');
-  let automatic = true, running = false, ready = null, interval = null, pendingInstall = null, status = 'idle', error = '', release = null, progress = 0, checkedAt = null;
-  try { automatic = JSON.parse(fs.readFileSync(preferences, 'utf8')).automatic !== false; } catch { /* New installations use automatic checks. */ }
+  let automatic = true, intervalMinutes = DEFAULT_INTERVAL_MINUTES, running = false, ready = null, interval = null, started = false, pendingInstall = null, status = 'idle', error = '', release = null, progress = 0, checkedAt = null;
+  try { const saved=JSON.parse(fs.readFileSync(preferences, 'utf8')); automatic = saved.automatic !== false; if(validInterval(saved.intervalMinutes))intervalMinutes=saved.intervalMinutes; } catch { /* New installations use automatic checks. */ }
   try { const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8')); if (typeof pending.job === 'string' && path.dirname(pending.job) === root && fs.readFileSync(path.join(pending.job, 'result'), 'utf8').trim() === 'failed') { status = 'error'; error = 'The update could not start. The previous version was restored.'; } } catch { /* No previous installation result. */ }
   const supported = platform === 'darwin' && app.isPackaged && ['arm64','x64'].includes(arch) && /^\d+\.\d+\.\d+$/.test(version);
-  const snapshot = () => ({ version, arch, supported, automatic, status, error, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || RELEASES_URL });
+  const snapshot = () => ({ version, arch, supported, automatic, intervalMinutes, status, error, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || RELEASES_URL });
   const emit = () => onChange(snapshot());
   const set = (next, message = '') => { status = next; error = message; emit(); };
   const privateRoot = async () => { await fsp.mkdir(root, { recursive: true, mode: 0o700 }); await fsp.chmod(root, 0o700); };
+  const schedule = () => { clearInterval(interval); interval = setInterval(() => { if (automatic) manager.check().catch(() => {}); }, intervalMinutes * 60 * 1000); interval.unref?.(); };
   const manager = {
     snapshot,
     get installing() { return status === 'installing'; },
     async configure(payload) {
-      if (typeof payload.automatic !== 'boolean') throw new Error('Choose whether to check for updates automatically.');
-      const enabled = payload.automatic && !automatic;
-      await privateRoot(); atomicWrite(preferences, JSON.stringify({ automatic: payload.automatic })); automatic = payload.automatic; emit();
-      if (enabled && interval !== null) return manager.check();
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload) || (!Object.hasOwn(payload,'automatic') && !Object.hasOwn(payload,'intervalMinutes'))) throw new Error('변경할 업데이트 설정을 지정하십시오.');
+      if (Object.hasOwn(payload,'automatic') && typeof payload.automatic !== 'boolean') throw new Error('Choose whether to check for updates automatically.');
+      if (Object.hasOwn(payload,'intervalMinutes') && !validInterval(payload.intervalMinutes)) throw new Error('업데이트 확인 주기는 1~1440분 사이의 정수로 입력하십시오.');
+      const nextAutomatic = payload.automatic ?? automatic, nextInterval = payload.intervalMinutes ?? intervalMinutes;
+      const enabled = nextAutomatic && !automatic, changedInterval = nextInterval !== intervalMinutes;
+      await privateRoot(); atomicWrite(preferences, JSON.stringify({ automatic: nextAutomatic, intervalMinutes: nextInterval })); automatic = nextAutomatic; intervalMinutes = nextInterval;
+      if (started && changedInterval) schedule();
+      emit();
+      if (enabled && started) return manager.check();
       return snapshot();
     },
     async check() {
@@ -240,12 +247,13 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
     },
     openRelease() { return shell.openExternal(release?.releaseUrl || RELEASES_URL); },
     start() {
-      if (!supported || interval !== null) return;
+      if (!supported || started) return;
+      started = true;
       pruneUpdateCache(root, [ready?.job]).catch(() => {});
       if (automatic) manager.check().catch(() => {});
-      interval = setInterval(() => { if (automatic) manager.check().catch(() => {}); }, CHECK_INTERVAL); interval.unref?.();
+      schedule();
     },
-    close() { clearInterval(interval); interval = null; }
+    close() { started = false; clearInterval(interval); interval = null; }
   };
   // All callers share the current operation. A sidebar click can safely join a
   // scheduled check or a Settings download without starting a second request.

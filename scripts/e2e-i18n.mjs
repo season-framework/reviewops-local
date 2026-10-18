@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {openSelect,selectControl,expectSelectValue} from './select-control.mjs';
 import {setTestLocale} from './test-locale.mjs';
+import {isolatedModelRuntime} from './model-cache-fixture.mjs';
 const root=process.cwd(),testRoot=fs.mkdtempSync('/tmp/reviewops-i18n-'),home=path.join(testRoot,'home'),dataPath=path.join(testRoot,'data'),files=path.join(testRoot,'files');
 fs.mkdirSync(path.join(home,'.ssh'),{recursive:true});fs.mkdirSync(files);const config=path.join(home,'.ssh','config');fs.writeFileSync(config,'# Isolated localization fixture\n');
 const en=JSON.parse(fs.readFileSync(path.join(root,'src/i18n/en.json'))),translations=JSON.parse(fs.readFileSync(path.join(root,'src/i18n/translations.json')));
@@ -14,7 +15,7 @@ const pane=()=>page.locator('.workspace-pane:not([hidden])');
 const ipc=(action,payload={})=>page.evaluate(({action,payload})=>window.reviewops.invoke(action,payload),{action,payload});
 const settings=(language)=>page.locator('.sidebar-bottom').getByRole('button',{name:text('설정',language),exact:true});
 async function launch(){
- const env={...process.env,HOME:home,CODEX_HOME:path.join(home,'.codex'),REVIEWOPS_DATA_DIR:dataPath,REVIEWOPS_SSH_CONFIG:config,REVIEWOPS_CODEX_SSH_CONFIG:config};for(const key of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[key];
+ const env={...process.env,...isolatedModelRuntime({home,dataPath}),REVIEWOPS_DATA_DIR:dataPath,REVIEWOPS_SSH_CONFIG:config,REVIEWOPS_CODEX_SSH_CONFIG:config};for(const key of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[key];
  app=await electron.launch({args:process.env.REVIEWOPS_TEST_EXECUTABLE?[]:[root],executablePath:process.env.REVIEWOPS_TEST_EXECUTABLE,env,timeout:30000});page=await app.firstWindow();page.setDefaultTimeout(12000);page.on('pageerror',error=>errors.push(error.message));await page.waitForFunction(()=>Boolean(window.reviewops?.invoke));await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1600,1000));await ipc('update.configure',{automatic:false});
 }
 try{
@@ -36,6 +37,11 @@ try{
   const nativeLabels=()=>app.evaluate(({Menu})=>Menu.getApplicationMenu().items.map(item=>item.label));await expect.poll(nativeLabels).toContain(text('편집',language));
   if(['en','ja','zh-CN','de'].includes(language))await page.screenshot({path:path.join(output,`settings-${language}.png`)});
   current=language;
+  await pane().locator('.settings-section-menu').getByRole('button',{name:text('자동 확인',language),exact:true}).click();
+  await expect(pane().getByRole('heading',{name:text('모델 목록 자동 수집',language),exact:true})).toBeVisible();
+  await pane().locator('.settings-section-menu').getByRole('button',{name:text('자료 관리',language),exact:true}).click();
+  await expect(pane().getByRole('heading',{name:text('자료 저장 위치',language),exact:true})).toBeVisible();
+  await pane().locator('.settings-section-menu').getByRole('button',{name:text('일반',language),exact:true}).click();
  }
  pass('All 12 languages are searchable by English names and update navigation, settings and native menus');
  const nativeSearch=await openSelect(languageControl);await nativeSearch.search.fill('日本語');await expect(nativeSearch.listbox.getByRole('option')).toHaveCount(1);await nativeSearch.search.press('Escape');await expectSelectValue(languageControl,'ko');pass('Native language names can be searched and Escape keeps the selection');

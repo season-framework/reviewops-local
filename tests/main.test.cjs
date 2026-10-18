@@ -111,16 +111,18 @@ async function harness(t, options = {}) {
     } };
     if (name === './vault.cjs') return { atomicWrite, createVault(file, storage) {
       const vault = createVault(file, storage); state.realVault = vault;
-      return { ...vault, commit: wrapMutation(vault, 'commit'), clear: wrapMutation(vault, 'clear'), delete: wrapMutation(vault, 'delete') };
+      return { ...vault, get: wrapMutation(vault, 'get'), commit: wrapMutation(vault, 'commit'), clear: wrapMutation(vault, 'clear'), delete: wrapMutation(vault, 'delete') };
     } };
     if (name === './ssh.cjs') return { createSshService: () => ({ close() {}, async openShell(_config,{onData,onClose}) { if(!state.allowShell)throw new Error('SSH must not run in these tests');onData(Buffer.from('session ready'));return {write:data=>onData(Buffer.from(data)),resize(){},close(){onClose()}}; }, test() { if(state.trustFingerprint)throw Object.assign(new Error('Synthetic SSH trust required'),{code:'SSH_TRUST_REQUIRED',fingerprint:state.trustFingerprint});throw new Error('SSH must not run in these tests'); } }) };
     if (name === './terminal.cjs') return require('../electron/terminal.cjs');
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
+      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
     if (name === './updates.cjs') return require('../electron/updates.cjs');
+    if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
+    if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
     if (name === './archive.cjs') return require('../electron/archive.cjs');
     if (name === './html-preview.cjs') return require('../electron/html-preview.cjs');
@@ -160,6 +162,10 @@ async function harness(t, options = {}) {
     // VM creates objects in another realm; return plain local values to assertions.
     return result.data === undefined ? undefined : JSON.parse(JSON.stringify(result.data));
   };
+  // Model collection is independent of window actions. Settle its synthetic
+  // startup work before each test begins observing window-specific events.
+  await success('modelCache.refresh');
+  state.windowMessages=[];
   return { root, dataPath, state, invoke, success, event, appEvents };
 }
 
@@ -204,14 +210,14 @@ test('startup reconnects a durable SSH job using its saved target and vault with
 
 test('startup retains saved SSH output and refuses to reconnect a changed execution target',async t=>{
   let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths,{service:{host:'changed.example.test'}});}});
-  assert.equal(h.state.agentRestores,undefined);
+  assert.deepEqual(h.state.agentRestores,[]);
   const saved=await h.success('agent.read',{id:fixture.run.id});assert.equal(saved.status,'interrupted');assert.equal(saved.response,'기존 부분 응답');
   assert.match(saved.error,/접속 설정/);assert.equal((await h.success('snapshot')).agentRunning,0);
 });
 
 test('startup interrupts remote launch preparation instead of launching it again',async t=>{
   let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths,{run:{remoteExecution:{version:1,ready:false,stdoutOffset:0,stderrOffset:0}}});}});
-  assert.equal(h.state.agentRestores,undefined);assert.equal((await h.success('agent.read',{id:fixture.run.id})).status,'interrupted');
+  assert.deepEqual(h.state.agentRestores,[]);assert.equal((await h.success('agent.read',{id:fixture.run.id})).status,'interrupted');
 });
 
 test('Windows starts the standalone app without opening the Unix-only Season AI connection', async t => {
@@ -907,6 +913,54 @@ test('agent environment uses registered models only when the host did not return
  assert.equal(remote.modelSource,'host');assert.deepEqual(remote.models,hostModels);assert.equal(remote.defaultModel,'host-code');
  await h.success('service.save',{id:service.id,agentModels:[]});h.state.agentEnvironment={installed:true,models:[],modelSource:'none',modelError:'모델 목록을 불러오지 못했습니다.'};
  const empty=await h.success('agent.environment',{serviceId:service.id});assert.deepEqual(empty.models,[]);assert.equal(empty.modelSource,'none');assert.equal(empty.modelError,h.state.agentEnvironment.modelError);
+});
+
+test('review model reads stay immediate and do not probe hosts during a background refresh or running task',async t=>{
+ const h=await harness(t),{service,review,project}=await seed(h);
+ const saved=await h.success('project.save',{id:project.id,connection:{...service,agentEnabled:1}});
+ h.state.agentEnvironment={installed:true,loggedIn:true,models:[{id:'cached-model',label:'Saved model',reasoning:['low','high'],defaultReasoningEffort:'high'}],defaultModel:'cached-model',defaultReasoningEffort:'high',modelSource:'host'};
+ const snapshot=await h.success('modelCache.refresh');
+ const remote=snapshot.targets.find(row=>row.id.startsWith('connection:'));assert(remote);
+ let resolve;h.state.environmentGate=new Promise(done=>{resolve=done});t.after(()=>resolve());
+ const refreshing=h.success('modelCache.refresh',{id:remote.id});await new Promise(setImmediate);
+ const probes=h.state.environmentChecks.length;
+ const value=await h.success('agent.models',{serviceId:service.id});
+ assert.equal(value.models[0].id,'cached-model');assert.equal(value.refreshing,true);assert.equal(value.modelSource,'cache');assert.equal(h.state.environmentChecks.length,probes);
+ await h.success('agent.start',{reviewId:review.id,prompt:'Use the saved model list',context:{instruction:false}});
+ const running=await h.success('agent.models',{serviceId:saved.connection.id});assert.equal(running.models[0].id,'cached-model');assert.equal(h.state.environmentChecks.length,probes);
+ resolve();const result=await refreshing;assert(Array.isArray(result.targets));
+});
+
+test('cache settings persist and cached reads preserve manual registrations without a live query',async t=>{
+ const h=await harness(t),{service}=await seed(h);
+ await h.success('service.save',{...service,agentModels:[{id:'registered-model',label:'Registered model',reasoning:['low'],defaultReasoningEffort:'low'}]});
+ await h.success('modelCache.refresh');const before=h.state.environmentChecks.length;
+ const value=await h.success('agent.models',{serviceId:service.id});assert.equal(value.modelSource,'manual');assert.equal(value.models[0].id,'registered-model');assert.equal(h.state.environmentChecks.length,before);
+ const configured=await h.success('modelCache.configure',{intervalMinutes:120});assert.equal(configured.intervalMinutes,120);assert.equal((await h.success('modelCache.state')).intervalMinutes,120);
+ const untrusted={sender:h.state.window.webContents,senderFrame:{url:'https://example.test/'}};
+ assert.equal((await h.invoke('modelCache.refresh',{},untrusted)).ok,false);assert.equal((await h.invoke('agent.models',{serviceId:service.id},untrusted)).ok,false);
+});
+
+test('a host credential failure cannot block catalog listing or a different local catalog',async t=>{
+ const h=await harness(t),{group}=await seed(h);
+ h.state.agentEnvironment={installed:true,loggedIn:true,models:[{id:'local-model',label:'Local model',reasoning:['low']}],modelSource:'host'};
+ h.state.failures.get='before';
+ const local=await h.success('project.save',{groupId:group.id,name:'Independent local project',connection:{kind:'local',rootPath:h.root}});
+ const state=await h.success('modelCache.refresh');assert(state.targets.some(row=>row.id.startsWith('connection:')&&row.error));assert.equal(state.targets.find(row=>row.id==='local').models[0].id,'local-model');
+ assert.equal((await h.success('agent.models',{serviceId:local.connection.id})).models[0].id,'local-model');assert(Array.isArray((await h.success('modelCache.state')).targets));
+});
+
+test('login changes invalidate every executable sharing the same local account catalog',async t=>{
+ const h=await harness(t),group=await h.success('group.save',{name:'Shared account catalogs'});
+ h.state.agentEnvironment={models:[{id:'old-account',reasoning:['low']}],modelSource:'host'};
+ const one=await h.success('project.save',{groupId:group.id,name:'Default executable',connection:{kind:'local',rootPath:h.root}});
+ await h.success('project.save',{groupId:group.id,name:'Custom executable',connection:{kind:'local',rootPath:h.root,agentBinary:'/fixture/custom-codex'}});
+ assert((await h.success('modelCache.refresh')).targets.every(row=>row.models[0].id==='old-account'));
+ let release;h.state.environmentGate=new Promise(done=>{release=done});t.after(()=>release());
+ h.state.agentUpdate({id:'synthetic-login',kind:'login',status:'completed',serviceId:one.connection.id});
+ const changed=await h.success('modelCache.state');assert.equal(changed.targets.length,2);assert(changed.targets.every(row=>!row.models.length&&row.refreshing));
+ h.state.agentEnvironment={models:[{id:'new-account',reasoning:['high']}],modelSource:'host'};release();
+ assert((await h.success('modelCache.refresh')).targets.every(row=>row.models[0].id==='new-account'));
 });
 
 test('agent materials expose generated instructions and only shared files from the same group',async t=>{
