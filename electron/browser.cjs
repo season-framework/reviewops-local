@@ -222,11 +222,13 @@ function createBrowserManager(window) {
         return item?recorder.collect(item):{schemaVersion:1,capturedAt:new Date().toISOString(),available:false,url:payload.url||'',title:'',viewport:{},navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};
       }
       const item = get(payload.id), contents = item.view.webContents;
-      if (['browser.evidence','browser.clearLogs','browser.pickElement','browser.capture'].includes(action)) { await item.emulationPromise;get(item.id); }
+      if (['browser.evidence','browser.clearLogs','browser.pickElement','browser.showElement','browser.clearElement','browser.capture'].includes(action)) { await item.emulationPromise;get(item.id); }
       if (action === 'browser.context') return bindContext(item,payload.contextId).then(()=>state(item));
       if (action === 'browser.evidence') return recorder.collect(item);
       if (action === 'browser.clearLogs') return recorder.clear(item,payload.kind);
       if (action === 'browser.pickElement') return recorder.pick(item);
+      if (action === 'browser.showElement') return recorder.showElement(item);
+      if (action === 'browser.clearElement') { await recorder.clearElement(item);return state(item); }
       if (action === 'browser.layout') return layout(item,payload);
       if (action === 'browser.navigate') {
         if(payload.contextId===undefined)return navigate(item,payload.url);

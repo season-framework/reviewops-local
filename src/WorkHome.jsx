@@ -1,13 +1,13 @@
-import {t,localized} from './i18n/index.js';
+import {t,localized,getLocale} from './i18n/index.js';
 import React, {useEffect, useMemo, useRef, useState} from 'react';
 import Icon from './icons.jsx';
 import OriginalReviewPanel from './OriginalReviewPanel.jsx';
 import HomeCapture from './HomeCapture.jsx';
 import {projectConnection} from './OriginalForms.jsx';
 import './work-home.css';
+import {matchesReviewSearch} from './review-categories.js';
 
 const STATES = localized([['open','열림'],['in_progress','진행'],['in_review','검토'],['resolved','해결'],['recheck','재검토'],['closed','닫힘']]);
-const CATEGORIES = localized([['bug','버그'],['ux','UX'],['content','콘텐츠'],['performance','성능'],['accessibility','접근성'],['security','보안'],['structure','구조'],['design','설계'],['data','데이터'],['message','메시지'],['typo','오탈자'],['other','기타'],['feature','기능']]);
 const stateName = value => STATES.find(([key]) => key === value)?.[1] || t("열림");
 const isClosed = review => ['closed','resolved'].includes(review.status);
 const storage = {
@@ -39,7 +39,7 @@ export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpe
   const selected = data.reviews.find(item => item.id === selectedId);
   const selectedProject = data.projects.find(item => item.id === selected?.projectId);
   const selectedGroup = data.groups.find(item => item.id === selectedProject?.groupId);
-  const visible = useMemo(() => data.reviews.filter(item => (scope === 'closed' ? isClosed(item) : !isClosed(item)) && item.title.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())).sort((a,b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt)), [data.reviews, scope, search]);
+  const visible = useMemo(() => data.reviews.filter(item => (scope === 'closed' ? isClosed(item) : !isClosed(item)) && matchesReviewSearch(item,search,data)).sort((a,b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt)), [data.reviews, data.settings?.reviewCategories, scope, search, getLocale()]);
   const selectReview = review => {
     setSelectedId(review.id); storage.set('reviewops.home.selected',review.id);
     const project = data.projects.find(item => item.id === review.projectId);
@@ -88,7 +88,7 @@ export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpe
     if (!nodes.some(node => node.dataset.treeNode === focusedKey)) setFocusedKey(nodes[0]?.dataset.treeNode || '');
   }, [visible, collapsed, data.groups, data.projects, focusedKey]);
   return <div className="work-home">
-    <header className="work-home-header"><div className="work-home-heading"><h1>{t("홈")}</h1><p title={selected ? `${selectedGroup?.name || ''} / ${selectedProject?.name || ''}` : undefined}>{selected ? `${selectedGroup?.name || ''} / ${selectedProject?.name || ''}` : '\u00a0'}</p></div><div className="work-home-filters"><div className="work-home-scope" role="group" aria-label={t("리뷰 상태")}>{[['active',t("진행 리뷰")],['closed',t("닫힌 리뷰")]].map(([key,name]) => <button key={key} id={`work-home-scope-${key}`} type="button" aria-pressed={scope === key} tabIndex={scope === key ? 0 : -1} className={scope === key ? 'active is-active' : ''} onClick={() => setIssueScope(key)} onKeyDown={event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault();setIssueScope(event.key === 'Home' ? 'active' : event.key === 'End' ? 'closed' : scope === 'active' ? 'closed' : 'active',true);}}}>{name}</button>)}</div><label className="work-home-search"><Icon name="search" size={14}/><input type="search" aria-label={t("리뷰 제목 검색")} placeholder={t("리뷰 제목 검색")} value={search} onChange={event => setSearch(event.target.value)}/></label></div></header>
+    <header className="work-home-header"><div className="work-home-heading"><h1>{t("홈")}</h1><p title={selected ? `${selectedGroup?.name || ''} / ${selectedProject?.name || ''}` : undefined}>{selected ? `${selectedGroup?.name || ''} / ${selectedProject?.name || ''}` : '\u00a0'}</p></div><div className="work-home-filters"><div className="work-home-scope" role="group" aria-label={t("리뷰 상태")}>{[['active',t("진행 리뷰")],['closed',t("닫힌 리뷰")]].map(([key,name]) => <button key={key} id={`work-home-scope-${key}`} type="button" aria-pressed={scope === key} tabIndex={scope === key ? 0 : -1} className={scope === key ? 'active is-active' : ''} onClick={() => setIssueScope(key)} onKeyDown={event => {if (['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) {event.preventDefault();setIssueScope(event.key === 'Home' ? 'active' : event.key === 'End' ? 'closed' : scope === 'active' ? 'closed' : 'active',true);}}}>{name}</button>)}</div><label className="work-home-search"><Icon name="search" size={14}/><input type="search" aria-label={t("리뷰 제목·분류 검색")} placeholder={t("리뷰 제목·분류 검색")} value={search} onChange={event => setSearch(event.target.value)}/></label></div></header>
     <div className="work-home-panes"><aside className="work-home-explorer" aria-label={t("그룹 프로젝트 리뷰 탐색")}><header><h2>{t("탐색")}</h2><span>{visible.length}{t("개 리뷰")}</span><button type="button" className="work-home-icon" onClick={refresh} disabled={refreshing || busy} title={t("새로고침")} aria-label={t("작업 트리 새로고침")}><Icon name="refresh" size={13}/></button></header><div className="work-home-tree-scroll"><h3>{t("내 그룹")}</h3><div role="tree" aria-label={t("그룹 프로젝트 리뷰")} ref={treeRef} onKeyDown={treeKey}>{filteredGroups.map(group => {
       const projects = data.projects.filter(project => project.groupId === group.id && (!search.trim() || visible.some(review => review.projectId === project.id)));
       const groupCount = visible.filter(review => projects.some(project => project.id === review.projectId)).length;

@@ -1,4 +1,5 @@
 import {setTestLocale} from './test-locale.mjs';
+import {isolatedModelRuntime} from './model-cache-fixture.mjs';
 import {_electron as electron, expect} from '@playwright/test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -69,6 +70,10 @@ async function authorizeDeletion(noun, name, {checkInvalid = false, previousName
   await expect(remove).toBeDisabled();
   await expect(dialog(noun).getByRole('checkbox')).toHaveCount(0);
   await expect(page.getByRole('dialog')).toHaveCount(1);
+  const rules=await dialog(noun).evaluate(node=>({header:getComputedStyle(node.querySelector(':scope > header')).borderBottomWidth,footer:getComputedStyle(node.querySelector(':scope > footer')).borderTopWidth,explanations:[...node.querySelectorAll('.dialog-body > p')].map(p=>({decoration:getComputedStyle(p).textDecorationLine,border:getComputedStyle(p).borderBottomWidth}))}));
+  assert.equal(rules.header,'0px');assert.equal(rules.footer,'0px');
+  assert.ok(rules.explanations.every(p=>p.decoration==='none'&&p.border==='0px'));
+
   if (checkInvalid) {
     for (const invalid of ['', '다른 이름', '   ', ` ${name}`, `${name} `, ...(previousName ? [previousName] : [])]) {
       await input.fill(invalid);
@@ -96,7 +101,7 @@ async function stored(keys) { return page.evaluate(keys=>Object.fromEntries(keys
 async function assertDraftsRemoved(keys) { assert.ok(Object.values(await stored(keys)).every(value=>value===null), '삭제한 항목의 초안이 남아 있습니다.'); }
 
 try {
-  const env = {...process.env, HOME:homePath, CODEX_HOME:path.join(homePath,'.codex'), REVIEWOPS_CODEX_SSH_CONFIG:sshConfig, REVIEWOPS_DATA_DIR:dataPath}; for(const name of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[name];
+  const env = {...process.env, ...isolatedModelRuntime({home:homePath,dataPath}), REVIEWOPS_CODEX_SSH_CONFIG:sshConfig, REVIEWOPS_DATA_DIR:dataPath}; for(const name of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[name];
   app = await electron.launch({args:process.env.REVIEWOPS_TEST_EXECUTABLE?[]:[root], executablePath:process.env.REVIEWOPS_TEST_EXECUTABLE, env, timeout:30000});
   page = await app.firstWindow(); await setTestLocale(page); page.setDefaultTimeout(10000);
   page.on('pageerror', error=>errors.push(error.message));

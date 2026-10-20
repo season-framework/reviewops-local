@@ -1,5 +1,15 @@
 # Release history
 
+## 1.2.7
+
+- Include review instructions, screenshots, and logs automatically only on the first agent request. Later requests send text unless attachments are added explicitly.
+- Keep model collection errors in settings and use saved model catalogs without failure notices in the review agent.
+- Remove decorative dividers around deletion explanations.
+- Keep selected website elements highlighted and support showing them again or clearing the highlight.
+- Use seven default review categories and allow adding named categories that persist through restarts and backups.
+
+Validation: 670 unit checks and 71 targeted UI checks, including agent follow-ups and restart, element highlighting, categories and backup restoration, deletion, settings, and all 12 supported languages.
+
 ## 1.2.6
 
 - Collect host model catalogs at startup and every hour by default, and keep them across restarts.

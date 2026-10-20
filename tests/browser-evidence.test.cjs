@@ -2,13 +2,14 @@
 const test=require('node:test'),assert=require('node:assert/strict'),{EventEmitter}=require('node:events');
 const {createEvidenceRecorder,safeUrl,safeText,LIMIT}=require('../electron/browser-evidence.cjs');
 class Contents extends EventEmitter {
-  constructor(id){super();this.id=id;this.url='https://fixture.invalid/page';this.logs=[];this.closed=false}
+  constructor(id){super();this.id=id;this.url='https://fixture.invalid/page';this.logs=[];this.closed=false;this.inspectorActions=[]}
   isDestroyed(){return this.closed}
   getURL(){return this.url}
   getTitle(){return '검사 페이지'}
   async executeJavaScriptInIsolatedWorld(world,scripts){
     assert.equal(world,109);
     if(scripts[0].code.includes('function readInputRecorder'))return {logs:this.logs.splice(0),fingerprint:{url:this.url,title:this.getTitle(),viewport:{width:1440,height:900}}};
+    for(const action of ['pick','show','clear'])if(scripts[0].code.endsWith('('+JSON.stringify(action)+')')){this.inspectorActions.push(action);return action==='pick'?this.pickResult:action==='show'?this.showResult:null}
     return null;
   }
 }
@@ -57,4 +58,35 @@ test('통신 로그를 해당 뷰어에만 저장하고 종류별로 삭제',asy
   assert.equal((await recorder.clear(a)).navigation_log.length,0);
   first.closed=true;first.emit('destroyed');recorder.beforeRequest({id:30,webContentsId:1,url:first.url,method:'GET'});recorder.completed({id:30,statusCode:200});
   assert.equal(a.evidence.network_log.length,0);
+});
+
+test('선택 요소 위치를 다시 읽고 표시 해제 시 저장된 선택도 즉시 지움',async t=>{
+  const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(1),entry=item(page);recorder.track(page,entry);
+  page.pickResult={selector:'#button',rect:{x:10,y:20,width:100,height:40}};
+  assert.equal((await recorder.pick(entry)).selector,'#button');assert.equal((await recorder.collect(entry)).fingerprint_log.selectedElement.rect.y,20);
+  page.showResult={...page.pickResult,rect:{x:10,y:150,width:100,height:40}};
+  assert.equal((await recorder.showElement(entry)).rect.y,150);assert.equal(entry.selectedElement.rect.y,150);
+  await recorder.clearElement(entry);assert.equal(entry.selectedElement,undefined);assert.equal((await recorder.collect(entry)).fingerprint_log.selectedElement,undefined);
+  assert.deepEqual(page.inspectorActions,['pick','show','clear']);
+});
+
+test('새 요소 지정 취소는 이전 선택을 보존하고 페이지 이동은 이전 선택을 지움',async t=>{
+  const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(1),entry=item(page);recorder.track(page,entry);
+  page.pickResult={selector:'#old'};await recorder.pick(entry);page.pickResult=null;
+  assert.equal(await recorder.pick(entry),null);assert.equal(entry.selectedElement.selector,'#old');
+  page.emit('did-navigate',{},'https://fixture.invalid/next');assert.equal(entry.selectedElement,undefined);assert.equal((await recorder.collect(entry)).fingerprint_log.selectedElement,undefined);
+});
+
+for(const action of ['clear','reset','navigate'])test(`${action} 이후 도착한 이전 요소 지정 응답은 저장하지 않음`,async t=>{
+  const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(1),entry=item(page);recorder.track(page,entry);
+  let resolve;page.pickResult=new Promise(done=>{resolve=done});const pending=recorder.pick(entry);
+  if(action==='clear')await recorder.clearElement(entry);else if(action==='reset')await recorder.reset(entry);else page.emit('did-navigate',{},'https://fixture.invalid/next');
+  resolve({selector:'#late'});assert.equal(await pending,null);assert.equal(entry.selectedElement,undefined);assert.equal((await recorder.collect(entry)).fingerprint_log.selectedElement,undefined);
+});
+
+for(const action of ['clear','reset','navigate'])test(`${action} 이후 도착한 이전 요소 위치 응답은 선택을 복원하지 않음`,async t=>{
+  const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(1),entry=item(page);recorder.track(page,entry);
+  entry.selectedElement={selector:'#old'};let resolve;page.showResult=new Promise(done=>{resolve=done});const pending=recorder.showElement(entry);
+  if(action==='clear')await recorder.clearElement(entry);else if(action==='reset')await recorder.reset(entry);else page.emit('did-navigate',{},'https://fixture.invalid/next');
+  resolve({selector:'#old',rect:{x:0,y:0,width:50,height:30}});assert.equal(await pending,null);assert.equal(entry.selectedElement,undefined);
 });

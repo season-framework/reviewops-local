@@ -30,7 +30,7 @@ function start(f, extra={}) {
 function windowsStore(t) {
   const windowsModule = {exports:{}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'../electron/store.cjs'),'utf8'), {
-    require:name=>name==='node:path'?path.win32:require(name), module:windowsModule, Buffer
+    require:name=>name==='node:path'?path.win32:require(name.startsWith('.')?path.join(__dirname,'../electron',name):name), module:windowsModule, Buffer
   });
   const store=windowsModule.exports.createStore({dbPath:':memory:'});
   t.after(()=>store.close());
@@ -119,6 +119,25 @@ test('completed execution writes one agent response and preserves context across
   assert.equal(messages.find(item=>item.role==='agent').body,done.response);
   assert.equal('agentRuns' in f.store.snapshot(),false);
   assert.throws(()=>f.store.updateActivity({id:messages.find(item=>item.role==='agent').id,body:'응답 변조'}),/사용자가 작성한/);
+});
+
+test('initial request context remains optional and preserves boolean values through restart and backup',t=>{
+ const f=setup(t),context={instruction:false,instructionMarkdown:'',screenshotId:null,screenshot:null,attachmentIds:[],attachments:[],logIds:[],logs:[]};
+ const values=[undefined,true,false],runs=values.map(value=>start(f,{context:{...context,...(value===undefined?{}:{initialRequest:value})}}));
+ f.store.close();const reopened=f.open();
+ for(let index=0;index<runs.length;index++)assert.deepEqual(reopened.get('agent_runs',runs[index].id).context,runs[index].context);
+ const backup=reopened.exportData();reopened.importData(backup);assert.deepEqual(reopened.exportData(),backup);
+ for(let index=0;index<runs.length;index++)assert.equal(reopened.get('agent_runs',runs[index].id).context.initialRequest,values[index]);
+});
+
+test('invalid initial request flags are rejected atomically in new runs and imported backups',t=>{
+ const f=setup(t),context={instruction:false,instructionMarkdown:'',screenshotId:null,screenshot:null,attachmentIds:[],attachments:[],logIds:[],logs:[],initialRequest:true};
+ start(f,{context});const before=f.store.exportData();
+ for(const value of [null,0,1,'true',[],{}]){
+  assert.throws(()=>start(f,{context:{...context,initialRequest:value}}),/에이전트 실행 정보가 올바르지 않습니다/);assert.deepEqual(f.store.exportData(),before);
+  const backup=clone(before);backup.agentRuns[0].context.initialRequest=value;
+  assert.throws(()=>f.store.importData(backup),/에이전트 실행 정보가 올바르지 않습니다/);assert.deepEqual(f.store.exportData(),before);
+ }
 });
 
 test('failed, cancelled and interrupted executions do not produce a completed response activity', t => {

@@ -38,7 +38,7 @@ const PIN = 'SHA256:' + crypto.createHash('sha256').update('synthetic host key')
 test('Windows services keep native local paths and POSIX server paths separate', () => {
   const windowsModule = { exports: {} };
   vm.runInNewContext(fs.readFileSync(path.join(__dirname, '../electron/store.cjs'), 'utf8'), {
-    require: name => name === 'node:path' ? path.win32 : require(name), module: windowsModule, Buffer
+    require: name => name === 'node:path' ? path.win32 : require(name.startsWith('.') ? path.join(__dirname, '../electron', name) : name), module: windowsModule, Buffer
   });
   const normalize = draft => windowsModule.exports.LocalStore.prototype.normalizeService.call({}, { groupId: 'windows-group', name: 'Windows project', ...draft });
   const local = normalize({ kind: 'local', rootPath: 'C:\\Users\\Operator\\My project', agentWorkPath: 'D:\\Work\\ReviewOps', agentBinary: 'C:\\Program Files\\Codex\\codex.exe' });

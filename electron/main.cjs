@@ -156,8 +156,10 @@ function agentMaterials(reviewId) {
   const evidence=review.evidence || {},captures=evidence.log_captures || [];
   const logs=captures.map((capture,index)=>({...capture,id:capture.id || `capture-${index}`,name:capture.label || `리뷰 로그 ${index+1}`}));
   if(!logs.length&&['navigation_log','input_log','network_log','console_log','fingerprint_log'].some(key=>evidence[key]&&Object.keys(evidence[key]).length))logs.push({...evidence,id:'current',name:'리뷰 로그'});
-  const instructionMarkdown=`# 에이전트 작업 지시서\n\n## 요청사항\n${review.body || review.title}\n\n## 리뷰 정보\n- 리뷰: ${review.number} (${review.id})\n- 제목: ${review.title}\n- 상태: ${review.status}\n- 우선순위: ${review.priority}\n- 분류: ${review.category}\n- 프로젝트: ${project.name}\n- 대상 파일: ${review.targetPath || '없음'}\n- 대상 주소: ${review.targetUrl || '없음'}\n- 첨부파일: ${attachments.length}개\n`;
-  return {instruction:{name:'작업 지시서.md',markdown:instructionMarkdown},screenshots:attachments.filter(item=>['image/png','image/jpeg','image/webp'].includes(item.mimeType)),attachments,sharedFiles,logs};
+  const categoryNames=require('./review-categories.json'),category=store.reviewCategories().find(item=>item.id===review.category)?.name||[...categoryNames.defaults,...categoryNames.legacy].find(([id])=>id===review.category)?.[1]||review.category;
+  const instructionMarkdown=`# 에이전트 작업 지시서\n\n## 요청사항\n${review.body || review.title}\n\n## 리뷰 정보\n- 리뷰: ${review.number} (${review.id})\n- 제목: ${review.title}\n- 상태: ${review.status}\n- 우선순위: ${review.priority}\n- 분류: ${category}\n- 프로젝트: ${project.name}\n- 대상 파일: ${review.targetPath || '없음'}\n- 대상 주소: ${review.targetUrl || '없음'}\n- 첨부파일: ${attachments.length}개\n`;
+  const requests=store.listAgentRuns(review.id),last=requests[0]?.context;
+  return {instruction:{name:'작업 지시서.md',markdown:instructionMarkdown},screenshots:attachments.filter(item=>['image/png','image/jpeg','image/webp'].includes(item.mimeType)),attachments,sharedFiles,logs,hasRequests:requests.length>0,requestIds:requests.map(run=>run.id),lastRequestContext:last?{instruction:Boolean(last.instruction),screenshotId:last.screenshotId||null,attachmentIds:last.attachmentIds||[],logIds:last.logIds||[]}:null};
 }
 async function exportInstruction(reviewId) {
   const review=store.get('reviews',reviewId),materials=agentMaterials(reviewId),name=`ReviewOps-${review.number}-${review.title.replace(/[/\\\x00-\x1f]/g,'_').slice(0,90)}.zip`;
@@ -270,7 +272,7 @@ async function agentAction(action,payload) {
   const previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&savedAgentExecutionScope(run)===sessionScope&&run.sessionId);
   const snapshot=store.snapshot();
   const history=snapshot.activities.filter(item=>item.reviewId===review.id&&item.type==='comment').slice(-30).map(item=>`${item.role==='agent'?'에이전트':'사용자'}: ${item.body}`).join('\n\n').slice(-60000);
-  const materials=agentMaterials(review.id),selection=retry?.context || (payload.context===undefined?{instruction:payload.includeInstruction!==false,attachmentIds:payload.attachmentIds ?? materials.attachments.filter(item=>payload.includeScreenshots!==false||!item.mimeType.startsWith('image/')).map(item=>item.id),logIds:payload.includeLogs===false?[]:payload.logCaptureId?[payload.logCaptureId]:materials.logs.map(item=>item.id)}:payload.context);
+  const materials=agentMaterials(review.id),automaticContext=!materials.hasRequests,initialRequest=retry?(retry.context?.initialRequest??true):automaticContext,selection=retry?.context || (payload.context===undefined?{instruction:payload.includeInstruction??automaticContext,attachmentIds:payload.attachmentIds??materials.attachments.filter(item=>item.mimeType.startsWith('image/')?(payload.includeScreenshots??automaticContext):automaticContext).map(item=>item.id),logIds:payload.includeLogs===false?[]:payload.logCaptureId?[payload.logCaptureId]:(payload.includeLogs??automaticContext)?materials.logs.map(item=>item.id):[]}:payload.context);
   if(!selection||typeof selection!=='object'||Array.isArray(selection))throw new Error('에이전트 첨부 자료를 다시 선택하십시오.');
   const selectedIds=(value,label)=>{if(value===undefined)return [];if(!Array.isArray(value)||value.length>100||value.some(item=>typeof item!=='string')||new Set(value).size!==value.length)throw new Error(`${label} 목록이 올바르지 않습니다.`);return value;};
   const attachmentIds=selectedIds(selection.attachmentIds,'첨부파일'),logIds=selectedIds(selection.logIds,'리뷰 로그');
@@ -284,14 +286,16 @@ async function agentAction(action,payload) {
   const pendingScreenshot=selection.screenshotToken?staged.find(item=>item.token===selection.screenshotToken):null;
   if(pendingScreenshot&&!['image/png','image/jpeg','image/webp'].includes(pendingScreenshot.metadata.mimeType))throw new Error('PNG, JPEG, WebP 스크린샷을 선택하십시오.');
   const pendingFiles=staged.filter(item=>item!==pendingScreenshot).map(item=>({id:item.metadata.id,name:item.metadata.name,mimeType:item.metadata.mimeType,size:item.metadata.size,reviewId:review.id,source:'activity'}));
-  const context={instruction:Boolean(selection.instruction),instructionMarkdown:selection.instruction?(retry?.context?.instructionMarkdown ?? materials.instruction.markdown):'',screenshotId:pendingScreenshot?.metadata.id || screenshot?.id || null,screenshot:pendingScreenshot?{...pendingScreenshot.metadata,storageName:undefined,sha256:undefined,reviewId:review.id}:screenshot,attachmentIds:[...new Set([...attachmentIds,...pendingFiles.map(item=>item.id)])],attachments:[...chosen,...pendingFiles],logIds,logs};
+  const context={instruction:Boolean(selection.instruction),instructionMarkdown:selection.instruction?(retry?.context?.instructionMarkdown ?? materials.instruction.markdown):'',screenshotId:pendingScreenshot?.metadata.id || screenshot?.id || null,screenshot:pendingScreenshot?{...pendingScreenshot.metadata,storageName:undefined,sha256:undefined,reviewId:review.id}:screenshot,attachmentIds:[...new Set([...attachmentIds,...pendingFiles.map(item=>item.id)])],attachments:[...chosen,...pendingFiles],logIds,logs,...(!retry||retry.context?.initialRequest!==undefined?{initialRequest}:{})};
   const sources=[...new Map([...(screenshot?[screenshot]:[]),...chosen].map(item=>[item.id,item])).values()];
   const images=[],files=[];let imageBytes=0,fileBytes=0;
   const collect=(item,bytes)=>{if(['image/png','image/jpeg','image/webp'].includes(item.mimeType)){imageBytes+=bytes.length;if(images.length>=10||imageBytes>40*1024*1024)throw new Error('요청에 첨부할 이미지는 10개, 합계 40 MB까지 지원합니다.');images.push({name:item.name,mimeType:item.mimeType,bytes});}else{fileBytes+=bytes.length;if(files.length>=30||fileBytes>100*1024*1024)throw new Error('요청에 첨부할 파일은 30개, 합계 100 MB까지 지원합니다.');files.push({name:item.name,mimeType:item.mimeType,bytes});}};
   for(const item of sources)collect(item,await readAttachment(attachmentById(item.id)));
   for(const item of staged)collect(item.metadata,item.bytes);
   const logText=JSON.stringify(logs);
-  const input=`리뷰: ${review.title}\n대상 파일: ${review.targetPath}\n대상 주소: ${review.targetUrl}\n${context.instructionMarkdown?`\n${context.instructionMarkdown}\n`:''}\n선택한 로그:\n${logText.length>40000?logText.slice(0,40000)+'\n(긴 로그의 나머지 내용은 첨부 파일에서 확인하십시오.)':logText}\n이전 대화:\n${history}\n\n사용자 작업 요청:\n${prompt}`;
+  const selectedLogText=logText.length>40000?logText.slice(0,40000)+'\n(긴 로그의 나머지 내용은 첨부 파일에서 확인하십시오.)':logText;
+  const selectedText=[context.instructionMarkdown,logs.length?`선택한 로그:\n${selectedLogText}`:''].filter(Boolean).join('\n\n');
+  const input=initialRequest?`리뷰: ${review.title}\n대상 파일: ${review.targetPath}\n대상 주소: ${review.targetUrl}\n${context.instructionMarkdown?`\n${context.instructionMarkdown}\n`:''}\n선택한 로그:\n${selectedLogText}\n이전 대화:\n${history}\n\n사용자 작업 요청:\n${prompt}`:selectedText?`${selectedText}\n\n사용자 작업 요청:\n${prompt}`:prompt;
   if(logs.length)files.push({name:'review-logs.json',mimeType:'application/json',bytes:Buffer.from(JSON.stringify(logs,null,2))});
   const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
   const execution={...job,prompt:input,config:service,settings,images,files};
@@ -654,6 +658,7 @@ async function dispatch(action, payload = {}) {
     const {connectionClonedFrom,...project}=result;
     return {...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null};
   }
+  if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
   if (action === 'review.save') {const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {
     if(payload.id)assertNoAgent(job=>job.serviceId===payload.id);

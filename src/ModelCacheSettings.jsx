@@ -25,11 +25,11 @@ export function useModelCacheState(invoke=cacheInvoke){
  return {state,error,command};
 }
 
-export function ModelCatalog({target}){
+export function ModelCatalog({target,showErrors=true}){
  const models=cacheModels(target),cachedAt=cacheTime(target?.cachedAt||target?.updatedAt);
  return <div className="model-catalog">
   <p className="model-cache-date">{cachedAt?t('마지막 수집: {0}',[cachedAt]):t('아직 수집하지 않았습니다.')}</p>
-  {target?.error&&<div className="model-cache-failure" role="status"><p>{t('수집하지 못했습니다.')} {models.length?t('이전에 수집한 모델 목록을 유지합니다.'):null}</p><p>{t(target.error)}</p></div>}
+  {showErrors&&target?.error&&<div className="model-cache-failure" role="status"><p>{t('수집하지 못했습니다.')} {models.length?t('이전에 수집한 모델 목록을 유지합니다.'):null}</p><p>{t(target.error)}</p></div>}
   {target?.defaultModel&&<p>{t('기본 모델: {0}',[target.defaultModel])}</p>}
   {target?.defaultReasoningEffort&&<p>{t('기본 추론 수준: {0}',[target.defaultReasoningEffort])}</p>}
   {models.length?<ul className="model-catalog-list">{models.map(model=><li key={model.id}><div><strong>{model.label||model.id}</strong>{model.label&&model.label!==model.id&&<code>{model.id}</code>}</div><dl><div><dt>{t('지원 추론 수준')}</dt><dd>{(model.reasoning||[]).map(value=>typeof value==='string'?value:value.effort||value.id).filter(Boolean).join(', ')||'—'}</dd></div>{model.defaultReasoningEffort&&<div><dt>{t('기본 추론 수준')}</dt><dd>{model.defaultReasoningEffort}</dd></div>}</dl></li>)}</ul>:<p className="muted">{t('저장된 모델 목록이 없습니다.')}</p>}

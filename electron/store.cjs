@@ -5,10 +5,13 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 const CATEGORIES = ['bug', 'ux', 'feature', 'content', 'performance', 'accessibility', 'security', 'structure', 'design', 'data', 'message', 'typo', 'other'];
+const CATEGORY_NAMES = require('./review-categories.json');
+const BUILTIN_CATEGORIES = [...CATEGORY_NAMES.defaults, ...CATEGORY_NAMES.legacy];
+const categoryNameKey = value => value.normalize('NFKC').toLowerCase();
 const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews', 'agent_runs', 'activities', 'attachments', 'settings'];
 const AGENT_STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
 const AGENT_FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
@@ -40,6 +43,23 @@ function choice(value, choices, fallback, label) {
   const result = value === undefined ? fallback : value;
   if (!choices.includes(result)) fail(`${label} 값이 올바르지 않습니다.`);
   return result;
+}
+function reviewCategoryName(value) {
+  const name = text(value, '분류 이름', 60, true).normalize('NFC');
+  if (/[\u0000-\u001f\u007f]/.test(name)) fail('분류 이름에 사용할 수 없는 문자가 있습니다.');
+  return name.replace(/\s+/gu, ' ');
+}
+function reviewCategories(value) {
+  if (!Array.isArray(value) || value.length > 100) fail('직접 추가한 분류는 100개까지 저장할 수 있습니다.');
+  const ids = new Set(), names = new Set();
+  return value.map(entry => {
+    object(entry, '리뷰 분류');
+    if (Object.keys(entry).some(key => !['id', 'name'].includes(key)) || typeof entry.id !== 'string' || !/^custom_[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(entry.id)) fail('저장된 분류 정보가 올바르지 않습니다.');
+    const name = reviewCategoryName(entry.name), key = categoryNameKey(name);
+    if (ids.has(entry.id) || names.has(key) || BUILTIN_CATEGORIES.some(([id, label]) => [id, label].some(value => categoryNameKey(value) === key))) fail('같은 이름의 분류가 이미 있습니다.');
+    ids.add(entry.id); names.add(key);
+    return {id: entry.id, name};
+  });
 }
 function integer(value, fallback, min, max, label) {
   if (value === undefined || value === null || value === '') return fallback;
@@ -201,6 +221,7 @@ function agentMetadata(input, previous) {
   if(value.context!==undefined) {
     object(value.context,'에이전트 첨부 자료');
     const context=value.context;
+    if(context.initialRequest!==undefined&&typeof context.initialRequest!=='boolean')fail('에이전트 실행 정보가 올바르지 않습니다.');
     if(typeof context.instruction!=='boolean'||typeof context.instructionMarkdown!=='string'||context.instructionMarkdown.length>200000)fail('에이전트 작업 지시서 형식이 올바르지 않습니다.');
     for(const key of ['attachmentIds','logIds'])if(!Array.isArray(context[key])||context[key].length>100||context[key].some(item=>typeof item!=='string'||item.length>128))fail('에이전트 첨부 자료 목록이 올바르지 않습니다.');
     for(const key of ['attachments','logs'])if(!Array.isArray(context[key])||context[key].length>100||context[key].some(item=>!item||typeof item!=='object'||Array.isArray(item)))fail('에이전트 첨부 자료 형식이 올바르지 않습니다.');
@@ -412,6 +433,23 @@ class LocalStore {
       ALTER TABLE services ADD COLUMN agentModels TEXT NOT NULL DEFAULT '[]';
       PRAGMA user_version=7;
     `));
+    if (current < 8) {
+      // Keep every review column, dependent index and trigger while allowing
+      // category IDs registered in settings alongside the original built-ins.
+      this.db.exec('PRAGMA foreign_keys=OFF; PRAGMA legacy_alter_table=ON;');
+      try { this.transaction(() => {
+        const schema = this.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='reviews'").get().sql;
+        const updated = schema.replace(/category TEXT NOT NULL CHECK\(category IN \([^)]*\)\)/, 'category TEXT NOT NULL');
+        if (updated !== schema) {
+          const dependent = this.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='reviews' AND type IN ('trigger','index') AND sql IS NOT NULL").all();
+          this.db.exec(updated.replace(/^CREATE TABLE\s+(?:"reviews"|reviews)\s*\(/i, 'CREATE TABLE reviews_v8 ('));
+          this.db.exec('INSERT INTO reviews_v8 SELECT * FROM reviews ORDER BY rowid; DROP TABLE reviews; ALTER TABLE reviews_v8 RENAME TO reviews;');
+          for (const item of dependent) this.db.exec(item.sql);
+        }
+        if (this.db.prepare('PRAGMA foreign_key_check').all().length) fail('자료 연결을 갱신하지 못했습니다.');
+        this.db.exec('PRAGMA user_version=8;');
+      }); } finally { this.db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;'); }
+    }
   }
 
   transaction(fn) {
@@ -563,7 +601,7 @@ class LocalStore {
       title: text(input.title ?? previous?.title, '리뷰 제목', 300, true), body: text(input.body ?? previous?.body, '리뷰 내용', 100000),
       status: choice(input.status, STATUSES, previous?.status || 'open', '리뷰 상태'),
       priority: choice(input.priority, PRIORITIES, previous?.priority || 'normal', '우선순위'),
-      category: choice(input.category, CATEGORIES, previous?.category || 'ux', '리뷰 분류'),
+      category: choice(input.category, [...CATEGORIES, ...this.reviewCategories().map(item => item.id)], previous?.category || 'ux', '리뷰 분류'),
       targetPath: text(input.targetPath ?? previous?.targetPath, '리뷰 파일 경로', 4096),
       targetUrl: safeUrl(input.targetUrl ?? previous?.targetUrl, '리뷰 주소'),
       evidenceJson:JSON.stringify(input.evidence===undefined?evidenceValue(previous?.evidence || {}):mergeEvidence(previous?.evidence,input.evidence,previous?'리뷰 로그':'리뷰 등록 로그'))
@@ -778,13 +816,32 @@ class LocalStore {
 
   saveSettings(input) {
     object(input); noSecrets(input);
-    for (const key of Object.keys(input)) if (key !== 'theme') fail('지원하지 않는 앱 설정입니다.');
+    for (const key of Object.keys(input)) if (!['theme', 'reviewCategories'].includes(key)) fail('지원하지 않는 앱 설정입니다.');
     return this.transaction(() => {
       if (input.theme !== undefined) {
         const theme = choice(input.theme, ['light', 'dark'], 'light', '화면 모드');
         this.db.prepare('INSERT INTO settings(key,valueJson) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET valueJson=excluded.valueJson').run('theme', JSON.stringify(theme));
       }
+      if (input.reviewCategories !== undefined) {
+        const categories = reviewCategories(input.reviewCategories), allowed = new Set([...CATEGORIES, ...categories.map(item => item.id)]);
+        if (this.db.prepare('SELECT DISTINCT category FROM reviews').all().some(row => !allowed.has(row.category))) fail('리뷰에서 사용하는 분류를 삭제할 수 없습니다.');
+        this.db.prepare('INSERT INTO settings(key,valueJson) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET valueJson=excluded.valueJson').run('reviewCategories', JSON.stringify(categories));
+      }
       return this.settings();
+    });
+  }
+  reviewCategories() { return reviewCategories(this.settings().reviewCategories || []); }
+  saveReviewCategory(input) {
+    object(input); noSecrets(input);
+    const name = reviewCategoryName(input.name), key = categoryNameKey(name);
+    return this.transaction(() => {
+      const builtin = BUILTIN_CATEGORIES.find(([id, label]) => [id, label].some(value => categoryNameKey(value) === key));
+      if (builtin) return {id: builtin[0], name: builtin[1]};
+      const categories = this.reviewCategories(), existing = categories.find(item => categoryNameKey(item.name) === key);
+      if (existing) return existing;
+      const category = {id: `custom_${crypto.randomUUID()}`, name};
+      this.saveSettings({reviewCategories: [...categories, category]});
+      return category;
     });
   }
   settings() {
@@ -805,7 +862,7 @@ class LocalStore {
 
   importData(payload) {
     object(payload, '백업 파일');
-    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
     for (const table of ['groups', 'projects', 'services', 'reviews', 'activities', 'attachments']) {
       if (!Array.isArray(payload[table]) || payload[table].length > MAX_ITEMS) fail('백업 자료의 항목 수가 올바르지 않습니다.');
     }
@@ -838,6 +895,7 @@ class LocalStore {
         const keys = Object.keys(row);
         this.db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(key => `:${key}`).join(',')})`).run(sqlRow(row));
       };
+      this.saveSettings(payload.settings);
       for (const row of payload.groups) {
         object(row);
         insertRow('groups', normalizeRow(row, { name: text(row.name, '그룹명', 120, true), description: text(row.description, '그룹 설명', 10000), ...metadata(row,null) }, ['name', 'description', 'memo', 'labels', 'operationalStatus']));
@@ -911,7 +969,6 @@ class LocalStore {
           size: integer(row.size, 0, 0, 1024 * 1024 * 1024, '파일 크기'), storageName: safeFilename(row.storageName), sha256 };
         insertRow('attachments', normalizeRow(row, normalized, Object.keys(normalized)));
       }
-      this.saveSettings(payload.settings);
       if (this.db.prepare('PRAGMA foreign_key_check').all().length) fail('백업 파일의 자료 연결이 올바르지 않습니다.');
     });
   }

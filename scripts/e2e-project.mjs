@@ -54,7 +54,7 @@ try{
  await expect(pane().locator('.original-review-table tbody tr')).toHaveCount(1);
  await expect(pane().locator('.original-review-table')).toContainText('완료된 문구 수정');
  await pane().locator('.original-status-filters').getByRole('button',{name:'전체',exact:true}).click();
- await pane().getByLabel('리뷰 제목',{exact:true}).fill('검색 버튼');
+ await pane().getByLabel('리뷰 제목 또는 분류',{exact:true}).fill('검색 버튼');
  await pane().locator('.original-review-search').getByRole('button',{name:'검색',exact:true}).click();
  await expect(pane().locator('.original-review-table tbody tr')).toHaveCount(1);
  await pane().getByRole('button',{name:'검색어 지우기',exact:true}).click();
