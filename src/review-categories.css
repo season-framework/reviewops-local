@@ -1,0 +1,15 @@
+.review-category-picker{min-width:0}
+.review-category-picker>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.review-category-picker>div:first-child label{font-size:12px;font-weight:600}
+.review-category-picker.is-compact{flex:1;gap:8px}
+.review-category-options>button{max-width:100%;overflow-wrap:anywhere;text-align:left}
+.review-category-picker .review-category-add{display:inline-flex;align-items:center;justify-content:center;width:36px;min-height:36px;flex:0 0 36px;padding:0;border:1px dashed var(--border);border-radius:6px;background:transparent;color:var(--muted)}
+.review-category-picker .review-category-add:hover{border-color:var(--accent-ink);background:var(--accent-soft);color:var(--accent-ink)}
+.review-category-picker button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.review-category-select-row{display:flex;align-items:center;gap:8px;min-width:0}
+.review-category-select-row>.reviewops-select{min-width:0;flex:1}
+.review-category-new{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.review-category-new input{flex:1;min-width:120px;width:100%;min-height:36px}
+.review-category-new button{min-height:36px;padding:7px 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);font-size:12px;white-space:nowrap}
+.review-category-new button:hover{background:var(--hover)}
+.review-category-error{margin:0;color:var(--accent-ink);font-size:12px;line-height:1.6}

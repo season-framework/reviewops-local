@@ -49,13 +49,13 @@ Release builds are ad hoc signed and are **not Apple-notarized**. If macOS block
 Each release includes SHA-256 checksums. To check a Windows installer in PowerShell:
 
 ```powershell
-Get-FileHash .\ReviewOps-1.2.6-windows-x64.exe -Algorithm SHA256
+Get-FileHash .\ReviewOps-1.2.7-windows-x64.exe -Algorithm SHA256
 ```
 
 To check a macOS installer:
 
 ```sh
-shasum -a 256 ReviewOps-1.2.6-arm64.dmg
+shasum -a 256 ReviewOps-1.2.7-arm64.dmg
 ```
 
 Compare the result with the checksum published in that release.
@@ -76,6 +76,8 @@ Drag the logo or an empty area of the tab bar to move the window. The Home tab s
 Codex CLI must be installed and signed in on the computer where a task will run. Local projects use Codex on your computer; SSH projects use Codex on the selected host. Configure the executable, model, reasoning level, and instructions in **Project → Settings → Agent**.
 
 The app collects models, supported reasoning levels, and defaults from your computer and saved SSH hosts at startup and every hour by default. Review agents read the saved catalog immediately without connecting to the host again. Host management shows each catalog, its last collection time, and a refresh action. Failed collection keeps the last successful catalog. Change the interval in **Settings → Automatic checks**. If no saved catalog is available, register models and their reasoning levels in **Project → Settings → Agent → Register models**. Registered models are saved with the project connection and included in backups.
+
+The first accepted request in a review includes the selected instructions, screenshot, and logs automatically. After that, requests send only the entered text unless you explicitly add materials. Model collection failures remain visible in Settings; the review agent continues using saved choices without a collection-failure notice.
 
 Agent commands run as:
 

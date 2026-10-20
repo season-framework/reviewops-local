@@ -1,0 +1,4 @@
+{
+  "defaults": [["bug", "버그"], ["ux", "UX"], ["content", "콘텐츠"], ["performance", "성능"], ["accessibility", "접근성"], ["security", "보안"], ["other", "기타"]],
+  "legacy": [["feature", "기능"], ["structure", "구조"], ["design", "설계"], ["data", "데이터"], ["message", "메시지"], ["typo", "오탈자"]]
+}

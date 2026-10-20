@@ -124,6 +124,7 @@ async function harness(t, options = {}) {
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
+    if (name === './review-categories.json') return require('../electron/review-categories.json');
     if (name === './archive.cjs') return require('../electron/archive.cjs');
     if (name === './html-preview.cjs') return require('../electron/html-preview.cjs');
     if (name === './files.cjs') return files;
@@ -972,6 +973,14 @@ test('agent materials expose generated instructions and only shared files from t
  assert.deepEqual(materials.sharedFiles.map(item=>item.id),[shared.id]);assert.equal(materials.sharedFiles.some(item=>item.id===hidden.id),false);
 });
 
+test('agent instruction categories use display names for built-in, legacy and custom categories',async t=>{
+ const h=await harness(t),{review}=await seed(h),custom=h.state.liveStore.saveReviewCategory({name:'결제 화면'});
+ for(const [id,name] of [['bug','버그'],['feature','기능'],[custom.id,custom.name]]){
+  await h.success('review.save',{id:review.id,category:id});
+  const materials=await h.success('agent.materials',{reviewId:review.id});assert(materials.instruction.markdown.includes(`- 분류: ${name}\n`));assert.equal(materials.instruction.markdown.includes(custom.id),false);
+ }
+});
+
 test('selected agent context, per-request model and staged files persist atomically and the same request cannot execute twice',async t=>{
  const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1,agentModel:'service-model',agentReasoningEffort:'low'});
  await h.success('review.save',{id:review.id,evidence:syntheticEvidence('selected log')});
@@ -1061,6 +1070,53 @@ test('an explicit empty context excludes unselected review instructions, screens
  const staged=await h.success('attachment.stageFiles',{paths:[image]});await h.success('activity.add',{reviewId:review.id,attachmentTokens:[staged[0].token]});
  const run=await h.success('agent.start',{requestId:crypto.randomUUID(),reviewId:review.id,prompt:'현재 요청만 수행하십시오.',context:{instruction:false,screenshotId:null,attachmentIds:[],logIds:[]}});
  const execution=h.state.agentStarts[0];assert.equal(execution.images.length,0);assert.equal(execution.files.length,0);assert.equal(execution.prompt.includes('PRIVATE_REVIEW_INSTRUCTION'),false);assert.equal(execution.prompt.includes('PRIVATE_LOG'),false);assert.equal(execution.prompt.includes('PRIVATE_FILE'),false);assert.equal(run.context.instructionMarkdown,'');
+});
+
+test('review materials are automatic only before the first accepted request, including new conversations',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ await h.success('review.save',{id:review.id,body:'FIRST_REQUEST_INSTRUCTION',evidence:syntheticEvidence('FIRST_REQUEST_LOG')});
+ await addFile(h,review.id,'FIRST_REQUEST_FILE');
+ const image=path.join(h.root,'first-request.png');fs.writeFileSync(image,Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64'));
+ const staged=await h.success('attachment.stageFiles',{paths:[image]});await h.success('activity.add',{reviewId:review.id,attachmentTokens:[staged[0].token]});
+ assert.equal((await h.success('agent.materials',{reviewId:review.id})).hasRequests,false);
+ const first=await h.success('agent.start',{reviewId:review.id,prompt:'First request',requestId:crypto.randomUUID()});
+ assert.equal(first.context.instruction,true);assert.equal(first.context.logs.length,1);assert.equal(h.state.agentStarts[0].images.length,1);assert.equal(h.state.agentStarts[0].files.length,2);
+ const saved=await h.success('agent.materials',{reviewId:review.id});assert.equal(saved.hasRequests,true);assert.deepEqual(saved.requestIds,[first.id]);assert.deepEqual(saved.lastRequestContext.attachmentIds,first.context.attachmentIds);
+ h.state.agentUpdate({id:first.id,status:'completed',kind:'agent',sessionId:'first-session',response:'Done',finishedAt:new Date().toISOString()});
+ for(const newConversation of [false,true]){
+  const next=await h.success('agent.start',{reviewId:review.id,prompt:'Text only',requestId:crypto.randomUUID(),newConversation}),execution=h.state.agentStarts.at(-1);
+  assert.equal(next.context.instruction,false);assert.equal(next.context.screenshotId,null);assert.deepEqual(next.context.attachmentIds,[]);assert.deepEqual(next.context.logIds,[]);assert.equal(execution.images.length,0);assert.equal(execution.files.length,0);assert.equal(execution.prompt,'Text only');assert.equal(execution.sessionId,newConversation?'':'first-session');
+  h.state.agentUpdate({id:next.id,status:'completed',kind:'agent',sessionId:'first-session',response:'Done',finishedAt:new Date().toISOString()});
+ }
+});
+
+test('rejected requests keep first-request materials while accepted failures retain the original retry snapshot',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ await h.success('review.save',{id:review.id,body:'RETRY_ORIGINAL_INSTRUCTION',evidence:syntheticEvidence('RETRY_ORIGINAL_LOG')});const file=await addFile(h,review.id,'RETRY_ORIGINAL_FILE');
+ const original=h.state.liveStore.addActivity;h.state.liveStore.addActivity=()=>{throw new Error('synthetic request save failure')};
+ assert.equal((await h.invoke('agent.start',{reviewId:review.id,prompt:'Rejected before acceptance',requestId:crypto.randomUUID()})).ok,false);
+ h.state.liveStore.addActivity=original;assert.equal((await h.success('agent.materials',{reviewId:review.id})).hasRequests,false);assert.equal(h.state.agentStarts.length,0);
+ h.state.agentStartError=true;
+ const failed=await h.success('agent.start',{reviewId:review.id,prompt:'Accepted request',requestId:crypto.randomUUID()});
+ assert.equal(failed.status,'failed');assert.equal(failed.context.instruction,true);assert.equal((await h.success('agent.materials',{reviewId:review.id})).hasRequests,true);
+ await h.success('review.save',{id:review.id,body:'RETRY_UPDATED_INSTRUCTION',evidence:syntheticEvidence('RETRY_UPDATED_LOG')});h.state.agentStartError=false;
+ const retry=await h.success('agent.start',{reviewId:review.id,prompt:failed.prompt,requestId:crypto.randomUUID(),retryOf:failed.id});assert.deepEqual(retry.context,failed.context);assert.match(h.state.agentStarts.at(-1).prompt,/RETRY_ORIGINAL_INSTRUCTION/);assert.equal(h.state.agentStarts.at(-1).prompt.includes('RETRY_UPDATED_INSTRUCTION'),false);
+ h.state.agentUpdate({id:retry.id,status:'completed',kind:'agent',response:'Done',finishedAt:new Date().toISOString()});
+ const manual=await h.success('agent.start',{reviewId:review.id,prompt:'Explicit new attachment',requestId:crypto.randomUUID(),newConversation:true,context:{instruction:false,attachmentIds:[file.id],logIds:[]}});
+ assert.deepEqual(manual.context.attachmentIds,[file.id]);assert.equal(manual.context.instruction,false);assert.deepEqual(manual.context.logIds,[]);assert.equal(h.state.agentStarts.at(-1).files[0].bytes.toString(),'RETRY_ORIGINAL_FILE');assert.equal(h.state.agentStarts.at(-1).prompt,'Explicit new attachment');
+});
+
+test('follow-up material requests and retries include only explicit materials without automatic review history',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ await h.success('review.save',{id:review.id,body:'DO_NOT_REPEAT_REVIEW_BODY',evidence:syntheticEvidence('EXPLICIT_LOG')});const file=await addFile(h,review.id,'EXPLICIT_FILE');
+ const first=await h.success('agent.start',{reviewId:review.id,prompt:'Original user request',context:{instruction:false}});
+ h.state.agentUpdate({id:first.id,status:'completed',kind:'agent',response:'DO_NOT_REPEAT_HISTORY',finishedAt:new Date().toISOString()});
+ const materials=await h.success('agent.materials',{reviewId:review.id}),next=await h.success('agent.start',{reviewId:review.id,prompt:'Read selected materials',context:{instruction:false,attachmentIds:[file.id],logIds:[materials.logs[0].id]}}),execution=h.state.agentStarts.at(-1);
+ assert.equal(next.context.initialRequest,false);assert.equal(execution.prompt,`선택한 로그:\n${JSON.stringify(next.context.logs)}\n\n사용자 작업 요청:\nRead selected materials`);assert.equal(execution.files.length,2);
+ for(const marker of ['DO_NOT_REPEAT_REVIEW_BODY','DO_NOT_REPEAT_HISTORY','리뷰:','이전 대화:'])assert.equal(execution.prompt.includes(marker),false);
+ h.state.agentUpdate({id:next.id,status:'failed',kind:'agent',error:'synthetic failure',finishedAt:new Date().toISOString()});
+ await h.success('review.save',{id:review.id,evidence:syntheticEvidence('CHANGED_LOG')});
+ const retried=await h.success('agent.start',{reviewId:review.id,prompt:next.prompt,retryOf:next.id});assert.deepEqual(retried.context,next.context);assert.equal(h.state.agentStarts.at(-1).prompt,execution.prompt);assert.equal(h.state.agentStarts.at(-1).files[0].bytes.toString(),'EXPLICIT_FILE');
 });
 
 test('a retry uses the original material snapshot after the review changes and preserves the old run context',async t=>{

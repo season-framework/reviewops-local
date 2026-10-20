@@ -90,11 +90,11 @@ try {
   await expect(home.locator('.work-home-explorer > header')).toContainText('5개 리뷰');
   await expect(tree.locator('.work-home-tree-review')).toHaveCount(5);
   await expect(home.locator('.stats-grid,.dashboard,.summary-tile')).toHaveCount(0);
-  await home.getByRole('searchbox', { name: '리뷰 제목 검색', exact: true }).fill('파일 이름');
+  await home.getByRole('searchbox', { name: '리뷰 제목·분류 검색', exact: true }).fill('파일 이름');
   await expect(home.locator('.work-home-explorer > header')).toContainText('1개 리뷰');
   await expect(treeReview(fixtures.reviews[0])).toBeVisible();
   await expect(treeReview(fixtures.reviews[1])).toHaveCount(0);
-  await home.getByRole('searchbox', { name: '리뷰 제목 검색', exact: true }).fill('');
+  await home.getByRole('searchbox', { name: '리뷰 제목·분류 검색', exact: true }).fill('');
   await reviewScope('닫힌 리뷰').click();
   await expect(home.locator('.work-home-explorer > header')).toContainText('2개 리뷰');
   await expect(treeReview(fixtures.reviews[3])).toBeVisible();

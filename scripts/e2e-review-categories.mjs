@@ -1,0 +1,130 @@
+import {setTestLocale} from './test-locale.mjs';
+import {isolatedModelRuntime} from './model-cache-fixture.mjs';
+import {_electron as electron,expect} from '@playwright/test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const root=process.cwd(),testRoot=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-review-categories-'));
+const home=path.join(testRoot,'home'),dataPath=path.join(testRoot,'data'),files=path.join(testRoot,'files'),output=path.join(root,'test-results','review-categories');
+for(const directory of [home,files,output])fs.mkdirSync(directory,{recursive:true});
+const isolated=isolatedModelRuntime({home,dataPath}),checks=[],errors=[];
+let app,page;
+const pane=()=>page.locator('.workspace-pane:not([hidden])');
+const form=()=>pane().getByRole('region',{name:'리뷰 등록',exact:true});
+const picker=()=>pane().locator('.review-category-picker');
+const ipc=(action,payload={})=>page.evaluate(({action,payload})=>window.reviewops.invoke(action,payload),{action,payload});
+const snapshot=()=>ipc('snapshot');
+const pass=message=>{checks.push(message);console.log('PASS: '+message)};
+async function launch(){
+  const env={...process.env,...isolated,REVIEWOPS_DATA_DIR:dataPath};delete env.ELECTRON_RUN_AS_NODE;
+  app=await electron.launch({args:process.env.REVIEWOPS_TEST_EXECUTABLE?[]:[root],executablePath:process.env.REVIEWOPS_TEST_EXECUTABLE,env,timeout:30000});
+  page=await app.firstWindow();await setTestLocale(page);page.on('pageerror',error=>errors.push(error.message));
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1500,1000));
+  await expect(page.getByRole('heading',{name:'홈',exact:true})).toBeVisible();
+}
+async function stop(){
+  if(!app)return;
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().forEach(window=>window.destroy())).catch(()=>{});
+  await app.close();app=null;
+}
+async function addCategory(name){
+  await picker().getByRole('button',{name:'분류 추가',exact:true}).click();
+  await picker().getByLabel('분류 이름',{exact:true}).fill(name);
+  await picker().getByLabel('분류 이름',{exact:true}).press('Enter');
+  await expect(picker().getByRole('button',{name:name.trim(),exact:true})).toHaveAttribute('aria-pressed','true');
+}
+async function openProject(project){
+  await page.locator('.main-nav').getByRole('button',{name:'홈',exact:true}).click();
+  await page.locator('.workspace-refresh').click();
+  await page.getByRole('button',{name:`${project.name} 프로젝트 열기`,exact:true}).click();
+}
+try{
+  await launch();
+  const group=await ipc('group.save',{name:'리뷰 분류 검사'}),service=await ipc('service.save',{groupId:group.id,name:'파일 환경',kind:'local',rootPath:files}),project=await ipc('project.save',{groupId:group.id,name:'분류 검사 프로젝트',serviceIds:[service.id]});
+  await openProject(project);await pane().getByRole('button',{name:'새 리뷰',exact:true}).click();
+  assert.deepEqual(await picker().locator('button[data-value]').allTextContents(),['버그','UX','콘텐츠','성능','접근성','보안','기타']);
+  await picker().getByRole('button',{name:'분류 추가',exact:true}).focus();await page.keyboard.press('Enter');
+  await expect(picker().getByLabel('분류 이름',{exact:true})).toBeFocused();
+  await picker().getByLabel('분류 이름',{exact:true}).press('Enter');
+  await expect(picker().getByRole('alert')).toContainText('분류 이름을 입력하십시오.');
+  await picker().getByLabel('분류 이름',{exact:true}).press('Escape');
+  await expect(picker().getByRole('button',{name:'분류 추가',exact:true})).toBeFocused();
+  pass('기본 분류 7개와 키보드 추가·빈 이름 검사·취소 초점 표시');
+  await addCategory('배포 확인');await addCategory('출시 후 검토');
+  await addCategory('출시 후 검토');
+  assert.equal((await snapshot()).settings.reviewCategories.length,2);
+  assert.equal((await snapshot()).reviews.length,0);
+  const categories=(await snapshot()).settings.reviewCategories,selected=categories.find(item=>item.name==='출시 후 검토');
+  await form().getByLabel('제목',{exact:true}).fill('분류 이름으로 찾을 요청');
+  await form().getByRole('button',{name:'등록',exact:true}).click();
+  await expect.poll(async()=>(await snapshot()).reviews.find(item=>item.title==='분류 이름으로 찾을 요청')?.category).toBe(selected.id);
+  let review=(await snapshot()).reviews.find(item=>item.title==='분류 이름으로 찾을 요청');
+  pass('추가한 분류를 즉시 선택하고 같은 이름은 중복 없이 재사용');
+  await pane().getByRole('tab',{name:'정보',exact:true}).click();
+  await expect(pane().locator('.original-review-meta')).toContainText('출시 후 검토');
+  await pane().getByRole('button',{name:'편집',exact:true}).click();
+  await expect(picker().getByRole('button',{name:'출시 후 검토',exact:true})).toHaveAttribute('aria-pressed','true');
+  await picker().getByRole('button',{name:'배포 확인',exact:true}).click();
+  await pane().getByRole('button',{name:'저장',exact:true}).click();
+  const custom=categories.find(item=>item.name==='배포 확인');
+  await expect.poll(async()=>(await snapshot()).reviews.find(item=>item.id===review.id)?.category).toBe(custom.id);
+  const legacy=await ipc('review.save',{projectId:project.id,title:'이전 기능 요청',category:'feature'});
+  await page.locator('.workspace-refresh').click();await pane().getByRole('button',{name:'리뷰 닫기',exact:true}).click();
+  await pane().getByRole('button',{name:'확장',exact:true}).click();
+  const filters=pane().locator('.original-advanced-filters>div').first();
+  await filters.getByRole('button',{name:'배포 확인',exact:true}).click();
+  await expect(pane().locator('.original-review-table tbody tr')).toHaveCount(1);
+  await expect(pane().locator('.original-review-table tbody')).toContainText(review.title);
+  await filters.getByRole('button',{name:'모든 분류',exact:true}).click();
+  await pane().getByLabel('리뷰 제목 또는 분류',{exact:true}).fill('배포 확인');
+  await pane().locator('.original-review-search').getByRole('button',{name:'검색',exact:true}).click();
+  await expect(pane().locator('.original-review-table tbody tr')).toHaveCount(1);
+  await expect(pane().locator('.original-review-table tbody')).toContainText(review.title);
+  await pane().getByRole('button',{name:'검색어 지우기',exact:true}).click();
+  await pane().locator('.original-review-table tbody tr').filter({hasText:legacy.title}).click();
+  await pane().getByRole('tab',{name:'정보',exact:true}).click();await pane().getByRole('button',{name:'편집',exact:true}).click();
+  await expect(picker().getByRole('button',{name:'기능',exact:true})).toHaveAttribute('aria-pressed','true');
+  await pane().getByRole('button',{name:'저장',exact:true}).click();
+  assert.equal((await snapshot()).reviews.find(item=>item.id===legacy.id).category,'feature');
+  pass('편집·분류 필터·분류 이름 검색과 과거 기능 분류를 같은 목록으로 표시');
+  await page.locator('.main-nav').getByRole('button',{name:'홈',exact:true}).click();
+  await pane().getByRole('searchbox',{name:'리뷰 제목·분류 검색',exact:true}).fill('배포 확인');
+  await expect(pane().locator('.work-home-tree-review')).toHaveCount(1);
+  await expect(pane().locator('.work-home-tree-review')).toContainText(review.title);
+  pass('홈 리뷰 목록에서도 직접 추가한 분류 이름으로 검색');
+  const backup=path.join(testRoot,'backup.json');
+  await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file})},backup);
+  await ipc('backup.export');assert(fs.existsSync(backup));
+  await ipc('reviewCategory.save',{name:'복원 전 임시 분류'});
+  await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});dialog.showMessageBox=async()=>({response:1})},backup);
+  assert.equal((await ipc('backup.import')).imported,true);
+  assert.deepEqual((await snapshot()).settings.reviewCategories,categories);
+  assert.equal((await snapshot()).reviews.find(item=>item.id===review.id).category,custom.id);
+  pass('실제 백업 내보내기와 복원 후 사용·미사용 분류와 리뷰 연결을 보존');
+  await stop();await launch();
+  assert.deepEqual((await snapshot()).settings.reviewCategories,categories);
+  await openProject(project);
+  if(await pane().getByRole('button',{name:'리뷰 닫기',exact:true}).count())await pane().getByRole('button',{name:'리뷰 닫기',exact:true}).click();
+  await pane().getByRole('button',{name:'새 리뷰',exact:true}).click();
+  await expect(picker().getByRole('button',{name:'배포 확인',exact:true})).toBeVisible();
+  await expect(picker().getByRole('button',{name:'출시 후 검토',exact:true})).toBeVisible();
+  await page.locator('.sidebar-bottom').getByRole('button',{name:'어두운 화면',exact:true}).click();
+  await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(800,700));
+  await picker().scrollIntoViewIfNeeded();
+  const bounds=await picker().evaluate(node=>({client:node.clientWidth,scroll:node.scrollWidth}));assert(bounds.scroll<=bounds.client+1);
+  await page.screenshot({path:path.join(output,'custom-categories-narrow-dark.png')});
+  pass('재시작 후 모든 직접 분류를 유지하고 작은 창·어두운 화면에서 표시');
+  await setTestLocale(page,'en');
+  await page.getByRole('tab',{name:project.name,exact:true}).click();
+  const english=JSON.parse(fs.readFileSync(path.join(root,'src/i18n/en.json'),'utf8'));
+  await pane().getByRole('button',{name:english['새 리뷰'],exact:true}).click();
+  await expect(pane().locator('.review-category-picker').getByRole('button',{name:'배포 확인',exact:true})).toBeVisible();
+  await expect(pane().locator('.review-category-picker').getByRole('button',{name:'Bug',exact:true})).toBeVisible();
+  assert.deepEqual(errors,[]);
+  pass('언어를 바꿔도 직접 입력한 분류 이름은 원문 유지');
+  fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,testRoot,checks,rendererErrors:errors,categories,legacyCategory:'feature',userProfilesChanged:false},null,2));
+  console.log(JSON.stringify({ok:true,testRoot,checks:checks.length}));
+}catch(error){await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});throw error}
+finally{await stop().catch(()=>{})}

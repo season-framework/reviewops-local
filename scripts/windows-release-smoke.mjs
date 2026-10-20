@@ -226,6 +226,8 @@ try {
   assert.match(JSON.stringify(projectFile), /WINDOWS_LOCAL_PROJECT_FILE/);
   await refresh.click();
   await expect(page.getByRole('button', { name: `${project.name} 프로젝트 열기`, exact: true })).toBeVisible();
+  const customCategory = await invoke('reviewCategory.save', { name: 'Windows 직접 추가 분류' });
+  const categorizedReview = await invoke('review.save', { projectId: project.id, serviceId: service.id, title: '분류가 유지되는 리뷰', category: customCategory.id });
   const stored = await invoke('snapshot');
   assert.equal(stored.services.find(item => item.id === service.id).rootPath, filesPath);
   assert.equal(stored.projects.find(item => item.id === project.id).name, project.name);
@@ -239,6 +241,10 @@ try {
   assert.equal(restored.services.find(item => item.id === service.id).rootPath, filesPath);
   assert.deepEqual(restored.services.find(item => item.id === service.id).agentModels, registeredModels);
   check('Manual agent models and supported reasoning levels persist through Windows restart');
+  assert.deepEqual(restored.settings.reviewCategories.find(item => item.id === customCategory.id), customCategory);
+  assert.equal(restored.reviews.find(item => item.id === categorizedReview.id).category, customCategory.id);
+  assert.deepEqual(await invoke('reviewCategory.save', { name: customCategory.name }), customCategory);
+  check('Custom review categories and assigned reviews persist through Windows restart without duplicate names');
   assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
   await closeWindow();
   assert.deepEqual(report.rendererErrors, []);
