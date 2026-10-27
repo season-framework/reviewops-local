@@ -9,7 +9,7 @@ import ReviewCategoryPicker from './ReviewCategoryPicker.jsx';
 import {reviewCategoryLabel} from './review-categories.js';
 import {projectConnection,connectionLabel} from './OriginalForms.jsx';
 import GeneratedFilePreview,{useGeneratedFilePreview} from './GeneratedFilePreview.jsx';
-import {parseInlineMarkdown,markdownLinkType} from './markdown-inline.mjs';
+import Markdown from './ReviewMarkdown.jsx';
 import {Dialog,Field} from './components.jsx';
 import './original-review.css';
 
@@ -55,35 +55,6 @@ function parseForm(value) {
 }
 function Status({value}) {return <span className={`original-review-status status-${value}`}>{label(STATES,value)}</span>;}
 function Control({children,icon,className='',...props}) {return <button type="button" className={`original-review-control ${className}`} {...props}>{icon && <Icon name={icon} size={13}/>} {children}</button>;}
-
-// Text is rendered as React nodes; stored Markdown never becomes executable HTML.
-function Markdown({text='',invoke,onError,onFileLink}) {
-  const inline = value => parseInlineMarkdown(value).map((part,index) => {
-    if(part.type==='strong') return <strong key={index}>{inline(part.text)}</strong>;
-    if(part.type==='code') return <code key={index}>{part.text}</code>;
-    if(part.type==='em') return <em key={index}>{inline(part.text)}</em>;
-    if(part.type==='link') {
-      const kind=markdownLinkType(part.target);
-      if(kind==='external') return <a key={index} href={part.target} onClick={event=>{event.preventDefault();invoke('external.open',{url:part.target}).catch(error=>onError?.(error.message));}}>{part.label}</a>;
-      if(kind==='file'&&onFileLink) return <a key={index} href="#" onClick={event=>{event.preventDefault();Promise.resolve(onFileLink(part.target,part.label)).catch(error=>onError?.(error.message))}}>{part.label}</a>;
-      return <React.Fragment key={index}>{part.label}</React.Fragment>;
-    }
-    return part.text;
-  });
-  const nodes=[]; const lines=String(text).split('\n');
-  for(let i=0;i<lines.length;i++) {
-    const line=lines[i];
-    if(line.startsWith('```')) {const code=[];while(++i<lines.length&&!lines[i].startsWith('```'))code.push(lines[i]);nodes.push(<pre key={i}><code>{code.join('\n')}</code></pre>);continue;}
-    const heading=line.match(/^(#{1,6})\s+(.+)$/);
-    if(heading){const Tag=`h${Math.min(heading[1].length+1,6)}`;nodes.push(<Tag key={i}>{inline(heading[2])}</Tag>);continue;}
-    if(/^\s*[-*+]\s+/.test(line)){const items=[];let j=i;while(j<lines.length&&/^\s*[-*+]\s+/.test(lines[j])){items.push(<li key={j}>{inline(lines[j].replace(/^\s*[-*+]\s+/,''))}</li>);j++;}nodes.push(<ul key={i}>{items}</ul>);i=j-1;continue;}
-    if(/^\s*\d+[.)]\s+/.test(line)){const items=[];let j=i;while(j<lines.length&&/^\s*\d+[.)]\s+/.test(lines[j])){items.push(<li key={j}>{inline(lines[j].replace(/^\s*\d+[.)]\s+/,''))}</li>);j++;}nodes.push(<ol key={i}>{items}</ol>);i=j-1;continue;}
-    if(/^>\s?/.test(line)){nodes.push(<blockquote key={i}>{inline(line.replace(/^>\s?/,''))}</blockquote>);continue;}
-    if(line.trim()) nodes.push(<p key={i}>{inline(line)}</p>);
-    else nodes.push(<div className="original-review-paragraph-space" key={i}/>);
-  }
-  return <div className="original-review-markdown">{nodes}</div>;
-}
 
 function ImageAttachment({file,invoke,onPreview,onError}) {
   const [content,setContent]=useState(null),[failed,setFailed]=useState(false);
