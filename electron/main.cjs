@@ -16,6 +16,7 @@ const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
 const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
+const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
@@ -299,6 +300,13 @@ async function agentAction(action,payload) {
   if(logs.length)files.push({name:'review-logs.json',mimeType:'application/json',bytes:Buffer.from(JSON.stringify(logs,null,2))});
   const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
   const execution={...job,prompt:input,config:service,settings,images,files};
+  manager.validateStart(execution);
+  const preflightOperation=`agent-preflight:${id}`;operations.add(preflightOperation);
+  try{await manager.preflight(service,settings);}
+  catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
+  finally{operations.delete(preflightOperation);}
+  if(JSON.stringify(serviceById(service.id,true))!==JSON.stringify(service))throw new Error('검사 중 프로젝트 설정이 변경되었습니다. 실행 대상을 살펴본 후 요청을 다시 보내십시오.');
+  if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.requestSignature!==requestSignature)throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
   manager.validateStart(execution);
   await saveWithAttachments(tokens,()=>{store.saveAgentRun(job);return store.addActivity({reviewId:review.id,body:displayPrompt.trim(),role:'user',agentRunId:id,status:'in_progress'});},activity=>({reviewId:review.id,activityId:activity.id}));
   operations.add(`agent:${id}`);agentJobs.set(id,job);
@@ -687,8 +695,10 @@ async function dispatch(action, payload = {}) {
     return result;
   }
   if (action === 'settings.save') return store.saveSettings(payload);
-  if (action === 'dialog.directory' || action === 'dialog.key') {
-    const selection = await dialog.showOpenDialog(window,{title:action === 'dialog.key' ? 'SSH 개인 키 선택' : '로컬 폴더 선택',properties:[action === 'dialog.key' ? 'openFile':'openDirectory'], ...(action==='dialog.key'?{properties:['openFile','showHiddenFiles']}: {})});
+  if (action === 'directory.inspect') return inspectDirectory(payload.path);
+  if (action === 'directory.create') return createChildDirectory(payload.parent,payload.name);
+  if (action === 'dialog.directory' || action === 'dialog.key' || action === 'dialog.executable') {
+    const selection = await dialog.showOpenDialog(window,{title:action === 'dialog.key' ? 'SSH 개인 키 선택' : action==='dialog.executable'?'Codex 실행 파일 선택':'로컬 폴더 선택',properties:action==='dialog.directory'?['openDirectory','createDirectory']:['openFile','showHiddenFiles']});
     return selection.canceled ? null : selection.filePaths[0];
   }
   if (action === 'attachment.stage') return stageAttachments();
