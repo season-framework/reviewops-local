@@ -107,7 +107,7 @@ function ReviewPanelContent({active=true,review,projectId,data,invoke,mutate,bus
   const [pending,setPending]=useState([]),[commentFiles,setCommentFiles]=useState([]);
   const [waiting,setWaiting]=useState(false),[error,setError]=useState(''),[menu,setMenu]=useState(''),[discard,setDiscard]=useState(false),[deleteReview,setDeleteReview]=useState(false),[deleteConfirm,setDeleteConfirm]=useState('');
   const [editActivity,setEditActivity]=useState(null),[activityBody,setActivityBody]=useState(''),[editFiles,setEditFiles]=useState([]),[removedFiles,setRemovedFiles]=useState([]),[activitySwitch,setActivitySwitch]=useState(null),[instructionExport,setInstructionExport]=useState('');
-  const [logKind,setLogKind]=useState('navigation'),[logVersion,setLogVersion]=useState(''),[previewEvidence,setPreviewEvidence]=useState(null),[capturePrompt,setCapturePrompt]=useState(null),[agentDirty,setAgentDirty]=useState(false),[dropActive,setDropActive]=useState(false);
+  const [logKind,setLogKind]=useState('navigation'),[logVersion,setLogVersion]=useState(''),[previewResult,setPreviewEvidence]=useState(null),[capturePrompt,setCapturePrompt]=useState(null),[agentDirty,setAgentDirty]=useState(false),[dropActive,setDropActive]=useState(false);
   const evidenceCallback=useRef(onCollectEvidence);evidenceCallback.current=onCollectEvidence;
   const panelRef=useRef(null),scrollRef=useRef(null),pendingRef=useRef([]),commentRef=useRef([]),editRef=useRef([]),dirtyCallback=useRef(onDirtyChange);
   const uid=useId();
@@ -124,6 +124,9 @@ function ReviewPanelContent({active=true,review,projectId,data,invoke,mutate,bus
   const evidence=normalizeEvidence(review?.evidence),logCaptures=Array.isArray(evidence.log_captures)?evidence.log_captures:[];
   const selectedCapture=logCaptures.find(item=>item.id===logVersion)||logCaptures.at(-1)||evidence;
   const selectedCaptureId=selectedCapture.id||'';
+  const previewTarget=captureTargetKey(service?.id,targetPath?'file':'web',targetPath,targetUrl);
+  const livePreviewTarget=useRef(previewTarget);livePreviewTarget.current=previewTarget;
+  const previewEvidence=previewResult?.target===previewTarget?previewResult.value:null;
   const captureKind=captureTargetKind(targetPath,previewEvidence);
   const preferenceKey=capturePreferenceKey(projectId,captureKind);
   const captureMode=selectedCaptureMode({kind:captureKind,available:previewEvidence?.available,draftMode:form.captureModes?.[captureKind],savedMode:storage.get(preferenceKey)});
@@ -136,7 +139,7 @@ function ReviewPanelContent({active=true,review,projectId,data,invoke,mutate,bus
   const draftScreenshot=pending.find(item=>item.screenshot);
   const context=previewEvidence||draftScreenshot?.capture||evidence;
   const viewport=context.viewport||{width:service?.viewerWidth,height:service?.viewerHeight,scale:service?.viewerScale};
-  useEffect(()=>{if(!isCreate||!onCollectEvidence)return;let live=true,timer;const poll=async()=>{try{const value=await evidenceCallback.current?.({preview:true});if(live&&value)setPreviewEvidence(value)}catch{}if(live)timer=setTimeout(poll,1200)};poll();return()=>{live=false;clearTimeout(timer)}},[isCreate,service?.id,Boolean(onCollectEvidence)]);
+  useEffect(()=>{if(!isCreate||!onCollectEvidence)return;let live=true,timer;const poll=async()=>{try{const value=await evidenceCallback.current?.({preview:true});if(live&&value&&livePreviewTarget.current===previewTarget)setPreviewEvidence({target:previewTarget,value})}catch{}if(live)timer=setTimeout(poll,1200)};poll();return()=>{live=false;clearTimeout(timer)}},[isCreate,service?.id,previewTarget,Boolean(onCollectEvidence)]);
   useEffect(()=>{dirtyCallback.current?.(dirty);return()=>dirtyCallback.current?.(false);},[dirty]);
   useEffect(()=>{if(!dirty)return;const guard=event=>{event.preventDefault();event.returnValue='';};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard);},[dirty]);
   useEffect(()=>()=>{const tokens=[...pendingRef.current,...commentRef.current,...editRef.current].map(file=>file.token);if(tokens.length)invoke('attachment.discard',{tokens}).catch(()=>{});},[identity,invoke]);

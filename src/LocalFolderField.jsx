@@ -1,4 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
+import {createPortal} from 'react-dom';
 import {Button,Dialog,Field,invoke} from './components.jsx';
 import {t} from './i18n/index.js';
 
@@ -13,11 +14,11 @@ export default function LocalFolderField({label,value='',onChange,placeholder=''
   <Field label={label} hint={hint}><div className="input-action"><input aria-label={label} value={value} onChange={event=>onChange(event.target.value)} placeholder={placeholder} required={required} disabled={disabled}/><Button type="button" icon="folder" disabled={disabled} onClick={choose}>{t('선택')}</Button><Button type="button" disabled={disabled} onClick={()=>setCreation({parent:'',name:'',error:''})}>{t('새 폴더')}</Button></div></Field>
   {checking?<p className="original-form-help" role="status">{t('폴더 검사 중')}</p>:result&&<p className={result.ok?'original-form-help':'form-error'} role="status">{t(result.message)}</p>}
   {error&&<p className="form-error" role="alert">{t(error)}</p>}
-  {creation&&<Dialog title={t('새 폴더 만들기')} onClose={()=>{if(!working)setCreation(null)}} footer={<><Button type="button" disabled={working} onClick={()=>setCreation(null)}>{t('취소')}</Button><Button type="button" variant="primary" disabled={working||!creation.parent||!creation.name.trim()} onClick={create}>{working?t('생성 중'):t('폴더 만들기')}</Button></>}>
+  {creation&&createPortal(<Dialog title={t('새 폴더 만들기')} onClose={()=>{if(!working)setCreation(null)}} footer={<><Button type="button" disabled={working} onClick={()=>setCreation(null)}>{t('취소')}</Button><Button type="button" variant="primary" disabled={working||!creation.parent||!creation.name.trim()} onClick={create}>{working?t('생성 중'):t('폴더 만들기')}</Button></>}>
    <p>{t('상위 폴더를 선택하고 그 안에 만들 폴더 이름을 입력하십시오.')}</p>
    <Field label={t('상위 폴더')}><div className="input-action"><input aria-label={t('상위 폴더')} value={creation.parent} readOnly/><Button type="button" disabled={working} onClick={chooseParent}>{t('위치 선택')}</Button></div></Field>
    <Field label={t('새 폴더 이름')}><input aria-label={t('새 폴더 이름')} value={creation.name} disabled={working} onChange={event=>setCreation({...creation,name:event.target.value,error:''})}/></Field>
    {creation.error&&<p className="form-error" role="alert">{t(creation.error)}</p>}
-  </Dialog>}
+  </Dialog>,document.body)}
  </>;
 }
