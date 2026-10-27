@@ -5,18 +5,19 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
+const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 const CATEGORIES = ['bug', 'ux', 'feature', 'content', 'performance', 'accessibility', 'security', 'structure', 'design', 'data', 'message', 'typo', 'other'];
 const CATEGORY_NAMES = require('./review-categories.json');
 const BUILTIN_CATEGORIES = [...CATEGORY_NAMES.defaults, ...CATEGORY_NAMES.legacy];
 const categoryNameKey = value => value.normalize('NFKC').toLowerCase();
-const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews', 'agent_runs', 'activities', 'attachments', 'settings'];
+const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews', 'agent_runs', 'agent_requests', 'activities', 'attachments', 'settings'];
 const AGENT_STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
 const AGENT_FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const AGENT_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution'];
+const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution','sourceRunId','executionTarget'];
 const LOG_FIELDS = ['navigation_log','input_log','network_log','console_log','fingerprint_log'];
 const SECRET_KEY = /^(password|passphrase|private[_-]?key|ssh[_-]?password|ssh[_-]?private[_-]?key|access[_-]?token|api[_-]?key|secret|credential)$/i;
 const MAX_ITEMS = 100000;
@@ -207,11 +208,13 @@ function agentProgress(value, strict = false) {
   return serialized;
 }
 function agentMetadata(input, previous) {
-  const immutable=new Set(['context','requestId','requestSignature','newConversation','retryOf','independentExecution']);
+  const immutable=new Set(['context','requestId','requestSignature','newConversation','retryOf','independentExecution','sourceRunId','executionTarget']);
   const value = Object.fromEntries(AGENT_METADATA.filter(key => (input[key] ?? previous?.[key]) !== undefined).map(key => [key,immutable.has(key)&&previous?.[key]!==undefined?previous[key]:input[key] ?? previous?.[key]]));
   for (const key of ['cancelRequested','terminationConfirmed','outputTruncated','newConversation','independentExecution']) if (value[key] !== undefined && typeof value[key] !== 'boolean') fail('에이전트 실행 정보가 올바르지 않습니다.');
   if(value.requestId!==undefined)value.requestId=id(value.requestId,'요청');
   if(value.retryOf!==undefined)value.retryOf=id(value.retryOf,'원본 요청');
+  if(value.sourceRunId!==undefined)value.sourceRunId=id(value.sourceRunId,'가져온 요청');
+  if(value.executionTarget!==undefined){const target={...object(value.executionTarget,'실행 대상')};const allowed=['kind','host','hostAlias','sshConfigPath','port','username','workPath','binary','model','reasoningEffort'];if(Object.keys(target).some(key=>!allowed.includes(key))||!['local','ssh'].includes(target.kind))fail('저장된 실행 대상이 올바르지 않습니다.');for(const key of allowed.filter(key=>!['kind','port'].includes(key)))target[key]=text(target[key],'실행 대상',['workPath','binary','sshConfigPath'].includes(key)?4096:256);target.port=integer(target.port,0,0,65535,'포트');value.executionTarget=target;}
   if(value.requestSignature!==undefined && !/^[a-f0-9]{64}$/.test(value.requestSignature))fail('에이전트 요청 정보가 올바르지 않습니다.');
   if(value.remoteExecution!==undefined) {
     const remote=object(value.remoteExecution,'SSH 에이전트 실행 정보');
@@ -450,6 +453,7 @@ class LocalStore {
         this.db.exec('PRAGMA user_version=8;');
       }); } finally { this.db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;'); }
     }
+    if (current < 9) this.transaction(() => this.db.exec(REQUEST_SCHEMA + '\nPRAGMA user_version=9;'));
   }
 
   transaction(fn) {
@@ -858,17 +862,18 @@ class LocalStore {
       settings: this.settings()
     }));
   }
-  exportData() { return this.transaction(() => ({ format: 'reviewops-local', version: SCHEMA_VERSION, ...this.snapshot(), agentRuns:this.listAgentRuns() })); }
+  exportData() { return this.transaction(() => ({ format: 'reviewops-local', version: SCHEMA_VERSION, ...this.snapshot(), agentRuns:this.listAgentRuns(),agentRequests:listSavedRequests(this.db) })); }
 
   importData(payload) {
     object(payload, '백업 파일');
-    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
     for (const table of ['groups', 'projects', 'services', 'reviews', 'activities', 'attachments']) {
       if (!Array.isArray(payload[table]) || payload[table].length > MAX_ITEMS) fail('백업 자료의 항목 수가 올바르지 않습니다.');
     }
     if (payload.version >= 3 || payload.agentRuns !== undefined) {
       if (!Array.isArray(payload.agentRuns) || payload.agentRuns.length > MAX_ITEMS) fail('백업 파일의 에이전트 실행 기록 수가 올바르지 않습니다.');
     }
+    if(payload.version >= 9 && !Array.isArray(payload.agentRequests))fail('백업 파일의 후속 요청 목록이 올바르지 않습니다.');
     object(payload.settings, '앱 설정');
     // Validate an independent copy before touching the live database. Import never copies SSH host trust.
     const validation = new LocalStore(':memory:');
@@ -943,6 +948,7 @@ class LocalStore {
         const allowed = [...Object.keys(normalized).filter(key => !['progressJson','metadataJson'].includes(key)),'progress',...AGENT_METADATA];
         insertRow('agent_runs',normalizeRow(row,normalized,allowed));
       }
+      importRequests(this,payload.agentRequests || []);
       for (const row of payload.activities) {
         object(row);
         const type = choice(row.type, ['comment', 'created', 'updated', 'status'], 'comment', '활동 종류');

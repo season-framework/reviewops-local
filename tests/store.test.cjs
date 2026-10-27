@@ -310,7 +310,7 @@ test('export and import preserve all local content and IDs, while dropping SSH t
   expected.services[0].hostFingerprint = '';
   for (const project of expected.projects) if (project.connection) project.connection.hostFingerprint = '';
   assert.deepEqual(restored, expected);
-  assert.deepEqual(store.exportData(), { format: 'reviewops-local', version: SCHEMA_VERSION, ...expected, agentRuns: [] });
+  assert.deepEqual(store.exportData(), { format: 'reviewops-local', version: SCHEMA_VERSION, ...expected, agentRuns: [], agentRequests: [] });
   assert.equal(backup.services[0].hostFingerprint, PIN, 'input object must remain unchanged');
 });
 
