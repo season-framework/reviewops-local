@@ -17,6 +17,7 @@ const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
 const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
+const {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions}=require('./review-versions.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
@@ -154,7 +155,7 @@ function agentMaterials(reviewId) {
   const metadata=item=>{const owner=snapshot.reviews.find(entry=>entry.id===item.reviewId),ownerProject=snapshot.projects.find(entry=>entry.id===owner?.projectId);return {id:item.id,name:item.name,mimeType:item.mimeType,size:item.size,createdAt:item.createdAt,reviewId:item.reviewId,activityId:item.activityId,reviewTitle:owner?.title || '',projectName:ownerProject?.name || '',source:item.reviewId===review.id?(item.activityId?'activity':'review'):'shared'};};
   const attachments=snapshot.attachments.filter(item=>item.reviewId===review.id).map(metadata);
   const sharedFiles=snapshot.attachments.filter(item=>item.reviewId!==review.id&&snapshot.projects.some(owner=>owner.id===snapshot.reviews.find(entry=>entry.id===item.reviewId)?.projectId&&owner.groupId===project.groupId)).map(metadata);
-  const evidence=review.evidence || {},captures=evidence.log_captures || [];
+  const evidence=withoutReviewVersions(review.evidence || {}),captures=evidence.log_captures || [];
   const logs=captures.map((capture,index)=>({...capture,id:capture.id || `capture-${index}`,name:capture.label || `리뷰 로그 ${index+1}`}));
   if(!logs.length&&['navigation_log','input_log','network_log','console_log','fingerprint_log'].some(key=>evidence[key]&&Object.keys(evidence[key]).length))logs.push({...evidence,id:'current',name:'리뷰 로그'});
   const categoryNames=require('./review-categories.json'),category=store.reviewCategories().find(item=>item.id===review.category)?.name||[...categoryNames.defaults,...categoryNames.legacy].find(([id])=>id===review.category)?.[1]||review.category;
@@ -170,10 +171,10 @@ async function exportInstruction(reviewId) {
   const snapshot=store.snapshot(),entries=[];let total=0;
   const add=(name,bytes)=>{if(typeof bytes==='string')bytes=Buffer.from(bytes);total+=bytes.length;if(total>200*1024*1024)throw new Error('ZIP으로 저장할 자료는 합계 200 MB까지 지원합니다.');entries.push({name,bytes});};
   add('README.md',`# ReviewOps 리뷰 자료\n\n${review.title}\n\n- request.md: 작업 지시서\n- review.json: 리뷰 정보\n- logs/: 저장한 화면 로그\n- screenshots/: 스크린샷과 이미지\n- attachments/: 리뷰 첨부파일\n- activities/: 작업이력과 첨부파일\n\n이 ZIP에는 앱에 저장된 자료가 포함됩니다.\n`);
-  add('request.md',materials.instruction.markdown);add('review.json',JSON.stringify(review,null,2));
-  add('logs/current.json',JSON.stringify({...review.evidence,log_captures:undefined},null,2));
+  add('request.md',materials.instruction.markdown);add('review.json',JSON.stringify(withoutReviewVersions(review),null,2));
+  add('logs/current.json',JSON.stringify({...withoutReviewVersions(review.evidence),log_captures:undefined},null,2));
   for(const [index,capture] of materials.logs.entries())add(`logs/${String(index+1).padStart(3,'0')}-${capture.id}.json`,JSON.stringify(capture,null,2));
-  const activities=snapshot.activities.filter(item=>item.reviewId===review.id);add('activities/history.json',JSON.stringify(activities,null,2));
+  const activities=snapshot.activities.filter(item=>item.reviewId===review.id);add('activities/history.json',JSON.stringify(withoutReviewVersions(activities),null,2));
   add('activities/history.md',activities.map(item=>`## ${item.role==='agent'?'에이전트':item.type==='comment'?'사용자':'상태 기록'} · ${item.createdAt}\n\n${item.body || `${item.fromStatus} → ${item.toStatus}`}\n`).join('\n'));
   for(const file of snapshot.attachments.filter(item=>item.reviewId===review.id)) {
     const folder=file.mimeType.startsWith('image/')?'screenshots':file.activityId?`activities/${file.activityId}/attachments`:'attachments';
@@ -447,7 +448,7 @@ async function readAttachment(item) {
   const stat = await fsp.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) throw new Error('첨부파일이 올바르지 않습니다.');
   const bytes = await fsp.readFile(file);
-  if (digest(bytes) !== item.sha256) throw new Error('첨부파일이 변경되었거나 손상되었습니다.');
+  if (digest(bytes) !== item.sha256) throw Object.assign(new Error('첨부파일이 변경되었거나 손상되었습니다.'),{code:'ATTACHMENT_INTEGRITY_FAILED'});
   return bytes;
 }
 async function backupBundle() {
@@ -667,6 +668,9 @@ async function dispatch(action, payload = {}) {
     return {...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null};
   }
   if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
+  if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
+  if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment);
+  if (action === 'review.version.target') return changeReviewTarget(store,payload);
   if (action === 'review.save') {const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {
     if(payload.id)assertNoAgent(job=>job.serviceId===payload.id);
