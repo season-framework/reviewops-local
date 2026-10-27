@@ -227,7 +227,18 @@ async function agentAction(action,payload) {
     if(run.reviewId!==review.id)throw new Error('같은 리뷰의 요청만 가져올 수 있습니다.');
     const service=serviceById(review.serviceId,true),settings=agentSettings(service),{executionTarget,copyAgentDraft}=require('./agent-copy-draft.cjs'),current=executionTarget(service,settings);
     const sameLocation=run.executionTarget?['kind','host','hostAlias','sshConfigPath','port','username','workPath'].every(key=>(run.executionTarget[key]??'')===(current[key]??'')):savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
-    return copyAgentDraft({run,current,materials:agentMaterials(review.id),sameLocation});
+    const materials=agentMaterials(review.id),copy=copyAgentDraft({run,current,materials,sameLocation}),unavailable=new Set();
+    // Check only files retained by the draft's ownership and target checks.
+    // Read each file separately so validation does not retain another copy of all attachments.
+    for(const id of new Set([copy.draft.screenshotId,...copy.draft.attachmentIds].filter(Boolean))) {
+      try{await readAttachment(attachmentById(id));}catch{unavailable.add(id);}
+    }
+    if(!unavailable.size)return copy;
+    return copyAgentDraft({run,current,sameLocation,materials:{...materials,
+      attachments:materials.attachments.filter(file=>!unavailable.has(file.id)),
+      sharedFiles:materials.sharedFiles.filter(file=>!unavailable.has(file.id)),
+      screenshots:materials.screenshots.filter(file=>!unavailable.has(file.id))
+    }});
   }
 
   if(action==='agent.models')return cachedAgentModels(serviceById(payload.serviceId||(payload.projectId?store.project(payload.projectId).connection?.id:null)));

@@ -1410,3 +1410,20 @@ test('a project connection replacement during preflight cannot execute the retai
  const result=await pending;assert.equal(result.ok,false);assert.match(result.error.message,/검사 중 프로젝트 설정이 변경/);assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
  assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files.length,1);
 });
+
+for(const damage of ['missing','corrupted'])test(`copied drafts exclude ${damage} selected attachment bytes without changing the failed request`,async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const broken=await addFile(h,review.id,'selected file to validate'),kept=await addFile(h,review.id,'keep this selected file'),unselected=await addFile(h,review.id,'unselected file');
+ const imagePath=path.join(h.root,'selected-image.png'),imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64');fs.writeFileSync(imagePath,imageBytes);h.state.openResult={canceled:false,filePaths:[imagePath]};
+ const [image]=await h.success('attachment.add',{reviewId:review.id});
+ const source=await h.success('agent.start',{requestId:`copy-${damage}-source`,reviewId:review.id,prompt:'Preserve the selected files',context:{instruction:false,screenshotId:image.id,attachmentIds:[broken.id,kept.id],logIds:[]}});
+ h.state.agentUpdate({id:source.id,kind:'agent',status:'failed',error:'fixture failure',finishedAt:new Date().toISOString()});
+ const original=await h.success('agent.read',{id:source.id}),before=await h.success('snapshot'),starts=h.state.agentStarts.length;
+ for(const file of [broken,image]){const location=path.join(h.dataPath,'attachments',file.storageName);if(damage==='missing')fs.unlinkSync(location);else fs.writeFileSync(location,'changed bytes');}
+ fs.unlinkSync(path.join(h.dataPath,'attachments',unselected.storageName));
+ const copy=await h.success('agent.copyDraft',{reviewId:review.id,runId:source.id});
+ assert.equal(copy.draft.screenshotId,null);assert.deepEqual(copy.draft.attachmentIds,[kept.id]);assert.equal(copy.draft.prompt,source.prompt);assert.deepEqual(copy.excluded.map(file=>file.id).sort(),[image.id,broken.id].sort());assert.ok(copy.excluded.every(file=>file.reason==='첨부 자료를 더 이상 사용할 수 없습니다.'));
+ assert.deepEqual(await h.success('agent.read',{id:source.id}),original);assert.deepEqual(await h.success('snapshot'),before);assert.equal(h.state.agentStarts.length,starts);assert.equal(h.state.liveStore.listAgentRuns().length,1);
+ assert.equal(fs.readFileSync(path.join(h.dataPath,'attachments',kept.storageName),'utf8'),'keep this selected file');
+ for(const file of [broken,image]){const location=path.join(h.dataPath,'attachments',file.storageName);if(damage==='missing')assert.equal(fs.existsSync(location),false);else assert.equal(fs.readFileSync(location,'utf8'),'changed bytes');}
+});
