@@ -668,6 +668,19 @@ async function dispatch(action, payload = {}) {
     return {...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null};
   }
   if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
+  if (action === 'review.copy') {
+    const {copySource,copyReviewRecord}=require('./review-copy.cjs');
+    const source=copySource(store,payload),tokens=[];let total=0;
+    try {
+      for(const file of source.attachments){
+        const bytes=await readAttachment(file),token=crypto.randomUUID();
+        total+=bytes.length;if(total>200*1024*1024)throw new Error('복사할 첨부 파일은 합계 200 MB까지 지원합니다.');
+        stagedAttachments.set(token,{token,bytes,expires:Date.now()+300000,metadata:{name:file.name,mimeType:file.mimeType,size:bytes.length,sha256:digest(bytes),storageName:crypto.randomUUID()+path.extname(file.storageName)}});
+        tokens.push(token);
+      }
+      return (await saveWithAttachments(tokens,()=>copyReviewRecord(store,payload),review=>({reviewId:review.id}))).entity;
+    } finally {for(const token of tokens)stagedAttachments.delete(token);}
+  }
   if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
   if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment);
   if (action === 'review.version.target') return changeReviewTarget(store,payload);
