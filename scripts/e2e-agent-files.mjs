@@ -1,4 +1,5 @@
 import {setTestLocale} from './test-locale.mjs';
+import {isolatedModelRuntime} from './model-cache-fixture.mjs';
 import {_electron as electron,expect} from '@playwright/test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -56,7 +57,7 @@ const response=[
 ].join('\n\n');
 const hostKey=crypto.generateKeyPairSync('rsa',{modulusLength:2048,privateKeyEncoding:{type:'pkcs1',format:'pem'},publicKeyEncoding:{type:'pkcs1',format:'pem'}}).privateKey;
 const fingerprint='SHA256:'+crypto.createHash('sha256').update(utils.parseKey(hostKey).getPublicSSH()).digest('base64').replace(/=+$/,'');
-const clients=new Set(),checks=[],errors=[],requests=[],commands=[],fileReads=[];let authentications=0,app,page,server;
+const clients=new Set(),checks=[],errors=[],requests=[],commands=[],fileReads=[],remoteRuns=new Map();let authentications=0,app,page,server;
 const passed=name=>{checks.push(name);console.log(`PASS: ${name}`)};
 const pane=()=>page.locator('.workspace-pane:not([hidden])'),panel=()=>pane().locator('.agent-panel').last();
 const preview=()=>page.locator('.agent-generated-preview [role="dialog"]');
@@ -81,9 +82,43 @@ async function startServer(){
    session.on('exec',(acceptExec,_reject,info)=>{
     const stream=acceptExec(),record={command:info.command,input:'',kind:''};commands.push(record);stream.on('error',()=>{});stream.on('data',chunk=>{record.input+=chunk.toString();});
     const finish=(text='',code=0)=>{stream.write(text);stream.exit(code);stream.end();};
+    const controlDirectory=info.command.match(/\/tmp\/reviewops-agent-[A-Za-z0-9_-]{1,128}/)?.[0];
+    // Keep the server entirely in memory. Durable agent execution uploads a
+    // runner and input, then reads result files through new SSH channels.
+    if(controlDirectory&&info.command.startsWith('umask 077; mkdir ')){
+     record.kind='execution-directory';if(directories.has(controlDirectory)){finish('이미 존재하는 합성 실행 폴더입니다.\n',1);return;}
+     directories.add(controlDirectory);files.set(controlDirectory+'/stdout',Buffer.alloc(0));files.set(controlDirectory+'/stderr',Buffer.alloc(0));finish();return;
+    }
+    const upload=info.command.match(/^umask 077; cat > '(\/tmp\/reviewops-agent-[A-Za-z0-9_-]{1,128}\/(input|runner))'$/);
+    if(upload){record.kind='execution-upload';stream.on('end',()=>{if(!directories.has(path.posix.dirname(upload[1]))){finish('합성 실행 폴더가 없습니다.\n',1);return;}files.set(upload[1],Buffer.from(record.input));finish();});return;}
+    if(controlDirectory&&info.command.includes('nohup setsid bash')){
+     record.kind='request';const input=files.get(controlDirectory+'/input'),runner=files.get(controlDirectory+'/runner');
+     if(!input||!runner||remoteRuns.has(controlDirectory)){finish('합성 실행 자료가 없거나 이미 시작한 요청입니다.\n',1);return;}
+     record.input=input.toString();record.runner=runner.toString();const execution={done:false,timer:null};remoteRuns.set(controlDirectory,execution);
+     execution.timer=setTimeout(()=>{const output=[{type:'thread.started',thread_id:'fixture-files-thread'},{type:'turn.started'},{type:'item.completed',item:{id:'answer',type:'agent_message',text:response}},{type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}].map(event=>JSON.stringify(event)+'\n').join('');files.set(controlDirectory+'/stdout',Buffer.from(output));execution.done=true;},60);
+     finish();return;
+    }
+    if(controlDirectory&&info.command.startsWith('d=')&&info.command.includes('tail -c +')){
+     record.kind='execution-read';const execution=remoteRuns.get(controlDirectory);
+     if(!directories.has(controlDirectory)){finish('missing\n\n0\n0\n\n\n');return;}
+     const offsets=[...info.command.matchAll(/tail -c \+(\d+)/g)].map(match=>Number(match[1])-1),stdout=files.get(controlDirectory+'/stdout')||Buffer.alloc(0),stderr=files.get(controlDirectory+'/stderr')||Buffer.alloc(0);
+     if(offsets.length!==2||offsets.some(offset=>!Number.isSafeInteger(offset)||offset<0)){finish('올바르지 않은 합성 출력 위치입니다.\n',1);return;}
+     finish([execution?.done?'done':execution?'running':'lost',execution?.done?'0':'',stdout.length,stderr.length,stdout.subarray(offsets[0],offsets[0]+65536).toString('base64'),stderr.subarray(offsets[1],offsets[1]+65536).toString('base64'),''].join('\n'));return;
+    }
+    if(controlDirectory&&info.command.startsWith('rm -rf -- ')){
+     record.kind='execution-cleanup';clearTimeout(remoteRuns.get(controlDirectory)?.timer);remoteRuns.delete(controlDirectory);directories.delete(controlDirectory);for(const file of files.keys())if(file.startsWith(controlDirectory+'/'))files.delete(file);finish();return;
+    }
+    if(controlDirectory&&info.command.startsWith('bash -c ')&&info.command.includes('kill -TERM --')){record.kind='command-stop';finish();return;}
     if(info.command.includes('--version')){record.kind='version';finish('codex-cli synthetic-file-17\n');return;}
     if(info.command.includes('models_cache.json')){record.kind='models';finish(JSON.stringify({models:[{slug:'fixture-model',display_name:'합성 모델'}]}));return;}
     if(info.command.includes('login')&&info.command.includes('status')){record.kind='authentication';finish('');return;}
+    if(info.command.includes('app-server')){
+     record.kind='model-rpc';let pending='';
+     stream.on('data',chunk=>{pending+=chunk.toString();let boundary;while((boundary=pending.indexOf('\n'))>=0){const line=pending.slice(0,boundary);pending=pending.slice(boundary+1);if(!line.trim())continue;let message;try{message=JSON.parse(line);}catch{finish('올바르지 않은 합성 RPC 요청입니다.\n',1);return;}if(message.id==null)continue;let result;
+      if(message.method==='initialize')result={};else if(message.method==='config/read')result={config:{model:'fixture-model',model_reasoning_effort:'high'}};else if(message.method==='model/list')result={data:[{id:'fixture-model',model:'fixture-model',displayName:'합성 모델',supportedReasoningEfforts:[{reasoningEffort:'low'},{reasoningEffort:'high'}],defaultReasoningEffort:'high'}],nextCursor:null};else{record.kind='unexpected';finish('지원하지 않는 합성 RPC 요청입니다.\n',1);return;}
+      stream.write(JSON.stringify({id:message.id,result})+'\n');
+     }});stream.on('end',()=>finish());return;
+    }
     if(info.command.includes('--json')){
      record.kind='request';stream.on('end',()=>{setTimeout(()=>finish([{type:'thread.started',thread_id:'fixture-files-thread'},{type:'turn.started'},{type:'item.completed',item:{id:'answer',type:'agent_message',text:response}},{type:'turn.completed',usage:{input_tokens:1,output_tokens:1}}].map(event=>JSON.stringify(event)+'\n').join('')),60);});return;
     }
@@ -94,7 +129,7 @@ async function startServer(){
  server.on('error',error=>errors.push('합성 SSH 서버: '+error.message));await new Promise((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});return server.address().port;
 }
 async function launch(){
- const env={...process.env,HOME:homePath,CODEX_HOME:path.join(homePath,'.codex'),REVIEWOPS_CODEX_SSH_CONFIG:sshConfig,REVIEWOPS_DATA_DIR:dataPath};for(const name of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[name];
+ const env={...process.env,...isolatedModelRuntime({home:homePath,dataPath}),REVIEWOPS_CODEX_SSH_CONFIG:sshConfig,REVIEWOPS_DATA_DIR:dataPath};for(const name of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[name];
  app=await electron.launch({args:process.env.REVIEWOPS_TEST_EXECUTABLE?[]:[root],executablePath:process.env.REVIEWOPS_TEST_EXECUTABLE,env,timeout:30000});page=await app.firstWindow(); await setTestLocale(page);page.on('pageerror',error=>errors.push(error.message));page.on('request',req=>{if(/^https?:/.test(req.url()))requests.push(req.url());});await page.waitForFunction(()=>!!window.reviewops?.request);await expect(page.getByRole('heading',{name:'홈',exact:true})).toBeVisible();await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(win=>win.webContents.getURL().startsWith('reviewops://app/')).setSize(1600,1050));
 }
 async function stopApp(){if(!app)return;const current=app;app=null;await current.evaluate(({app})=>app.exit(0)).catch(()=>{});await current.close().catch(()=>{});}
@@ -108,7 +143,7 @@ try{
  const snapshot=await ipc('snapshot'),saved=snapshot.services.find(item=>item.id===service.id);assert.equal(saved.hasPassword,true);assert.equal(saved.password,undefined);assert.ok(!JSON.stringify(snapshot).includes(password));const encrypted=fs.readFileSync(path.join(dataPath,'credentials.json'),'utf8');assert.ok(encrypted.includes('reviewops-aes256gcm-v1:'));assert.ok(!encrypted.includes(password));assert.equal(fs.statSync(path.join(dataPath,'credentials.json')).mode&0o777,0o600);assert.equal(fs.statSync(path.join(dataPath,'credentials.json.key')).mode&0o777,0o600);assert.ok(!fs.readFileSync(path.join(dataPath,'reviewops.sqlite')).includes(Buffer.from(password)));
  const first=await request('ssh.test',{serviceId:service.id});assert.equal(first.ok,false);assert.equal(first.error.code,'SSH_TRUST_REQUIRED');assert.equal(first.error.fingerprint,fingerprint);assert.equal(authentications,0);await ipc('ssh.trust',{serviceId:service.id,fingerprint});passed('macOS 키체인 요청 방지와 내부 암호화 저장·서버 승인 전 인증 차단');
 
- await page.locator('.workspace-refresh').click();await page.getByRole('button',{name:`${project.name} 프로젝트 열기`,exact:true}).click();await pane().locator('.original-review-table tbody tr').filter({hasText:review.title}).click();await pane().getByRole('tab',{name:'에이전트',exact:true}).click();await panel().getByLabel('에이전트 작업 요청',{exact:true}).fill('합성 SSH 파일 응답 생성');await panel().getByRole('button',{name:'작업 요청',exact:true}).click();await expect.poll(async()=>(await ipc('agent.list',{reviewId:review.id}))[0]?.status,{timeout:20000}).toBe('completed');const run=(await ipc('agent.list',{reviewId:review.id}))[0];assert.equal(run.workPath,remoteRoot);assert.equal(run.response,response);const execution=commands.filter(item=>item.kind==='request');assert.equal(execution.length,1);assert.match(execution[0].command,/^bash -lc /);assert.ok(execution[0].command.includes('--dangerously-bypass-approvals-and-sandbox'));assert.ok(!execution[0].command.includes('sandbox_mode='));assert.ok(!execution[0].command.includes('--sandbox'));assert.ok(execution[0].input.includes('합성 SSH 파일 응답 생성'));assert.ok(authentications>0);assert.ok(!commands.some(item=>item.kind==='unexpected'));passed('SSH 비밀번호 인증으로 합성 CLI 실행·로그인 셸·제한 해제 옵션 전달');
+ await page.locator('.workspace-refresh').click();await page.getByRole('button',{name:`${project.name} 프로젝트 열기`,exact:true}).click();await pane().locator('.original-review-table tbody tr').filter({hasText:review.title}).click();await pane().getByRole('tab',{name:'에이전트',exact:true}).click();await panel().getByLabel('에이전트 작업 요청',{exact:true}).fill('합성 SSH 파일 응답 생성');await panel().getByRole('button',{name:'작업 요청',exact:true}).click();await expect.poll(async()=>(await ipc('agent.list',{reviewId:review.id}))[0]?.status,{timeout:20000}).toBe('completed');const run=(await ipc('agent.list',{reviewId:review.id}))[0];assert.equal(run.workPath,remoteRoot);assert.equal(run.response,response);const execution=commands.filter(item=>item.kind==='request');assert.equal(execution.length,1);assert.match(execution[0].command,/^bash -lc /);assert.ok(execution[0].command.includes('nohup setsid bash'));assert.ok(execution[0].runner.includes('--dangerously-bypass-approvals-and-sandbox'));assert.ok(!execution[0].runner.includes('sandbox_mode='));assert.ok(!execution[0].runner.includes('--sandbox'));assert.ok(execution[0].input.includes('합성 SSH 파일 응답 생성'));assert.ok(commands.some(item=>item.kind==='execution-read'));assert.equal(run.remoteExecution?.ready,true);assert.ok(authentications>0);assert.ok(!commands.some(item=>item.kind==='unexpected'));passed('SSH 비밀번호 인증으로 합성 CLI 실행·로그인 셸·제한 해제 옵션 전달');
 
  const answer=panel().locator('.agent-answer').last();await openLink(answer,'배포 재시도 기록','development-log.md','FIXTURE_DEPLOYMENT_LOG_8305');await page.screenshot({path:path.join(results,'agent-files-ssh-markdown.png'),scale:'css'});await closePreview();for(const label of ['줄과 열','줄 앵커','줄 범위']){await openLink(answer,label,'development-log.md','FIXTURE_DEPLOYMENT_LOG_8305');await closePreview();}passed('실제 오류와 같은 절대 경로·줄 번호·열 번호·줄 앵커 링크 열기');
 
@@ -126,4 +161,4 @@ try{
 
  const beforeRestart=authentications;await stopApp();await launch();assert.equal(await app.evaluate(({app})=>app.commandLine.hasSwitch('use-mock-keychain')),process.platform==='darwin');await ipc('ssh.test',{serviceId:service.id});assert.ok(authentications>beforeRestart);const reopened=await ipc('agent.fileRead',{reviewId:review.id,runId:run.id,path:documentPath+':8305'});assert.ok(reopened.content.includes('FIXTURE_DEPLOYMENT_LOG_8305'));assert.equal(reopened.absolutePath,documentPath);assert.ok(!fs.readFileSync(path.join(dataPath,'credentials.json'),'utf8').includes(password));passed('앱 재실행 뒤 내부 저장 비밀번호와 이전 작업 파일 접근 유지');
  assert.deepEqual(errors,[]);assert.deepEqual(requests,[]);fs.writeFileSync(path.join(results,'agent-files.json'),JSON.stringify({passed:true,version:(await ipc('app.info')).version,executable:process.env.REVIEWOPS_TEST_EXECUTABLE||'development Electron',checks,errors,externalRequests:requests,authentications,commands:commands.map(item=>({kind:item.kind,command:item.command})),fileReadCount:fileReads.length,testRoot},null,2));console.log(JSON.stringify({ok:true,checks:checks.length,testRoot}));
-}catch(error){await page?.screenshot({path:path.join(results,'agent-files-failure.png'),scale:'css'}).catch(()=>{});fs.writeFileSync(path.join(results,'agent-files-failure.json'),JSON.stringify({passed:false,checks,errors,requests,commands:commands.map(item=>({kind:item.kind,command:item.command})),fileReads,message:error.message,testRoot},null,2));console.error('AGENT_FILES_FAILURE',testRoot,error);throw error;}finally{await stopApp();for(const client of clients)client.destroy();if(server)await new Promise(resolve=>server.close(resolve));}
+}catch(error){await page?.screenshot({path:path.join(results,'agent-files-failure.png'),scale:'css'}).catch(()=>{});fs.writeFileSync(path.join(results,'agent-files-failure.json'),JSON.stringify({passed:false,checks,errors,requests,commands:commands.map(item=>({kind:item.kind,command:item.command})),fileReads,message:error.message,testRoot},null,2));console.error('AGENT_FILES_FAILURE',testRoot,error);throw error;}finally{await stopApp();for(const execution of remoteRuns.values())clearTimeout(execution.timer);for(const client of clients)client.destroy();if(server)await new Promise(resolve=>server.close(resolve));}
