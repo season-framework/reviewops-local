@@ -48,7 +48,7 @@
     "test:update-packaged": "node scripts/e2e-update-packaged.mjs",
     "release:manifest": "node scripts/create-update-manifest.mjs",
     "package:windows": "npm run build && electron-builder --win nsis --x64 --publish never",
-    "test:windows-release": "node scripts/windows-release-smoke.mjs",
+    "test:windows-release": "node --test tests/tool-integration.test.cjs && node scripts/windows-release-smoke.mjs",
     "test:update-ui": "node scripts/e2e-update-ui.mjs",
     "test:remote-restart": "node scripts/e2e-remote-restart.mjs",
     "test:agent-models": "node scripts/e2e-host-agent-models.mjs",

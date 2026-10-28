@@ -83,6 +83,34 @@ async function nativeProcess(file, args, env) {
     });
   });
 }
+async function toolCli(command, payload, dataPath, env) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [path.join(root, 'skills', 'reviewops', 'scripts', 'reviewops.mjs'), command, '--data-dir', dataPath], {
+      env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '', stderr = '', settled = false;
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      if (error) { child.kill(); reject(error); } else resolve(value);
+    };
+    const timer = setTimeout(() => finish(new Error(`External ${command} CLI timed out.`)), 45000);
+    child.stdout.on('data', chunk => { stdout += chunk; });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', error => finish(error));
+    child.stdin.once('error', error => finish(error));
+    child.once('close', (code, signal) => {
+      if (settled) return;
+      try {
+        assert.equal(code, 0, `External ${command} CLI exited with ${code ?? signal}: ${stderr}`);
+        const result = JSON.parse(stdout.trim());
+        assert.equal(result.ok, true, `External ${command} CLI returned an unsuccessful response.`);
+        finish(null, result.data);
+      } catch (error) { finish(error); }
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
 async function waitForFileState(file, exists) {
   await expect.poll(async () => {
     try { await fs.access(file); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
@@ -233,6 +261,76 @@ try {
   assert.equal(stored.projects.find(item => item.id === project.id).name, project.name);
   await page.screenshot({ path: path.join(outputRoot, 'windows-installed.png') });
   check('Windows local folder, file reading, project saving, and refresh');
+
+  const secondFilesPath = path.join(fixtureRoot, 'second-project-files');
+  await fs.mkdir(secondFilesPath);
+  const secondService = await invoke('service.save', { name: 'Windows 두 번째 로컬 폴더', groupId: group.id, kind: 'local', rootPath: secondFilesPath });
+  const secondProject = await invoke('project.save', { name: 'Windows 두 번째 저장 검사', groupId: group.id, serviceIds: [secondService.id] });
+  await waitForFileState(path.join(dataPath, 'integrations', 'tools.json'), true);
+  const alternateDataPath = dataPath.toUpperCase(), alternateWorkspacePath = secondFilesPath.toUpperCase();
+  assert.notEqual(alternateDataPath, dataPath); assert.notEqual(alternateWorkspacePath, secondFilesPath);
+  assert.equal((await fs.realpath(alternateDataPath)).toLowerCase(), (await fs.realpath(dataPath)).toLowerCase());
+  assert.equal((await fs.realpath(alternateWorkspacePath)).toLowerCase(), (await fs.realpath(secondFilesPath)).toLowerCase());
+  const listed = await toolCli('list', {}, alternateDataPath, env);
+  assert.deepEqual(listed.map(item => item.id).sort(), [project.id, secondProject.id].sort());
+  assert.ok(listed.every(item => item.kind === 'local'));
+  const requestA = { requestId: 'windows-release-open-a', projectId: project.id, title: 'Windows 외부 리뷰 A', body: 'WINDOWS_EXTERNAL_REVIEW_A', tool: 'windows-release-smoke' };
+  const requestB = { requestId: 'windows-release-open-b', workspacePath: alternateWorkspacePath, title: 'Windows 외부 리뷰 B', body: 'WINDOWS_EXTERNAL_REVIEW_B', tool: 'windows-release-smoke' };
+  const recordProjectError = childPage => childPage.on('pageerror', error => report.rendererErrors.push(error.message));
+  app.on('window', recordProjectError);
+  const [openedA, openedB] = await Promise.all([
+    toolCli('open', requestA, alternateDataPath, env), toolCli('open', requestB, alternateDataPath, env),
+  ]);
+  for (const opened of [openedA, openedB]) {
+    assert.equal(opened.status, 'shown'); assert.equal(opened.shown, true);
+    assert.match(opened.windowId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  }
+  assert.notEqual(openedA.windowId, openedB.windowId); assert.notEqual(openedA.reviewId, openedB.reviewId);
+  const projectPages = [];
+  for (const [target, opened, request] of [[project, openedA, requestA], [secondProject, openedB, requestB]]) {
+    assert.equal(opened.projectId, target.id);
+    const matching = () => app.windows().filter(candidate => {
+      if (candidate.isClosed()) return false;
+      try { const url = new URL(candidate.url()); return url.protocol === 'reviewops:' && url.searchParams.get('projectId') === target.id; } catch { return false; }
+    });
+    await expect.poll(() => matching().length, { timeout: 20000 }).toBe(1);
+    const projectPage = matching()[0]; projectPages.push(projectPage); projectPage.setDefaultTimeout(15000);
+    assert.equal(new URL(projectPage.url()).searchParams.get('windowId'), opened.windowId);
+    assert.deepEqual(await projectPage.evaluate(() => window.reviewops.invoke('window.context')), { windowId: opened.windowId, projectId: target.id });
+    await expect(projectPage.locator('.workspace-app')).toHaveAttribute('data-window-project-id', target.id);
+    const activePane = projectPage.locator('.workspace-pane:not([hidden])');
+    await expect(activePane.locator('.original-project')).toHaveAttribute('data-review-id', opened.reviewId);
+    await expect(activePane).toContainText(request.title);
+    await expect(projectPage).toHaveTitle(`${target.name} · ReviewOps`);
+    assert.equal((await invoke('agent.list', { reviewId: opened.reviewId })).length, 0);
+    assert.equal((await projectPage.evaluate(() => window.accountManager.getState())).accounts.length, 0);
+  }
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 3);
+  check('Installed app accepts concurrent external JSON CLI requests over a Windows named pipe and displays two separate project review windows');
+  const duplicates = await Promise.all([toolCli('open', requestA, alternateDataPath, env), toolCli('open', requestA, alternateDataPath, env)]);
+  for (const duplicate of duplicates) {
+    assert.equal(duplicate.status, 'shown'); assert.equal(duplicate.reviewId, openedA.reviewId); assert.equal(duplicate.windowId, openedA.windowId);
+  }
+  const externalSnapshot = await invoke('snapshot');
+  assert.equal(externalSnapshot.reviews.length, stored.reviews.length + 2);
+  for (const [request, opened] of [[requestA, openedA], [requestB, openedB]]) {
+    const status = await toolCli('status', { requestId: request.requestId }, dataPath.toLowerCase(), env);
+    assert.equal(status.status, 'shown'); assert.equal(status.reviewId, opened.reviewId); assert.equal(status.windowId, opened.windowId);
+    assert.equal(externalSnapshot.reviews.filter(review => review.evidence?.toolIntegration?.requestId === request.requestId).length, 1);
+  }
+  assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length), 3);
+  check('External CLI accepts differently cased Windows data and workspace paths, reuses duplicate request IDs, and reports stored review status without starting agents');
+  for (const projectPage of projectPages) {
+    await Promise.all([
+      projectPage.waitForEvent('close', { timeout: 20000 }),
+      projectPage.getByRole('button', { name: '창 닫기', exact: true }).click(),
+    ]);
+  }
+  app.off('window', recordProjectError);
+  await expect.poll(() => app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().length)).toBe(1);
+  assert.equal(page.isClosed(), false); await page.bringToFront();
+  assert.equal((await invoke('window.context')).projectId, '');
+  check('Closing both external project windows keeps the original application window open');
   await closeWindow();
   check('Close icon shuts down the installed application');
   await launch();
