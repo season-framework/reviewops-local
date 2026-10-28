@@ -16,6 +16,8 @@ const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
 const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
+const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
+const {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions}=require('./review-versions.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
@@ -148,12 +150,21 @@ function restoreRemoteAgents() {
 function assertNoAgent(predicate) {
   if([...agentJobs.values()].some(job=>job.status==='running'&&predicate(job)))throw new Error('에이전트 실행 또는 로그인이 끝난 후 변경하십시오.');
 }
+function assertNoAgentWorkspaceConflict(service,settings,independentExecution=false) {
+  if(independentExecution)return;
+  const {requestTargetKey,conflictingTargets}=require('./agent-requests.cjs'),target=requestTargetKey(service,settings);
+  for(const job of agentJobs.values()){
+    if(job.kind!=='agent'||job.status!=='running')continue;
+    const previous=job.executionTarget||serviceById(job.serviceId,true),previousSettings={workPath:job.workPath||previous.workPath||agentSettings(previous).workPath};
+    if(conflictingTargets(target,requestTargetKey(previous,previousSettings)))throw new Error('같은 작업 폴더 또는 그 안의 폴더에서 에이전트가 실행 중입니다. 실행이 끝난 뒤 다시 요청하십시오.');
+  }
+}
 function agentMaterials(reviewId) {
   const review=store.get('reviews',reviewId),snapshot=store.snapshot(),project=snapshot.projects.find(item=>item.id===review.projectId);
   const metadata=item=>{const owner=snapshot.reviews.find(entry=>entry.id===item.reviewId),ownerProject=snapshot.projects.find(entry=>entry.id===owner?.projectId);return {id:item.id,name:item.name,mimeType:item.mimeType,size:item.size,createdAt:item.createdAt,reviewId:item.reviewId,activityId:item.activityId,reviewTitle:owner?.title || '',projectName:ownerProject?.name || '',source:item.reviewId===review.id?(item.activityId?'activity':'review'):'shared'};};
   const attachments=snapshot.attachments.filter(item=>item.reviewId===review.id).map(metadata);
   const sharedFiles=snapshot.attachments.filter(item=>item.reviewId!==review.id&&snapshot.projects.some(owner=>owner.id===snapshot.reviews.find(entry=>entry.id===item.reviewId)?.projectId&&owner.groupId===project.groupId)).map(metadata);
-  const evidence=review.evidence || {},captures=evidence.log_captures || [];
+  const evidence=withoutReviewVersions(review.evidence || {}),captures=evidence.log_captures || [];
   const logs=captures.map((capture,index)=>({...capture,id:capture.id || `capture-${index}`,name:capture.label || `리뷰 로그 ${index+1}`}));
   if(!logs.length&&['navigation_log','input_log','network_log','console_log','fingerprint_log'].some(key=>evidence[key]&&Object.keys(evidence[key]).length))logs.push({...evidence,id:'current',name:'리뷰 로그'});
   const categoryNames=require('./review-categories.json'),category=store.reviewCategories().find(item=>item.id===review.category)?.name||[...categoryNames.defaults,...categoryNames.legacy].find(([id])=>id===review.category)?.[1]||review.category;
@@ -169,10 +180,10 @@ async function exportInstruction(reviewId) {
   const snapshot=store.snapshot(),entries=[];let total=0;
   const add=(name,bytes)=>{if(typeof bytes==='string')bytes=Buffer.from(bytes);total+=bytes.length;if(total>200*1024*1024)throw new Error('ZIP으로 저장할 자료는 합계 200 MB까지 지원합니다.');entries.push({name,bytes});};
   add('README.md',`# ReviewOps 리뷰 자료\n\n${review.title}\n\n- request.md: 작업 지시서\n- review.json: 리뷰 정보\n- logs/: 저장한 화면 로그\n- screenshots/: 스크린샷과 이미지\n- attachments/: 리뷰 첨부파일\n- activities/: 작업이력과 첨부파일\n\n이 ZIP에는 앱에 저장된 자료가 포함됩니다.\n`);
-  add('request.md',materials.instruction.markdown);add('review.json',JSON.stringify(review,null,2));
-  add('logs/current.json',JSON.stringify({...review.evidence,log_captures:undefined},null,2));
+  add('request.md',materials.instruction.markdown);add('review.json',JSON.stringify(withoutReviewVersions(review),null,2));
+  add('logs/current.json',JSON.stringify({...withoutReviewVersions(review.evidence),log_captures:undefined},null,2));
   for(const [index,capture] of materials.logs.entries())add(`logs/${String(index+1).padStart(3,'0')}-${capture.id}.json`,JSON.stringify(capture,null,2));
-  const activities=snapshot.activities.filter(item=>item.reviewId===review.id);add('activities/history.json',JSON.stringify(activities,null,2));
+  const activities=snapshot.activities.filter(item=>item.reviewId===review.id);add('activities/history.json',JSON.stringify(withoutReviewVersions(activities),null,2));
   add('activities/history.md',activities.map(item=>`## ${item.role==='agent'?'에이전트':item.type==='comment'?'사용자':'상태 기록'} · ${item.createdAt}\n\n${item.body || `${item.fromStatus} → ${item.toStatus}`}\n`).join('\n'));
   for(const file of snapshot.attachments.filter(item=>item.reviewId===review.id)) {
     const folder=file.mimeType.startsWith('image/')?'screenshots':file.activityId?`activities/${file.activityId}/attachments`:'attachments';
@@ -194,13 +205,42 @@ async function readAgentFile(payload,raw=false) {
   catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
   finally{operations.delete(token);}
 }
+let followupRequests;
+function requestQueue() {
+  if(!followupRequests)followupRequests=require('./agent-requests.cjs').createRequestQueue({store,
+    targetForReview:review=>{const service=serviceById(review.serviceId,true);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,agentSettings(service))};},
+    targetForRun:run=>{const service=serviceById(run.serviceId,true);return require('./agent-requests.cjs').requestTargetKey(service,{...agentSettings(service),workPath:run.workPath});},
+    start:payload=>agentAction('agent.start',payload)
+  });
+  return followupRequests;
+}
 async function agentAction(action,payload) {
+  if(action.startsWith('agent.request.')){const method=action.slice('agent.request.'.length);if(!['list','add','confirmResult','cancel','start','resolve'].includes(method))throw new Error('지원하지 않는 후속 요청 기능입니다.');return requestQueue()[method](method==='list'?payload.reviewId:payload);}
   if(action==='agent.loginState'){serviceById(payload.serviceId);return [...agentJobs.values()].reverse().find(job=>job.kind==='login'&&job.serviceId===payload.serviceId)||null;}
   if(action==='agent.list')return store.listAgentRuns(payload.reviewId);
   if(action==='agent.read')return agentJobs.get(payload.id)||store.get('agent_runs',payload.id);
   if(action==='agent.materials')return agentMaterials(payload.reviewId);
   if(action==='agent.instructionExport')return exportInstruction(payload.reviewId);
   if(action==='agent.transfer')return store.transferAgentResponse(payload.runId);
+  if(action==='agent.copyDraft'){
+    const run=store.get('agent_runs',payload.runId),review=store.get('reviews',payload.reviewId);
+    if(run.reviewId!==review.id)throw new Error('같은 리뷰의 요청만 가져올 수 있습니다.');
+    const service=serviceById(review.serviceId,true),settings=agentSettings(service),{executionTarget,copyAgentDraft}=require('./agent-copy-draft.cjs'),current=executionTarget(service,settings);
+    const sameLocation=run.executionTarget?['kind','host','hostAlias','sshConfigPath','port','username','workPath'].every(key=>(run.executionTarget[key]??'')===(current[key]??'')):savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
+    const materials=agentMaterials(review.id),copy=copyAgentDraft({run,current,materials,sameLocation}),unavailable=new Set();
+    // Check only files retained by the draft's ownership and target checks.
+    // Read each file separately so validation does not retain another copy of all attachments.
+    for(const id of new Set([copy.draft.screenshotId,...copy.draft.attachmentIds].filter(Boolean))) {
+      try{await readAttachment(attachmentById(id));}catch{unavailable.add(id);}
+    }
+    if(!unavailable.size)return copy;
+    return copyAgentDraft({run,current,sameLocation,materials:{...materials,
+      attachments:materials.attachments.filter(file=>!unavailable.has(file.id)),
+      sharedFiles:materials.sharedFiles.filter(file=>!unavailable.has(file.id)),
+      screenshots:materials.screenshots.filter(file=>!unavailable.has(file.id))
+    }});
+  }
+
   if(action==='agent.models')return cachedAgentModels(serviceById(payload.serviceId||(payload.projectId?store.project(payload.projectId).connection?.id:null)));
   if(action==='agent.fileRead')return readAgentFile(payload);
   if(action==='agent.fileExport') {
@@ -212,7 +252,7 @@ async function agentAction(action,payload) {
     return {saved:true,path:selection.filePath,name:file.name,size:file.size};
   }
   const requestId=action==='agent.start'&&payload.requestId;
-  const requestSignature=action==='agent.start'?digest(JSON.stringify([payload.reviewId,typeof payload.prompt==='string'?payload.prompt.trim():'',Boolean(payload.newConversation),payload.model ?? null,payload.reasoningEffort ?? null,payload.context ?? null,payload.attachmentTokens || [],payload.retryOf ?? null,Boolean(payload.independentExecution)])):'';
+  const requestSignature=action==='agent.start'?digest(JSON.stringify([payload.reviewId,typeof payload.prompt==='string'?payload.prompt.trim():'',Boolean(payload.newConversation),payload.model ?? null,payload.reasoningEffort ?? null,payload.context ?? null,payload.attachmentTokens || [],payload.retryOf ?? null,Boolean(payload.independentExecution),...(payload.sourceRunId?[payload.sourceRunId,payload.sourceTarget??null]:[])])):'';
   if(requestId && (typeof requestId!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)))throw new Error('에이전트 요청 ID가 올바르지 않습니다.');
   if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.reviewId!==payload.reviewId||existing.prompt!==payload.prompt?.trim()||(existing.requestSignature&&existing.requestSignature!==requestSignature))throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
   const manager=agentManager();
@@ -221,6 +261,9 @@ async function agentAction(action,payload) {
   const service=serviceById(review?.serviceId||payload.serviceId||(payload.projectId?store.project(payload.projectId).connection?.id:null),true),settings=agentSettings(service);
   const retry=action==='agent.start'&&payload.retryOf?store.get('agent_runs',payload.retryOf):null;
   if(retry&&retry.reviewId!==review.id)throw new Error('같은 리뷰의 요청만 재실행할 수 있습니다.');
+  const source=action==='agent.start'&&payload.sourceRunId?store.get('agent_runs',payload.sourceRunId):null;
+  if(source&&(source.reviewId!==review.id||!['failed','cancelled','interrupted'].includes(source.status)))throw new Error('같은 리뷰의 실패하거나 중단된 요청만 새 실행에 연결할 수 있습니다.');
+  if(source&&payload.newConversation!==true)throw new Error('가져온 요청은 새 대화로 시작하십시오.');
   if(action==='agent.session') {
     assertNoAgent(job=>job.serviceId===service.id);
     if(payload.model!==undefined){if(typeof payload.model!=='string'||payload.model.length>256||/[\s\0]/.test(payload.model))throw new Error('에이전트 모델 이름이 올바르지 않습니다.');settings.model=payload.model;}
@@ -267,6 +310,8 @@ async function agentAction(action,payload) {
   const newConversation=payload.newConversation===undefined?Boolean(retry?.newConversation):Boolean(payload.newConversation);
   if(payload.independentExecution!==undefined&&typeof payload.independentExecution!=='boolean')throw new Error('독립실행 옵션이 올바르지 않습니다.');
   const independentExecution=payload.independentExecution===undefined?Boolean(retry?.independentExecution):payload.independentExecution;
+  if(source&&JSON.stringify(payload.sourceTarget)!==JSON.stringify(require('./agent-copy-draft.cjs').executionTarget(service,settings)))throw new Error('초안을 가져온 뒤 실행 대상이나 에이전트 설정이 변경되었습니다. 이전 내용을 다시 가져와 새 설정을 확인하십시오.');
+  assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   const sessionScope=agentExecutionScope(service,settings);
   if(retry&&savedAgentExecutionScope(retry)!==sessionScope)throw new Error('접속 대상, 작업 폴더 또는 에이전트 설정이 변경되었습니다. 새 요청으로 실행하십시오.');
   const previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&savedAgentExecutionScope(run)===sessionScope&&run.sessionId);
@@ -297,8 +342,17 @@ async function agentAction(action,payload) {
   const selectedText=[context.instructionMarkdown,logs.length?`선택한 로그:\n${selectedLogText}`:''].filter(Boolean).join('\n\n');
   const input=initialRequest?`리뷰: ${review.title}\n대상 파일: ${review.targetPath}\n대상 주소: ${review.targetUrl}\n${context.instructionMarkdown?`\n${context.instructionMarkdown}\n`:''}\n선택한 로그:\n${selectedLogText}\n이전 대화:\n${history}\n\n사용자 작업 요청:\n${prompt}`:selectedText?`${selectedText}\n\n사용자 작업 요청:\n${prompt}`:prompt;
   if(logs.length)files.push({name:'review-logs.json',mimeType:'application/json',bytes:Buffer.from(JSON.stringify(logs,null,2))});
-  const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
+  const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,executionTarget:require('./agent-copy-draft.cjs').executionTarget(service,settings),...(source?{sourceRunId:source.id}:{}),model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
   const execution={...job,prompt:input,config:service,settings,images,files};
+  manager.validateStart(execution);
+  const preflightOperation=`agent-preflight:${id}`;operations.add(preflightOperation);
+  try{await manager.preflight(service,settings);}
+  catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
+  finally{operations.delete(preflightOperation);}
+  if(store.get('reviews',review.id).serviceId!==service.id||JSON.stringify(serviceById(service.id,true))!==JSON.stringify(service))throw new Error('검사 중 프로젝트 설정이 변경되었습니다. 실행 대상을 살펴본 후 요청을 다시 보내십시오.');
+  if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.requestSignature!==requestSignature)throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
+  assertNoAgent(job=>job.serviceId===service.id);
+  assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   manager.validateStart(execution);
   await saveWithAttachments(tokens,()=>{store.saveAgentRun(job);return store.addActivity({reviewId:review.id,body:displayPrompt.trim(),role:'user',agentRunId:id,status:'in_progress'});},activity=>({reviewId:review.id,activityId:activity.id}));
   operations.add(`agent:${id}`);agentJobs.set(id,job);
@@ -439,7 +493,7 @@ async function readAttachment(item) {
   const stat = await fsp.lstat(file);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_FILE_BYTES) throw new Error('첨부파일이 올바르지 않습니다.');
   const bytes = await fsp.readFile(file);
-  if (digest(bytes) !== item.sha256) throw new Error('첨부파일이 변경되었거나 손상되었습니다.');
+  if (digest(bytes) !== item.sha256) throw Object.assign(new Error('첨부파일이 변경되었거나 손상되었습니다.'),{code:'ATTACHMENT_INTEGRITY_FAILED'});
   return bytes;
 }
 async function backupBundle() {
@@ -659,6 +713,22 @@ async function dispatch(action, payload = {}) {
     return {...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null};
   }
   if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
+  if (action === 'review.copy') {
+    const {copySource,copyReviewRecord}=require('./review-copy.cjs');
+    const source=copySource(store,payload),tokens=[];let total=0;
+    try {
+      for(const file of source.attachments){
+        const bytes=await readAttachment(file),token=crypto.randomUUID();
+        total+=bytes.length;if(total>200*1024*1024)throw new Error('복사할 첨부 파일은 합계 200 MB까지 지원합니다.');
+        stagedAttachments.set(token,{token,bytes,expires:Date.now()+300000,metadata:{name:file.name,mimeType:file.mimeType,size:bytes.length,sha256:digest(bytes),storageName:crypto.randomUUID()+path.extname(file.storageName)}});
+        tokens.push(token);
+      }
+      return (await saveWithAttachments(tokens,()=>copyReviewRecord(store,payload),review=>({reviewId:review.id}))).entity;
+    } finally {for(const token of tokens)stagedAttachments.delete(token);}
+  }
+  if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
+  if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment);
+  if (action === 'review.version.target') return changeReviewTarget(store,payload);
   if (action === 'review.save') {const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {
     if(payload.id)assertNoAgent(job=>job.serviceId===payload.id);
@@ -687,8 +757,10 @@ async function dispatch(action, payload = {}) {
     return result;
   }
   if (action === 'settings.save') return store.saveSettings(payload);
-  if (action === 'dialog.directory' || action === 'dialog.key') {
-    const selection = await dialog.showOpenDialog(window,{title:action === 'dialog.key' ? 'SSH 개인 키 선택' : '로컬 폴더 선택',properties:[action === 'dialog.key' ? 'openFile':'openDirectory'], ...(action==='dialog.key'?{properties:['openFile','showHiddenFiles']}: {})});
+  if (action === 'directory.inspect') return inspectDirectory(payload.path);
+  if (action === 'directory.create') return createChildDirectory(payload.parent,payload.name);
+  if (action === 'dialog.directory' || action === 'dialog.key' || action === 'dialog.executable') {
+    const selection = await dialog.showOpenDialog(window,{title:action === 'dialog.key' ? 'SSH 개인 키 선택' : action==='dialog.executable'?'Codex 실행 파일 선택':'로컬 폴더 선택',properties:action==='dialog.directory'?['openDirectory','createDirectory']:['openFile','showHiddenFiles']});
     return selection.canceled ? null : selection.filePaths[0];
   }
   if (action === 'attachment.stage') return stageAttachments();

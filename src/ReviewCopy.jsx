@@ -1,0 +1,14 @@
+import React,{useState} from 'react';
+import {t} from './i18n/index.js';
+import {Dialog,Button,Field} from './components.jsx';
+import Select from './Select.jsx';
+import {projectConnection,connectionLabel} from './OriginalForms.jsx';
+
+export default function ReviewCopy({review,data,invoke,mutate}) {
+  const [open,setOpen]=useState(false),[projectId,setProjectId]=useState(''),[selected,setSelected]=useState([]),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+  const projects=data.projects.filter(item=>item.id!==review.projectId),project=projects.find(item=>item.id===projectId),service=projectConnection(project,data);
+  const files=data.attachments.filter(item=>item.reviewId===review.id);
+  const start=async()=>{setMessage('');try{const runs=await invoke('agent.list',{reviewId:review.id});if(runs.length){setMessage(t('실행 이력이 있는 리뷰는 다른 프로젝트로 복사할 수 없습니다.'));return;}setSelected([]);setProjectId('');setOpen(true);}catch(error){setMessage(error.message)}};
+  const copy=async()=>{setBusy(true);setMessage('');try{const result=await mutate('review.copy',{reviewId:review.id,projectId,attachmentIds:selected});if(result){setOpen(false);setMessage(t('{0} 프로젝트에 #{1} 리뷰를 복사했습니다. 에이전트는 실행하지 않았습니다.',[project.name,result.number]));}}catch(error){setMessage(error.message)}finally{setBusy(false)}};
+  return <section className="original-review-info-section"><h3>{t('다른 프로젝트로 복사')}</h3><p>{t('실행하지 않은 리뷰의 내용을 복사합니다. 원본 리뷰와 이력은 유지됩니다.')}</p><Button disabled={!projects.length||busy} onClick={start}>{t('복사할 프로젝트 선택')}</Button>{message&&!open&&<p role="status">{message}</p>}{open&&<Dialog title={t('다른 프로젝트로 복사')} onClose={()=>{if(!busy)setOpen(false)}} footer={<><Button disabled={busy} onClick={()=>setOpen(false)}>{t('취소')}</Button><Button disabled={busy||!project} onClick={copy}>{t('리뷰 복사')}</Button></>}><Field label={t('프로젝트')}><Select aria-label={t('복사할 프로젝트')} value={projectId} disabled={busy} onChange={event=>setProjectId(event.target.value)}><option value="">{t('프로젝트 선택')}</option>{projects.map(item=><option value={item.id} key={item.id}>{item.name}</option>)}</Select></Field>{project&&<div className="original-review-target"><p>{t('실행 대상')}: {connectionLabel(service)}</p><p>{t('작업 폴더')}: {service?.agentWorkPath||service?.rootPath||'—'}</p></div>}<p>{t('파일 경로와 뷰어 주소는 복사하지 않습니다. 새 프로젝트에서 선택하십시오.')}</p><fieldset disabled={busy}><legend>{t('복사할 첨부 사본')}</legend>{files.map(file=><label className="review-copy-file" key={file.id}><input type="checkbox" checked={selected.includes(file.id)} onChange={event=>setSelected(current=>event.target.checked?[...current,file.id]:current.filter(id=>id!==file.id))}/>{file.name}</label>)}{!files.length&&<p>{t('첨부 파일이 없습니다.')}</p>}</fieldset><p>{t('선택한 사본은 새 프로젝트에 저장하며, 원본 리뷰와 파일 해시를 함께 기록합니다.')}</p>{message&&<p role="alert">{message}</p>}</Dialog>}</section>;
+}

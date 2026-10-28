@@ -23,3 +23,6 @@
 @media(max-width:1023px){.original-review-evidence-toolbar{padding:8px}}
 
 .original-review-evidence-version>.reviewops-select{width:220px;max-width:100%;min-width:0;--select-height:32px;--select-font-size:11px}
+
+.original-review-target,.review-execution-summary{margin:10px 16px;padding:12px;border:1px solid var(--border,#d7dde5);border-radius:8px;background:var(--surface,#fff);overflow-wrap:anywhere;font-size:12px;line-height:1.5}
+.original-review-target p,.review-execution-summary p{margin:4px 0}.original-review-target strong{font-size:14px}.original-review-target small,.original-review-capture-help,.review-execution-summary small{color:var(--muted,#64748b);font-size:11px;line-height:1.5}.original-review-capture-help{margin:6px 0}.review-execution-summary{flex-shrink:0;max-height:220px;overflow:auto}.review-execution-summary>div{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.review-result-excerpt{white-space:pre-wrap}.review-execution-summary button{padding:4px 8px;border:1px solid var(--border,#d7dde5);border-radius:5px;background:transparent;color:inherit;cursor:pointer}.review-copy-file{display:flex;gap:8px;margin:6px 0}.original-review-form>.original-review-target{margin:0}

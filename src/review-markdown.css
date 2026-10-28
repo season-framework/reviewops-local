@@ -1,0 +1,9 @@
+.review-markdown-table { max-width:100%;overflow-x:auto;margin:10px 0; }
+.original-review-markdown .review-markdown-table table { width:100%;border-collapse:collapse;table-layout:auto;font-size:inherit;line-height:1.65; }
+.original-review-markdown .review-markdown-table th,.original-review-markdown .review-markdown-table td { height:auto;padding:8px 12px;border:1px solid var(--border);font-size:inherit;vertical-align:top;white-space:normal; }
+.original-review-markdown .review-markdown-table th { background:var(--app);font-weight:600; }
+.original-review-markdown .review-markdown-table td { color:inherit; }
+.agent-generated-markdown-options { display:flex;align-items:center;flex-wrap:wrap;gap:8px;padding:8px 16px;border-bottom:1px solid var(--border); }
+.agent-generated-markdown-options button { padding:5px 10px;border:1px solid var(--border);border-radius:5px;background:var(--surface);color:var(--text);font-size:12px; }
+.agent-generated-markdown-options button[aria-pressed=true] { background:var(--hover);font-weight:600; }
+.agent-generated-markdown-options small { flex:1;min-width:160px;color:var(--muted);font-size:11px;line-height:1.6; }

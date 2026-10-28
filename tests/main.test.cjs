@@ -117,9 +117,10 @@ async function harness(t, options = {}) {
     if (name === './terminal.cjs') return require('../electron/terminal.cjs');
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
-      state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
+      state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
+      return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
@@ -403,7 +404,7 @@ test('service.delete restores an unreferenced service and secrets when credentia
 
 test('group deletion removes descendant files and credentials, cancels only its agents, and preserves another group',async t=>{
  const h=await harness(t),target=await seed(h),keep=await seed(h);
- await h.success('service.save',{id:target.service.id,agentEnabled:1});await h.success('service.save',{id:keep.service.id,agentEnabled:1});
+ await h.success('service.save',{id:target.service.id,agentEnabled:1});await h.success('service.save',{id:keep.service.id,agentEnabled:1,rootPath:'/tmp/retained-group-work'});
  const removed=await addFile(h,target.review.id,'remove bytes'),retained=await addFile(h,keep.review.id,'keep bytes');
  const run=await h.success('agent.start',{reviewId:target.review.id,prompt:'synthetic delete target'}),other=await h.success('agent.start',{reviewId:keep.review.id,prompt:'synthetic retained request'});
  await h.state.seasonIntegration.showReview({reviewId:target.review.id,fullscreen:false});
@@ -1344,4 +1345,85 @@ test('changing an existing connection executable does not reuse a session record
  assert.equal((await h.success('agent.session',{reviewId:review.id})).available,false);
  await h.success('agent.start',{reviewId:review.id,prompt:'새 실행 파일',requestId:crypto.randomUUID()});
  assert.equal(h.state.agentStarts.at(-1).sessionId,'');
+});
+
+test('runtime preflight rejection preserves the draft attachment and all review records',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const staged=await stageFile(h,'preserved.txt'),before=await h.success('snapshot');
+ const payload={requestId:'preflight-denied',reviewId:review.id,prompt:'Keep the request',context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]};
+ for(const code of ['AGENT_WORK_PATH_MISSING','AGENT_NOT_INSTALLED','AGENT_AUTH_REQUIRED']){
+  h.state.preflightError=Object.assign(new Error('Choose a folder, executable, or login'),{code});
+  const result=await h.invoke('agent.start',payload);assert.equal(result.ok,false);assert.equal(result.error.code,code);
+  assert.equal(h.state.agentStarts.length,0);assert.deepEqual(await h.success('snapshot'),before);
+  assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files[0].token,staged.token);
+ }
+ h.state.preflightError=null;const run=await h.success('agent.start',payload);assert.equal(run.id,payload.requestId);assert.equal(h.state.agentStarts.length,1);
+});
+
+test('a settings change during runtime preflight rejects execution without consuming staged files',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const staged=await stageFile(h,'before-settings-change.txt');let release;h.state.preflightGate=new Promise(done=>{release=done});t.after(()=>release());
+ const pending=h.invoke('agent.start',{requestId:'preflight-change',reviewId:review.id,prompt:'Keep this request',context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]});
+ for(let attempt=0;attempt<100&&!h.state.agentPreflights.length;attempt++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.state.agentPreflights.length,1);
+ h.state.liveStore.saveService({id:service.id,rootPath:path.join(h.root,'different-folder')});release();
+ const result=await pending;assert.equal(result.ok,false);assert.match(result.error.message,/검사 중 프로젝트 설정이 변경/);
+ assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
+ assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files[0].token,staged.token);
+});
+
+for(const relation of ['same','child','symlink'])test(`normal requests on another service cannot edit an active ${relation} workspace`,async t=>{
+ const h=await harness(t),group=await h.success('group.save',{name:'Workspace overlap'}),folder=path.join(h.root,'work');fs.mkdirSync(folder);
+ let other=relation==='child'?path.join(folder,'child'):relation==='symlink'?path.join(h.root,'linked-work'):folder;
+ if(relation==='child')fs.mkdirSync(other);if(relation==='symlink')fs.symlinkSync(folder,other,'dir');
+ const firstProject=await h.success('project.save',{groupId:group.id,name:'First',connection:{kind:'local',rootPath:folder,agentBinary:'/fixture/first-codex',agentEnabled:1}});
+ const secondProject=await h.success('project.save',{groupId:group.id,name:'Second',connection:{kind:'local',rootPath:other,agentBinary:'/fixture/second-codex',agentEnabled:1}});
+ const firstReview=await h.success('review.save',{projectId:firstProject.id,title:'First'}),secondReview=await h.success('review.save',{projectId:secondProject.id,title:'Second'});
+ await h.success('agent.start',{requestId:'active-workspace',reviewId:firstReview.id,prompt:'First request',context:{instruction:false,attachmentIds:[],logIds:[]}});
+ const staged=await stageFile(h,'waiting-for-workspace.txt'),before=await h.success('snapshot'),payload={requestId:'conflicting-workspace',reviewId:secondReview.id,prompt:'Second request',context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]};
+ const refused=await h.invoke('agent.start',payload);assert.equal(refused.ok,false);assert.match(refused.error.message,/같은 작업 폴더 또는 그 안의 폴더/);
+ assert.equal(h.state.agentStarts.length,1);assert.deepEqual(await h.success('snapshot'),before);assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files.length,1);
+ const explicit=await h.success('agent.start',{...payload,independentExecution:true});assert.equal(explicit.independentExecution,true);assert.equal(h.state.agentStarts.length,2);
+});
+
+test('a copied draft cannot run against settings changed after the comparison was accepted',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const source=await h.success('agent.start',{requestId:'copied-source',reviewId:review.id,prompt:'Original failed request',context:{instruction:false,attachmentIds:[],logIds:[]}});
+ h.state.agentUpdate({id:source.id,kind:'agent',status:'failed',error:'fixture failure',finishedAt:new Date().toISOString()});
+ const original=await h.success('agent.read',{id:source.id}),copied=await h.success('agent.copyDraft',{reviewId:review.id,runId:source.id});
+ assert.ok(copied.draft.sourceTarget);
+ const staged=await stageFile(h,'kept-after-target-change.txt');
+ await h.success('service.save',{id:service.id,rootPath:'/tmp/changed-after-copy'});const before=await h.success('snapshot');
+ const refused=await h.invoke('agent.start',{requestId:'copied-new-target',reviewId:review.id,prompt:copied.draft.prompt,newConversation:true,sourceRunId:copied.draft.sourceRunId,sourceTarget:copied.draft.sourceTarget,context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]});
+ assert.equal(refused.ok,false);assert.match(refused.error.message,/설정|대상/);assert.equal(h.state.agentStarts.length,1);
+ assert.deepEqual(await h.success('snapshot'),before);assert.deepEqual(await h.success('agent.read',{id:source.id}),original);assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files.length,1);
+});
+
+test('a project connection replacement during preflight cannot execute the retained old service',async t=>{
+ const h=await harness(t),{service,review,project}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const beforeService=h.state.liveStore.get('services',service.id),staged=await stageFile(h,'keep-after-connection-copy.txt');let release;h.state.preflightGate=new Promise(done=>{release=done});t.after(()=>release());
+ const pending=h.invoke('agent.start',{requestId:'preflight-connection-copy',reviewId:review.id,prompt:'Preserve this request',context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]});
+ for(let attempt=0;attempt<100&&!h.state.agentPreflights.length;attempt++)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(h.state.agentPreflights.length,1);
+ const changed=h.state.liveStore.saveProjectConnection(project.id,{...beforeService,rootPath:'/tmp/new-owned-connection'});
+ assert.notEqual(changed.connection.id,service.id);assert.deepEqual(h.state.liveStore.get('services',service.id),beforeService);release();
+ const result=await pending;assert.equal(result.ok,false);assert.match(result.error.message,/검사 중 프로젝트 설정이 변경/);assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
+ assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files.length,1);
+});
+
+for(const damage of ['missing','corrupted'])test(`copied drafts exclude ${damage} selected attachment bytes without changing the failed request`,async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const broken=await addFile(h,review.id,'selected file to validate'),kept=await addFile(h,review.id,'keep this selected file'),unselected=await addFile(h,review.id,'unselected file');
+ const imagePath=path.join(h.root,'selected-image.png'),imageBytes=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64');fs.writeFileSync(imagePath,imageBytes);h.state.openResult={canceled:false,filePaths:[imagePath]};
+ const [image]=await h.success('attachment.add',{reviewId:review.id});
+ const source=await h.success('agent.start',{requestId:`copy-${damage}-source`,reviewId:review.id,prompt:'Preserve the selected files',context:{instruction:false,screenshotId:image.id,attachmentIds:[broken.id,kept.id],logIds:[]}});
+ h.state.agentUpdate({id:source.id,kind:'agent',status:'failed',error:'fixture failure',finishedAt:new Date().toISOString()});
+ const original=await h.success('agent.read',{id:source.id}),before=await h.success('snapshot'),starts=h.state.agentStarts.length;
+ for(const file of [broken,image]){const location=path.join(h.dataPath,'attachments',file.storageName);if(damage==='missing')fs.unlinkSync(location);else fs.writeFileSync(location,'changed bytes');}
+ fs.unlinkSync(path.join(h.dataPath,'attachments',unselected.storageName));
+ const copy=await h.success('agent.copyDraft',{reviewId:review.id,runId:source.id});
+ assert.equal(copy.draft.screenshotId,null);assert.deepEqual(copy.draft.attachmentIds,[kept.id]);assert.equal(copy.draft.prompt,source.prompt);assert.deepEqual(copy.excluded.map(file=>file.id).sort(),[image.id,broken.id].sort());assert.ok(copy.excluded.every(file=>file.reason==='첨부 자료를 더 이상 사용할 수 없습니다.'));
+ assert.deepEqual(await h.success('agent.read',{id:source.id}),original);assert.deepEqual(await h.success('snapshot'),before);assert.equal(h.state.agentStarts.length,starts);assert.equal(h.state.liveStore.listAgentRuns().length,1);
+ assert.equal(fs.readFileSync(path.join(h.dataPath,'attachments',kept.storageName),'utf8'),'keep this selected file');
+ for(const file of [broken,image]){const location=path.join(h.dataPath,'attachments',file.storageName);if(damage==='missing')assert.equal(fs.existsSync(location),false);else assert.equal(fs.readFileSync(location,'utf8'),'changed bytes');}
 });

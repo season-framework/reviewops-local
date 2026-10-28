@@ -12,6 +12,7 @@ const { SshError, validateConfig, fingerprintOf } = require('./ssh.cjs');
 const { terminateProcessGroup } = require('./codex/host-ssh.cjs');
 const { RpcClient } = require('./codex/rpc-client.cjs');
 const remoteAgent = require('./remote-agent.cjs');
+const {requireDirectory} = require('./work-directory.cjs');
 
 const FINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_PROMPT = 256 * 1024;
@@ -271,9 +272,7 @@ function createAgentManager(options = {}) {
     return job;
   }
   async function prepareLocal(settings) {
-    let root;
-    try {root = await fs.realpath(settings.workPath); if (!(await fs.stat(root)).isDirectory()) throw new Error();}
-    catch {throw new SshError('AGENT_WORK_PATH_INVALID', '에이전트 작업 폴더를 열 수 없습니다.');}
+    const root = await requireDirectory(settings.workPath);
     if (platform === 'win32') {
       // npm installs a .cmd wrapper. Resolve its native Codex executable instead
       // of sending user paths or prompts through cmd.exe.
@@ -677,12 +676,12 @@ function createAgentManager(options = {}) {
       const version = await localRun(prepared,['--version'],'',null,commandTimeoutMs).done;
       assertMetadataCurrent(settings);
       if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
-      if (version.code !== 0) return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:prepared.workPath,models:[],error:version.error || clean(version.stderr).slice(0,2000)};
+      if (version.code !== 0) return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:prepared.binary,workPath:prepared.workPath,models:[],error:'Codex 실행 파일을 실행할 수 없습니다. 프로젝트 설정에서 실행 파일을 선택하거나 전체 경로를 입력하십시오.'};
       const auth = await localRun(prepared,['login','status'],'',null,commandTimeoutMs).done;
       assertMetadataCurrent(settings);
       const models=includeModels?await availableModels(config,prepared):{models:[]};
       assertMetadataCurrent(settings);
-      return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:prepared.workPath,...models};
+      return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:prepared.binary,workPath:prepared.workPath,...models};
     }
     const version=await remoteCommand(config,settings,['--version']);
     assertMetadataCurrent(settings);
@@ -761,6 +760,12 @@ function createAgentManager(options = {}) {
       return {available:Boolean(metadata)&&!changed,sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:!metadata?'missing':changed?'model_changed':'available',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':changed?'저장된 세션과 선택한 모델이 달라 새 대화로 실행합니다.':metadata.model?'저장된 세션 파일과 모델을 확인했습니다.':'저장된 세션 파일을 찾았습니다. 모델 정보는 기록되어 있지 않습니다.'};
     },
     environment(config,settings={}){return probe(config,metadataSettings(normalize(settings,config)),true);},
+    async preflight(config,settings={}){
+      const status=await probe(config,metadataSettings(normalize(settings,config)));
+      if(!status.installed)throw new SshError('AGENT_NOT_INSTALLED',status.error||'Codex 실행 파일을 찾을 수 없습니다. 프로젝트 설정에서 실행 파일을 선택하거나 전체 경로를 입력하십시오.');
+      if(!status.loggedIn)throw new SshError(status.authState==='unknown'?'AGENT_AUTH_CHECK_FAILED':'AGENT_AUTH_REQUIRED',status.authState==='unknown'?'Codex 로그인 상태를 검사하지 못했습니다. 프로젝트 설정에서 실행 환경을 다시 검사하십시오.':'Codex 로그인이 필요합니다. 프로젝트 설정의 에이전트 탭에서 로그인하십시오.');
+      return status;
+    },
     validateStart(input){prepareStart(input);},
     start(input){
       const {settings,args,prompt,images,files}=prepareStart(input);

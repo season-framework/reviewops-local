@@ -15,6 +15,8 @@ export function acceptedAgentDraft(current,sent){
   logIds:ids(current.logIds).filter(id=>!ids(sent.logIds).includes(id)),
   requestId:current.requestId===sent.requestId?null:current.requestId,
   fresh:current.fresh===sent.fresh?false:current.fresh,
+  sourceRunId:current.sourceRunId===sent.sourceRunId?null:current.sourceRunId,
+  sourceTarget:current.sourceRunId===sent.sourceRunId?null:current.sourceTarget,
  };
 }
 
