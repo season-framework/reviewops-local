@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub 이슈 관리"
+  short_description: "GitHub 이슈와 완료 댓글을 짧고 정확하게 작성·정리합니다"
+  default_prompt: "$github-issue-management 스킬로 GitHub 이슈를 정리하고 완료한 수정과 검사 결과만 댓글로 기록하십시오."
