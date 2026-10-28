@@ -33,13 +33,15 @@ const DRAFT_EVENT = 'reviewops-shared-draft';
 function useSharedDraft(key, aliases = []) {
   const read = () => storage.get(key, aliases.map(alias => storage.get(alias)).find(Boolean) || '');
   const [value, setValue] = useState(read);
-  const current = useRef(value);
+  const current = useRef(value),locallyEdited=useRef(Boolean(value));
   current.current = value;
   useEffect(() => {
     const receive = event => {
       if (event.type === 'storage' && ![key,...aliases].includes(event.key)) return;
       if (event.type === DRAFT_EVENT && event.detail.key !== key) return;
+      if (event.type === 'storage' && event.newValue === null && locallyEdited.current && current.current) return;
       const next = read(); current.current = next; setValue(next);
+      if(event.type===DRAFT_EVENT)locallyEdited.current=Boolean(next);
     };
     window.addEventListener(DRAFT_EVENT, receive);
     window.addEventListener('storage', receive);
@@ -47,7 +49,7 @@ function useSharedDraft(key, aliases = []) {
   }, [key]);
   const update = next => {
     const result = typeof next === 'function' ? next(current.current) : next;
-    current.current = result;
+    current.current = result;locallyEdited.current=Boolean(result);
     for (const entry of [key,...aliases]) storage.set(entry,result);
     setValue(result);
     window.dispatchEvent(new CustomEvent(DRAFT_EVENT,{detail:{key}}));

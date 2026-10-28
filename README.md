@@ -89,6 +89,10 @@ Tasks have the permissions of the selected local or SSH account. ReviewOps does 
 
 Codex account profiles in ReviewOps are separate from the default Codex login. Account import is explicit and preserves the source app's data. File-based credentials can be copied; credentials stored only in macOS Keychain require signing in again. ReviewOps does not use Keychain.
 
+### Requests from external tools
+
+The [ReviewOps skill](skills/reviewops/SKILL.md) provides a local JSON command for tools that can run Node.js, including Codex, Claude Code, and Hermes. Requests specify a project ID or an exact local working folder. Each project opens in its own window; later requests reuse that project’s window. The command registers a review and opens it without starting an agent. See [the request commands](docs/tool-integration.md) for setup and examples.
+
 ### Using SSH
 
 Host management reads `~/.ssh/config` and its included files, including `IdentityFile` and `ProxyJump`. Registered hosts can be selected by multiple projects. The app checks host keys and does not accept an unknown or changed key automatically. On macOS, its SSH commands use `UseKeychain=no`. Windows host management uses SSH keys; password prompts are not supported there.

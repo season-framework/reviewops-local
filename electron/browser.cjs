@@ -25,7 +25,7 @@ function intersection(...rects) {
   return {x, y, width:Math.max(0,right-x), height:Math.max(0,bottom-y)};
 }
 
-function createBrowserManager(window) {
+function createBrowserManager(window, {partition = PARTITION} = {}) {
   const views = new Map(), popups = new Set();
   const recorder = createEvidenceRecorder();
   function bindContext(item,value){
@@ -55,7 +55,7 @@ function createBrowserManager(window) {
   // Cocoa can emit show before isVisible() reflects the new window state.
   for (const event of ['show','restore','focus','enter-full-screen','leave-full-screen']) window.on(event,syncAfterShow);
   for (const event of ['hide','minimize']) window.on(event,hideWindows);
-  const browserSession = session.fromPartition(PARTITION);
+  const browserSession = session.fromPartition(partition);
   // This partition belongs only to external pages. It has no application preload
   // or IPC bridge and cannot request app assets or local files.
   browserSession.webRequest.onBeforeRequest((details, callback) => {
@@ -69,7 +69,7 @@ function createBrowserManager(window) {
   browserSession.setPermissionRequestHandler((_contents, permission, callback) => callback(['fullscreen','pointerLock'].includes(permission)));
   browserSession.setPermissionCheckHandler((_contents, permission) => ['fullscreen','pointerLock'].includes(permission));
   const preferences = {
-    partition:PARTITION, contextIsolation:true, nodeIntegration:false,
+    partition, contextIsolation:true, nodeIntegration:false,
     nodeIntegrationInSubFrames:false, nodeIntegrationInWorker:false,
     sandbox:true, webSecurity:false, allowRunningInsecureContent:true,
     webviewTag:false, navigateOnDragDrop:false, backgroundThrottling:true

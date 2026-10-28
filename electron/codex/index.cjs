@@ -26,8 +26,7 @@ async function createCodexManager(options = {}) {
   let changingRuntime = false, registered = false, closed = false;
   const channels = [];
   const send = (channel, snapshot) => {
-    const window = getWindow();
-    if (window && !window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(channel, snapshot);
+    for(const window of options.getWindows?.()||[getWindow()])if(window&&!window.isDestroyed()&&!window.webContents.isDestroyed())window.webContents.send(channel,snapshot);
   };
   function state() {
     return { ...service.snapshot(), runtime: { available: runtime.available, path: runtime.path, version: runtime.version, error: runtime.error } };
@@ -83,7 +82,7 @@ async function setupService(command) {
 function registerHandlers(ipcMain = options.ipcMain) {
     if (!ipcMain || typeof ipcMain.handle !== 'function') throw new Error('IPC 연결을 지정하십시오.');
     if (registered) throw new Error('계정 및 호스트 관리가 이미 연결되어 있습니다.');
-    const register = (channel, handler) => { ipcMain.handle(channel, handler); channels.push([ipcMain, channel]); };
+    const register = (channel, handler) => { ipcMain.handle(channel,(event,...args)=>options.withWindow?options.withWindow(event,()=>handler(event,...args)):handler(event,...args)); channels.push([ipcMain, channel]); };
     registered = true;
   const methods = {
     getState: async () => state(),

@@ -32,6 +32,7 @@
     "test:browser-evidence": "node scripts/e2e-browser-evidence.mjs",
     "test:groups-list": "node scripts/e2e-groups-list.mjs",
     "test:window-controls": "node scripts/e2e-window-controls.mjs",
+    "test:parallel-workspaces": "node scripts/e2e-parallel-workspaces.mjs",
     "test:tab-reorder": "node scripts/e2e-tab-reorder.mjs",
     "test:viewer-toolbar": "node scripts/e2e-viewer-toolbar.mjs",
     "test:agent-files": "node scripts/e2e-agent-files.mjs",

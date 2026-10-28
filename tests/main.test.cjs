@@ -21,7 +21,7 @@ async function harness(t, options = {}) {
   const dataPath = path.join(root, 'data');
   const handlers = new Map();
   const appEvents = new EventEmitter();
-  const state = { switches: [], window: null, startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [] };
+  const state = { switches: [], window: null, primaryWindow:null, windows:[], browserManagers:[], startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [], dialogCalls:[] };
   const stores = [];
   const app = Object.assign(appEvents, {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
@@ -33,22 +33,32 @@ async function harness(t, options = {}) {
     whenReady() { return { then(callback) { state.startup = callback(); return state.startup; } }; }
   });
   class FakeBrowserWindow extends EventEmitter {
-    constructor(options) {
-      super(); this.options = options;
+    constructor(windowOptions) {
+      super(); this.options = windowOptions; this.id=state.windows.length+1;this.messages=[];
+      const host=this;
       this.destroyed = false; this.maximized = false; this.fullScreen = false; this.closeCalls = 0;
       this.visible = true; this.minimized = false; this.bounds = {x:0,y:0,width:1440,height:940};
       this.webContents = Object.assign(new EventEmitter(), {
+        id:this.id+1000,
         mainFrame: { url: 'reviewops://app/index.html' },
         setWindowOpenHandler() {}, getURL() { return this.mainFrame.url; },
+        isDestroyed(){return host.destroyed;},getZoomFactor(){return host.zoomFactor||1;},
         isLoadingMainFrame() { return false; },
+        async executeJavaScript(){return Boolean(host.preventUnload ?? state.preventUnload);},
         send(channel, data) {
-          state.windowMessages.push({ channel, data: JSON.parse(JSON.stringify(data)) });
+          const message={ channel, data: JSON.parse(JSON.stringify(data)) };state.windowMessages.push(message);host.messages.push(message);
           if(channel==='reviewops:season-review'&&!options.manualSeasonAcknowledgment)setImmediate(()=>handlers.get('reviewops:invoke')({sender:this,senderFrame:this.mainFrame},'integration.displayed',{...data,section:'review'}));
         },
-        session: { setPermissionRequestHandler() {}, setPermissionCheckHandler() {} }
+        async capturePage(bounds){(state.captureCalls||=[]).push({windowId:host.id,bounds});return {isEmpty:()=>false,toPNG:()=>Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64')};},
+        session: { setPermissionRequestHandler(callback) {state.permissionRequest=callback;}, setPermissionCheckHandler(callback) {state.permissionCheck=callback;} }
       });
+      state.windows.push(this);state.primaryWindow ||= this;
       state.window = this;
     }
+    static getAllWindows(){return state.windows.filter(host=>!host.destroyed);}
+    static getFocusedWindow(){return state.focusedWindow||FakeBrowserWindow.getAllWindows().at(-1)||null;}
+    static fromWebContents(contents){return state.windows.find(host=>host.webContents===contents)||null;}
+    static fromId(id){return state.windows.find(host=>host.id===id)||null;}
     loadURL(url) { this.webContents.mainFrame.url = url; }
     isDestroyed() { return this.destroyed; }
     isMaximized() { return this.maximized; }
@@ -57,8 +67,10 @@ async function harness(t, options = {}) {
     isMinimized() { return this.minimized; }
     restore() { this.minimized = false; }
     show() { this.visible = true; }
-    focus() {}
+    focus() {state.focusedWindow=this;}
     getBounds() { return this.bounds; }
+    getContentBounds(){return this.bounds;}
+    getContentSize(){return [this.bounds.width,this.bounds.height];}
     setBounds(bounds) { this.bounds = {...bounds}; }
     maximize() { this.maximized = true; this.emit('maximize'); }
     unmaximize() { this.maximized = false; this.emit('unmaximize'); }
@@ -68,7 +80,7 @@ async function harness(t, options = {}) {
       const closeEvent = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
       this.emit('close', closeEvent);
       if (closeEvent.defaultPrevented) return;
-      if (state.preventUnload) {
+      if (this.preventUnload ?? state.preventUnload) {
         const unloadEvent = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
         this.webContents.emit('will-prevent-unload', unloadEvent);
         if (!unloadEvent.defaultPrevented) return;
@@ -76,6 +88,7 @@ async function harness(t, options = {}) {
       this.destroyed = true;
       this.emit('closed');
     }
+    destroy(){if(this.destroyed)return;this.destroyed=true;this.emit('closed');}
   }
   const safeStorage = new Proxy({}, {get(){throw new Error('Keychain must not be accessed');}});
   const electron = {
@@ -83,10 +96,10 @@ async function harness(t, options = {}) {
     screen: { getAllDisplays: () => [{id:1,bounds:{x:0,y:0,width:1440,height:940}},{id:2,bounds:{x:1440,y:0,width:1920,height:1080}}], getPrimaryDisplay: () => ({id:1}) },
     ipcMain: { handle(name, callback) { handlers.set(name, callback); } },
     dialog: {
-      async showOpenDialog() { if(state.openHandler)return state.openHandler();return state.openResult || { canceled: true, filePaths: [] }; },
-      async showSaveDialog() { return state.saveResult || { canceled: true }; },
+      async showOpenDialog(host,options) { state.dialogCalls.push({kind:'open',host,options});if(state.openHandler)return state.openHandler(host,options);return state.openResult || { canceled: true, filePaths: [] }; },
+      async showSaveDialog(host,options) { state.dialogCalls.push({kind:'save',host,options});return state.saveResult || { canceled: true }; },
       async showMessageBox() { state.messageCalls++; return { response: state.messageResponse }; },
-      showMessageBoxSync() { state.unloadCalls++; return state.unloadResponse; },
+      showMessageBoxSync(host) { state.unloadCalls++; return host.unloadResponse ?? state.unloadResponse; },
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
     },
     shell: { async openPath() { return ''; }, async openExternal() {} },
@@ -115,6 +128,14 @@ async function harness(t, options = {}) {
     } };
     if (name === './ssh.cjs') return { createSshService: () => ({ close() {}, async openShell(_config,{onData,onClose}) { if(!state.allowShell)throw new Error('SSH must not run in these tests');onData(Buffer.from('session ready'));return {write:data=>onData(Buffer.from(data)),resize(){},close(){onClose()}}; }, test() { if(state.trustFingerprint)throw Object.assign(new Error('Synthetic SSH trust required'),{code:'SSH_TRUST_REQUIRED',fingerprint:state.trustFingerprint});throw new Error('SSH must not run in these tests'); } }) };
     if (name === './terminal.cjs') return require('../electron/terminal.cjs');
+    if (name === './browser.cjs') return {createBrowserManager(host,options={}){
+      const manager={host,options,closed:false,views:new Map(),async dispatch(action,payload){
+        if(action==='browser.create'){const view={id:crypto.randomUUID(),url:payload.url};this.views.set(view.id,view);return view;}
+        if(action==='browser.close'){this.views.delete(payload.id);return {closed:true};}
+        const view=this.views.get(payload.id);if(!view)throw new Error('열린 화면을 찾을 수 없습니다.');return view;
+      },closeAll(){this.closed=true;this.views.clear();},async flush(){}};
+      state.browserManagers.push(manager);return manager;
+    }};
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
@@ -136,6 +157,7 @@ async function harness(t, options = {}) {
       if (state.seasonError) throw new Error(state.seasonError);
       return { close: async () => { state.seasonIntegrationClosed = true; } };
     } };
+    if (name === './tool-integration.cjs') return {createToolIntegration:async options=>{state.toolIntegration=options;return {close:async()=>{state.toolIntegrationClosed=true;}};}};
     if (name.startsWith('node:')) return require(name);
     throw new Error(`Unexpected module: ${name}`);
   };
@@ -156,10 +178,10 @@ async function harness(t, options = {}) {
   assert(state.window);
   const handler = handlers.get('reviewops:invoke');
   assert.equal(typeof handler, 'function');
-  const event = () => ({ sender: state.window.webContents, senderFrame: state.window.webContents.mainFrame });
+  const event = (host=state.window) => ({ sender: host.webContents, senderFrame: host.webContents.mainFrame });
   const invoke = (action, payload = {}, sender = event()) => handler(sender, action, payload);
-  const success = async (action, payload) => {
-    const result = await invoke(action, payload);
+  const success = async (action, payload, sender=event()) => {
+    const result = await invoke(action, payload, sender);
     assert.equal(result.ok, true, result.error?.message);
     // VM creates objects in another realm; return plain local values to assertions.
     return result.data === undefined ? undefined : JSON.parse(JSON.stringify(result.data));
@@ -168,7 +190,8 @@ async function harness(t, options = {}) {
   // startup work before each test begins observing window-specific events.
   await success('modelCache.refresh');
   state.windowMessages=[];
-  return { root, dataPath, state, invoke, success, event, appEvents };
+  const forWindow=host=>({event:()=>event(host),invoke:(action,payload)=>invoke(action,payload,event(host)),success:(action,payload)=>success(action,payload,event(host))});
+  return { root, dataPath, state, invoke, success, event, forWindow, appEvents };
 }
 
 async function seed(h) {
@@ -181,6 +204,24 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+
+async function waitForValue(read, message) {
+  for(let attempt=0;attempt<100;attempt++) {
+    const value=await read();if(value)return value;
+    await new Promise(resolve=>setTimeout(resolve,10));
+  }
+  assert.fail(message);
+}
+async function projectHost(h,projectId) {
+  return waitForValue(async()=>{
+    for(const host of h.state.windows.filter(host=>!host.isDestroyed())) {
+      const result=await h.forWindow(host).invoke('window.context');
+      if(result.ok&&result.data.projectId===projectId)return host;
+    }
+  },`No window opened for project ${projectId}`);
+}
+const pendingRoute=(h,host)=>waitForValue(()=>h.forWindow(host).success('integration.pending'),'The project window did not receive its review');
+const routeWindowId=host=>new URL(host.webContents.getURL()).searchParams.get('windowId');
 
 function savedRemoteFixture({dataPath},change={}) {
   fs.mkdirSync(dataPath,{recursive:true});
@@ -240,12 +281,14 @@ test('Season AI navigation preserves data and moves an already fullscreen window
   const h = await harness(t);
   const { review, project } = await seed(h);
   const before = await h.success('snapshot');
-  h.state.window.fullScreen = true;
+  await h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false});
+  const host=await projectHost(h,project.id);host.fullScreen=true;
   const bounds = {x:1440,y:0,width:1920,height:1080};
   const result = await h.state.seasonIntegration.showReview({ reviewId: review.id, fullscreen: true, displayBounds: bounds });
   assert.equal(result.shown, true); assert.equal(result.fullscreen, true);
   assert.equal(result.view,'project');assert.equal(result.projectId,project.id);assert.equal(result.reviewId,review.id);
-  assert.deepEqual(h.state.window.getBounds(), bounds);
+  assert.equal(result.windowId,routeWindowId(host));assert.notEqual(host,h.state.primaryWindow);assert.equal(h.state.windows.length,2);
+  assert.deepEqual(host.getBounds(), bounds);
   assert.equal((await h.success('integration.pending')).reviewId, review.id);
   assert.ok(h.state.windowMessages.some(item => item.channel === 'reviewops:season-review' && item.data.reviewId === review.id));
   assert.deepEqual(await h.success('snapshot'), before);
@@ -257,39 +300,218 @@ test('Season AI waits for the matching visible project review instead of accepti
   const {review,project}=await seed(h);
   let completed=false;
   const showing=h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false}).then(result=>{completed=true;return result;});
-  const pending=await h.success('integration.pending');
+  const host=await projectHost(h,project.id),client=h.forWindow(host),pending=await pendingRoute(h,host);
   assert.equal(pending.projectId,project.id);assert.equal(pending.view,'project');assert.equal(completed,false);
   for(const mismatch of [{view:'home'},{projectId:'another-project'},{reviewId:'another-review'},{request:pending.request-1},{section:'settings'}]){
-    assert.deepEqual(await h.success('integration.displayed',{...pending,section:'review',...mismatch}),{accepted:false});
+    assert.deepEqual(await client.success('integration.displayed',{...pending,section:'review',...mismatch}),{accepted:false});
     assert.equal(completed,false);
   }
-  assert.deepEqual(await h.success('integration.displayed',{...pending,section:'review'}),{accepted:true});
+  assert.deepEqual(await h.forWindow(h.state.primaryWindow).success('integration.displayed',{...pending,section:'review'}),{accepted:false});
+  assert.equal(await h.forWindow(h.state.primaryWindow).success('integration.pending'),null);
+  assert.deepEqual(await client.success('integration.displayed',{...pending,section:'review'}),{accepted:true});
   assert.equal((await showing).shown,true);
 });
 
 test('Season AI rejects a missing project and reports a closed renderer before showing a review',async t=>{
   const h=await harness(t,{manualSeasonAcknowledgment:true});
-  const {review}=await seed(h);
+  const {review,project}=await seed(h);
   await assert.rejects(h.state.seasonIntegration.showReview({reviewId:review.id,projectId:'another-project',fullscreen:false}),/프로젝트/);
   const showing=h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false});
   const rejected=assert.rejects(showing,/창이 닫혔습니다/);
-  h.state.window.close();
+  const host=await projectHost(h,project.id);await pendingRoute(h,host);host.close();
   await rejected;
+  assert.equal(h.state.primaryWindow.isDestroyed(),false);
 });
 
-test('Season AI replaces an unacknowledged route and ignores its late acknowledgment',async t=>{
+test('simultaneous Season AI routes use separate project windows and reject another window acknowledgment',async t=>{
   const h=await harness(t,{manualSeasonAcknowledgment:true});
   const first=await seed(h),second=await seed(h);
   const showingFirst=h.state.seasonIntegration.showReview({reviewId:first.review.id,fullscreen:false});
-  const firstRequest=await h.success('integration.pending');
-  const rejected=assert.rejects(showingFirst,/다른 프로젝트/);
   const showingSecond=h.state.seasonIntegration.showReview({reviewId:second.review.id,fullscreen:false});
-  const secondRequest=await h.success('integration.pending');
-  await rejected;
-  assert(secondRequest.request>firstRequest.request);
-  assert.deepEqual(await h.success('integration.displayed',{...firstRequest,section:'review'}),{accepted:false});
-  assert.deepEqual(await h.success('integration.displayed',{...secondRequest,section:'review'}),{accepted:true});
-  assert.equal((await showingSecond).reviewId,second.review.id);
+  const firstHost=await projectHost(h,first.project.id),secondHost=await projectHost(h,second.project.id);
+  const firstClient=h.forWindow(firstHost),secondClient=h.forWindow(secondHost);
+  const firstRequest=await pendingRoute(h,firstHost),secondRequest=await pendingRoute(h,secondHost);
+  assert.notEqual(firstHost,secondHost);assert.equal(h.state.windows.length,3);
+  assert.deepEqual(await secondClient.success('integration.displayed',{...firstRequest,section:'review'}),{accepted:false});
+  assert.deepEqual(await firstClient.success('integration.displayed',{...secondRequest,section:'review'}),{accepted:false});
+  assert.deepEqual(await secondClient.success('integration.displayed',{...secondRequest,section:'review'}),{accepted:true});
+  assert.equal((await showingSecond).windowId,routeWindowId(secondHost));
+  assert.deepEqual(await firstClient.success('integration.pending'),firstRequest);
+  assert.deepEqual(await firstClient.success('integration.displayed',{...firstRequest,section:'review'}),{accepted:true});
+  assert.equal((await showingFirst).windowId,routeWindowId(firstHost));
+});
+
+test('simultaneous requests for the same project reuse one window and acknowledge each review in order',async t=>{
+  const h=await harness(t,{manualSeasonAcknowledgment:true}),{project,review}=await seed(h);
+  const other=await h.success('review.save',{projectId:project.id,title:'같은 프로젝트의 다음 리뷰'});
+  const first=h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false});
+  const second=h.state.seasonIntegration.showReview({reviewId:other.id,fullscreen:false});
+  const host=await projectHost(h,project.id),client=h.forWindow(host),pending=await pendingRoute(h,host);
+  assert.equal(pending.reviewId,review.id);assert.equal(h.state.windows.length,2);
+  await client.success('integration.displayed',{...pending,section:'review'});assert.equal((await first).windowId,routeWindowId(host));
+  const next=await waitForValue(async()=>{const item=await client.success('integration.pending');return item?.reviewId===other.id?item:null;},'The second review did not reach the reused window');
+  assert.equal(h.state.windows.length,2);assert(next.request>pending.request);
+  assert.deepEqual(await client.success('integration.displayed',{...pending,section:'review'}),{accepted:false});
+  await client.success('integration.displayed',{...next,section:'review'});assert.equal((await second).windowId,routeWindowId(host));
+});
+
+test('window controls, capture, dialogs and permissions use the requesting registered application window',async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h),primary=h.state.primaryWindow;
+  const openedA=await h.forWindow(primary).success('window.openProject',{projectId:first.project.id,reviewId:first.review.id});
+  const a=await projectHost(h,first.project.id),clientA=h.forWindow(a);
+  const openedB=await h.forWindow(primary).success('window.openProject',{projectId:second.project.id,reviewId:second.review.id});
+  const b=await projectHost(h,second.project.id),clientB=h.forWindow(b);
+  assert.equal(openedA.windowId,routeWindowId(a));assert.equal(openedB.windowId,routeWindowId(b));assert.notEqual(openedA.windowId,openedB.windowId);
+  assert.deepEqual(await clientA.success('window.context'),{windowId:routeWindowId(a),projectId:first.project.id});
+  assert.deepEqual(await clientB.success('window.context'),{windowId:routeWindowId(b),projectId:second.project.id});
+  assert.equal((await clientA.success('window.fullscreen')).fullScreen,true);assert.equal((await clientB.success('window.state')).fullScreen,false);assert.equal(primary.fullScreen,false);
+  await clientA.success('viewer.capture',{bounds:{x:10,y:20,width:300,height:200}});
+  assert.equal(h.state.captureCalls.at(-1).windowId,a.id);
+  await clientA.success('dialog.directory');assert.equal(h.state.dialogCalls.at(-1).host,a);
+  for(const host of [primary,a,b]) {
+    assert.equal(h.state.permissionCheck(host.webContents,'fullscreen','reviewops://app/index.html'),true);
+    assert.equal(h.state.permissionCheck(host.webContents,'media','reviewops://app/index.html'),false);
+    let allowed;h.state.permissionRequest(host.webContents,'fullscreen',value=>{allowed=value;},{isMainFrame:false,requestingUrl:'reviewops://app/index.html'});assert.equal(allowed,false);
+  }
+  const foreign=new primary.constructor({});
+  assert.equal((await h.forWindow(foreign).invoke('snapshot')).ok,false);
+  assert.equal(h.state.permissionCheck(foreign.webContents,'fullscreen','reviewops://app/index.html'),false);
+  const frame={url:'reviewops://app/index.html',parent:a.webContents.mainFrame};
+  assert.equal((await h.invoke('window.close',{}, {sender:a.webContents,senderFrame:frame})).ok,false);
+  assert.equal(a.closeCalls,0);assert.equal(b.closeCalls,0);
+});
+
+test('cross-project navigation retains create, edit and settings destinations only in the target window',async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h),primary=h.state.primaryWindow;
+  await h.forWindow(primary).success('window.openProject',{projectId:first.project.id});
+  const a=await projectHost(h,first.project.id),clientA=h.forWindow(a);
+  const ownNavigation=await clientA.success('window.navigation');
+  const opened=await clientA.success('window.openProject',{projectId:second.project.id,section:'review',reviewMode:'create'});
+  const b=await projectHost(h,second.project.id),clientB=h.forWindow(b);
+  const creating=await clientB.success('window.navigation');
+  assert.equal(creating.projectId,second.project.id);assert.equal(creating.section,'review');assert.equal(creating.reviewMode,'create');assert.equal(creating.reviewId,'');
+  assert.deepEqual(b.messages.filter(item=>item.channel==='reviewops:project-open').at(-1).data,creating);
+  const editingResult=await clientA.success('window.openProject',{projectId:second.project.id,section:'review',reviewMode:'edit',reviewId:second.review.id});
+  const editing=await clientB.success('window.navigation');
+  assert.equal(editing.reviewMode,'edit');assert.equal(editing.reviewId,second.review.id);assert.ok(editing.request>creating.request);assert.equal(editingResult.windowId,opened.windowId);
+  await clientA.success('window.openProject',{projectId:second.project.id,section:'settings'});
+  const settings=await clientB.success('window.navigation');assert.equal(settings.section,'settings');assert.ok(settings.request>editing.request);
+  assert.equal(h.state.windows.length,3);assert.deepEqual(await clientA.success('window.navigation'),ownNavigation);assert.equal(await h.forWindow(primary).success('window.navigation'),null);
+  await h.state.seasonIntegration.showReview({projectId:second.project.id,reviewId:second.review.id,fullscreen:false});
+  assert.equal(await clientB.success('window.navigation'),null);
+  const shown=await clientB.success('integration.pending');assert.ok(shown.request>settings.request);
+  await clientA.success('window.openProject',{projectId:second.project.id,section:'settings'});
+  assert.equal(await clientB.success('integration.pending'),null);
+  assert.equal((await clientB.success('window.navigation')).section,'settings');
+  assert.deepEqual(await clientB.success('integration.displayed',{...shown,section:'review'}),{accepted:false});
+});
+
+test('invalid cross-project navigation cannot replace a target window destination',async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h),primary=h.state.primaryWindow;
+  await h.forWindow(primary).success('window.openProject',{projectId:second.project.id,section:'settings'});
+  const host=await projectHost(h,second.project.id),before=await h.forWindow(host).success('window.navigation');
+  for(const payload of [
+    {projectId:second.project.id,reviewId:first.review.id,reviewMode:'edit'},
+    {projectId:second.project.id,reviewMode:'edit'},
+    {projectId:second.project.id,section:'unsupported'},
+    {projectId:second.project.id,reviewMode:'unsupported'}
+  ])assert.equal((await h.forWindow(primary).invoke('window.openProject',payload)).ok,false);
+  assert.deepEqual(await h.forWindow(host).success('window.navigation'),before);assert.equal(h.state.windows.length,2);
+});
+
+for(const ending of ['close','crash','reload'])test(`a project window ${ending} preserves another window's browser, terminal and staged files`,async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h);h.state.allowShell=true;
+  await h.state.seasonIntegration.showReview({reviewId:first.review.id,fullscreen:false});const a=await projectHost(h,first.project.id),clientA=h.forWindow(a);
+  await h.state.seasonIntegration.showReview({reviewId:second.review.id,fullscreen:false});const b=await projectHost(h,second.project.id),clientB=h.forWindow(b);
+  const browserA=await clientA.success('browser.create',{url:'https://fixture.invalid/a'}),browserB=await clientB.success('browser.create',{url:'https://fixture.invalid/b'});
+  const managerA=h.state.browserManagers.find(manager=>manager.host===a),managerB=h.state.browserManagers.find(manager=>manager.host===b);
+  assert.equal(managerA.options.partition,`persist:reviewops-browser-project-${first.project.id}`);assert.equal(managerB.options.partition,`persist:reviewops-browser-project-${second.project.id}`);
+  assert.equal((await clientA.invoke('browser.state',{id:browserB.id})).ok,false);
+  const terminalA=await clientA.success('terminal.open',{serviceId:first.service.id}),terminalB=await clientB.success('terminal.open',{serviceId:second.service.id});
+  assert.equal((await clientB.invoke('terminal.read',{id:terminalA.id})).ok,false);
+  assert.equal((await clientA.invoke('terminal.write',{id:terminalB.id,data:'must not arrive'})).ok,false);
+  const fileA=path.join(h.root,'window-a.txt'),fileB=path.join(h.root,'window-b.txt');fs.writeFileSync(fileA,'draft A');fs.writeFileSync(fileB,'draft B');
+  const [stagedA]=await clientA.success('attachment.stageFiles',{paths:[fileA]}),[stagedB]=await clientB.success('attachment.stageFiles',{paths:[fileB]});
+  assert.equal((await clientB.invoke('attachment.stagePreview',{token:stagedA.token})).ok,false);
+  assert.equal((await clientB.invoke('activity.add',{reviewId:second.review.id,body:'wrong owner',attachmentTokens:[stagedA.token]})).ok,false);
+  await clientB.invoke('attachment.discard',{tokens:[stagedA.token]});
+  assert.equal((await clientA.success('attachment.stagePreview',{token:stagedA.token})).content,'draft A');
+  if(ending==='close')a.close();else if(ending==='crash')a.webContents.emit('render-process-gone',{}, {reason:'crashed'});else a.webContents.emit('did-start-navigation',{},a.webContents.getURL(),false,true);
+  assert.equal(managerA.closed,true);assert.equal(managerB.closed,false);assert.equal(b.isDestroyed(),false);
+  assert.equal((await clientB.success('browser.state',{id:browserB.id})).id,browserB.id);
+  await clientB.success('terminal.write',{id:terminalB.id,data:'B remains connected'});
+  const output=await clientB.success('terminal.read',{id:terminalB.id,cursor:0});assert.match(output.data,/B remains connected/);assert.doesNotMatch(output.data,/must not arrive/);
+  assert.equal((await clientB.success('attachment.stagePreview',{token:stagedB.token})).content,'draft B');
+  assert.equal((await h.forWindow(h.state.primaryWindow).invoke('terminal.read',{id:terminalA.id,cursor:0})).ok,false);
+  assert.equal((await clientB.success('attachment.staged',{tokens:[stagedB.token]})).files.length,1);
+  if(ending!=='close'){
+    assert.equal((await clientA.success('attachment.stagePreview',{token:stagedA.token})).content,'draft A');
+    assert.equal((await clientA.success('attachment.staged',{tokens:[stagedA.token]})).files.length,1);
+  }
+  assert.equal(managerA.views.has(browserA.id),false);
+});
+
+for(const dirtyAt of ['before selection','during selection'])test(`backup restore preserves another window draft started ${dirtyAt}`,async t=>{
+  const h=await harness(t),{project,review}=await seed(h),primary=h.state.primaryWindow;
+  await h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false});
+  const host=await projectHost(h,project.id),client=h.forWindow(host);
+  const file=path.join(h.root,'unsaved-restore-draft.txt');fs.writeFileSync(file,'Keep this other window attachment');
+  const [draft]=await client.success('attachment.stageFiles',{paths:[file]});
+  const backup=importBundle(h),before=await client.success('snapshot');
+  if(dirtyAt==='before selection')host.preventUnload=true;
+  h.state.openHandler=async()=>{host.preventUnload=true;return {canceled:false,filePaths:[backup]};};
+  const result=await h.forWindow(primary).invoke('backup.import');
+  assert.equal(result.ok,false);assert.match(result.error.message,/다른 창에서 작성 중인 내용/);
+  assert.deepEqual(await client.success('snapshot'),before);
+  assert.equal((await client.success('attachment.stagePreview',{token:draft.token})).content,'Keep this other window attachment');
+  assert.equal(host.isDestroyed(),false);
+  assert.equal(h.state.dialogCalls.filter(call=>call.kind==='open').length,dirtyAt==='before selection'?0:1);
+});
+
+test('cancelling application quit in the second dirty window keeps every window and browser open',async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h);
+  await h.state.seasonIntegration.showReview({reviewId:first.review.id,fullscreen:false});const a=await projectHost(h,first.project.id);
+  await h.state.seasonIntegration.showReview({reviewId:second.review.id,fullscreen:false});const b=await projectHost(h,second.project.id);
+  await h.forWindow(a).success('browser.create',{url:'https://fixture.invalid/a'});await h.forWindow(b).success('browser.create',{url:'https://fixture.invalid/b'});
+  a.preventUnload=true;a.unloadResponse=1;b.preventUnload=true;b.unloadResponse=0;
+  h.appEvents.emit('before-quit',{preventDefault(){}});
+  await waitForValue(()=>h.state.unloadCalls===2,'Both dirty windows must be asked before any window closes');
+  for(const host of h.state.windows){assert.equal(host.isDestroyed(),false);assert.equal(host.closeCalls,0);}
+  assert.ok(h.state.browserManagers.every(manager=>!manager.closed));
+  b.unloadResponse=1;h.appEvents.emit('before-quit',{preventDefault(){}});
+  await waitForValue(()=>h.state.windows.every(host=>host.isDestroyed()),'Approved quit must close all application windows');
+  assert.equal(h.state.unloadCalls,4,'Approved windows must not show the same discard prompt again');
+  assert.ok(h.state.browserManagers.every(manager=>manager.closed));
+});
+
+test('shared data changes notify all registered windows without consuming another window draft',async t=>{
+  const h=await harness(t),first=await seed(h),second=await seed(h);
+  await h.state.seasonIntegration.showReview({reviewId:first.review.id,fullscreen:false});const a=await projectHost(h,first.project.id),clientA=h.forWindow(a);
+  await h.state.seasonIntegration.showReview({reviewId:second.review.id,fullscreen:false});const b=await projectHost(h,second.project.id),clientB=h.forWindow(b);
+  const file=path.join(h.root,'unsaved-window-b.txt');fs.writeFileSync(file,'B draft');
+  const [draft]=await clientB.success('attachment.stageFiles',{paths:[file]});
+  for(const host of h.state.windows)host.messages=[];
+  const activity=await clientA.success('activity.add',{reviewId:first.review.id,body:'A saved this comment'});
+  const revisions=[];
+  for(const host of h.state.windows){const changes=host.messages.filter(message=>message.channel==='reviewops:data-change');assert.equal(changes.length,1);assert.deepEqual(Object.keys(changes[0].data),['revision']);assert.equal(Number.isSafeInteger(changes[0].data.revision),true);revisions.push(changes[0].data.revision);}
+  assert.equal(new Set(revisions).size,1);assert.ok((await clientB.success('snapshot')).activities.some(item=>item.id===activity.id));
+  assert.equal((await clientB.success('attachment.stagePreview',{token:draft.token})).content,'B draft');
+  a.close();const closedMessageCount=a.messages.length;
+  await clientB.success('activity.add',{reviewId:second.review.id,body:'B saved this comment'});
+  assert.equal(a.messages.length,closedMessageCount);assert.ok(b.messages.filter(message=>message.channel==='reviewops:data-change').at(-1).data.revision>revisions[0]);
+});
+
+test('a queued write from a closed window cannot run after another window releases the action queue',async t=>{
+  const h=await harness(t),{review,project}=await seed(h),primary=h.state.primaryWindow;
+  await h.state.seasonIntegration.showReview({reviewId:review.id,fullscreen:false});const host=await projectHost(h,project.id),client=h.forWindow(host);
+  let opened,release;const ready=new Promise(resolve=>{opened=resolve;});
+  h.state.openHandler=()=>{opened();return new Promise(resolve=>{release=resolve;});};
+  const restore=h.forWindow(primary).success('backup.import');await ready;
+  const before=await h.forWindow(primary).success('snapshot');
+  const queued=client.invoke('group.save',{name:'Must not be saved after the owner closes'});host.close();
+  release({canceled:true,filePaths:[]});assert.equal((await restore).cancelled,true);
+  const result=await queued;assert.equal(result.ok,false);assert.match(result.error.message,/창이 닫혔습니다|허용되지 않은 요청/);
+  assert.deepEqual(await h.forWindow(primary).success('snapshot'),before);
 });
 
 test('integration display text stays separate from execution instructions and updates the visible history', async t => {
@@ -316,6 +538,28 @@ async function addFile(h, reviewId, content = 'synthetic attachment') {
   assert.equal(added.length, 1);
   return added[0];
 }
+
+test('review.copy preserves selected attachment bytes in a separate file owned by the requesting window',async t=>{
+  const h=await harness(t),source=await seed(h),destination=await seed(h);
+  const original=await addFile(h,source.review.id,'Selected source attachment to copy');
+  const originalContents=await h.success('attachment.read',{id:original.id});
+  const originalReview=(await h.success('snapshot')).reviews.find(review=>review.id===source.review.id);
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});
+  const sourceHost=await projectHost(h,source.project.id),sourceClient=h.forWindow(sourceHost);
+  await h.state.seasonIntegration.showReview({reviewId:destination.review.id,fullscreen:false});
+  const otherHost=await projectHost(h,destination.project.id);h.state.focusedWindow=otherHost;
+  const copied=await sourceClient.success('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+  const snapshot=await sourceClient.success('snapshot'),copies=snapshot.attachments.filter(file=>file.reviewId===copied.id);
+  assert.equal(copied.projectId,destination.project.id);assert.equal(copies.length,1);
+  const copy=copies[0];assert.equal(copy.name,original.name);assert.equal(copy.sha256,original.sha256);assert.equal(copy.size,original.size);
+  assert.notEqual(copy.id,original.id);assert.notEqual(copy.storageName,original.storageName);
+  assert.equal((await sourceClient.success('attachment.read',{id:copy.id})).content,originalContents.content);
+  assert.deepEqual(fs.readFileSync(path.join(h.dataPath,'attachments',copy.storageName)),fs.readFileSync(path.join(h.dataPath,'attachments',original.storageName)));
+  assert.deepEqual(snapshot.reviews.find(review=>review.id===source.review.id),originalReview);
+  assert.deepEqual(snapshot.attachments.find(file=>file.id===original.id),original);
+  assert.equal(copied.evidence.copiedFrom.reviewId,source.review.id);assert.equal(copied.evidence.copiedFrom.attachments[0].sha256,original.sha256);
+  assert.deepEqual(await sourceClient.success('agent.list',{reviewId:copied.id}),[]);assert.equal(h.state.agentStarts.length,0);
+});
 
 function importBundle(h) {
   const source = createStore({ dbPath: path.join(h.root, 'import-source.sqlite') });
@@ -680,7 +924,7 @@ test('a pending custom close does not close an already destroyed host again', as
   for (const action of ['window.state', 'window.fullscreen', 'window.close']) {
     const result = await h.invoke(action);
     assert.equal(result.ok, false);
-    assert.match(result.error.message, /창이 닫혔습니다/);
+    assert.match(result.error.message, /허용되지 않은 요청/);
   }
 });
 

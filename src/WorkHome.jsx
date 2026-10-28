@@ -19,14 +19,15 @@ function ProjectIcon() {
   return <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="2" width="4" height="4" rx="1"/><rect x="10" y="1" width="5" height="4" rx="1"/><rect x="10" y="10" width="5" height="4" rx="1"/><path d="M4 3h5v1h2v2H8V5H4zm0 1h2v7h5v2H4z"/></svg>;
 }
 
-export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpenProject, onEditReview, onCreateReview, onPreview, onError, onRefresh, onGroups, onDirtyChange, initialReviewId = '', selectionRequest = 0}) {
-  const [selectedId, setSelectedId] = useState(() => initialReviewId || storage.get('reviewops.home.selected'));
+export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpenProject, onEditReview, onCreateReview, onPreview, onError, onRefresh, onGroups, onDirtyChange, initialReviewId = '', selectionRequest = 0, storageScope='reviewops.home', windowProjectId=''}) {
+  const selectedKey=`${storageScope}.selected`,favoritesKey=`${storageScope}.favorites`;
+  const [selectedId, setSelectedId] = useState(() => initialReviewId || storage.get(selectedKey));
   const [scope, setScope] = useState('active');
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState({});
   const [focusedKey, setFocusedKey] = useState('');
   const [refreshing, setRefreshing] = useState(false);
-  const [favorites, setFavorites] = useState(() => {try {const values = JSON.parse(storage.get('reviewops.home.favorites','[]'));return Array.isArray(values) ? values : [];} catch {return [];}});
+  const [favorites, setFavorites] = useState(() => {try {const values = JSON.parse(storage.get(favoritesKey,'[]'));return Array.isArray(values) ? values : [];} catch {return [];}});
   const [captureRequest,setCaptureRequest]=useState(null);
   const captureResolver=useRef(null),capturedEvidence=useRef(null);
   useEffect(()=>()=>{captureResolver.current?.resolve(null);captureResolver.current=null},[]);
@@ -36,35 +37,36 @@ export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpe
   useEffect(()=>{if(captureResolver.current){captureResolver.current.resolve(null);captureResolver.current=null;setCaptureRequest(null)}},[selectedId]);
   const treeRef = useRef(null);
   const initialSelection = useRef(false);
-  const selected = data.reviews.find(item => item.id === selectedId);
+  const selected = data.reviews.find(item => item.id === selectedId&&(!windowProjectId||item.projectId===windowProjectId));
   const selectedProject = data.projects.find(item => item.id === selected?.projectId);
   const selectedGroup = data.groups.find(item => item.id === selectedProject?.groupId);
   const visible = useMemo(() => data.reviews.filter(item => (scope === 'closed' ? isClosed(item) : !isClosed(item)) && matchesReviewSearch(item,search,data)).sort((a,b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt)), [data.reviews, data.settings?.reviewCategories, scope, search, getLocale()]);
   const selectReview = review => {
-    setSelectedId(review.id); storage.set('reviewops.home.selected',review.id);
+    if(windowProjectId&&review.projectId!==windowProjectId){onOpenProject(review.projectId,{reviewId:review.id,reviewMode:'detail',selectionRequest:Date.now(),section:'review'});return;}
+    setSelectedId(review.id); storage.set(selectedKey,review.id);
     const project = data.projects.find(item => item.id === review.projectId);
     setCollapsed(value => ({...value, [`g-${project?.groupId}`]:false, [`p-${review.projectId}`]:false}));
   };
   useEffect(() => {
     if (!data.reviews.length || initialSelection.current) return;
     initialSelection.current = true;
-    const review = data.reviews.find(item => item.id === (initialReviewId || selectedId));
+    const review = data.reviews.find(item => item.id === (initialReviewId || selectedId)&&(!windowProjectId||item.projectId===windowProjectId));
     if (review) {setScope(isClosed(review) ? 'closed' : 'active');selectReview(review);}
-    else {setSelectedId('');storage.set('reviewops.home.selected','');}
+    else {setSelectedId('');storage.set(selectedKey,'');}
   }, [data.reviews]);
   useEffect(() => {
     if (!initialReviewId) return;
     const review = data.reviews.find(item => item.id === initialReviewId);
     if (review) {setScope(isClosed(review) ? 'closed' : 'active');setSearch('');selectReview(review);}
   }, [initialReviewId, selectionRequest]);
-  useEffect(() => {if (selectedId && !data.reviews.some(item => item.id === selectedId)) {setSelectedId('');storage.set('reviewops.home.selected','');}}, [data.reviews, selectedId]);
-  useEffect(() => {setFavorites(current=>{const next=current.filter(id=>data.projects.some(project=>project.id===id));if(next.length===current.length)return current;storage.set('reviewops.home.favorites',JSON.stringify(next));return next})}, [data.projects]);
-  const clearSelection = () => {setSelectedId('');storage.set('reviewops.home.selected','');};
+  useEffect(() => {if (selectedId && !data.reviews.some(item => item.id === selectedId&&(!windowProjectId||item.projectId===windowProjectId))) {setSelectedId('');storage.set(selectedKey,'');}}, [data.reviews, selectedId]);
+  useEffect(() => {setFavorites(current=>{const next=current.filter(id=>data.projects.some(project=>project.id===id));if(next.length===current.length)return current;storage.set(favoritesKey,JSON.stringify(next));return next})}, [data.projects]);
+  const clearSelection = () => {setSelectedId('');storage.set(selectedKey,'');};
   const setIssueScope = (value, focus = false) => {
     setScope(value); if (selected && isClosed(selected) !== (value === 'closed')) clearSelection();
     if (focus) requestAnimationFrame(() => document.getElementById(`work-home-scope-${value}`)?.focus());
   };
-  const toggleFavorite = id => {setFavorites(values => {const next = values.includes(id) ? values.filter(value => value !== id) : [...values,id];storage.set('reviewops.home.favorites',JSON.stringify(next));return next;});};
+  const toggleFavorite = id => {setFavorites(values => {const next = values.includes(id) ? values.filter(value => value !== id) : [...values,id];storage.set(favoritesKey,JSON.stringify(next));return next;});};
   const toggle = key => setCollapsed(values => ({...values,[key]:!values[key]}));
   const treeKey = event => {
     const node = event.target.closest('[data-tree-node]');
