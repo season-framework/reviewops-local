@@ -72,6 +72,7 @@
 .agent-model-manager .agent-model-reasoning input[type=checkbox] { width:14px;height:14px;min-height:14px;flex:0 0 14px;padding:0;accent-color:var(--accent) }
 @media(max-width:700px){.agent-model-manager{padding:12px}.agent-model-manager>header{flex-wrap:wrap}.agent-model-row-fields{grid-template-columns:minmax(0,1fr)}.agent-model-row-fields>.button{justify-self:end}.agent-model-row>.field{max-width:none}.agent-model-reasoning label{min-height:32px}}
 .agent-picker-stage { display:flex;min-width:0;min-height:0;overflow:hidden;padding:0 }
+.agent-picker-stage > .agent-followups { display:none }
 .agent-picker-stage > .agent-picker { display:flex;width:100%;max-width:none;min-width:0;min-height:0;flex:1;flex-direction:column;margin:0;background:var(--surface) }
 .agent-picker > header { display:flex;min-height:44px;flex:0 0 auto;flex-wrap:wrap;align-items:center;gap:8px;border-bottom:1px solid var(--border);padding:8px 12px;font-size:12px }
 .agent-picker > header > span { color:var(--muted);font-size:10px }
