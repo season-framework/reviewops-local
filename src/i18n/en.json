@@ -1483,5 +1483,6 @@
   "실행 대상: 내용을 다시 입력하십시오.": "Enter a valid execution target.",
   "필요한 결과: 내용을 다시 입력하십시오.": "Enter a valid required result.",
   "결과 버전: 내용을 다시 입력하십시오.": "Enter a result version or file.",
-  "처리 내용: 내용을 다시 입력하십시오.": "Enter outcome notes."
+  "처리 내용: 내용을 다시 입력하십시오.": "Enter outcome notes.",
+  "다른 창에서 삭제된 항목이 있습니다. 작성 중인 내용은 이 창에 유지됩니다.": "An item was deleted in another window. Your unsaved content is kept in this window."
 }

@@ -26,6 +26,20 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
     ipcRenderer.on('reviewops:window-state',listener);
     return () => ipcRenderer.removeListener('reviewops:window-state',listener);
   },
+  onDataChange: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => { if (Number.isSafeInteger(value?.revision) && value.revision >= 0) callback({revision:value.revision}); };
+    ipcRenderer.on('reviewops:data-change',listener);
+    return () => ipcRenderer.removeListener('reviewops:data-change',listener);
+  },
+  onProjectOpen: callback => {
+    if (typeof callback !== 'function') return () => {};
+    const listener = (_event, value) => {
+      if (typeof value?.projectId === 'string' && Number.isSafeInteger(value.request)) callback({projectId:value.projectId,reviewId:value.reviewId,section:value.section,reviewMode:value.reviewMode,request:value.request});
+    };
+    ipcRenderer.on('reviewops:project-open',listener);
+    return () => ipcRenderer.removeListener('reviewops:project-open',listener);
+  },
   onIntegrationReview: callback => {
     if (typeof callback !== 'function') throw new TypeError('리뷰를 열 함수를 지정하십시오.');
     const listener = (_event, value) => {

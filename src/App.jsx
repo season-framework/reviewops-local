@@ -10,18 +10,19 @@ import GroupsList from './GroupsList.jsx';
 import useWorkspaceTabOrder from './useWorkspaceTabOrder.js';
 import {CodexManagement} from './codex/CodexManagement.jsx';
 import {deletionTargets,deletedTab,clearDeletionDrafts} from './deletion.mjs';
+import {HOME_TAB,readWindowContext,windowStorageKeys,restoreWindowTabs,externalProjectRequest,projectNavigationUpdate,dirtyTabSet,preserveDeletedDrafts} from './window-context.mjs';
 import {EMPTY, date, invoke, Button, Empty, Field, Dialog, TrustDialog, EntityDialog, FileContent, DataSettings} from './components.jsx';
 
-const HOME = {id:'home',kind:'home'};
+const HOME = HOME_TAB;
 const nouns = localized({group:'그룹',project:'프로젝트',service:'서비스',review:'리뷰'});
 const unique = () => crypto.randomUUID();
-function savedTabs() {
- try { const saved=JSON.parse(localStorage.getItem('reviewops.workspace.tabs')||'[]');return [HOME,...saved.filter(t=>['groups','group','project','service','settings','accounts','hosts'].includes(t.kind)&&typeof t.id==='string'&&t.id!=='home').slice(0,30)]; } catch {return [HOME];}
-}
-
 export default function App() {
  useLocale();
- const [data,setData]=useState(EMPTY),[ready,setReady]=useState(false),[tabs,setTabs]=useState(savedTabs),[active,setActive]=useState('home');
+ const [windowContext]=useState(()=>readWindowContext(window.location.search));
+ const storageKeys=windowStorageKeys(windowContext.projectId);
+ const [initialWorkspace]=useState(()=>{let saved='';try{saved=localStorage.getItem(storageKeys.tabs)||''}catch{}return restoreWindowTabs(saved,windowContext.projectId)});
+ const [data,setData]=useState(EMPTY),[ready,setReady]=useState(false),[tabs,setTabs]=useState(initialWorkspace.tabs),[active,setActive]=useState(initialWorkspace.active);
+ const [deletedDraftNotice,setDeletedDraftNotice]=useState(false);
  const [error,setError]=useState(''),[toast,setToast]=useState(''),[busy,setBusy]=useState(false),[modal,setModal]=useState(null),[closePending,setClosePending]=useState(null);
  const [deleteConfirm,setDeleteConfirm]=useState('');
  const [updateState,setUpdateState]=useState(null),[updateApplying,setUpdateApplying]=useState(false);
@@ -32,19 +33,42 @@ export default function App() {
  const [dark,setDark]=useState(()=>localStorage.getItem('reviewops.theme')==='dark'),[expanded,setExpanded]=useState(()=>localStorage.getItem('reviewops.sidebar.expanded')==='true');
  const [windowState,setWindowState]=useState({maximized:false,fullScreen:false}),[windowChanging,setWindowChanging]=useState(false);
  const [homeSelection,setHomeSelection]=useState({id:'',request:0});
- const dirtyTabs=useRef(new Set()),tabsRef=useRef(tabs);tabsRef.current=tabs;
+ const dirtyTabs=useRef(null),tabsRef=useRef(tabs);tabsRef.current=tabs;
+ if(!dirtyTabs.current)dirtyTabs.current=dirtyTabSet(dirty=>{document.documentElement.dataset.reviewopsDirty=String(dirty)});
+ const dataRef=useRef(data),snapshotSequence=useRef(0),appliedSnapshot=useRef(0);dataRef.current=data;
+ const lastWindowNavigation=useRef(0);
  useEffect(()=>{const guard=event=>{if(dirtyTabs.current.size){event.preventDefault();event.returnValue=''}};window.addEventListener('beforeunload',guard);return()=>window.removeEventListener('beforeunload',guard)},[]);
  const [workspaceRevision,setWorkspaceRevision]=useState(0);
- const reload=async()=>{const result=await invoke('snapshot');setData({...EMPTY,...result});dataLoaded.current=true;setReady(true);return result};
+ const reload=async()=>{
+  const sequence=++snapshotSequence.current,result=await invoke('snapshot');
+  if(sequence>=appliedSnapshot.current){
+   appliedSnapshot.current=sequence;
+   let selected=homeSelection.id;try{selected=localStorage.getItem(storageKeys.homeSelected)||selected}catch{}
+   const preserved=preserveDeletedDrafts(dataRef.current,{...EMPTY,...result},tabsRef.current,dirtyTabs.current,selected);
+   dataRef.current=preserved.data;setData(preserved.data);setDeletedDraftNotice(preserved.preserved);dataLoaded.current=true;setReady(true);
+  }
+  return result;
+ };
  useEffect(()=>{reload().catch(e=>{setError(e.message);setReady(true)})},[]);
+ useEffect(()=>{
+  let live=true,timer,lastRevision=-1;
+  const unsubscribe=window.reviewops?.onDataChange?.(value=>{
+   if(!live||!Number.isSafeInteger(value?.revision)||value.revision<=lastRevision)return;
+   lastRevision=value.revision;clearTimeout(timer);
+   timer=setTimeout(()=>{reload().catch(error=>{if(live)setError(error.message)})},30);
+  });
+  return()=>{live=false;clearTimeout(timer);unsubscribe?.()};
+ },[]);
  useEffect(()=>{
   let live=true,updated=false;
   const unsubscribe=window.reviewops?.onWindowState?.(state=>{updated=true;if(live)setWindowState(state)});
   invoke('window.state').then(state=>{if(live&&!updated)setWindowState(state)}).catch(e=>{if(live)setError(e.message)});
   return()=>{live=false;unsubscribe?.()};
  },[]);
- useEffect(()=>{if(!data.agentRunning)return;let live=true,timer;const poll=async()=>{try{const result=await invoke('snapshot');if(!live)return;setData({...EMPTY,...result});if(result.agentRunning)timer=setTimeout(poll,1000)}catch(e){if(live){setError(e.message);timer=setTimeout(poll,3000)}}};timer=setTimeout(poll,1000);return()=>{live=false;clearTimeout(timer)}},[data.agentRunning]);
- useEffect(()=>{localStorage.setItem('reviewops.workspace.tabs',JSON.stringify(tabs.filter(t=>!['editor','home'].includes(t.kind))))},[tabs]);
+ useEffect(()=>{if(!data.agentRunning)return;let live=true,timer;const poll=async()=>{try{const result=await reload();if(!live)return;if(result.agentRunning)timer=setTimeout(poll,1000)}catch(e){if(live){setError(e.message);timer=setTimeout(poll,3000)}}};timer=setTimeout(poll,1000);return()=>{live=false;clearTimeout(timer)}},[data.agentRunning]);
+ useEffect(()=>{localStorage.setItem(storageKeys.tabs,JSON.stringify(tabs.filter(t=>!['editor','home'].includes(t.kind))))},[tabs,storageKeys.tabs]);
+ const windowProject=data.projects.find(project=>project.id===windowContext.projectId);
+ useEffect(()=>{document.title=windowContext.projectId?`${windowProject?.name||t('프로젝트')} · ReviewOps`:'ReviewOps'},[windowContext.projectId,windowProject?.name]);
  useEffect(()=>{document.documentElement.dataset.theme=dark?'dark':'light';localStorage.setItem('reviewops.theme',dark?'dark':'light')},[dark]);
  useEffect(()=>{localStorage.setItem('reviewops.sidebar.expanded',String(expanded))},[expanded]);
  useEffect(()=>{if(toast){const timer=setTimeout(()=>setToast(''),3500);return()=>clearTimeout(timer)}},[toast]);
@@ -52,7 +76,7 @@ export default function App() {
  const mutate=async(action,payload,message)=>run(async()=>{
   const entity=/^(group|project|service|review)\.delete$/.exec(action)?.[1];
   const targets=entity?deletionTargets(data,entity,payload.id):null;
-  const deletingHomeReview=targets&&(targets.reviewIds.has(homeSelection.id)||targets.reviewIds.has(localStorage.getItem('reviewops.home.selected')));
+  const deletingHomeReview=targets&&(targets.reviewIds.has(homeSelection.id)||targets.reviewIds.has(localStorage.getItem(storageKeys.homeSelected)));
   const result=await invoke(action,payload);
   if(targets){
    const closing=tabsRef.current.filter(tab=>deletedTab(tab,targets)).map(tab=>tab.id);
@@ -63,6 +87,7 @@ export default function App() {
    setClosePending(current=>closing.includes(current)?null:current);
    setHomeSelection(current=>targets.reviewIds.has(current.id)?{id:'',request:Date.now()}:current);
    const tokens=clearDeletionDrafts(localStorage,targets);
+   if(deletingHomeReview)localStorage.removeItem(storageKeys.homeSelected);
    if(tokens.length)invoke('attachment.discard',{tokens}).catch(()=>{});
    setData(current=>({...current,
     groups:current.groups.filter(item=>!targets.groupIds.has(item.id)),
@@ -80,7 +105,7 @@ export default function App() {
  const restoreWorkspace=async()=>{
   await reload();
   dirtyTabs.current.clear();
-  setTabs(current=>current.filter(tab=>['home','settings'].includes(tab.kind)));
+  setTabs(current=>current.filter(tab=>['home','settings'].includes(tab.kind)||windowContext.projectId&&tab.kind==='project'&&tab.entityId===windowContext.projectId));
   setHomeSelection({id:'',request:Date.now()});
   setWorkspaceRevision(value=>value+1);
  };
@@ -101,20 +126,49 @@ export default function App() {
  const openGroups=()=>openTab('groups');
  const openHosts=()=>openTab('hosts');
  const openGroup=(id,section='projects')=>openTab('group',id,{section,sectionRequest:Date.now()});
- const openProject=(id,extra={})=>openTab('project',id,{...extra,sectionRequest:Date.now()});
+ const openProject=(id,extra={})=>{
+  const request=externalProjectRequest(windowContext.projectId,id,extra);
+  if(request)return invoke('window.openProject',request).catch(error=>{setError(error.message);return null});
+  return openTab('project',id,{...extra,sectionRequest:Date.now()});
+ };
  const openService=(id,extra={})=>{const project=data.projects.find(item=>item.serviceIds?.includes(id));return project?openProject(project.id,extra):openHosts()};
- const openReview=review=>{setHomeSelection({id:typeof review==='string'?review:review.id,request:Date.now()});setActive('home')};
+ const openReview=review=>{
+  const record=typeof review==='string'?dataRef.current.reviews.find(item=>item.id===review):review;
+  if(windowContext.projectId&&record?.projectId)return openProject(record.projectId,{reviewId:record.id,reviewMode:'detail',selectionRequest:Date.now(),section:'review'});
+  setHomeSelection({id:typeof review==='string'?review:review.id,request:Date.now()});setActive('home');
+ };
  useEffect(()=>{
   let live=true,lastRequest=0;
   const receive=async value=>{
-   if(!value?.reviewId||value.request<=lastRequest)return;
-   lastRequest=value.request;
+   const extra=projectNavigationUpdate(windowContext.projectId,value);
+   if(!extra||value.request<=lastRequest||value.request<lastWindowNavigation.current)return;
+   lastRequest=value.request;lastWindowNavigation.current=value.request;
    try{
     const result=await reload();
-    if(!live||value.request!==lastRequest)return;
+    if(!live||value.request!==lastRequest||value.request!==lastWindowNavigation.current)return;
+    const project=result.projects.find(project=>project.id===value.projectId);
+    if(!project||value.reviewId&&!result.reviews.some(review=>review.id===value.reviewId&&review.projectId===project.id))throw new Error(t('요청한 리뷰의 프로젝트를 찾을 수 없습니다.'));
+    const existing=tabsRef.current.find(tab=>tab.kind==='project'&&tab.entityId===project.id&&!dirtyTabs.current.has(tab.id));
+    if(existing){setTabs(current=>current.map(tab=>tab.id===existing.id?{...tab,...extra}:tab));setActive(existing.id)}
+    else{const tab={id:unique(),kind:'project',entityId:project.id,...extra};setTabs(current=>[...current,tab]);setActive(tab.id)}
+   }catch(error){if(live&&value.request===lastWindowNavigation.current)setError(error.message)}
+  };
+  const unsubscribe=window.reviewops?.onProjectOpen?.(receive);
+  invoke('window.navigation').then(receive).catch(()=>{});
+  return()=>{live=false;unsubscribe?.()};
+ },[]);
+ useEffect(()=>{
+  let live=true,lastRequest=0;
+  const receive=async value=>{
+   if(!value?.reviewId||value.request<=lastRequest||value.request<lastWindowNavigation.current)return;
+   lastRequest=value.request;lastWindowNavigation.current=value.request;
+   try{
+    const result=await reload();
+    if(!live||value.request!==lastRequest||value.request!==lastWindowNavigation.current)return;
     const review=result.reviews.find(item=>item.id===value.reviewId);
     const project=result.projects.find(item=>item.id===(value.projectId||review?.projectId));
     if((value.view&&value.view!=='project')||!review||!project||review.projectId!==project.id)throw new Error(t("요청한 리뷰의 프로젝트를 찾을 수 없습니다."));
+    if(windowContext.projectId&&project.id!==windowContext.projectId){await invoke('window.openProject',{projectId:project.id,reviewId:review.id});return;}
     const extra={section:'review',sectionRequest:value.request,reviewId:review.id,reviewMode:'detail',selectionRequest:value.request,integrationRequest:value.request};
     const existing=tabsRef.current.find(tab=>tab.kind==='project'&&tab.entityId===project.id&&!dirtyTabs.current.has(tab.id));
     if(existing){setTabs(current=>current.map(tab=>tab.id===existing.id?{...tab,...extra}:tab));setActive(existing.id);}
@@ -209,7 +263,7 @@ export default function App() {
   finally{updateApplyPending.current=false;setUpdateApplying(false)}
  };
  const deleteLinks=modal?.type==='delete'&&modal.entity==='service'?data.projects.filter(project=>project.serviceIds?.includes(modal.record.id)):[];
- return <div className={`app workspace-app ${expanded?'sidebar-expanded':''}`}>
+ return <div className={`app workspace-app ${expanded?'sidebar-expanded':''}`} data-window-project-id={windowContext.projectId}>
   <aside className="sidebar"><div className="sidebar-brand" title={t("드래그하여 창 이동")}><img src={expanded?'./assets/brand/reviewops-logo.svg':'./assets/brand/reviewops-icon.svg'} alt="ReviewOps" draggable={false}/></div>
    <nav className="main-nav" aria-label={t("주요 메뉴")}>{[['home','home',t("홈")],['groups','group',t("그룹")],['accounts','users',t("계정관리")],['hosts','service',t("호스트관리")]].map(([key,icon,name])=><button key={key} className={`nav-item ${(key==='home'?selectedTab.kind==='home':key==='groups'?['groups','group','project','editor'].includes(selectedTab.kind):selectedTab.kind===key)?'active':''}`} onClick={()=>key==='home'?setActive('home'):key==='groups'?openGroups():openTab(key)} title={name} aria-label={name}><Icon name={icon}/>{expanded&&<span>{name}</span>}</button>)}</nav>
    <div className="sidebar-bottom">
@@ -221,14 +275,15 @@ export default function App() {
     <button className="nav-item" onClick={()=>setExpanded(!expanded)} title={expanded?t("메뉴 접기"):t("메뉴 펼치기")} aria-label={expanded?t("메뉴 접기"):t("메뉴 펼치기")}><Icon name="columns"/>{expanded&&<span>{t("메뉴 접기")}</span>}</button><button className={`nav-item ${selectedTab.kind==='settings'?'active':''}`} onClick={()=>openTab('settings')} title={t('설정')} aria-label={t("설정")}><Icon name="settings"/>{expanded&&<span>{t("설정")}</span>}</button><button className="nav-item" onClick={()=>setDark(!dark)} title={dark?t("밝은 화면"):t("어두운 화면")} aria-label={dark?t("밝은 화면"):t("어두운 화면")}><Icon name={dark?'sun':'moon'}/>{expanded&&<span>{dark?t("밝은 화면"):t("어두운 화면")}</span>}</button>
    </div>
   </aside>
-  <main className="workspace-main">
+  <main className="workspace-main" aria-label={windowProject?`${windowProject.name} · ReviewOps`:'ReviewOps'}>
    <div className="workspace-tabs" role="tablist" aria-label={t("작업 탭")}><div ref={tabOrder.listRef} className={`workspace-tab-list reviewops-tab-strip ${tabOrder.draggedTabId?'is-reordering':''}`}>{tabs.map((tab,index)=><div key={tab.id} data-tab-id={tab.id} className={`workspace-tab reviewops-tab-item ${active===tab.id?'active is-active':''} ${tabOrder.draggedTabId===tab.id?'dragging':''}`} role="presentation" onPointerDown={event=>tabOrder.beginDrag(event,tab.id)} onDragStart={event=>event.preventDefault()}><button id={`tab-${tab.id}`} type="button" className="workspace-tab-select reviewops-tab-label" role="tab" aria-label={tabTitle(tab)} aria-selected={active===tab.id} aria-controls={`pane-${tab.id}`} aria-describedby={tab.id==='home'?undefined:'workspace-tab-move-help'} aria-keyshortcuts={tab.id==='home'?undefined:'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>tabKey(event,index)}><Icon name={tabIcon(tab)} size={16}/><span className="tab-title">{tabTitle(tab)}</span></button>{tab.id!=='home'&&<button className="tab-close reviewops-tab-close" onClick={()=>requestClose(tab.id)} aria-label={t("{0} 닫기",[tabTitle(tab)])} title={t("탭 닫기")}><Icon name="close" size={12}/></button>}</div>)}<button className="workspace-add-tab" aria-label={t("새 작업 탭")} title={t("새 작업 탭")} onClick={duplicateTab}><Icon name="plus" size={17}/></button></div><button className="workspace-refresh" aria-label={t("새로고침")} title={t("새로고침")} onClick={()=>run(reload)} disabled={busy}><Icon name="refresh" size={18}/></button>
     <div className="window-controls" role="group" aria-label={t("창 제어")}><button type="button" className="window-control" onClick={()=>controlWindow('window.fullscreen')} title={fullscreenLabel} aria-label={fullscreenLabel} aria-pressed={windowState.fullScreen} disabled={windowChanging}><Icon name={windowState.fullScreen?'compress':'expand'} size={17}/></button><button type="button" className="window-control window-control-close" onClick={()=>controlWindow('window.close')} title={t("창 닫기")} aria-label={t("창 닫기")}><Icon name="close" size={17}/></button></div>
    </div>
    <span id="workspace-tab-move-help" className="workspace-tab-assistive">{t("드래그하거나 Alt와 Shift를 누른 채 좌우 방향키로 탭 순서를 바꿀 수 있습니다. 홈 탭은 고정되어 있습니다.")}</span><span className="workspace-tab-assistive" role="status" aria-live="polite">{tabOrder.announcement}</span>
    {error&&<div className="error-banner" role="alert"><Icon name="warning" size={17}/><span>{t(error)}</span><button className="icon-button" onClick={()=>setError('')} aria-label={t("오류 닫기")}><Icon name="close" size={15}/></button></div>}
+   {deletedDraftNotice&&<div className="error-banner" role="status"><Icon name="warning" size={17}/><span>{t('다른 창에서 삭제된 항목이 있습니다. 작성 중인 내용은 이 창에 유지됩니다.')}</span></div>}
    {!ready?<div className="loading"><span className="spinner"/>{t("자료 불러오는 중")}</div>:<div className="workspace-panes">{tabs.map(tab=><section id={`pane-${tab.id}`} key={tab.id} className="workspace-pane" role="tabpanel" aria-labelledby={`tab-${tab.id}`} hidden={active!==tab.id}>
-    {tab.kind==='home'&&<WorkHome key={workspaceRevision} data={data} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onEditReview={review=>edit('review',review)} onCreateReview={createReview} onPreview={previewFile} onError={setError} onRefresh={()=>run(reload)} onGroups={openGroups} initialReviewId={homeSelection.id} selectionRequest={homeSelection.request} onDirtyChange={dirty=>dirty?dirtyTabs.current.add('home'):dirtyTabs.current.delete('home')}/>}
+    {tab.kind==='home'&&<WorkHome key={workspaceRevision} data={data} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onEditReview={review=>edit('review',review)} onCreateReview={createReview} onPreview={previewFile} onError={setError} onRefresh={()=>run(reload)} onGroups={openGroups} initialReviewId={homeSelection.id} selectionRequest={homeSelection.request} storageScope={storageKeys.home} windowProjectId={windowContext.projectId} onDirtyChange={dirty=>dirty?dirtyTabs.current.add('home'):dirtyTabs.current.delete('home')}/>}
     {['accounts','hosts'].includes(tab.kind)&&active===tab.id&&<CodexManagement page={tab.kind}/>}
     {tab.kind==='groups'&&<GroupsList data={data} onOpen={openGroup} onCreate={()=>edit('group')}/>}
     {tab.kind==='group'&&<GroupPane data={data} groupId={tab.entityId} initialSection={tab.section} sectionRequest={tab.sectionRequest} onGroups={openGroups} onOpenProject={openProject} onOpenService={openService} onEdit={edit} onDelete={remove} mutate={mutate} busy={busy} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}

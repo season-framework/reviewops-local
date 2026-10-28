@@ -178,8 +178,8 @@ async function createSeasonIntegration({ dataPath, workspaceRoot, dispatch, show
         if (typeof request.token !== 'string' || request.token.length !== token.length || !crypto.timingSafeEqual(Buffer.from(request.token), Buffer.from(token))) throw new Error('허용되지 않은 연결입니다.');
       } catch { socket.end(JSON.stringify({ ok: false, error: '허용되지 않은 연결입니다.' }) + '\n'); return; }
       const execute = () => handle(request.action, request.payload || {});
-      const result = ['task.status', 'task.cancel', 'capabilities'].includes(request.action) ? execute() : queue.then(execute);
-      if (!['task.status', 'task.cancel', 'capabilities'].includes(request.action)) queue = result.catch(() => {});
+      const result = ['task.status', 'task.cancel', 'capabilities', 'review.show'].includes(request.action) ? execute() : queue.then(execute);
+      if (!['task.status', 'task.cancel', 'capabilities', 'review.show'].includes(request.action)) queue = result.catch(() => {});
       result.then(data => socket.end(JSON.stringify({ ok: true, data }) + '\n'), error => socket.end(JSON.stringify({ ok: false, error: error.message }) + '\n'));
     });
   });
