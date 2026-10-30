@@ -30,6 +30,8 @@ Run `npm run package:windows` on Windows to build `ReviewOps-<version>-windows-x
 
 The `Windows installer` GitHub Actions workflow builds on a Windows runner, runs the Windows-compatible unit checks, installs the package, and checks application startup, local project persistence, and uninstallation. Download its installer, SHA-256 file, and verification report after the workflow passes. The report is a build record; publish only the installer and checksum as user downloads.
 
+To send the verified Windows installer directly to an existing draft, use `workflow_dispatch` with `release_tag`, `publish_to_draft: true`, and the full `reviewed_commit`. The workflow ref and the draft's target must point to that same commit. The optional upload accepts only the EXE and its checksum; it never publishes the release or replaces different existing files.
+
 Windows installers are unsigned. The macOS updater does not install Windows EXE files. Windows users download a new installer and run it with the app closed. The optional Season AI connection is macOS-only, and Windows host management uses SSH key authentication.
 
 ## Update manifest

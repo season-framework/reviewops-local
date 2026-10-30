@@ -118,6 +118,11 @@ async function waitForFileState(file, exists) {
 }
 async function verifyAsar(archive) {
   const entries = asar.listPackage(archive).map(entry => entry.replaceAll('\\', '/').replace(/^\//, ''));
+  if (process.env.REVIEWOPS_EXPECT_STABLE_BUILD === 'true') {
+    assert.equal(entries.includes('electron/reviewops-build.json'), false, 'Stable package contains test build identity.');
+    report.stableBuild = { metadataAbsent: true };
+    check('Stable package does not contain test build identity');
+  }
   const allowedRoots = new Set(['dist', 'electron', 'node_modules', 'package.json', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt']);
   for (const entry of entries) {
     assert.ok(allowedRoots.has(entry.split('/')[0]), `Unexpected packaged path: ${entry}`);
