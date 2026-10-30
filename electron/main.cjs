@@ -144,6 +144,10 @@ function savedAgentExecutionScope(run) {
   try{original=store.get('services',run.serviceId);}catch(error){if(error.code==='NOT_FOUND')return null;throw error;}
   return agentExecutionScope(original,{...agentSettings(original),workPath:run.workPath,model:run.model});
 }
+function sameAgentLocation(run,service,settings) {
+  // A model selection changes the next turn, not the conversation's location.
+  return savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
+}
 function agentManager() {
   if(!agents) agents=require('./agents.cjs').createAgentManager({onUpdate:job=>{
     const previous=agentJobs.get(job.id);
@@ -312,9 +316,9 @@ async function agentAction(action,payload) {
     assertNoAgent(job=>job.serviceId===service.id);
     if(payload.model!==undefined){if(typeof payload.model!=='string'||payload.model.length>256||/[\s\0]/.test(payload.model))throw new Error('에이전트 모델 이름이 올바르지 않습니다.');settings.model=payload.model;}
     const candidates=store.listAgentRuns(review.id).filter(run=>run.status==='completed'&&run.sessionId);
-    const scope=agentExecutionScope(service,settings),last=candidates.find(run=>savedAgentExecutionScope(run)===scope);
+    const last=candidates.find(run=>sameAgentLocation(run,service,settings));
     if(!last){
-      const moved=candidates.find(run=>run.workPath!==settings.workPath&&savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,workPath:run.workPath}));
+      const moved=candidates.find(run=>run.workPath!==settings.workPath&&sameAgentLocation(run,service,{...settings,workPath:run.workPath}));
       if(moved)return {available:false,sessionId:moved.sessionId,model:moved.model,requestedModel:settings.model,status:'work_path_changed',message:'저장된 세션의 작업 폴더가 프로젝트 설정과 다릅니다. 새 대화로 실행하십시오.'};
       return {available:false,sessionId:'',model:'',requestedModel:settings.model,status:'missing',message:'저장된 에이전트 세션이 없습니다.'};
     }
@@ -353,7 +357,7 @@ async function agentAction(action,payload) {
   if(retry){if(payload.model===undefined)settings.model=retry.model;if(payload.reasoningEffort===undefined)settings.reasoningEffort=retry.reasoningEffort;}
   const selectedSettings={model:payload.model??'',reasoningEffort:payload.reasoningEffort??''};
   const executionSettings=require('./agent-execution-settings.cjs').executionSettings(payload.executionSettings??(retry&&payload.model===undefined&&payload.reasoningEffort===undefined?retry.executionSettings:undefined)??{version:1,selected:selectedSettings,automatic:{model:!selectedSettings.model,reasoningEffort:!selectedSettings.reasoningEffort},sent:{model:settings.model,reasoningEffort:settings.reasoningEffort}},{model:settings.model,reasoningEffort:settings.reasoningEffort});
-  const newConversation=payload.newConversation===undefined?Boolean(retry?.newConversation):Boolean(payload.newConversation);
+  const newConversation=Boolean(payload.newConversation);
   if(payload.independentExecution!==undefined&&typeof payload.independentExecution!=='boolean')throw new Error('독립실행 옵션이 올바르지 않습니다.');
   const independentExecution=payload.independentExecution===undefined?Boolean(retry?.independentExecution):payload.independentExecution;
   if(source) {
@@ -362,8 +366,8 @@ async function agentAction(action,payload) {
   }
   assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   const sessionScope=agentExecutionScope(service,settings);
-  if(retry&&savedAgentExecutionScope(retry)!==sessionScope)throw new Error('접속 대상, 작업 폴더 또는 에이전트 설정이 변경되었습니다. 새 요청으로 실행하십시오.');
-  let previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&savedAgentExecutionScope(run)===sessionScope&&run.sessionId);
+  if(retry&&!sameAgentLocation(retry,service,settings))throw new Error('접속 대상, 작업 폴더 또는 실행 파일이 변경되었습니다. 새 요청으로 실행하십시오.');
+  let previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&sameAgentLocation(run,service,settings)&&run.sessionId);
   const currentTarget=require('./agent-copy-draft.cjs').executionTarget(service,settings),sameLocation=run=>{
     const target=run.executionTarget;
     if(target)return ['kind','host','hostAlias','sshConfigPath','port','username','workPath','binary'].every(key=>(target[key]??'')===(currentTarget[key]??''));
@@ -371,8 +375,16 @@ async function agentAction(action,payload) {
   };
   const explicitPrevious=payload.continuedFromRunId?store.get('agent_runs',payload.continuedFromRunId):null;
   if(explicitPrevious&&(explicitPrevious.reviewId!==review.id||newConversation||!sameLocation(explicitPrevious)))throw new Error('같은 리뷰와 작업 폴더의 요청만 이어서 실행할 수 있습니다.');
-  if(explicitPrevious)previous=explicitPrevious.sessionId&&savedAgentExecutionScope(explicitPrevious)===sessionScope?explicitPrevious:null;
-  const logicalPrevious=newConversation?null:explicitPrevious||previous||store.listAgentRuns(review.id).find(sameLocation);
+  if(retry&&!newConversation) {
+    const originalPrevious=retry.continuedFromRunId?store.get('agent_runs',retry.continuedFromRunId):null;
+    if(explicitPrevious&&explicitPrevious.id!==retry.id&&explicitPrevious.id!==originalPrevious?.id)throw new Error('재실행은 원본 요청의 대화만 사용할 수 있습니다.');
+    previous=retry.sessionId?retry:originalPrevious;
+    if(!previous?.sessionId||previous.reviewId!==review.id||!sameLocation(previous))throw Object.assign(new Error('원본 요청의 대화를 사용할 수 없습니다. 새 대화를 선택하여 실행하십시오.'),{code:'AGENT_RETRY_SESSION_MISSING'});
+  } else if(explicitPrevious) {
+    if(!explicitPrevious.sessionId)throw Object.assign(new Error('이 요청의 대화를 사용할 수 없습니다. 새 대화를 선택하여 실행하십시오.'),{code:'AGENT_SESSION_MISSING'});
+    previous=explicitPrevious;
+  }
+  const logicalPrevious=newConversation?null:retry?previous:explicitPrevious||previous;
   const snapshot=store.snapshot();
   const history=snapshot.activities.filter(item=>item.reviewId===review.id&&item.type==='comment').slice(-30).map(item=>`${item.role==='agent'?'에이전트':'사용자'}: ${item.body}`).join('\n\n').slice(-60000);
   const materials=agentMaterials(review.id),automaticContext=!materials.hasRequests,initialRequest=retry?(retry.context?.initialRequest??true):automaticContext,selection=retry?.context || (payload.context===undefined?{instruction:payload.includeInstruction??automaticContext,attachmentIds:payload.attachmentIds??materials.attachments.filter(item=>item.mimeType.startsWith('image/')?(payload.includeScreenshots??automaticContext):automaticContext).map(item=>item.id),logIds:payload.includeLogs===false?[]:payload.logCaptureId?[payload.logCaptureId]:(payload.includeLogs??automaticContext)?materials.logs.map(item=>item.id):[]}:payload.context);
@@ -683,6 +695,11 @@ async function dispatch(action, payload = {}) {
   if(requestWindowContext.getStore())getRequestWindow();
   if(payload.projectId&&!payload.serviceId&&['ssh.test','ssh.run','terminal.open','files.list','files.read','agent.environment','agent.login','agent.logout','agent.loginState','agent.session'].includes(action))payload={...payload,serviceId:store.project(payload.projectId).connection?.id};
   if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('요청이 올바르지 않습니다.');
+  if (action === 'clipboard.writeText') {
+    if(typeof payload.text!=='string'||!payload.text.length||Buffer.byteLength(payload.text)>2*1024*1024)throw new Error('복사할 내용을 다시 선택하십시오.');
+    clipboard.writeText(payload.text);
+    return {copied:true};
+  }
   if (action === 'app.language') {const result=appLanguage.setLanguage(payload.language);updateNativeMenu();return result;}
   if (action.startsWith('update.')) {
     if (!updater) throw new Error('Update settings are not ready.');
@@ -1014,7 +1031,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});

@@ -2,6 +2,34 @@ const contextVersion=1;
 const ids=value=>Array.isArray(value)?value:[];
 const draftCache=new Map();
 
+export function hasAgentDraftContent(value={}){
+ return Boolean(value.prompt?.trim()||ids(value.pending).length||ids(value.attachmentIds).length||ids(value.logIds).length||value.instruction||value.screenshotId||value.screenshotToken||value.model||value.reasoningEffort||value.predecessorId||value.requiredResult||value.newConversation||value.fresh||value.sourceRunId||value.continuedFromRunId);
+}
+
+// Queue edits use a separate slot. Opening them never replaces an unsent request.
+export function queueEditDraft(row){
+ return {editingId:row.id,prompt:row.prompt||'',fresh:Boolean(row.newConversation),
+  model:row.executionSettings?.selected?.model??row.model??'',reasoningEffort:row.executionSettings?.selected?.reasoningEffort??row.reasoningEffort??'',
+  executionSettings:row.executionSettings||null,predecessorId:row.predecessorId||'',requiredResult:row.requiredResult||'',
+  ...(row.context||{instruction:false,attachmentIds:[],logIds:[]}),pending:[],contextInitialized:true,contextVersion,
+  sourceRunId:row.sourceRunId||null,sourceTarget:row.sourceTarget||null,continuedFromRunId:row.continuedFromRunId||null};
+}
+
+export function legacyFollowupDraft(value){
+ return {...value,fresh:value.fresh??Boolean(value.newConversation),contextInitialized:true,contextVersion,
+  instruction:value.instruction??false,attachmentIds:ids(value.attachmentIds),logIds:ids(value.logIds),pending:ids(value.pending)};
+}
+
+export function acceptedQueueEditDraft(current,sent,saved){
+ if(JSON.stringify(current)===JSON.stringify(sent))return {};
+ if(current.editingId!==sent.editingId)return current;
+ const consumed=new Set(ids(sent.pending).map(file=>file.token)),context=saved.context||{};
+ return {...current,pending:ids(current.pending).filter(file=>!consumed.has(file.token)),
+  attachmentIds:[...new Set([...ids(current.attachmentIds),...ids(context.attachmentIds).filter(id=>!ids(sent.attachmentIds).includes(id))])],
+  ...(current.screenshotToken&&current.screenshotToken===sent.screenshotToken?{screenshotToken:null,screenshotId:context.screenshotId||current.screenshotId}:{}),
+ };
+}
+
 export function readPersistedAgentDraft(storage,key,{refresh=false}={}){
  if(!refresh&&draftCache.has(key))return draftCache.get(key);
  let value={};

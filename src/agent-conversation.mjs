@@ -2,7 +2,7 @@
 export async function copyMessageText(value,{writeText,streaming=false}={}){
  if(typeof value!=='string'||!value.trim())return {status:'empty'};
  try{
-  const write=writeText||(globalThis.navigator?.clipboard?.writeText?text=>globalThis.navigator.clipboard.writeText(text):null);
+  const write=writeText||(globalThis.window?.reviewops?.copyText?text=>globalThis.window.reviewops.copyText(text):globalThis.navigator?.clipboard?.writeText?text=>globalThis.navigator.clipboard.writeText(text):null);
   if(!write)throw new Error('Clipboard unavailable');
   await write(value);
   return {status:streaming?'streaming':'copied'};

@@ -103,6 +103,7 @@ async function harness(t, options = {}) {
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
     },
     shell: { async openPath() { return ''; }, async openExternal() {} },
+    clipboard: {writeText(text){if(state.clipboardError)throw state.clipboardError;state.clipboardText=text;(state.clipboardWrites||=[]).push(text);}},
     protocol: { registerSchemesAsPrivileged() {}, handle(_scheme,callback) { state.protocol=callback; } },
     net: { async fetch() { throw new Error('Network access must not occur in main tests'); } },
     Menu: { buildFromTemplate: value => value, setApplicationMenu() {} }
@@ -1243,7 +1244,7 @@ test('selected agent context, per-request model and staged files persist atomica
  assert.deepEqual(await h.success('agent.start',payload),run);assert.equal(h.state.agentStarts.length,1);
  assert.equal((await h.success('snapshot')).activities.filter(item=>item.type==='status').length,1);
  assert.equal((await h.invoke('agent.start',{...payload,model:'changed-model'})).ok,false);
- h.state.agentUpdate({id:run.id,kind:'agent',status:'failed',error:'synthetic failure',finishedAt:new Date().toISOString()});
+ h.state.agentUpdate({id:run.id,kind:'agent',status:'failed',sessionId:'original-session',error:'synthetic failure',finishedAt:new Date().toISOString()});
  assert.equal((await h.success('agent.start',payload)).status,'failed');assert.equal(h.state.agentStarts.length,1);
  assert.equal((await h.success('snapshot')).services.find(item=>item.id===service.id).agentModel,'service-model');
  const persisted=h.state.liveStore.get('agent_runs',run.id);assert.equal(persisted.context.attachments.length,2);assert.equal(persisted.newConversation,true);
@@ -1277,7 +1278,7 @@ test('a synchronous start failure returns the accepted failed request and its at
  assert.deepEqual((await h.success('attachment.staged',{tokens})).expiredTokens,tokens);
  assert.deepEqual(await h.success('agent.start',payload),failed);assert.equal(h.state.agentStarts.length,1);assert.deepEqual(await h.success('snapshot'),saved);
  h.state.agentStartError=false;
- const retried=await h.success('agent.start',{requestId:crypto.randomUUID(),retryOf:failed.id,reviewId:review.id,prompt:failed.prompt});
+ const retried=await h.success('agent.start',{requestId:crypto.randomUUID(),retryOf:failed.id,reviewId:review.id,prompt:failed.prompt,newConversation:true});
  assert.equal(retried.status,'running');assert.equal(retried.retryOf,failed.id);assert.deepEqual(retried.context,failed.context);assert.equal(h.state.agentStarts.length,2);
  assert.equal(h.state.agentStarts[1].files.find(item=>item.name==='accepted.txt').bytes.toString(),'staged attachment content');assert.deepEqual(h.state.agentStarts[1].images.find(item=>item.name==='accepted.png').bytes,imageBytes);assert.equal((await h.success('snapshot')).attachments.length,2);
 });
@@ -1345,7 +1346,7 @@ test('rejected requests keep first-request materials while accepted failures ret
  const failed=await h.success('agent.start',{reviewId:review.id,prompt:'Accepted request',requestId:crypto.randomUUID()});
  assert.equal(failed.status,'failed');assert.equal(failed.context.instruction,true);assert.equal((await h.success('agent.materials',{reviewId:review.id})).hasRequests,true);
  await h.success('review.save',{id:review.id,body:'RETRY_UPDATED_INSTRUCTION',evidence:syntheticEvidence('RETRY_UPDATED_LOG')});h.state.agentStartError=false;
- const retry=await h.success('agent.start',{reviewId:review.id,prompt:failed.prompt,requestId:crypto.randomUUID(),retryOf:failed.id});assert.deepEqual(retry.context,failed.context);assert.match(h.state.agentStarts.at(-1).prompt,/RETRY_ORIGINAL_INSTRUCTION/);assert.equal(h.state.agentStarts.at(-1).prompt.includes('RETRY_UPDATED_INSTRUCTION'),false);
+ const retry=await h.success('agent.start',{reviewId:review.id,prompt:failed.prompt,requestId:crypto.randomUUID(),retryOf:failed.id,newConversation:true});assert.deepEqual(retry.context,failed.context);assert.match(h.state.agentStarts.at(-1).prompt,/RETRY_ORIGINAL_INSTRUCTION/);assert.equal(h.state.agentStarts.at(-1).prompt.includes('RETRY_UPDATED_INSTRUCTION'),false);
  h.state.agentUpdate({id:retry.id,status:'completed',kind:'agent',response:'Done',finishedAt:new Date().toISOString()});
  const manual=await h.success('agent.start',{reviewId:review.id,prompt:'Explicit new attachment',requestId:crypto.randomUUID(),newConversation:true,context:{instruction:false,attachmentIds:[file.id],logIds:[]}});
  assert.deepEqual(manual.context.attachmentIds,[file.id]);assert.equal(manual.context.instruction,false);assert.deepEqual(manual.context.logIds,[]);assert.equal(h.state.agentStarts.at(-1).files[0].bytes.toString(),'RETRY_ORIGINAL_FILE');assert.equal(h.state.agentStarts.at(-1).prompt,'Explicit new attachment');
@@ -1355,7 +1356,7 @@ test('follow-up material requests and retries include only explicit materials wi
  const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
  await h.success('review.save',{id:review.id,body:'DO_NOT_REPEAT_REVIEW_BODY',evidence:syntheticEvidence('EXPLICIT_LOG')});const file=await addFile(h,review.id,'EXPLICIT_FILE');
  const first=await h.success('agent.start',{reviewId:review.id,prompt:'Original user request',context:{instruction:false}});
- h.state.agentUpdate({id:first.id,status:'completed',kind:'agent',response:'DO_NOT_REPEAT_HISTORY',finishedAt:new Date().toISOString()});
+ h.state.agentUpdate({id:first.id,status:'completed',kind:'agent',response:'DO_NOT_REPEAT_HISTORY',sessionId:'material-session',finishedAt:new Date().toISOString()});
  const materials=await h.success('agent.materials',{reviewId:review.id}),next=await h.success('agent.start',{reviewId:review.id,prompt:'Read selected materials',context:{instruction:false,attachmentIds:[file.id],logIds:[materials.logs[0].id]}}),execution=h.state.agentStarts.at(-1);
  assert.equal(next.context.initialRequest,false);assert.equal(execution.prompt,`선택한 로그:\n${JSON.stringify(next.context.logs)}\n\n사용자 작업 요청:\nRead selected materials`);assert.equal(execution.files.length,2);
  for(const marker of ['DO_NOT_REPEAT_REVIEW_BODY','DO_NOT_REPEAT_HISTORY','리뷰:','이전 대화:'])assert.equal(execution.prompt.includes(marker),false);
@@ -1368,12 +1369,12 @@ test('a retry uses the original material snapshot after the review changes and p
  const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
  await h.success('review.save',{id:review.id,body:'ORIGINAL_INSTRUCTION',evidence:syntheticEvidence('ORIGINAL_LOG')});
  const materials=await h.success('agent.materials',{reviewId:review.id}),first=await h.success('agent.start',{requestId:crypto.randomUUID(),reviewId:review.id,prompt:'원본 요청',model:'original-model',reasoningEffort:'high',newConversation:true,context:{instruction:true,screenshotId:null,attachmentIds:[],logIds:[materials.logs[0].id]}});
- h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',error:'synthetic failure',finishedAt:new Date().toISOString()});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',sessionId:'original-session',error:'synthetic failure',finishedAt:new Date().toISOString()});
  await h.success('review.save',{id:review.id,body:'UPDATED_INSTRUCTION',evidence:syntheticEvidence('UPDATED_LOG')});
  h.state.liveStore.saveAgentRun({id:first.id,context:{instruction:false}});
  const retained=await h.success('agent.read',{id:first.id});assert.deepEqual(retained.context,first.context);
  const second=await h.success('agent.start',{requestId:crypto.randomUUID(),retryOf:first.id,reviewId:review.id,prompt:first.prompt});
- assert.deepEqual(second.context,first.context);assert.equal(second.model,'original-model');assert.equal(second.reasoningEffort,'high');assert.equal(second.newConversation,true);assert.equal(second.retryOf,first.id);
+ assert.deepEqual(second.context,first.context);assert.equal(second.model,'original-model');assert.equal(second.reasoningEffort,'high');assert.equal(second.newConversation,false);assert.equal(second.sessionId,'original-session');assert.equal(second.retryOf,first.id);
  const executed=h.state.agentStarts[1];assert.match(executed.prompt,/ORIGINAL_INSTRUCTION/);assert.equal(executed.prompt.includes('UPDATED_INSTRUCTION'),false);assert.equal(executed.files[0].bytes.toString().includes('UPDATED_LOG'),false);
 });
 
@@ -1550,8 +1551,8 @@ test('project configuration versions keep current Codex sessions across display 
 test('a retry crosses a project configuration copy while keeping its original materials and review restriction',async t=>{
  const h=await harness(t),{project,service,review}=await seed(h);
  await h.success('service.save',{id:service.id,agentEnabled:1});
- const first=await h.success('agent.start',{reviewId:review.id,prompt:'재실행할 요청',requestId:crypto.randomUUID(),context:{instruction:true,attachmentIds:[],logIds:[]}});
- h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',error:'합성 실패',finishedAt:new Date().toISOString()});
+ const first=await h.success('agent.start',{reviewId:review.id,prompt:'재실행할 요청',newConversation:true,requestId:crypto.randomUUID(),context:{instruction:true,attachmentIds:[],logIds:[]}});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',sessionId:'configuration-session',error:'합성 실패',finishedAt:new Date().toISOString()});
  const oldScope=crypto.createHash('sha256').update(JSON.stringify([service.id,service.kind,service.host,service.port,service.username,first.workPath,first.model])).digest('hex');
  h.state.liveStore.saveAgentRun({id:first.id,sessionScope:oldScope});
  const changed=await h.success('project.save',{id:project.id,connection:{...h.state.liveStore.get('services',service.id),viewerHeight:1080}});
@@ -1565,7 +1566,7 @@ test('a retry crosses a project configuration copy while keeping its original ma
 for(const [label,change] of [
  ['host',{host:'another.example.test'}],['port',{port:2222}],['user',{username:'another-user'}],
  ['root folder',{rootPath:'/tmp/another-project'}],['agent folder',{agentWorkPath:'/tmp/another-agent'}],
- ['binary',{agentBinary:'another-codex'}],['model',{agentModel:'another-model'}]
+ ['binary',{agentBinary:'another-codex'}]
 ])test(`changing the project ${label} starts a fresh session and rejects retries against the previous execution target`,async t=>{
  const h=await harness(t),{project,service,review}=await seed(h);
  await h.success('service.save',{id:service.id,agentEnabled:1});
@@ -1680,7 +1681,7 @@ test('issue 27 dispatch preserves automatic selection, transmitted values, repor
  assert.deepEqual(first.executionSettings,executionSettings);assert.equal(first.reportedSettings,undefined);
  assert.equal(first.prompt,'\n  요청 원문\n\n');
  const reportedSettings={model:'reported-model',source:'cli_event',eventType:'turn.started',reportedAt:new Date().toISOString()};
- h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',reportedSettings,error:'synthetic failure',finishedAt:new Date().toISOString()});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',reportedSettings,sessionId:'issue27-original-session',error:'synthetic failure',finishedAt:new Date().toISOString()});
  const original=await h.success('agent.read',{id:first.id});
  await h.success('service.save',{id:service.id,agentModel:'later-model',agentReasoningEffort:'low'});
  const retried=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-retry',retryOf:first.id,prompt:first.prompt});
@@ -1736,7 +1737,7 @@ test('issue 27 continuing after a model change keeps the source request link and
  const first=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-first',prompt:'First request',model:'model-a',reasoningEffort:'high',context:{instruction:false}});
  h.state.agentUpdate({id:first.id,kind:'agent',status:'completed',sessionId:'issue27-link-session',response:'First response',finishedAt:new Date().toISOString()});
  const second=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-second',continuedFromRunId:first.id,prompt:'Follow up',model:'model-b',reasoningEffort:'low',context:{instruction:false}});
- assert.equal(second.continuedFromRunId,first.id);assert.equal(second.model,'model-b');assert.notEqual(second.id,first.id);
+ assert.equal(second.continuedFromRunId,first.id);assert.equal(second.model,'model-b');assert.equal(second.sessionId,'issue27-link-session');assert.equal(h.state.agentStarts.at(-1).sessionId,'issue27-link-session');assert.notEqual(second.id,first.id);
  h.state.agentUpdate({id:second.id,kind:'agent',status:'failed',error:'synthetic failed followup',finishedAt:new Date().toISOString()});
  const before=await h.success('agent.read',{id:second.id}),copied=await h.success('agent.copyDraft',{reviewId:review.id,runId:second.id});
  const copy=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-copy',prompt:copied.draft.prompt,newConversation:true,model:copied.draft.model,reasoningEffort:copied.draft.reasoningEffort,sourceRunId:copied.draft.sourceRunId,sourceTarget:copied.draft.sourceTarget,context:{instruction:false}});
@@ -1754,4 +1755,55 @@ for(const sourceStatus of ['completed','failed'])test(`issue 27 an explicit ${so
  assert.equal(continued.continuedFromRunId,source.id);assert.notEqual(continued.sessionId,'later-session-b');
  if(sourceStatus==='completed')assert.equal(continued.sessionId,'selected-session-a');
  assert.equal(h.state.agentStarts.at(-1).sessionId,continued.sessionId);
+});
+
+test('issue 27 retry stays with its failed source after another conversation completes',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const a=await h.success('agent.start',{reviewId:review.id,requestId:'retry-source-a',prompt:'A',model:'model-a',context:{instruction:false}});
+ h.state.agentUpdate({id:a.id,kind:'agent',status:'failed',sessionId:'session-a',error:'A failed',finishedAt:new Date().toISOString()});
+ const b=await h.success('agent.start',{reviewId:review.id,requestId:'retry-other-b',prompt:'B',model:'model-b',newConversation:true,context:{instruction:false}});
+ h.state.agentUpdate({id:b.id,kind:'agent',status:'completed',sessionId:'session-b',response:'B done',finishedAt:new Date().toISOString()});
+ const original=await h.success('agent.read',{id:a.id});
+ const input={reviewId:review.id,requestId:'retry-a-again',prompt:a.prompt,retryOf:a.id,model:'model-c',newConversation:false};
+ const [first,second]=await Promise.all([h.success('agent.start',input),h.success('agent.start',input)]);
+ assert.equal(first.id,second.id);assert.equal(first.sessionId,'session-a');assert.equal(first.continuedFromRunId,a.id);assert.equal(first.model,'model-c');
+ assert.equal(h.state.agentStarts.filter(item=>item.id===input.requestId).length,1);assert.equal(h.state.agentStarts.at(-1).sessionId,'session-a');
+ assert.deepEqual(await h.success('agent.read',{id:a.id}),original);
+});
+
+test('issue 27 retry can use the original parent session and refuses a missing source session',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const a=await h.success('agent.start',{reviewId:review.id,prompt:'A',context:{instruction:false}});
+ h.state.agentUpdate({id:a.id,kind:'agent',status:'completed',sessionId:'parent-session',response:'A done',finishedAt:new Date().toISOString()});
+ const failed=await h.success('agent.start',{reviewId:review.id,prompt:'A followup',continuedFromRunId:a.id,context:{instruction:false}});
+ h.state.agentUpdate({id:failed.id,kind:'agent',status:'failed',sessionId:'',error:'failed before CLI reported session',finishedAt:new Date().toISOString()});
+ const retry=await h.success('agent.start',{reviewId:review.id,prompt:failed.prompt,retryOf:failed.id});assert.equal(retry.sessionId,'parent-session');assert.equal(retry.continuedFromRunId,a.id);
+ h.state.agentUpdate({id:retry.id,kind:'agent',status:'failed',sessionId:'',error:'stop',finishedAt:new Date().toISOString()});
+ const missing=await h.success('agent.start',{reviewId:review.id,prompt:'New initial',newConversation:true,context:{instruction:false}});
+ h.state.agentUpdate({id:missing.id,kind:'agent',status:'failed',error:'no session',finishedAt:new Date().toISOString()});
+ const before=await h.success('snapshot'),starts=h.state.agentStarts.length;
+ const rejected=await h.invoke('agent.start',{reviewId:review.id,prompt:missing.prompt,retryOf:missing.id,newConversation:false});
+ assert.equal(rejected.ok,false);assert.equal(rejected.error.code,'AGENT_RETRY_SESSION_MISSING');assert.match(rejected.error.message,/새 대화/);assert.equal(h.state.agentStarts.length,starts);assert.deepEqual(await h.success('snapshot'),before);
+ const fresh=await h.success('agent.start',{reviewId:review.id,prompt:missing.prompt,retryOf:missing.id,newConversation:true});assert.equal(fresh.sessionId,'');assert.equal(fresh.newConversation,true);
+});
+
+test('issue 27 model selection keeps session availability and implicit continuation on the same target',async t=>{
+ const h=await harness(t),{service,project,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1,agentModel:'model-a'});
+ const first=await h.success('agent.start',{reviewId:review.id,prompt:'First',context:{instruction:false}});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'completed',sessionId:'model-independent-session',response:'Done',finishedAt:new Date().toISOString()});
+ await h.success('project.save',{id:project.id,connection:{...h.state.liveStore.get('services',service.id),agentModel:'model-b'}});
+ assert.equal((await h.success('agent.session',{reviewId:review.id,model:'model-c'})).available,true);assert.equal(h.state.sessionCheck.sessionId,'model-independent-session');
+ const next=await h.success('agent.start',{reviewId:review.id,prompt:'Continue',model:'model-c',context:{instruction:false}});assert.equal(next.sessionId,'model-independent-session');assert.equal(next.model,'model-c');assert.equal(next.continuedFromRunId,first.id);
+});
+
+test('issue 28 native clipboard writes exact original text only for a trusted application main frame',async t=>{
+ const h=await harness(t),text='  요청 원문\n\n```js\na = 1;\n```\n| 열 | 값 |\n| --- | --- |\n| 한글 | 2 |\n';
+ assert.deepEqual(await h.success('clipboard.writeText',{text}),{copied:true});assert.equal(h.state.clipboardText,text);
+ const host=h.state.window,untrusted=[{sender:host.webContents,senderFrame:{url:'reviewops://app/index.html',parent:host.webContents.mainFrame}},{sender:host.webContents,senderFrame:{url:'https://external.example/'}}];
+ for(const event of untrusted)assert.equal((await h.invoke('clipboard.writeText',{text:'untrusted'},event)).ok,false);
+ host.webContents.mainFrame.url='https://external.example/';assert.equal((await h.invoke('clipboard.writeText',{text:'untrusted'})).ok,false);host.webContents.mainFrame.url='reviewops://app/index.html';
+ for(const value of ['',null,8,'x'.repeat(2*1024*1024+1)])assert.equal((await h.invoke('clipboard.writeText',{text:value})).ok,false);
+ h.state.clipboardError=new Error('synthetic clipboard failure');const failed=await h.invoke('clipboard.writeText',{text:'retry text'});assert.equal(failed.ok,false);assert.match(failed.error.message,/synthetic clipboard failure/);assert.equal(h.state.clipboardText,text);
+ h.state.clipboardError=null;assert.deepEqual(await h.success('clipboard.writeText',{text:'retry text'}),{copied:true});assert.equal(h.state.clipboardText,'retry text');
+ assert.equal(h.state.permissionCheck(host.webContents,'clipboard-read','reviewops://app/index.html'),false);assert.equal(h.state.permissionCheck(host.webContents,'clipboard-sanitized-write','https://external.example'),false);
 });

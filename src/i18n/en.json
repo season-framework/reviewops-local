@@ -1547,5 +1547,21 @@
   "연결된 실행 기록을 찾을 수 없습니다.": "The linked execution record could not be found.",
   "연결된 실행 기록을 불러오지 못했습니다.": "Could not load the linked execution record.",
   "실행 기록을 불러오는 중입니다.": "Loading the execution record.",
-  "저장된 작업 지시서가 없습니다.": "There are no saved task instructions."
+  "저장된 작업 지시서가 없습니다.": "There are no saved task instructions.",
+  "사용 모델 · {0}": "Model used · {0}",
+  "사용 추론 수준 · {0}": "Reasoning level used · {0}",
+  "사용 정보 없음": "Usage information unavailable",
+  "수정 중인 요청이 있습니다. 저장하거나 수정 취소를 누르십시오.": "Another request has unsaved edits. Save it or cancel editing.",
+  "대기 요청을 수정했습니다.": "Queued request updated.",
+  "새 요청 초안": "Request draft",
+  "이전 후속 초안": "Previous follow-up draft",
+  "대기 요청 수정": "Edit queued request",
+  "대기 요청을 수정하고 있습니다. 새 요청 초안은 따로 보관됩니다.": "Editing a queued request. Your request draft is stored separately.",
+  "수정 취소": "Cancel editing",
+  "실행 중에는 추가 요청을 대기 목록에 저장합니다. 실행 중인 작업에는 바로 전달되지 않습니다.": "While a task runs, additional requests are saved in the queue. They are not sent to the running task.",
+  "실행 조건이 있는 요청은 대기 목록에 저장한 뒤 실행합니다.": "Requests with execution conditions are saved in the queue before running.",
+  "요청 설정": "Request settings",
+  "대기 요청": "Queued requests",
+  "대기 중인 요청이 없습니다. 아래 입력창에서 작성하여 저장하십시오.": "No queued requests. Write and save a request in the input below.",
+  "수정 중": "Editing"
 }

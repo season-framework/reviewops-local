@@ -157,6 +157,7 @@
 
 /* Request actions stay near their content; execution details remain collapsed. */
 .agent-model-summary{margin:0 0 10px;color:var(--muted);font-size:11px;line-height:1.7;overflow-wrap:anywhere}
+.agent-model-summary>span{display:inline-block;margin-right:12px}
 .agent-response-empty{margin:10px 0;color:var(--muted);font-size:12px}
 .agent-copy-control{display:inline-flex;max-width:100%;flex-wrap:wrap;align-items:center;gap:6px}
 .agent-copy-control>.button{min-height:30px;gap:5px;border:1px solid var(--border);border-radius:6px;padding:3px 8px;color:var(--muted);font-size:11px}
@@ -218,3 +219,25 @@
 .agent-followup-predecessor{display:block;max-width:100%;overflow:hidden;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
 .agent-linked-record{min-width:0;max-height:65vh;overflow:auto;overscroll-behavior:contain;padding:8px}
 .agent-linked-record .agent-turn{margin-bottom:4px}
+
+/* The composer keeps its space. Expanded requests share the remaining height. */
+.agent-panel{overflow:hidden}
+.agent-conversation{flex:1 1 0;min-height:0}
+.agent-followup-area{min-height:36px;flex:0 0 36px;overflow:hidden}
+.agent-followup-area.is-open{flex:1 1 0;min-height:36px;max-height:32%}
+.agent-followup-area>.agent-followups[open]{display:flex;height:100%;min-height:0;flex-direction:column;overflow:hidden}
+.agent-followup-area .agent-followups>summary{flex:0 0 36px;min-height:36px}
+.agent-followup-area .agent-followups-body{flex:1 1 0;min-height:0;max-height:none;overflow:auto}
+.agent-composer{flex:0 0 auto;overflow:visible;padding-block:8px}
+.agent-composer textarea{height:clamp(60px,10vh,96px);min-height:60px;max-height:clamp(60px,14vh,120px);resize:none;overflow:auto}
+.agent-composer-contexts{max-height:48px;overflow:auto;overscroll-behavior:contain}
+.agent-composer-feedback{max-height:min(76px,12vh);overflow:auto;overscroll-behavior:contain;scrollbar-gutter:stable}
+.agent-composer-feedback:empty{display:none}
+.agent-composer-feedback .form-error{margin:6px 4px 0;overflow-wrap:anywhere;font-size:12px;line-height:1.6}
+.agent-draft-slots{display:flex;gap:6px;max-height:38px;overflow:auto;padding:0 4px 6px}
+.agent-draft-slots>.button{flex:0 0 auto;min-height:28px;padding:3px 8px;font-size:11px}
+.agent-draft-slots>.button[aria-pressed=true]{border-color:var(--accent-border);background:var(--accent-subtle);color:var(--accent-ink)}
+.agent-compose-settings>label{display:flex;min-width:0;flex-direction:column;gap:6px;font-size:12px}
+.agent-compose-settings>label>input,.agent-compose-settings>label>select{width:100%;min-width:0}
+@media(max-width:480px){.agent-composer-toolbar{flex-wrap:wrap}.agent-composer-toolbar>.agent-toolbar-spacer{display:none}.agent-composer-toolbar>.button{max-width:none}.agent-composer-feedback{max-height:64px}}
+@media(max-height:720px){.agent-conversation{padding-block:8px}.agent-composer textarea{height:60px;max-height:80px}.agent-composer-contexts{max-height:38px}.agent-composer-reference{margin-block:0 4px}.agent-composer-feedback{max-height:60px}.agent-composer-notice{font-size:11px}.agent-composer-shell{padding:6px}.agent-draft-slots{max-height:34px}}

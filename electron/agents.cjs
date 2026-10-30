@@ -388,9 +388,11 @@ function createAgentManager(options = {}) {
     const original = job.replaySaved.remoteExecution, current = job.data.remoteExecution;
     const caughtUp = current.stdoutOffset >= original.stdoutOffset && current.stderrOffset >= original.stderrOffset;
     if (!caughtUp && !force) return;
-    if (!caughtUp || preserve) Object.assign(job.data,job.replaySaved);
-    else if (!job.data.progress.length) job.data.progress=job.replaySaved.progress;
+    Object.assign(job.data,job.replaySaved);
+    if(caughtUp&&!preserve)job.data.remoteExecution=current;
     delete job.replaySaved;
+    for(const [chunk,stderr] of job.replayUnread||[])collect(job,chunk,stderr);
+    delete job.replayUnread;
     publish(job);
   }
   // Agent requests use files and a detached process group on the server. SSH
@@ -414,8 +416,15 @@ function createAgentManager(options = {}) {
       const record = job.data.remoteExecution;
       if (!record.ready && ['running','done'].includes(result.state)) {record.ready = true; publish(job);}
       for (const [key,stderr] of [['stdout',false],['stderr',true]]) if (result[key].length) {
-        record[key+'Offset'] += result[key].length;
-        collect(job,result[key],stderr);
+        const offsetKey=key+'Offset',chunk=result[key];
+        const replayLength=job.replaySaved?Math.min(chunk.length,Math.max(0,job.replaySaved.remoteExecution[offsetKey]-record[offsetKey])):0;
+        record[offsetKey] += chunk.length;
+        if(replayLength)collect(job,chunk.subarray(0,replayLength),stderr);
+        if(replayLength<chunk.length) {
+          const unread=chunk.subarray(replayLength);
+          if(job.replaySaved)(job.replayUnread||=[]).push([unread,stderr]);
+          else collect(job,unread,stderr);
+        }
       }
       if (result.state !== 'missing' && !(result.state === 'lost' && result.stdoutSize === 0 && result.stderrSize === 0)) finishReplay(job);
       return record.stdoutOffset >= result.stdoutSize && record.stderrOffset >= result.stderrSize;
@@ -765,8 +774,7 @@ function createAgentManager(options = {}) {
         } finally {client.end();}
       }
       assertMetadataCurrent(normalized);
-      const changed=Boolean(metadata?.model&&normalized.model&&metadata.model!==normalized.model);
-      return {available:Boolean(metadata)&&!changed,sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:!metadata?'missing':changed?'model_changed':'available',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':changed?'저장된 세션과 선택한 모델이 달라 새 대화로 실행합니다.':metadata.model?'저장된 세션 파일과 모델을 확인했습니다.':'저장된 세션 파일을 찾았습니다. 모델 정보는 기록되어 있지 않습니다.'};
+      return {available:Boolean(metadata),sessionId,model:metadata?.model || '',requestedModel:normalized.model,status:metadata?'available':'missing',message:!metadata?'실행 환경에서 저장된 세션 파일을 찾지 못했습니다.':'저장된 대화에서 이어서 실행합니다.'};
     },
     environment(config,settings={}){return probe(config,metadataSettings(normalize(settings,config)),true);},
     async preflight(config,settings={}){
@@ -783,11 +791,12 @@ function createAgentManager(options = {}) {
     restore({job:saved,config,settings={}}) {
       if (!saved || saved.kind !== 'agent' || saved.status !== 'running' || saved.remoteExecution?.version !== 1 || !saved.remoteExecution.ready || config?.kind !== 'ssh') throw new SshError('AGENT_RESTORE_INVALID','다시 연결할 SSH 에이전트 작업 정보가 올바르지 않습니다.');
       validateConfig(config);
+      saved=JSON.parse(JSON.stringify(saved));
       const job = makeJob({id:saved.id,reviewId:saved.reviewId,serviceId:saved.serviceId,sessionId:saved.sessionId,config,settings},'agent',false);
       // Replay the remote files from the beginning. An app may have stopped
       // between bytes of a UTF-8 character or JSON event; the process is never run again.
       job.data = {...saved,status:'running',finishedAt:null,response:'',output:'',progress:[],progressOmitted:0,error:'',remoteExecution:{version:1,ready:true,stdoutOffset:0,stderrOffset:0}};
-      job.replaySaved = {response:saved.response || '',output:saved.output || '',progress:saved.progress || [],progressOmitted:saved.progressOmitted||0,...(saved.usage?{usage:saved.usage}:{}),sessionId:saved.sessionId || '',remoteExecution:{...saved.remoteExecution}};
+      job.replaySaved = {response:saved.response || '',output:saved.output || '',progress:saved.progress || [],progressOmitted:saved.progressOmitted||0,reportedSettings:saved.reportedSettings,...(saved.usage?{usage:saved.usage}:{}),sessionId:saved.sessionId || '',remoteExecution:{...saved.remoteExecution}};
       publish(job);
       job.control = observeRemote(job);
       job.resolveControlReady(job.control);

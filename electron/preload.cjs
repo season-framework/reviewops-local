@@ -8,6 +8,7 @@ async function invoke(action,payload={}) {
 contextBridge.exposeInMainWorld('reviewops', Object.freeze({
   request: (action, payload = {}) => ipcRenderer.invoke('reviewops:invoke', action, payload),
   invoke,
+  ...(process.isMainFrame?{copyText:text=>invoke('clipboard.writeText',{text})}:{}),
   onUpdateState: callback => {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, state) => callback(state);

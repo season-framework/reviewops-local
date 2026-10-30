@@ -165,6 +165,15 @@ function createRequestQueue({store,targetForReview,targetForRun,start}) {
       const row=get(input.id);
       if(row.runId||row.cancelled||starting.has(row.id)||store.listAgentRuns().some(run=>run.id===row.id))fail('이미 시작하거나 취소한 후속 요청은 바꿀 수 없습니다.');
       const patch={...settings(input,targetForReview(store.get('reviews',row.reviewId)),row),...(input.prompt!==undefined?{prompt:text(input.prompt,'후속 요청',100000,true,true)}:{}),...(input.context!==undefined?{context:requestContext(input.context)}:{}),...(input.sourceRunId!==undefined?{sourceRunId:identifier(input.sourceRunId),sourceTarget:input.sourceTarget??null}:{}),...(input.continuedFromRunId!==undefined?{continuedFromRunId:identifier(input.continuedFromRunId)}:{})};
+      if(input.predecessorId!==undefined) {
+        patch.predecessorId=identifier(input.predecessorId);
+        if(patch.predecessorId) {
+          const previous=store.get('agent_runs',patch.predecessorId),review=store.get('reviews',row.reviewId);
+          if(store.get('reviews',previous.reviewId).projectId!==review.projectId)fail('같은 프로젝트의 실행만 기다릴 수 있습니다.');
+        }
+      }
+      if(input.requiredResult!==undefined)patch.requiredResult=text(input.requiredResult,'필요한 결과',10000);
+      if(patch.predecessorId!==undefined&&patch.predecessorId!==row.predecessorId||patch.requiredResult!==undefined&&patch.requiredResult!==row.requiredResult)patch.resultConfirmed=false;
       if(patch.newConversation)patch.continuedFromRunId='';
       validateSource(store,{...row,...patch},store.get('reviews',row.reviewId));
       return state(update(row,patch));
