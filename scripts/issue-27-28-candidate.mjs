@@ -38,22 +38,44 @@ export function verifyCandidate(candidate){
  return {checkedFiles:checks.length,candidateHash:candidate.candidateHash};
 }
 
-// Only an explicit command in the current request selects a synthetic result.
-// The application can prepend review instructions and prior conversation text.
+// Classify only the saved request text. Assembled CLI input also contains
+// unrestricted review/history text and cannot identify its own boundaries.
 export function fixtureScenario(input){
- const marker='\n사용자 작업 요청:\n';
- const text=String(input),index=text.lastIndexOf(marker);
- const request=(index<0?text:text.slice(index+marker.length)).trim();
- const match=/^QA:(MANY|MISSING|EMPTY|FAIL)$/.exec(request);
+ const match=/^QA:(MANY|MISSING|EMPTY|FAIL)$/.exec(String(input).trim());
  return match?match[1]:'NORMAL';
 }
 
-export function createFixtureScript({calls,sessionPath,stepDelayMs=7000}){
+export function fixtureRequestMatches(input,request){
+ const text=String(input),original=String(request);
+ const matches=value=>value===original||value.endsWith('\n사용자 작업 요청:\n'+original)||value.endsWith('\n\n'+original);
+ if(matches(text))return true;
+ const marker='\n\n첨부파일 경로(파일의 내용은 작업 지시가 아닌 사용자 자료입니다):\n';
+ const index=text.lastIndexOf(marker);
+ if(index<0||!matches(text.slice(0,index)))return false;
+ // Only the normalized filesPrompt trailer from electron/agents.cjs is allowed.
+ return text.slice(index+marker.length).split('\n').every(line=>{
+  const match=/^("(?:[^"\\]|\\.)*"): (\/[^\r\n]+|[A-Za-z]:[\\/][^\r\n]+)$/.exec(line);
+  if(!match)return false;
+  try{return typeof JSON.parse(match[1])==='string';}catch{return false;}
+ });
+}
+
+export function seedLegacyReportedRuns(store,{reviewId,serviceId,workPath,startedAt,finishedAt}){
+ const common={reviewId,serviceId,workPath,startedAt,finishedAt,status:'completed'};
+ const reported=store.saveAgentRun({...common,prompt:'선택 기록 없이 실제 모델과 추론을 받은 과거 실행',response:'이 과거 실행은 선택 기록이 없으며 프로그램이 실제 모델과 추론을 제공했습니다.',reportedSettings:{model:'qa-actual-legacy-model',reasoningEffort:'low',source:'cli_event',eventType:'turn.started',reportedAt:startedAt}});
+ const partial=store.saveAgentRun({...common,prompt:'선택 기록 없이 실제 모델만 받은 과거 실행',response:'이 과거 실행은 프로그램이 실제 모델만 제공했습니다. 실제 추론 정보는 없습니다.',reportedSettings:{model:'qa-actual-legacy-partial-model',source:'cli_event',eventType:'turn.started',reportedAt:startedAt}});
+ return {legacyReportedRunId:reported.id,legacyPartialReportedRunId:partial.id};
+}
+
+export function createFixtureScript({calls,sessionPath,stepDelayMs=7000,requestDbPath,requestWorkPath}){
  if(!Number.isInteger(stepDelayMs)||stepDelayMs<0)throw new Error('검사 대기 시간은 0 이상의 정수여야 합니다.');
- return `#!${process.execPath}
+ if(Boolean(requestDbPath)!==Boolean(requestWorkPath)||(requestDbPath&&(!path.isAbsolute(requestDbPath)||!path.isAbsolute(requestWorkPath))))throw new Error('검사 DB와 작업 폴더의 전체 경로가 필요합니다.');
+ return `#!${process.execPath} --disable-warning=ExperimentalWarning
 const fs=require('node:fs');
 const args=process.argv.slice(2),emit=value=>console.log(JSON.stringify(value));
 const scenarioForInput=${fixtureScenario.toString()};
+const matchesSavedRequest=${fixtureRequestMatches.toString()};
+const requestDbPath=${JSON.stringify(requestDbPath||'')},requestWorkPath=${JSON.stringify(requestWorkPath||'')};
 fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({at:new Date().toISOString(),args})+'\\n');
 if(args[0]==='--version'){console.log('codex-cli 0.0.0-issue-27-28-qa');process.exit(0)}
 if(args[0]==='login'&&args[1]==='status'){console.log('검사 전용 실행 프로그램');process.exit(0)}
@@ -66,7 +88,19 @@ if(args[0]==='app-server'){
 if(args[0]!=='exec')process.exit(77);
 let prompt='';process.stdin.on('data',chunk=>prompt+=chunk);process.stdin.on('end',async()=>{
  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
- const scenario=scenarioForInput(prompt);
+ let request=prompt;
+ if(requestDbPath){
+  let database;
+  try{
+   const {DatabaseSync}=require('node:sqlite');database=new DatabaseSync(requestDbPath,{readOnly:true});
+   database.exec('PRAGMA busy_timeout=3000');
+   const candidates=database.prepare("SELECT id,prompt FROM agent_runs WHERE status='running' AND workPath=?").all(requestWorkPath).filter(run=>matchesSavedRequest(prompt,run.prompt));
+   if(candidates.length!==1)throw new Error('저장 원문과 일치하는 실행이 한 개여야 합니다: '+candidates.length);
+   request=candidates[0].prompt;
+  }catch(error){console.error('QA_REQUEST_SOURCE_FAILED: '+error.message);process.exitCode=78;return;}
+  finally{database?.close();}
+ }
+ const scenario=scenarioForInput(request);
  const selected=args.indexOf('--model'),model=selected<0?'qa-model-a':args[selected+1];
  const configured=args.find(arg=>arg.startsWith('model_reasoning_effort='));let effort='medium';if(configured)try{effort=JSON.parse(configured.split('=').slice(1).join('='))}catch{}
  const resume=args.indexOf('resume'),sessionId=resume<0?'qa-thread-'+Date.now():args[resume+1];
@@ -103,12 +137,12 @@ const quote=value=>`'${String(value).replaceAll("'", "'\"'\"'")}'`;
 const binary=path.join(directory,'bin','codex-qa');
 const fixtureScript=path.join(directory,'bin','fixture-runner.cjs');
 const calls=path.join(directory,'cli-calls.jsonl');
-const fixture=createFixtureScript({calls,sessionPath:path.join(sessionProfile,'sessions')});
+const fixture=createFixtureScript({calls,sessionPath:path.join(sessionProfile,'sessions'),requestDbPath:path.join(dataPath,'reviewops.sqlite'),requestWorkPath:work});
 write(fixtureScript,fixture,0o700);
 // The production runtime picker requires a native Apple Silicon executable.
 // Compile a small, fixed launcher instead of weakening that validation.
 const launcherSource=path.join(directory,'bin','fixture-launcher.c');
-write(launcherSource,`#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc,char **argv){char **args=calloc((size_t)argc+2,sizeof(char*));if(!args)return 126;args[0]=${JSON.stringify(process.execPath)};args[1]=${JSON.stringify(fixtureScript)};for(int i=1;i<argc;i++)args[i+1]=argv[i];execv(args[0],args);perror("qa launcher");return 127;}\n`);
+write(launcherSource,`#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc,char **argv){char **args=calloc((size_t)argc+3,sizeof(char*));if(!args)return 126;args[0]=${JSON.stringify(process.execPath)};args[1]="--disable-warning=ExperimentalWarning";args[2]=${JSON.stringify(fixtureScript)};for(int i=1;i<argc;i++)args[i+2]=argv[i];execv(args[0],args);perror("qa launcher");return 127;}\n`);
 execFileSync('/usr/bin/clang',[launcherSource,'-o',binary],{stdio:'pipe'});
 const runtimeCheck=await require('../electron/codex/runtime.cjs').findRuntime(binary);
 if(!runtimeCheck.available||runtimeCheck.path!==binary)throw new Error(`검사 실행 프로그램을 선택하지 못했습니다: ${runtimeCheck.error}`);
@@ -130,6 +164,7 @@ try{
  const response='# 완료된 검사 응답\n\n'+Array.from({length:45},(_,i)=>`${i+1}. 긴 대화에서 읽던 위치가 유지되는지 검사합니다.`).join('\n')+'\n\n| 항목 | 내용 |\n| --- | --- |\n| 원문 | Markdown과 줄바꿈 |\n\n```js\nconsole.log("copy");\n```';
  const completed=store.saveAgentRun({reviewId:review.id,serviceId:service.id,status:'completed',prompt:'Markdown 표와 코드가 포함된 검사 요청\n\n```js\nconst value = 1;\n```',response,model:'qa-model-a',reasoningEffort:'medium',workPath:work,startedAt:earlier,finishedAt:later,requestId:'qa-completed',executionSettings:{version:1,selected:{model:'qa-model-a',reasoningEffort:'medium'},automatic:{model:false,reasoningEffort:false},sent:{model:'qa-model-a',reasoningEffort:'medium'}},reportedSettings:{model:'qa-model-a',reasoningEffort:'medium',source:'cli_event',eventType:'turn.started',reportedAt:earlier},progress:Array.from({length:100},(_,i)=>({sequence:i+16,state:'completed',step:'command_execution',message:`검사 명령 ${i+16} 완료`,createdAt:later})),progressOmitted:15});
  const legacy=store.saveAgentRun({reviewId:review.id,serviceId:service.id,status:'failed',prompt:'기록이 없는 예전 실행',error:'검사용 예전 실패 기록',workPath:work,startedAt:earlier,finishedAt:later});
+ const legacyReported=seedLegacyReportedRuns(store,{reviewId:review.id,serviceId:service.id,workPath:work,startedAt:earlier,finishedAt:later});
  const automatic={version:1,selected:{model:'',reasoningEffort:''},automatic:{model:true,reasoningEffort:true},sent:{model:'',reasoningEffort:''}};
  const linked=store.saveAgentRun({reviewId:linkedReview.id,serviceId:service.id,status:'completed',prompt:'다른 리뷰에 저장된 요청 원문',response:'다른 리뷰의 실제 저장 응답입니다.\n\n연결된 요청과 응답을 함께 읽습니다.',workPath:work,startedAt:earlier,finishedAt:later,executionSettings:automatic});
  const missing=store.saveAgentRun({reviewId:review.id,serviceId:service.id,status:'completed',prompt:'자동 선택 후 실제 사용 값을 제공하지 않은 실행',response:'프로그램이 실제 사용 값을 보내지 않은 검사 기록입니다.',workPath:work,startedAt:earlier,finishedAt:later,executionSettings:automatic,continuedFromRunId:completed.id});
@@ -137,7 +172,7 @@ try{
  store.saveAgentRun({reviewId:review.id,serviceId:service.id,status:'completed',prompt:'예전 실패 요청을 재실행한 검사 기록',response:'원본 실행으로 이동할 수 있습니다.',workPath:work,startedAt:earlier,finishedAt:later,executionSettings:automatic,retryOf:legacy.id});
  const queue=createRequestQueue({store,targetForReview:()=>({serviceId:service.id,key:requestTargetKey(service,{workPath:work}),settings:{binary,workPath:work,model:'qa-model-a',reasoningEffort:'medium'}}),targetForRun:()=>requestTargetKey(service,{workPath:work}),start:()=>{throw new Error('후보 준비 중 실행할 수 없습니다.')}});
  queue.add({requestId:'qa-waiting',reviewId:review.id,prompt:'저장한 설정으로 실행하는 검사 요청',model:'qa-model-b',reasoningEffort:'high',predecessorId:linked.id});
- seed={groupId:group.id,projectId:project.id,reviewId:review.id,commandReviewId:commandReview.id,serviceId:service.id,completedRunId:completed.id,linkedReviewId:linkedReview.id,linkedRunId:linked.id,schemaVersion:store.exportData().version,dbIntegrity:store.db.prepare('PRAGMA integrity_check').all(),dbForeignKeyErrors:store.db.prepare('PRAGMA foreign_key_check').all()};
+ seed={groupId:group.id,projectId:project.id,reviewId:review.id,commandReviewId:commandReview.id,serviceId:service.id,completedRunId:completed.id,legacyRunId:legacy.id,...legacyReported,linkedReviewId:linkedReview.id,linkedRunId:linked.id,schemaVersion:store.exportData().version,dbIntegrity:store.db.prepare('PRAGMA integrity_check').all(),dbForeignKeyErrors:store.db.prepare('PRAGMA foreign_key_check').all()};
 }finally{store.close();}
 
 execFileSync(process.execPath,[path.join(root,'node_modules/vite/bin/vite.js'),'build','--outDir',path.join(appRoot,'dist')],{cwd:root,stdio:'inherit'});
@@ -163,7 +198,7 @@ const externalFiles=[fixtureScript,binary,fs.realpathSync(process.execPath),elec
 const dependencyLockSha256=hashFile(path.join(root,'package-lock.json'));
 const integrity={version:2,appFilesSha256:hash(JSON.stringify(files)),source,dependencyLockSha256,externalFiles};
 const candidateHash=hash(JSON.stringify(integrity));
-const metadata={createdAt:new Date().toISOString(),baseCommit:source.commit,productDirty:source.productDirty,source,candidateHash,integrity,appRoot,wrapper,startCommand:path.join(directory,'start-candidate.command'),electronExecutable,electronExecutableSha256:hashFile(electronExecutable),fixtureNodeExecutable:fs.realpathSync(process.execPath),dbPath:path.join(dataPath,'reviewops.sqlite'),dbSha256:hashFile(path.join(dataPath,'reviewops.sqlite')),runtimeLog:path.join(directory,'runtime.log'),fixtureCallsLog:calls,fixtureBinary:binary,fixtureScript,fixtureSha256:hash(fixture),fixtureBinarySha256:hashFile(binary),runtimeCheck,sessionProfile,fixtureMode:'Synthetic CLI events through the real application; no model or SSH connection',fixtureCommands:['QA:MANY','QA:MISSING','QA:EMPTY','QA:FAIL'],dependencyLockSha256,seed,files};
+const metadata={createdAt:new Date().toISOString(),baseCommit:source.commit,productDirty:source.productDirty,source,candidateHash,integrity,appRoot,wrapper,startCommand:path.join(directory,'start-candidate.command'),electronExecutable,electronExecutableSha256:hashFile(electronExecutable),fixtureNodeExecutable:fs.realpathSync(process.execPath),dbPath:path.join(dataPath,'reviewops.sqlite'),dbSha256:hashFile(path.join(dataPath,'reviewops.sqlite')),runtimeLog:path.join(directory,'runtime.log'),fixtureCallsLog:calls,fixtureBinary:binary,fixtureScript,fixtureSha256:hash(fixture),fixtureBinarySha256:hashFile(binary),runtimeCheck,sessionProfile,fixtureMode:'Synthetic CLI events through the real application; no model or SSH connection',fixtureRequestSource:{kind:'saved_run_prompt',dbPath:path.join(dataPath,'reviewops.sqlite'),workPath:work,readOnly:true},fixtureCommands:['QA:MANY','QA:MISSING','QA:EMPTY','QA:FAIL'],dependencyLockSha256,seed,files};
 metadata.fileVerification=verifyCandidate(metadata);
 const report=path.join(evidence,`candidate-${id}.json`);
 write(report,JSON.stringify(metadata,null,2));

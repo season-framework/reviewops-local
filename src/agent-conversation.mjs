@@ -15,9 +15,9 @@ export function shouldFollowLatest({nearBottom,detailsOpen=false,readingEarlier=
 
 export function executionSettingsView(run={}){
  const settings=run.executionSettings;
- if(!settings||settings.version!==1)return {recorded:false,selected:{},automatic:{},sent:{},reported:{}};
  const reported={};
  for(const key of ['model','reasoningEffort'])if(typeof run.reportedSettings?.[key]==='string'&&run.reportedSettings[key])reported[key]=run.reportedSettings[key];
+ if(!settings||settings.version!==1)return {recorded:false,selected:{},automatic:{},sent:{},reported};
  return {recorded:true,selected:{...settings.selected},automatic:{...settings.automatic},sent:{...settings.sent},reported};
 }
 

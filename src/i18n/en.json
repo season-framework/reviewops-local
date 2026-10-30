@@ -1563,5 +1563,10 @@
   "요청 설정": "Request settings",
   "대기 요청": "Queued requests",
   "대기 중인 요청이 없습니다. 아래 입력창에서 작성하여 저장하십시오.": "No queued requests. Write and save a request in the input below.",
-  "수정 중": "Editing"
+  "수정 중": "Editing",
+  "사용 모델·추론 정보 없음": "Model and reasoning information unavailable",
+  "새 요청 초안이 변경되었습니다. 바꿀 내용을 확인한 뒤 다시 가져오십시오.": "The request draft has changed. Review what will be replaced, then import again.",
+  "새 요청 초안으로 가져왔습니다. 직접 실행 버튼을 누르면 시작합니다.": "Imported into the request draft. Click Run to start it.",
+  "작성 중인 새 요청 내용·설정·선택한 자료를 가져온 내용으로 바꿉니다.": "The imported content will replace the content, settings, and selected items in your request draft.",
+  "대기 요청 수정 내용과 설정은 따로 보관됩니다. 대기 요청 수정 버튼으로 돌아갈 수 있습니다.": "Your queued request edits and settings are stored separately. Click Edit queued request to return to them."
 }
