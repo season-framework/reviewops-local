@@ -74,6 +74,9 @@ test('two competing saves preserve the first successful write', async t => {
 
 test('new hosts precede wildcard defaults and OpenSSH resolves their explicit values', async t => {
   const { store, configPath } = await fixture(t, '# defaults\nHost *\n  User default-user\n  Port 22\n  Compression yes\n')
+  const before = await exec('ssh', ['-G', '-F', configPath, 'new-server'])
+  const compression = /^compression (.+)$/m.exec(before.stdout)?.[1]
+  assert.ok(compression, 'OpenSSH reports the wildcard compression setting')
   const state = await store.read()
   const next = await store.save({ alias: 'new-server', hostName: '127.0.0.1', user: 'new-user', port: '2202' }, state.revision)
   assert.equal(next.hosts[0].alias, 'new-server')
@@ -83,7 +86,8 @@ test('new hosts precede wildcard defaults and OpenSSH resolves their explicit va
   assert.match(stdout, /^hostname 127\.0\.0\.1$/m)
   assert.match(stdout, /^user new-user$/m)
   assert.match(stdout, /^port 2202$/m)
-  assert.match(stdout, /^compression yes$/m)
+  assert.equal(/^compression (.+)$/m.exec(stdout)?.[1], compression)
+  assert.match(await fs.readFile(configPath, 'utf8'), /Host \*\n  User default-user\n  Port 22\n  Compression yes\n$/)
 })
 
 test('deleting a host keeps subsequent host comments and Match settings', async t => {
