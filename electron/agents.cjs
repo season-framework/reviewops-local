@@ -13,6 +13,7 @@ const { terminateProcessGroup } = require('./codex/host-ssh.cjs');
 const { RpcClient } = require('./codex/rpc-client.cjs');
 const remoteAgent = require('./remote-agent.cjs');
 const {requireDirectory} = require('./work-directory.cjs');
+const {executionSettings}=require('./agent-execution-settings.cjs');
 
 const FINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_PROMPT = 256 * 1024;
@@ -136,11 +137,19 @@ function appendProgress(job, message, state = 'running', step = 'execution', key
   if (job.seen.size > 400) job.seen.delete(job.seen.keys().next().value);
   const sequence = (job.data.progress.at(-1)?.sequence || 0) + 1;
   job.data.progress.push({sequence, state, message:message.slice(0,2000), step, createdAt:new Date().toISOString()});
-  if (job.data.progress.length > 100) job.data.progress.shift();
+  if (job.data.progress.length > 100) {job.data.progress.shift();job.data.progressOmitted=(job.data.progressOmitted||0)+1;}
 }
 function acceptEvent(job, event) {
   if (!event || typeof event !== 'object') return;
   const type = event.type;
+  // Only explicit values in CLI lifecycle events describe what this execution
+  // used. Requested flags, model catalogs and session IDs are not actual values.
+  if(['thread.started','turn.started','turn.completed','session_meta','turn_context'].includes(type)) {
+    const value=event.payload&&typeof event.payload==='object'?event.payload:event;
+    const model=value.model,effort=value.reasoning_effort??value.model_reasoning_effort??value.reasoningEffort;
+    const reported={...(typeof model==='string'&&model.length>0&&model.length<=256&&!/[\s\0]/.test(model)?{model}:{}),...(typeof effort==='string'&&/^[\w-]{1,128}$/.test(effort)?{reasoningEffort:effort}:{})};
+    if(Object.keys(reported).length)job.data.reportedSettings={...job.data.reportedSettings,...reported,source:'cli_event',eventType:type,reportedAt:new Date().toISOString()};
+  }
   if (typeof event.thread_id === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(event.thread_id)) job.data.sessionId = event.thread_id;
   if (type === 'thread.started') appendProgress(job, '에이전트 대화 연결', 'running', 'session', `session:${event.thread_id}`);
   else if (type === 'turn.started') appendProgress(job, '요청 처리 시작', 'running', 'response', 'turn');
@@ -262,7 +271,7 @@ function createAgentManager(options = {}) {
     const id = input.id || randomUUID();
     const config = input.config || {}, settings = normalize(input.settings, config);
     if (!['local','ssh'].includes(config.kind)) throw new SshError('AGENT_CONFIG_INVALID', '로컬 폴더 또는 SSH 호스트를 선택하십시오.');
-    const data = {id, kind, reviewId:input.reviewId || '', serviceId:input.serviceId || config.id || '', status:'running', sessionId:input.sessionId || '', model:settings.model, reasoningEffort:settings.reasoningEffort, response:'', output:'', error:'', progress:[], startedAt:new Date().toISOString(), finishedAt:null, cancelRequested:false};
+    const data = {id, kind, reviewId:input.reviewId || '', serviceId:input.serviceId || config.id || '', status:'running', sessionId:input.sessionId || '', model:settings.model, reasoningEffort:settings.reasoningEffort, ...(kind==='agent'?{executionSettings:executionSettings(input.executionSettings,{model:settings.model,reasoningEffort:settings.reasoningEffort})}:{}),response:'', output:'', error:'', progress:[], progressOmitted:0,startedAt:new Date().toISOString(), finishedAt:null, cancelRequested:false};
     const job = {data, settings, config, images:input.images || [], files:input.files || [], seen:new Map(), stdoutDecoder:new StringDecoder('utf8'), stderrDecoder:new StringDecoder('utf8'), pending:'', stderr:'', secrets:[config.password, config.passphrase]};
     job.done = new Promise(resolve => {job.resolveDone = resolve;});
     job.controlReady = new Promise(resolve => {job.resolveControlReady = resolve;});
@@ -777,8 +786,8 @@ function createAgentManager(options = {}) {
       const job = makeJob({id:saved.id,reviewId:saved.reviewId,serviceId:saved.serviceId,sessionId:saved.sessionId,config,settings},'agent',false);
       // Replay the remote files from the beginning. An app may have stopped
       // between bytes of a UTF-8 character or JSON event; the process is never run again.
-      job.data = {...saved,status:'running',finishedAt:null,response:'',output:'',progress:[],error:'',remoteExecution:{version:1,ready:true,stdoutOffset:0,stderrOffset:0}};
-      job.replaySaved = {response:saved.response || '',output:saved.output || '',progress:saved.progress || [],...(saved.usage?{usage:saved.usage}:{}),sessionId:saved.sessionId || '',remoteExecution:{...saved.remoteExecution}};
+      job.data = {...saved,status:'running',finishedAt:null,response:'',output:'',progress:[],progressOmitted:0,error:'',remoteExecution:{version:1,ready:true,stdoutOffset:0,stderrOffset:0}};
+      job.replaySaved = {response:saved.response || '',output:saved.output || '',progress:saved.progress || [],progressOmitted:saved.progressOmitted||0,...(saved.usage?{usage:saved.usage}:{}),sessionId:saved.sessionId || '',remoteExecution:{...saved.remoteExecution}};
       publish(job);
       job.control = observeRemote(job);
       job.resolveControlReady(job.control);

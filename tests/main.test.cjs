@@ -141,7 +141,7 @@ async function harness(t, options = {}) {
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
       return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
@@ -1670,4 +1670,88 @@ for(const damage of ['missing','corrupted'])test(`copied drafts exclude ${damage
  assert.deepEqual(await h.success('agent.read',{id:source.id}),original);assert.deepEqual(await h.success('snapshot'),before);assert.equal(h.state.agentStarts.length,starts);assert.equal(h.state.liveStore.listAgentRuns().length,1);
  assert.equal(fs.readFileSync(path.join(h.dataPath,'attachments',kept.storageName),'utf8'),'keep this selected file');
  for(const file of [broken,image]){const location=path.join(h.dataPath,'attachments',file.storageName);if(damage==='missing')assert.equal(fs.existsSync(location),false);else assert.equal(fs.readFileSync(location,'utf8'),'changed bytes');}
+});
+
+test('issue 27 dispatch preserves automatic selection, transmitted values, reported values and retry history separately',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);
+ await h.success('service.save',{id:service.id,agentEnabled:1,agentModel:'project-model',agentReasoningEffort:'high'});
+ const executionSettings={version:1,selected:{model:'',reasoningEffort:''},automatic:{model:true,reasoningEffort:true},sent:{model:'project-model',reasoningEffort:'high'}};
+ const first=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-auto',prompt:'\n  요청 원문\n\n',executionSettings,context:{instruction:false,attachmentIds:[],logIds:[]}});
+ assert.deepEqual(first.executionSettings,executionSettings);assert.equal(first.reportedSettings,undefined);
+ assert.equal(first.prompt,'\n  요청 원문\n\n');
+ const reportedSettings={model:'reported-model',source:'cli_event',eventType:'turn.started',reportedAt:new Date().toISOString()};
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'failed',reportedSettings,error:'synthetic failure',finishedAt:new Date().toISOString()});
+ const original=await h.success('agent.read',{id:first.id});
+ await h.success('service.save',{id:service.id,agentModel:'later-model',agentReasoningEffort:'low'});
+ const retried=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-retry',retryOf:first.id,prompt:first.prompt});
+ assert.deepEqual(retried.executionSettings,executionSettings);assert.equal(retried.model,'project-model');assert.equal(retried.reasoningEffort,'high');
+ assert.equal(retried.reportedSettings,undefined);assert.equal(retried.retryOf,first.id);assert.notEqual(retried.id,first.id);
+ assert.deepEqual(await h.success('agent.read',{id:first.id}),original);
+});
+
+test('issue 27 queued settings survive project connection replacement and explicit edits control the subsequent manual execution',async t=>{
+ const h=await harness(t),{service,project,review}=await seed(h);
+ await h.success('service.save',{id:service.id,agentEnabled:1,agentModel:'saved-project-model',agentReasoningEffort:'high'});
+ const first=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-before-queue',prompt:'First',context:{instruction:false}});
+ assert.deepEqual(first.executionSettings.selected,{model:'',reasoningEffort:''});assert.deepEqual(first.executionSettings.automatic,{model:true,reasoningEffort:true});assert.deepEqual(first.executionSettings.sent,{model:'saved-project-model',reasoningEffort:'high'});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'completed',response:'Complete',sessionId:'issue27-session',finishedAt:new Date().toISOString()});
+ const queued=await h.success('agent.request.add',{reviewId:review.id,requestId:'issue27-queued',prompt:'  저장한 요청\n\n',predecessorId:first.id,context:{instruction:false,attachmentIds:[],logIds:[]}});
+ assert.equal(queued.model,'saved-project-model');assert.equal(queued.reasoningEffort,'high');assert.equal(queued.prompt,'  저장한 요청\n\n');
+ assert.deepEqual(queued.executionSettings.selected,{model:'',reasoningEffort:''});assert.deepEqual(queued.executionSettings.sent,first.executionSettings.sent);
+ const changed=await h.success('project.save',{id:project.id,connection:{agentModel:'changed-project-model',agentReasoningEffort:'low'}});
+ assert.notEqual(changed.connection.id,service.id);
+ const starts=h.state.agentStarts.length;
+ assert.equal((await h.success('agent.request.list',{reviewId:review.id})).requests[0].state,'ready');assert.equal(h.state.agentStarts.length,starts);
+ const run=await h.success('agent.request.start',{id:queued.id});
+ assert.equal(run.serviceId,changed.connection.id);assert.equal(run.model,queued.model);assert.equal(run.reasoningEffort,queued.reasoningEffort);assert.deepEqual(run.executionSettings,queued.executionSettings);
+ h.state.agentUpdate({id:run.id,kind:'agent',status:'completed',response:'Queued result',finishedAt:new Date().toISOString()});
+ const next=await h.success('agent.request.add',{reviewId:review.id,requestId:'issue27-edited-queue',prompt:'Edit before starting',model:'before-edit',reasoningEffort:'medium',continuedFromRunId:run.id});
+ const edited=await h.success('agent.request.update',{id:next.id,model:'after-edit',reasoningEffort:'low',newConversation:true});
+ assert.equal(edited.model,'after-edit');assert.equal(edited.reasoningEffort,'low');assert.equal(edited.continuedFromRunId,'');
+ const [a,b]=await Promise.all([h.success('agent.request.start',{id:next.id}),h.success('agent.request.start',{id:next.id})]);
+ assert.equal(a.id,b.id);assert.equal(a.model,'after-edit');assert.equal(a.reasoningEffort,'low');assert.equal(a.newConversation,true);assert.equal(a.continuedFromRunId,undefined);assert.equal(h.state.agentStarts.filter(input=>input.id===next.id).length,1);
+});
+
+test('issue 28 queued attachments and draft identifiers survive a storage failure before atomic save and execute once',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const staged=await stageFile(h,'queued-attachment.txt'),before=await h.success('snapshot');
+ const input={reviewId:review.id,requestId:'issue28-queue-save',prompt:'  후속 요청 원문\n',model:'queue-model',reasoningEffort:'high',context:{instruction:false,attachmentIds:[],logIds:[]},attachmentTokens:[staged.token]};
+ const original=h.state.liveStore.addAttachment;h.state.liveStore.addAttachment=()=>{throw new Error('synthetic queued attachment failure')};
+ const rejected=await h.invoke('agent.request.add',input);assert.equal(rejected.ok,false);
+ h.state.liveStore.addAttachment=original;
+ assert.deepEqual(await h.success('snapshot'),before);assert.deepEqual((await h.success('agent.request.list',{reviewId:review.id})).requests,[]);
+ assert.equal((await h.success('attachment.staged',{tokens:[staged.token]})).files.length,1);
+ const saved=await h.success('agent.request.add',input);
+ assert.equal(saved.prompt,input.prompt);assert.equal(saved.context.attachmentIds.length,1);assert.equal(h.state.agentStarts.length,0);
+ const acceptedAgain=await h.success('agent.request.add',input);assert.equal(acceptedAgain.id,saved.id);
+ assert.equal((await h.success('agent.request.list',{reviewId:review.id})).requests.length,1);
+ const file=(await h.success('snapshot')).attachments.find(item=>item.id===saved.context.attachmentIds[0]);assert.equal(file.name,'queued-attachment.txt');
+ const run=await h.success('agent.request.start',{id:saved.id});assert.deepEqual(run.context.attachmentIds,saved.context.attachmentIds);
+ assert.equal(h.state.agentStarts.at(-1).files[0].bytes.toString(),'staged attachment content');
+ assert.equal(run.prompt,input.prompt);
+});
+
+test('issue 27 continuing after a model change keeps the source request link and copied requests keep a separate origin',async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const first=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-first',prompt:'First request',model:'model-a',reasoningEffort:'high',context:{instruction:false}});
+ h.state.agentUpdate({id:first.id,kind:'agent',status:'completed',sessionId:'issue27-link-session',response:'First response',finishedAt:new Date().toISOString()});
+ const second=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-second',continuedFromRunId:first.id,prompt:'Follow up',model:'model-b',reasoningEffort:'low',context:{instruction:false}});
+ assert.equal(second.continuedFromRunId,first.id);assert.equal(second.model,'model-b');assert.notEqual(second.id,first.id);
+ h.state.agentUpdate({id:second.id,kind:'agent',status:'failed',error:'synthetic failed followup',finishedAt:new Date().toISOString()});
+ const before=await h.success('agent.read',{id:second.id}),copied=await h.success('agent.copyDraft',{reviewId:review.id,runId:second.id});
+ const copy=await h.success('agent.start',{reviewId:review.id,requestId:'issue27-link-copy',prompt:copied.draft.prompt,newConversation:true,model:copied.draft.model,reasoningEffort:copied.draft.reasoningEffort,sourceRunId:copied.draft.sourceRunId,sourceTarget:copied.draft.sourceTarget,context:{instruction:false}});
+ assert.equal(copy.sourceRunId,second.id);assert.equal(copy.continuedFromRunId,undefined);assert.equal(copy.newConversation,true);
+ assert.deepEqual(await h.success('agent.read',{id:second.id}),before);
+});
+
+for(const sourceStatus of ['completed','failed'])test(`issue 27 an explicit ${sourceStatus} source never resumes an unrelated later conversation`,async t=>{
+ const h=await harness(t),{service,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const source=await h.success('agent.start',{reviewId:review.id,requestId:`issue27-session-source-${sourceStatus}`,prompt:'Source A',model:'same-model',reasoningEffort:'high',context:{instruction:false}});
+ h.state.agentUpdate({id:source.id,kind:'agent',status:sourceStatus,sessionId:'selected-session-a',response:'A response',...(sourceStatus==='failed'?{error:'synthetic failure'}:{}),finishedAt:new Date().toISOString()});
+ const other=await h.success('agent.start',{reviewId:review.id,requestId:`issue27-session-other-${sourceStatus}`,prompt:'Separate B',model:'same-model',reasoningEffort:'high',newConversation:true,context:{instruction:false}});
+ h.state.agentUpdate({id:other.id,kind:'agent',status:'completed',sessionId:'later-session-b',response:'B response',finishedAt:new Date().toISOString()});
+ const continued=await h.success('agent.start',{reviewId:review.id,requestId:`issue27-session-continued-${sourceStatus}`,prompt:'Continue selected A',model:'same-model',reasoningEffort:'high',continuedFromRunId:source.id,context:{instruction:false}});
+ assert.equal(continued.continuedFromRunId,source.id);assert.notEqual(continued.sessionId,'later-session-b');
+ if(sourceStatus==='completed')assert.equal(continued.sessionId,'selected-session-a');
+ assert.equal(h.state.agentStarts.at(-1).sessionId,continued.sessionId);
 });

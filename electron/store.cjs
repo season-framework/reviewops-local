@@ -5,8 +5,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
+const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
 const PRIORITIES = ['low', 'normal', 'high', 'critical'];
 const CATEGORIES = ['bug', 'ux', 'feature', 'content', 'performance', 'accessibility', 'security', 'structure', 'design', 'data', 'message', 'typo', 'other'];
@@ -17,7 +18,7 @@ const TABLES = ['groups', 'projects', 'services', 'project_services', 'reviews',
 const AGENT_STATES = ['queued', 'running', 'completed', 'failed', 'cancelled', 'interrupted'];
 const AGENT_FINAL = new Set(['completed', 'failed', 'cancelled', 'interrupted']);
 const AGENT_EFFORTS = ['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'];
-const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution','sourceRunId','executionTarget'];
+const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 'trust', 'usage', 'outputTruncated', 'context', 'requestId', 'requestSignature', 'newConversation','retryOf','independentExecution','remoteExecution','sourceRunId','executionTarget','executionSettings','reportedSettings','continuedFromRunId','progressOmitted'];
 const LOG_FIELDS = ['navigation_log','input_log','network_log','console_log','fingerprint_log'];
 const SECRET_KEY = /^(password|passphrase|private[_-]?key|ssh[_-]?password|ssh[_-]?private[_-]?key|access[_-]?token|api[_-]?key|secret|credential)$/i;
 const MAX_ITEMS = 100000;
@@ -180,8 +181,9 @@ function date(value) {
 function dataRow(input, previous, fields) {
   return { id: previous?.id || freshId(), ...fields, createdAt: previous?.createdAt || timestamp(), updatedAt: timestamp() };
 }
-function byteText(value, label, limit, strict = false) {
-  const result = text(value, label, Math.max(limit, typeof value === 'string' ? value.length : 0));
+function byteText(value, label, limit, strict = false, preserveWhitespace = false) {
+  const normalized = text(value, label, Math.max(limit, typeof value === 'string' ? value.length : 0));
+  const result = preserveWhitespace&&typeof value==='string'?value:normalized;
   const buffer = Buffer.from(result);
   if (buffer.length <= limit) return result;
   if (strict) fail(`${label}의 크기가 너무 큽니다.`);
@@ -208,12 +210,19 @@ function agentProgress(value, strict = false) {
   return serialized;
 }
 function agentMetadata(input, previous) {
-  const immutable=new Set(['context','requestId','requestSignature','newConversation','retryOf','independentExecution','sourceRunId','executionTarget']);
+  const immutable=new Set(['context','requestId','requestSignature','newConversation','retryOf','independentExecution','sourceRunId','executionTarget','executionSettings','continuedFromRunId']);
   const value = Object.fromEntries(AGENT_METADATA.filter(key => (input[key] ?? previous?.[key]) !== undefined).map(key => [key,immutable.has(key)&&previous?.[key]!==undefined?previous[key]:input[key] ?? previous?.[key]]));
+  // Missing historical selections remain missing; later project settings cannot
+  // be used to fill a completed or already-running request's history.
+  if(previous&&previous.executionSettings===undefined)delete value.executionSettings;
   for (const key of ['cancelRequested','terminationConfirmed','outputTruncated','newConversation','independentExecution']) if (value[key] !== undefined && typeof value[key] !== 'boolean') fail('에이전트 실행 정보가 올바르지 않습니다.');
   if(value.requestId!==undefined)value.requestId=id(value.requestId,'요청');
   if(value.retryOf!==undefined)value.retryOf=id(value.retryOf,'원본 요청');
   if(value.sourceRunId!==undefined)value.sourceRunId=id(value.sourceRunId,'가져온 요청');
+  if(value.continuedFromRunId!==undefined)value.continuedFromRunId=id(value.continuedFromRunId,'이전 요청');
+  if(value.executionSettings!==undefined)value.executionSettings=executionSettings(value.executionSettings,{model:previous?.model??input.model??'',reasoningEffort:previous?.reasoningEffort??input.reasoningEffort??''});
+  if(value.reportedSettings!==undefined)value.reportedSettings=reportedSettings(value.reportedSettings);
+  if(value.progressOmitted!==undefined)value.progressOmitted=integer(value.progressOmitted,0,0,Number.MAX_SAFE_INTEGER,'생략된 실행 기록 수');
   if(value.executionTarget!==undefined){const target={...object(value.executionTarget,'실행 대상')};const allowed=['kind','host','hostAlias','sshConfigPath','port','username','workPath','binary','model','reasoningEffort'];if(Object.keys(target).some(key=>!allowed.includes(key))||!['local','ssh'].includes(target.kind))fail('저장된 실행 대상이 올바르지 않습니다.');for(const key of allowed.filter(key=>!['kind','port'].includes(key)))target[key]=text(target[key],'실행 대상',['workPath','binary','sshConfigPath'].includes(key)?4096:256);target.port=integer(target.port,0,0,65535,'포트');value.executionTarget=target;}
   if(value.requestSignature!==undefined && !/^[a-f0-9]{64}$/.test(value.requestSignature))fail('에이전트 요청 정보가 올바르지 않습니다.');
   if(value.remoteExecution!==undefined) {
@@ -454,6 +463,11 @@ class LocalStore {
       }); } finally { this.db.exec('PRAGMA legacy_alter_table=OFF; PRAGMA foreign_keys=ON;'); }
     }
     if (current < 9) this.transaction(() => this.db.exec(REQUEST_SCHEMA + '\nPRAGMA user_version=9;'));
+    if (current < 10) this.transaction(() => {
+      const columns=new Set(this.db.prepare('PRAGMA table_info(agent_requests)').all().map(row=>row.name));
+      for(const [name,type] of [['model',"TEXT NOT NULL DEFAULT ''"],['reasoningEffort',"TEXT NOT NULL DEFAULT ''"],['binary',"TEXT NOT NULL DEFAULT ''"],['settingsRecorded','INTEGER NOT NULL DEFAULT 0 CHECK(settingsRecorded IN (0,1))'],['newConversation','INTEGER NOT NULL DEFAULT 0 CHECK(newConversation IN (0,1))'],['executionSettingsJson',"TEXT NOT NULL DEFAULT 'null'"],['contextJson',"TEXT NOT NULL DEFAULT 'null'"],['sourceRunId',"TEXT NOT NULL DEFAULT ''"],['sourceTargetJson',"TEXT NOT NULL DEFAULT 'null'"],['continuedFromRunId',"TEXT NOT NULL DEFAULT ''"],['requestSignature',"TEXT NOT NULL DEFAULT ''"]])if(!columns.has(name))this.db.exec(`ALTER TABLE agent_requests ADD COLUMN ${name} ${type}`);
+      this.db.exec('PRAGMA user_version=10;');
+    });
   }
 
   transaction(fn) {
@@ -684,7 +698,7 @@ class LocalStore {
     const status = choice(input.status,AGENT_STATES,previous?.status || 'queued','에이전트 실행 상태');
     const sessionId = input.sessionId ?? previous?.sessionId ?? '';
     if (sessionId && !/^[a-zA-Z0-9_-]{1,128}$/.test(sessionId)) fail('에이전트 대화 정보가 올바르지 않습니다.');
-    const model = text(input.model ?? previous?.model,'에이전트 모델',256);
+    const model = text(previous?.model ?? input.model,'에이전트 모델',256);
     if (/\s/.test(model)) fail('에이전트 모델 이름에 공백을 사용할 수 없습니다.');
     const startedAt = date(input.startedAt ?? previous?.startedAt ?? input.createdAt ?? timestamp());
     const finishedAt = AGENT_FINAL.has(status) ? date(input.finishedAt || previous?.finishedAt || timestamp()) : null;
@@ -695,11 +709,11 @@ class LocalStore {
     const workPaths = previous || allowDetached ? historicalPaths : service?.kind === 'ssh' ? path.posix : path;
     return {
       reviewId,serviceId,kind:choice(input.kind,['agent'],'agent','에이전트 실행 종류'),
-      prompt:byteText(input.prompt ?? previous?.prompt,'에이전트 요청',256 * 1024,strict),model,
-      reasoningEffort:choice(input.reasoningEffort,AGENT_EFFORTS,previous?.reasoningEffort || '','에이전트 추론 수준'),status,
+      prompt:byteText(input.prompt ?? previous?.prompt,'에이전트 요청',256 * 1024,strict,true),model,
+      reasoningEffort:choice(previous?.reasoningEffort ?? input.reasoningEffort,AGENT_EFFORTS,'','에이전트 추론 수준'),status,
       sessionId:text(sessionId,'에이전트 대화',128),sessionScope:text(input.sessionScope ?? previous?.sessionScope,'에이전트 대화 구분',256),
       workPath:absolutePath(workPathValue,'에이전트 작업 폴더',false,workPaths),
-      response:byteText(input.response ?? previous?.response,'에이전트 응답',256 * 1024,strict),
+      response:byteText(input.response ?? previous?.response,'에이전트 응답',256 * 1024,strict,true),
       output:byteText(input.output ?? previous?.output,'에이전트 출력',1024 * 1024,strict),error:text(input.error ?? previous?.error,'에이전트 오류',10000),
       progressJson:agentProgress(input.progress ?? input.progressJson ?? previous?.progress,strict),metadataJson:agentMetadata(input,previous),startedAt,finishedAt
     };
@@ -714,7 +728,7 @@ class LocalStore {
       const values = this.normalizeAgentRun(input,previous);
       const row = {id:itemId,...values,createdAt:previous?.createdAt || date(input.createdAt || input.startedAt || timestamp()),updatedAt:timestamp()};
       this.upsert('agent_runs',row);
-      if (row.status === 'completed' && row.response && !this.db.prepare("SELECT 1 FROM activities WHERE agentRunId=? AND role='agent'").get(itemId)) {
+      if (row.status === 'completed' && row.response.trim() && !this.db.prepare("SELECT 1 FROM activities WHERE agentRunId=? AND role='agent'").get(itemId)) {
         const notice = '\n\n전체 응답은 에이전트 탭에서 확인할 수 있습니다.';
         const body = row.response.length > 100000 ? row.response.slice(0,100000-notice.length).replace(/[\uD800-\uDBFF]$/,'') + notice : row.response;
         this.insertActivity(row.reviewId,body,'comment','','',{role:'agent',agentRunId:itemId});
@@ -866,7 +880,7 @@ class LocalStore {
 
   importData(payload) {
     object(payload, '백업 파일');
-    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,9,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
     for (const table of ['groups', 'projects', 'services', 'reviews', 'activities', 'attachments']) {
       if (!Array.isArray(payload[table]) || payload[table].length > MAX_ITEMS) fail('백업 자료의 항목 수가 올바르지 않습니다.');
     }
@@ -953,7 +967,9 @@ class LocalStore {
         object(row);
         const type = choice(row.type, ['comment', 'created', 'updated', 'status'], 'comment', '활동 종류');
         const evidence=evidenceValue(row.evidence || {});
-        const body = text(row.body, '댓글', 100000, type === 'comment' && !payload.attachments.some(file => file.activityId === row.id) && !Object.keys(evidence).length);
+        const normalizedBody = text(row.body, '댓글', 100000, type === 'comment' && !payload.attachments.some(file => file.activityId === row.id) && !Object.keys(evidence).length);
+        const body = row.role==='agent'?row.body:normalizedBody;
+        if(body.length>100000)fail('댓글은 100000자까지 입력할 수 있습니다.');
         const fromStatus = row.fromStatus ? choice(row.fromStatus, STATUSES, '', '이전 상태') : '';
         const toStatus = row.toStatus ? choice(row.toStatus, STATUSES, '', '변경 상태') : '';
         const role = choice(row.role,['user','agent','system'],'user','작성자 종류');
