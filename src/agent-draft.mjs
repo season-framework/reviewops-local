@@ -1,9 +1,24 @@
 const contextVersion=1;
 const ids=value=>Array.isArray(value)?value:[];
+const draftCache=new Map();
+
+export function readPersistedAgentDraft(storage,key,{refresh=false}={}){
+ if(!refresh&&draftCache.has(key))return draftCache.get(key);
+ let value={};
+ try{const raw=storage.getItem(key)||'';if(raw){try{const parsed=JSON.parse(raw);value=parsed&&typeof parsed==='object'&&!Array.isArray(parsed)?parsed:{prompt:raw};}catch{value={prompt:raw};}}}catch{}
+ draftCache.set(key,value);return value;
+}
+
+export function persistAgentDraft(storage,key,value){
+ draftCache.set(key,value);
+ try{storage.setItem(key,JSON.stringify(value));return {saved:true};}
+ catch(error){return {saved:false,error};}
+}
 
 // A request consumes its selected materials once. Preserve anything added in
 // another open panel while that request was being accepted.
 export function acceptedAgentDraft(current,sent){
+ if(current.requestId&&sent.requestId&&current.requestId!==sent.requestId)return current;
  const tokens=new Set(ids(sent.pending).map(file=>file.token));
  return {...current,contextInitialized:true,contextVersion,hasAcceptedRequest:true,
   prompt:current.prompt===sent.prompt?'':current.prompt,
@@ -17,6 +32,7 @@ export function acceptedAgentDraft(current,sent){
   fresh:current.fresh===sent.fresh?false:current.fresh,
   sourceRunId:current.sourceRunId===sent.sourceRunId?null:current.sourceRunId,
   sourceTarget:current.sourceRunId===sent.sourceRunId?null:current.sourceTarget,
+  continuedFromRunId:current.continuedFromRunId===sent.continuedFromRunId?null:current.continuedFromRunId,
  };
 }
 
