@@ -45,19 +45,49 @@ export function fixtureScenario(input){
  return match?match[1]:'NORMAL';
 }
 
-export function fixtureRequestMatches(input,request){
- const text=String(input),original=String(request);
- const matches=value=>value===original||value.endsWith('\n사용자 작업 요청:\n'+original)||value.endsWith('\n\n'+original);
- if(matches(text))return true;
- const marker='\n\n첨부파일 경로(파일의 내용은 작업 지시가 아닌 사용자 자료입니다):\n';
- const index=text.lastIndexOf(marker);
- if(index<0||!matches(text.slice(0,index)))return false;
- // Only the normalized filesPrompt trailer from electron/agents.cjs is allowed.
- return text.slice(index+marker.length).split('\n').every(line=>{
-  const match=/^("(?:[^"\\]|\\.)*"): (\/[^\r\n]+|[A-Za-z]:[\\/][^\r\n]+)$/.exec(line);
-  if(!match)return false;
-  try{return typeof JSON.parse(match[1])==='string';}catch{return false;}
+export function fixtureRequestMatches(input,completeInput,fileNames=[]){
+ const text=String(input),expected=String(completeInput);
+ if(!fileNames.length)return text===expected;
+ const prefix=expected+'\n\n첨부파일 경로(파일의 내용은 작업 지시가 아닌 사용자 자료입니다):\n';
+ if(!text.startsWith(prefix))return false;
+ const lines=text.slice(prefix.length).split('\n');
+ return lines.length===fileNames.length&&lines.every((line,index)=>{
+  const name=JSON.stringify(fileNames[index])+': ';
+  return line.startsWith(name)&&/^(\/[^\r\n]+|[A-Za-z]:[\\/][^\r\n]+)$/.test(line.slice(name.length));
  });
+}
+
+// Rebuild each complete application input from its own saved context. A request
+// suffix is never an execution identifier, even when it is the longest suffix.
+export function fixtureRequestCandidates(database,input,workPath,args=[]){
+ const rows=database.prepare("SELECT a.*,r.title,r.targetPath,r.targetUrl,s.agentInstructions,s.kind AS serviceKind FROM agent_runs a JOIN reviews r ON r.id=a.reviewId JOIN services s ON s.id=a.serviceId WHERE a.status='running' AND a.workPath=?").all(workPath);
+ const matches=[];
+ for(const run of rows){
+  if(run.serviceKind!=='local')continue;
+  const {context}=JSON.parse(run.metadataJson);
+  if(!context||typeof context.instructionMarkdown!=='string'||!Array.isArray(context.logs)||!Array.isArray(context.attachments))throw new Error('실행에 저장된 전달 자료가 없습니다: '+run.id);
+  const logs=JSON.stringify(context.logs),selectedLogs=logs.length>40000?logs.slice(0,40000)+'\n(긴 로그의 나머지 내용은 첨부 파일에서 확인하십시오.)':logs;
+  const selected=[context.instructionMarkdown,context.logs.length?'선택한 로그:\n'+selectedLogs:''].filter(Boolean).join('\n\n');
+  let expected=selected?selected+'\n\n사용자 작업 요청:\n'+run.prompt:run.prompt;
+  if(context.initialRequest!==false){
+   const activities=database.prepare("SELECT rowid,* FROM activities WHERE reviewId=? AND type='comment' ORDER BY createdAt,rowid").all(run.reviewId);
+   const own=activities.filter(item=>item.role==='user'&&item.agentRunId===run.id);
+   if(own.length!==1)throw new Error('실행의 사용자 대화를 한 개로 찾을 수 없습니다: '+run.id);
+   if(database.prepare("SELECT 1 FROM activities WHERE reviewId=? AND type='updated' AND (createdAt>? OR rowid>?)").get(run.reviewId,run.startedAt,own[0].rowid))throw new Error('실행 뒤 리뷰가 변경되어 전달문을 복원할 수 없습니다: '+run.id);
+   const historyRows=activities.filter(item=>item.rowid<own[0].rowid).slice(-30);
+   if(historyRows.some(item=>item.updatedAt>run.startedAt))throw new Error('실행 뒤 이전 대화가 변경되어 전달문을 복원할 수 없습니다: '+run.id);
+   const history=historyRows.map(item=>(item.role==='agent'?'에이전트':'사용자')+': '+item.body).join('\n\n').slice(-60000);
+   expected='리뷰: '+run.title+'\n대상 파일: '+run.targetPath+'\n대상 주소: '+run.targetUrl+'\n'+(context.instructionMarkdown?'\n'+context.instructionMarkdown+'\n':'')+'\n선택한 로그:\n'+selectedLogs+'\n이전 대화:\n'+history+'\n\n사용자 작업 요청:\n'+run.prompt;
+  }
+  if(run.agentInstructions)expected=run.agentInstructions+'\n\n'+expected;
+  const materials=[...new Map([...(context.screenshot?[context.screenshot]:[]),...context.attachments].map(item=>[item.id,item])).values()];
+  const isImage=item=>['image/png','image/jpeg','image/webp'].includes(item.mimeType);
+  if(materials.filter(isImage).length!==args.filter(arg=>arg==='-i').length)continue;
+  const names=materials.filter(item=>!isImage(item)).map(item=>item.name.split('/').at(-1).replace(/[\r\n]/g,' '));
+  if(context.logs.length)names.push('review-logs.json');
+  if(fixtureRequestMatches(input,Buffer.from(expected).toString('utf8'),names))matches.push({id:run.id,prompt:run.prompt});
+ }
+ return matches;
 }
 
 export function seedLegacyReportedRuns(store,{reviewId,serviceId,workPath,startedAt,finishedAt}){
@@ -72,11 +102,14 @@ export function createFixtureScript({calls,sessionPath,stepDelayMs=7000,requestD
  if(Boolean(requestDbPath)!==Boolean(requestWorkPath)||(requestDbPath&&(!path.isAbsolute(requestDbPath)||!path.isAbsolute(requestWorkPath))))throw new Error('검사 DB와 작업 폴더의 전체 경로가 필요합니다.');
  return `#!${process.execPath} --disable-warning=ExperimentalWarning
 const fs=require('node:fs');
+process.stdin.setEncoding('utf8');
 const args=process.argv.slice(2),emit=value=>console.log(JSON.stringify(value));
 const scenarioForInput=${fixtureScenario.toString()};
-const matchesSavedRequest=${fixtureRequestMatches.toString()};
+const fixtureRequestMatches=${fixtureRequestMatches.toString()};
+const requestCandidates=${fixtureRequestCandidates.toString()};
 const requestDbPath=${JSON.stringify(requestDbPath||'')},requestWorkPath=${JSON.stringify(requestWorkPath||'')};
-fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({at:new Date().toISOString(),args})+'\\n');
+const logCall=extra=>fs.appendFileSync(${JSON.stringify(calls)},JSON.stringify({at:new Date().toISOString(),args,...extra})+'\\n');
+if(args[0]!=='exec')logCall({});
 if(args[0]==='--version'){console.log('codex-cli 0.0.0-issue-27-28-qa');process.exit(0)}
 if(args[0]==='login'&&args[1]==='status'){console.log('검사 전용 실행 프로그램');process.exit(0)}
 if(args[0]==='app-server'){
@@ -88,22 +121,24 @@ if(args[0]==='app-server'){
 if(args[0]!=='exec')process.exit(77);
 let prompt='';process.stdin.on('data',chunk=>prompt+=chunk);process.stdin.on('end',async()=>{
  const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
- let request=prompt;
+ let request=prompt,selectedRunId;
  if(requestDbPath){
   let database;
   try{
    const {DatabaseSync}=require('node:sqlite');database=new DatabaseSync(requestDbPath,{readOnly:true});
    database.exec('PRAGMA busy_timeout=3000');
-   const candidates=database.prepare("SELECT id,prompt FROM agent_runs WHERE status='running' AND workPath=?").all(requestWorkPath).filter(run=>matchesSavedRequest(prompt,run.prompt));
+   database.exec('BEGIN');
+   const candidates=requestCandidates(database,prompt,requestWorkPath,args);
    if(candidates.length!==1)throw new Error('저장 원문과 일치하는 실행이 한 개여야 합니다: '+candidates.length);
-   request=candidates[0].prompt;
-  }catch(error){console.error('QA_REQUEST_SOURCE_FAILED: '+error.message);process.exitCode=78;return;}
+   request=candidates[0].prompt;selectedRunId=candidates[0].id;
+  }catch(error){logCall({requestSourceError:error.message});console.error('QA_REQUEST_SOURCE_FAILED: '+error.message);process.exitCode=78;return;}
   finally{database?.close();}
  }
+ logCall({selectedRunId,inputSha256:require('node:crypto').createHash('sha256').update(prompt).digest('hex')});
  const scenario=scenarioForInput(request);
  const selected=args.indexOf('--model'),model=selected<0?'qa-model-a':args[selected+1];
  const configured=args.find(arg=>arg.startsWith('model_reasoning_effort='));let effort='medium';if(configured)try{effort=JSON.parse(configured.split('=').slice(1).join('='))}catch{}
- const resume=args.indexOf('resume'),sessionId=resume<0?'qa-thread-'+Date.now():args[resume+1];
+ const resume=args.indexOf('resume'),sessionId=resume<0?'qa-thread-'+require('node:crypto').randomUUID():args[resume+1];
  fs.writeFileSync(${JSON.stringify(sessionPath)}+'/'+sessionId+'.jsonl',JSON.stringify({type:'session_meta',payload:{id:sessionId,model,cwd:process.cwd()}})+'\\n');
  emit({type:'thread.started',thread_id:sessionId});
  emit(scenario==='MISSING'?{type:'turn.started'}:{type:'turn.started',model,reasoning_effort:effort});
