@@ -1,0 +1,175 @@
+name: Test build
+
+on:
+  push:
+    branches:
+      - codex/test-updates
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified build to the single test-latest prerelease
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+# One global lock, across every branch and rerun. Keep it until cleanup ends.
+# Pending older runs may be replaced. Running publications are never cancelled.
+concurrency:
+  group: reviewops-test-latest
+  cancel-in-progress: false
+
+env:
+  REVIEWOPS_PUBLICATION_GROUP: reviewops-test-latest
+
+jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      number: ${{ steps.info.outputs.number }}
+      built_at: ${{ steps.info.outputs.built_at }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - id: info
+        name: Assign one build number and timestamp to all packages
+        shell: bash
+        run: |
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import { ciBuildNumber } from './scripts/test-release.mjs';
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${ciBuildNumber()}\nbuilt_at=${new Date().toISOString()}\n`);
+          JS
+
+  package:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            node_arch: arm64
+          - target: darwin-x64
+            runner: macos-15-intel
+            node_arch: x64
+          - target: win32-x64
+            runner: windows-latest
+            node_arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.node_arch }}
+          cache: npm
+      - run: npm ci
+      - name: Test publication and updater contracts
+        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs
+      - name: Test existing updater contracts on Intel macOS
+        if: matrix.target == 'darwin-x64'
+        run: node --test tests/updates.test.cjs
+      - name: Run existing macOS unit tests
+        if: matrix.target == 'darwin-arm64'
+        shell: bash
+        run: |
+          set +e
+          node --test --test-concurrency=4 --test-timeout=90000 tests/*.test.cjs > "$RUNNER_TEMP/reviewops-unit-tests.log" 2>&1
+          result=$?
+          cat "$RUNNER_TEMP/reviewops-unit-tests.log"
+          if [ "$result" -ne 0 ]; then
+            node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const log = fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'reviewops-unit-tests.log'), 'utf8');
+          const match = /(?:^not ok |\ntest at )/m.exec(log);
+          const detail = match ? log.slice(match.index, match.index + 5000) : log.slice(-5000);
+          console.log('::error title=macOS unit tests::' + detail.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+          JS
+          fi
+          exit "$result"
+      - name: Package and verify the native target
+        env:
+          TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
+          TEST_BUILT_AT: ${{ needs.metadata.outputs.built_at }}
+          TEST_TARGET: ${{ matrix.target }}
+        run: node scripts/test-build.mjs package --target "$TEST_TARGET" --number "$TEST_BUILD_NUMBER" --commit "$GITHUB_SHA" --built-at "$TEST_BUILT_AT"
+        shell: bash
+      - name: Clear generated test identity even after a failed build
+        if: always()
+        run: node scripts/build-info.mjs --clear
+      - name: Stage verified packages for the single publication job
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-test-build-${{ matrix.target }}
+          path: |
+            release/test-${{ matrix.target }}/*.zip
+            release/test-${{ matrix.target }}/*.dmg
+            release/test-${{ matrix.target }}/*.exe
+            release/test-${{ matrix.target }}/*.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          overwrite: true
+
+  publish:
+    if: always()
+    needs: [metadata, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: write
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Collect this run's verified files only
+        if: needs.package.result == 'success'
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: reviewops-test-build-*
+          merge-multiple: true
+          path: release/test
+      - name: Validate complete publication without changing any Release
+        id: validation
+        if: needs.package.result == 'success'
+        run: node scripts/test-release.mjs --directory release/test --dry-run
+      - name: Publish the complete build and remove previous test packages
+        id: publication
+        if: needs.package.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/test-release.mjs --directory release/test --publish
+      - name: Remove temporary package artifacts from this workflow
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          KEEP_CURRENT: ${{ needs.metadata.result == 'success' && steps.publication.outcome != 'success' }}
+          KEEP_CANDIDATE: ${{ steps.publication.outcome != 'success' }}
+        shell: bash
+        run: |
+          if [ "$KEEP_CURRENT" = "true" ]; then
+            node scripts/test-build-artifacts.mjs --delete --keep-current
+          elif [ "$KEEP_CANDIDATE" = "true" ]; then
+            node scripts/test-build-artifacts.mjs --delete --keep-candidate
+          else
+            node scripts/test-build-artifacts.mjs --delete
+          fi
+      - name: Fail when a required package was not verified
+        if: needs.metadata.result != 'success' || needs.package.result != 'success'
+        run: node -e "process.exit(1)"

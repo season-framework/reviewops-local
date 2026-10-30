@@ -7,6 +7,15 @@ on:
         description: Expected release tag, such as v1.2.3 (optional)
         required: false
         type: string
+      publish_to_draft:
+        description: Upload the verified EXE and checksum to an existing stable draft
+        required: false
+        type: boolean
+        default: false
+      reviewed_commit:
+        description: Full reviewed commit SHA; required only for draft upload
+        required: false
+        type: string
   push:
     branches:
       - codex/windows-installer
@@ -39,9 +48,14 @@ jobs:
     name: Build, install, and verify Windows x64
     runs-on: windows-latest
     timeout-minutes: 30
+    permissions:
+      contents: write
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: 'false'
       REVIEWOPS_RELEASE_TAG: ${{ inputs.release_tag }}
+      REVIEWOPS_REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+      REVIEWOPS_PUBLISH_TO_DRAFT: ${{ inputs.publish_to_draft }}
+      REVIEWOPS_EXPECT_STABLE_BUILD: 'true'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -51,6 +65,8 @@ jobs:
           node-version: '24'
           architecture: x64
           cache: npm
+      - name: Check optional draft upload inputs before building
+        run: node scripts/upload-windows-release.mjs --check-inputs
       - run: npm ci
       - run: npm run build
       - name: Run Windows-compatible unit tests
@@ -71,7 +87,8 @@ jobs:
             'tests/agent-model-storage.test.cjs',
             'tests/directory-sync.test.cjs',
             'tests/i18n.test.cjs',
-            'tests/markdown-inline.test.cjs'
+            'tests/markdown-inline.test.cjs',
+            'tests/windows-release-upload.test.cjs'
           )
           node --test --test-concurrency=4 --test-timeout=90000 --test-reporter=spec @testFiles 2>&1 | Tee-Object -FilePath test-results/windows-unit-tests.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -79,6 +96,11 @@ jobs:
         run: npm run package:windows
       - name: Verify package and installed application
         run: npm run test:windows-release
+      - name: Upload verified Windows files to the existing stable draft
+        if: github.event_name == 'workflow_dispatch' && inputs.publish_to_draft == true
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/upload-windows-release.mjs
       - name: Upload verified installer and report
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:

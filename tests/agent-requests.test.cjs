@@ -130,3 +130,14 @@ test('later result notes do not pretend delivery receipt or agent confirmation',
  assert.throws(()=>f.queue.resolve({id:'request-a',resolution:'deferred'}),/처리 내용/);
  f.queue.resolve({id:'request-a',resolution:'deferred',resultNote:'Needs a new execution'});assert.equal(f.current().resolution,'deferred');
 });
+
+test('editing a pending request preserves settings and links while changing its prerequisite and required result',t=>{
+ const f=fixture(t),first=f.run({reviewId:f.nextReview.id,status:'completed'}),second=f.run({reviewId:f.nextReview.id,status:'completed'});
+ const request=f.add({predecessorId:first.id,requiredResult:'First result',model:'saved-model',reasoningEffort:'high',continuedFromRunId:first.id,context:{instruction:false,attachmentIds:[],logIds:[]}});
+ f.queue.confirmResult({id:request.id});assert.equal(f.current().resultConfirmed,true);
+ const edited=f.queue.update({id:request.id,prompt:'  edited request\n',predecessorId:second.id,requiredResult:'New result'});
+ assert.equal(edited.predecessorId,second.id);assert.equal(edited.requiredResult,'New result');assert.equal(edited.resultConfirmed,false);assert.equal(edited.model,'saved-model');assert.equal(edited.reasoningEffort,'high');assert.equal(edited.continuedFromRunId,first.id);assert.deepEqual(edited.context,request.context);assert.deepEqual(edited.executionSettings,request.executionSettings);assert.equal(edited.prompt,'  edited request\n');
+ f.queue.confirmResult({id:request.id});f.queue.update({id:request.id,prompt:'Only prompt changed'});assert.equal(f.current().resultConfirmed,true);
+ const otherProject=f.store.saveProject({groupId:f.group.id,name:'Other project',serviceIds:[f.service.id]}),otherReview=f.store.saveReview({projectId:otherProject.id,serviceId:f.service.id,title:'Other'}),otherRun=f.store.saveAgentRun({reviewId:otherReview.id,serviceId:f.service.id,prompt:'Other',status:'completed',workPath:f.directory});
+ const before=f.current();assert.throws(()=>f.queue.update({id:request.id,predecessorId:otherRun.id,requiredResult:'Lost result'}),/같은 프로젝트/);assert.deepEqual(f.current(),before);
+});

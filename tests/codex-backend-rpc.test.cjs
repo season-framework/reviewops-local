@@ -66,8 +66,9 @@ test('RPC errors keep the safe code and discard potentially sensitive diagnostic
 });
 
 test('a timeout rejects a request and closes the child without replaying it', async (t) => {
-  const rpc = client(t, 100);
+  const rpc = client(t);
   await rpc.start();
+  rpc.options.timeoutMs = 100;
   await assert.rejects(rpc.request('never-respond'), (error) => error.code === 'TIMEOUT');
   assert.equal(rpc.closed, true);
   assert.equal(rpc.pending.size, 0);

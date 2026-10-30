@@ -27,8 +27,10 @@ export default function App() {
  const [deleteConfirm,setDeleteConfirm]=useState('');
  const [updateState,setUpdateState]=useState(null),[updateApplying,setUpdateApplying]=useState(false);
  const updateApplyPending=useRef(false);
+ const updateRevision=useRef(0);
+ const updateStateRef=useRef(null);
  const dataLoaded=useRef(false);
- useEffect(()=>{let alive=true,updated=false;const unsubscribe=window.reviewops?.onUpdateState?.(value=>{updated=true;if(alive)setUpdateState(value)});invoke('update.state').then(value=>{if(alive&&!updated)setUpdateState(value)}).catch(()=>{});return()=>{alive=false;unsubscribe?.()}},[]);
+ useEffect(()=>{let alive=true,updated=false;const unsubscribe=window.reviewops?.onUpdateState?.(value=>{updated=true;updateRevision.current++;updateStateRef.current=value;if(alive)setUpdateState(value)});invoke('update.state').then(value=>{if(alive&&!updated){updateStateRef.current=value;setUpdateState(value)}}).catch(()=>{});return()=>{alive=false;unsubscribe?.()}},[]);
  useEffect(()=>{if(!ready||!dataLoaded.current)return;const frame=requestAnimationFrame(()=>invoke('update.rendererReady').catch(()=>{}));return()=>cancelAnimationFrame(frame)},[ready]);
  const [dark,setDark]=useState(()=>localStorage.getItem('reviewops.theme')==='dark'),[expanded,setExpanded]=useState(()=>localStorage.getItem('reviewops.sidebar.expanded')==='true');
  const [windowState,setWindowState]=useState({maximized:false,fullScreen:false}),[windowChanging,setWindowChanging]=useState(false);
@@ -253,13 +255,14 @@ export default function App() {
  const updateWorking=updateApplying||['checking','downloading','verifying','installing'].includes(updateState?.status);
  const updateProgress=Math.max(0,Math.min(100,Number(updateState?.progress)||0));
  const updateLabel=updateState?.status==='downloading'?t('다운로드 중 {0}%',[updateProgress]):updateState?.status==='verifying'?t('다운로드한 앱 검사 중'):updateState?.status==='installing'?t('업데이트 설치 중'):updateWorking?t('업데이트 준비 중'):updateState?.status==='error'?t('업데이트 다시 시도'):t('업데이트 설치');
- const updateDetail=t('새 버전 {0}',[updateState?.availableVersion||'']);
+ const updateDetail=t(updateState?.availableBuild?.channel==='test'?'새 테스트 버전 {0}':'새 버전 {0}',[updateState?.availableVersion||'']);
  const updateTitle=`${updateLabel} · ${updateDetail}${updateState?.error?` · ${t(updateState.error)}`:''}`;
  const applyUpdate=async()=>{
   if(updateApplyPending.current||updateWorking||!updateAvailable)return;
   updateApplyPending.current=true;setUpdateApplying(true);setError('');
-  try{const state=await invoke('update.apply');if(state?.status)setUpdateState(state);if(state?.status==='error')setError(t(state.error||'업데이트를 완료하지 못했습니다.'))}
-  catch(failure){setError(t(failure.message));setUpdateState(state=>({...state,status:'error',error:failure.message}))}
+  const before=updateRevision.current;
+  try{const state=await invoke('update.apply');const unchanged=before===updateRevision.current,current=updateStateRef.current;if(unchanged&&state?.status){updateStateRef.current=state;setUpdateState(state)}if(state?.status==='error'&&(unchanged||((state.generation??0)===(current?.generation??0)&&current?.status==='error'&&current.error===state.error)))setError(t(state.error||'업데이트를 완료하지 못했습니다.'))}
+  catch(failure){if(before===updateRevision.current){setError(t(failure.message));setUpdateState(state=>({...state,status:'error',error:failure.message}))}}
   finally{updateApplyPending.current=false;setUpdateApplying(false)}
  };
  const deleteLinks=modal?.type==='delete'&&modal.entity==='service'?data.projects.filter(project=>project.serviceIds?.includes(modal.record.id)):[];

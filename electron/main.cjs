@@ -14,6 +14,7 @@ const { MAX_FILE_BYTES, mimeType, describeBytes, listLocal, readLocal, inside } 
 const { createHtmlPreview, htmlPreviewResponse } = require('./html-preview.cjs');
 const {readAgentOutput} = require('./agent-files.cjs');
 const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
+const {getBuildInfo} = require('./build-info.cjs');
 const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
@@ -72,7 +73,7 @@ function closeWindowResources(host,discardStaged=true) {
 function closeAllBrowsers() { for(const record of windowContexts.values()){record.browsers?.closeAll();record.browsers=null;} }
 function ownedTerminal(id) { if(terminalOwners.get(id)!==getRequestWindow())throw new Error('이 창의 터미널만 사용할 수 있습니다.');return id; }
 function ownedStaged(token) { const item=stagedAttachments.get(token);if(item&&item.ownerWindow!==getRequestWindow())throw new Error('이 창에서 추가한 첨부파일만 사용할 수 있습니다.');return item; }
-function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|start|cancel|confirmResult|resolve)$|^review\.(version|target)\.|^backup\.import$/.test(action); }
+function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|update|start|cancel|confirmResult|resolve)$|^review\.(version|target)\.|^backup\.import$/.test(action); }
 
 
 function screenshotBytes(payload) {
@@ -144,6 +145,10 @@ function savedAgentExecutionScope(run) {
   try{original=store.get('services',run.serviceId);}catch(error){if(error.code==='NOT_FOUND')return null;throw error;}
   return agentExecutionScope(original,{...agentSettings(original),workPath:run.workPath,model:run.model});
 }
+function sameAgentLocation(run,service,settings) {
+  // A model selection changes the next turn, not the conversation's location.
+  return savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
+}
 function agentManager() {
   if(!agents) agents=require('./agents.cjs').createAgentManager({onUpdate:job=>{
     const previous=agentJobs.get(job.id);
@@ -195,7 +200,8 @@ function agentMaterials(reviewId) {
   const categoryNames=require('./review-categories.json'),category=store.reviewCategories().find(item=>item.id===review.category)?.name||[...categoryNames.defaults,...categoryNames.legacy].find(([id])=>id===review.category)?.[1]||review.category;
   const instructionMarkdown=`# 에이전트 작업 지시서\n\n## 요청사항\n${review.body || review.title}\n\n## 리뷰 정보\n- 리뷰: ${review.number} (${review.id})\n- 제목: ${review.title}\n- 상태: ${review.status}\n- 우선순위: ${review.priority}\n- 분류: ${category}\n- 프로젝트: ${project.name}\n- 대상 파일: ${review.targetPath || '없음'}\n- 대상 주소: ${review.targetUrl || '없음'}\n- 첨부파일: ${attachments.length}개\n`;
   const requests=store.listAgentRuns(review.id),last=requests[0]?.context;
-  return {instruction:{name:'작업 지시서.md',markdown:instructionMarkdown},screenshots:attachments.filter(item=>['image/png','image/jpeg','image/webp'].includes(item.mimeType)),attachments,sharedFiles,logs,hasRequests:requests.length>0,requestIds:requests.map(run=>run.id),lastRequestContext:last?{instruction:Boolean(last.instruction),screenshotId:last.screenshotId||null,attachmentIds:last.attachmentIds||[],logIds:last.logIds||[]}:null};
+  const savedRequests=require('./agent-requests.cjs').listSavedRequests(store.db,review.id);
+  return {instruction:{name:'작업 지시서.md',markdown:instructionMarkdown},screenshots:attachments.filter(item=>['image/png','image/jpeg','image/webp'].includes(item.mimeType)),attachments,sharedFiles,logs,hasRequests:requests.length>0,requestIds:[...new Set([...requests.map(run=>run.id),...savedRequests.map(row=>row.id)])],lastRequestContext:last?{instruction:Boolean(last.instruction),screenshotId:last.screenshotId||null,attachmentIds:last.attachmentIds||[],logIds:last.logIds||[]}:null};
 }
 async function exportInstruction(reviewId) {
   const review=store.get('reviews',reviewId),materials=agentMaterials(reviewId),name=`ReviewOps-${review.number}-${review.title.replace(/[/\\\x00-\x1f]/g,'_').slice(0,90)}.zip`;
@@ -233,14 +239,32 @@ async function readAgentFile(payload,raw=false) {
 let followupRequests;
 function requestQueue() {
   if(!followupRequests)followupRequests=require('./agent-requests.cjs').createRequestQueue({store,
-    targetForReview:review=>{const service=serviceById(review.serviceId,true);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,agentSettings(service))};},
+    targetForReview:review=>{const service=serviceById(review.serviceId,true),settings=agentSettings(service);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,settings),settings};},
     targetForRun:run=>{const service=serviceById(run.serviceId,true);return require('./agent-requests.cjs').requestTargetKey(service,{...agentSettings(service),workPath:run.workPath});},
     start:payload=>agentAction('agent.start',payload)
   });
   return followupRequests;
 }
 async function agentAction(action,payload) {
-  if(action.startsWith('agent.request.')){const method=action.slice('agent.request.'.length);if(!['list','add','confirmResult','cancel','start','resolve'].includes(method))throw new Error('지원하지 않는 후속 요청 기능입니다.');return requestQueue()[method](method==='list'?payload.reviewId:payload);}
+  if(action.startsWith('agent.request.')){
+    const method=action.slice('agent.request.'.length);if(!['list','add','update','confirmResult','cancel','start','resolve'].includes(method))throw new Error('지원하지 않는 후속 요청 기능입니다.');
+    if(method==='add') {
+      const signature=digest(JSON.stringify([payload.reviewId,payload.prompt,payload.model??null,payload.reasoningEffort??null,payload.executionSettings??null,Boolean(payload.newConversation),payload.predecessorId||'',payload.requiredResult||'',payload.context??null,payload.attachmentTokens||[],payload.screenshotToken||'',payload.sourceRunId||'',payload.sourceTarget??null,payload.continuedFromRunId||'']));
+      const existing=payload.requestId&&require('./agent-requests.cjs').listSavedRequests(store.db,payload.reviewId).find(row=>row.id===payload.requestId);
+      if(existing?.requestSignature){if(existing.requestSignature!==signature)throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.');return requestQueue().list(payload.reviewId).requests.find(row=>row.id===existing.id);}
+      payload={...payload,requestSignature:signature};
+    }
+    if(['add','update'].includes(method)&&payload.context){const context={...payload.context},screenshotToken=payload.screenshotToken||context.screenshotToken;delete context.screenshotToken;payload={...payload,context,...(screenshotToken?{screenshotToken}:{})};}
+    if(['add','update'].includes(method)&&(payload.attachmentTokens?.length||payload.screenshotToken)) {
+      const tokens=attachmentTokens([...new Set([...(payload.attachmentTokens||[]),...(payload.screenshotToken?[payload.screenshotToken]:[])])]),staged=tokens.map(token=>{const item=ownedStaged(token);if(!item||item.expires<Date.now())throw new Error('첨부파일을 다시 선택하십시오. 임시 보관 시간이 지났습니다.');if(!item.metadata.id)item.metadata.id=crypto.randomUUID();return item;});
+      const context=require('./agent-execution-settings.cjs').requestContext(payload.context||{instruction:false,attachmentIds:[],logIds:[]});
+      const screenshot=payload.screenshotToken?ownedStaged(payload.screenshotToken):null;
+      if(screenshot&&!['image/png','image/jpeg','image/webp'].includes(screenshot.metadata.mimeType))throw new Error('PNG, JPEG, WebP 스크린샷을 선택하십시오.');
+      const updated={...payload,context:{...context,screenshotId:screenshot?.metadata.id||context.screenshotId,attachmentIds:[...new Set([...context.attachmentIds,...staged.filter(item=>item&&item!==screenshot).map(item=>item.metadata.id)])]}};
+      const result=await saveWithAttachments(tokens,()=>requestQueue()[method](updated),row=>({reviewId:row.reviewId}));return result.entity;
+    }
+    return requestQueue()[method](method==='list'?payload.reviewId:payload);
+  }
   if(action==='agent.loginState'){serviceById(payload.serviceId);return [...agentJobs.values()].reverse().find(job=>job.kind==='login'&&job.serviceId===payload.serviceId)||null;}
   if(action==='agent.list')return store.listAgentRuns(payload.reviewId);
   if(action==='agent.read')return agentJobs.get(payload.id)||store.get('agent_runs',payload.id);
@@ -277,9 +301,9 @@ async function agentAction(action,payload) {
     return {saved:true,path:selection.filePath,name:file.name,size:file.size};
   }
   const requestId=action==='agent.start'&&payload.requestId;
-  const requestSignature=action==='agent.start'?digest(JSON.stringify([payload.reviewId,typeof payload.prompt==='string'?payload.prompt.trim():'',Boolean(payload.newConversation),payload.model ?? null,payload.reasoningEffort ?? null,payload.context ?? null,payload.attachmentTokens || [],payload.retryOf ?? null,Boolean(payload.independentExecution),...(payload.sourceRunId?[payload.sourceRunId,payload.sourceTarget??null]:[])])):'';
+  const requestSignature=action==='agent.start'?digest(JSON.stringify([payload.reviewId,typeof payload.prompt==='string'?payload.prompt:'',Boolean(payload.newConversation),payload.model ?? null,payload.reasoningEffort ?? null,payload.context ?? null,payload.attachmentTokens || [],payload.retryOf ?? null,Boolean(payload.independentExecution),...(payload.sourceRunId?[payload.sourceRunId,payload.sourceTarget??null]:[]),...(payload.executionSettings?[payload.executionSettings]:[]),...(payload.continuedFromRunId?[payload.continuedFromRunId]:[])])):'';
   if(requestId && (typeof requestId!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)))throw new Error('에이전트 요청 ID가 올바르지 않습니다.');
-  if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.reviewId!==payload.reviewId||existing.prompt!==payload.prompt?.trim()||(existing.requestSignature&&existing.requestSignature!==requestSignature))throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
+  if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.reviewId!==payload.reviewId||existing.prompt!==payload.prompt||(existing.requestSignature&&existing.requestSignature!==requestSignature))throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
   const manager=agentManager();
   if(action==='agent.cancel')return manager.cancel(payload.id);
   const review=['agent.start','agent.session'].includes(action)?store.get('reviews',payload.reviewId):null;
@@ -293,9 +317,9 @@ async function agentAction(action,payload) {
     assertNoAgent(job=>job.serviceId===service.id);
     if(payload.model!==undefined){if(typeof payload.model!=='string'||payload.model.length>256||/[\s\0]/.test(payload.model))throw new Error('에이전트 모델 이름이 올바르지 않습니다.');settings.model=payload.model;}
     const candidates=store.listAgentRuns(review.id).filter(run=>run.status==='completed'&&run.sessionId);
-    const scope=agentExecutionScope(service,settings),last=candidates.find(run=>savedAgentExecutionScope(run)===scope);
+    const last=candidates.find(run=>sameAgentLocation(run,service,settings));
     if(!last){
-      const moved=candidates.find(run=>run.workPath!==settings.workPath&&savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,workPath:run.workPath}));
+      const moved=candidates.find(run=>run.workPath!==settings.workPath&&sameAgentLocation(run,service,{...settings,workPath:run.workPath}));
       if(moved)return {available:false,sessionId:moved.sessionId,model:moved.model,requestedModel:settings.model,status:'work_path_changed',message:'저장된 세션의 작업 폴더가 프로젝트 설정과 다릅니다. 새 대화로 실행하십시오.'};
       return {available:false,sessionId:'',model:'',requestedModel:settings.model,status:'missing',message:'저장된 에이전트 세션이 없습니다.'};
     }
@@ -325,21 +349,43 @@ async function agentAction(action,payload) {
   }
   if(action!=='agent.start')throw new Error('지원하지 않는 에이전트 기능입니다.');
   if(!service.agentEnabled)throw new Error('프로젝트 설정에서 에이전트 사용을 켜십시오.');
-  const prompt=typeof payload.prompt==='string'?payload.prompt.trim():'';
-  if(!prompt||prompt.length>100000)throw new Error('작업 요청은 1자 이상 100,000자 이하로 입력하십시오.');
+  const prompt=typeof payload.prompt==='string'?payload.prompt:'';
+  if(!prompt.trim()||prompt.length>100000||prompt.includes('\0'))throw new Error('작업 요청은 1자 이상 100,000자 이하로 입력하십시오.');
   const displayPrompt=payload.displayPrompt===undefined?prompt:payload.displayPrompt;
   if(typeof displayPrompt!=='string'||!displayPrompt.trim()||displayPrompt.length>100000||displayPrompt.includes('\0'))throw new Error('표시할 작업 요청은 1자 이상 100,000자 이하로 입력하십시오.');
   if(payload.model!==undefined){if(typeof payload.model!=='string'||payload.model.length>256||/\s|\0/.test(payload.model))throw new Error('에이전트 모델 이름이 올바르지 않습니다.');settings.model=payload.model;}
   if(payload.reasoningEffort!==undefined){if(!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(payload.reasoningEffort))throw new Error('에이전트 추론 수준이 올바르지 않습니다.');settings.reasoningEffort=payload.reasoningEffort;}
   if(retry){if(payload.model===undefined)settings.model=retry.model;if(payload.reasoningEffort===undefined)settings.reasoningEffort=retry.reasoningEffort;}
-  const newConversation=payload.newConversation===undefined?Boolean(retry?.newConversation):Boolean(payload.newConversation);
+  const selectedSettings={model:payload.model??'',reasoningEffort:payload.reasoningEffort??''};
+  const executionSettings=require('./agent-execution-settings.cjs').executionSettings(payload.executionSettings??(retry&&payload.model===undefined&&payload.reasoningEffort===undefined?retry.executionSettings:undefined)??{version:1,selected:selectedSettings,automatic:{model:!selectedSettings.model,reasoningEffort:!selectedSettings.reasoningEffort},sent:{model:settings.model,reasoningEffort:settings.reasoningEffort}},{model:settings.model,reasoningEffort:settings.reasoningEffort});
+  const newConversation=Boolean(payload.newConversation);
   if(payload.independentExecution!==undefined&&typeof payload.independentExecution!=='boolean')throw new Error('독립실행 옵션이 올바르지 않습니다.');
   const independentExecution=payload.independentExecution===undefined?Boolean(retry?.independentExecution):payload.independentExecution;
-  if(source&&JSON.stringify(payload.sourceTarget)!==JSON.stringify(require('./agent-copy-draft.cjs').executionTarget(service,settings)))throw new Error('초안을 가져온 뒤 실행 대상이나 에이전트 설정이 변경되었습니다. 이전 내용을 다시 가져와 새 설정을 확인하십시오.');
+  if(source) {
+    const current=require('./agent-copy-draft.cjs').executionTarget(service,settings);
+    if(!payload.sourceTarget||['kind','host','hostAlias','sshConfigPath','port','username','workPath','binary'].some(key=>(payload.sourceTarget[key]??'')!==(current[key]??'')))throw new Error('초안을 가져온 뒤 실행 대상이 변경되었습니다. 이전 내용을 다시 가져와 실행 대상을 확인하십시오.');
+  }
   assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   const sessionScope=agentExecutionScope(service,settings);
-  if(retry&&savedAgentExecutionScope(retry)!==sessionScope)throw new Error('접속 대상, 작업 폴더 또는 에이전트 설정이 변경되었습니다. 새 요청으로 실행하십시오.');
-  const previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&savedAgentExecutionScope(run)===sessionScope&&run.sessionId);
+  if(retry&&!sameAgentLocation(retry,service,settings))throw new Error('접속 대상, 작업 폴더 또는 실행 파일이 변경되었습니다. 새 요청으로 실행하십시오.');
+  let previous=newConversation?null:store.listAgentRuns(review.id).find(run=>run.status==='completed'&&sameAgentLocation(run,service,settings)&&run.sessionId);
+  const currentTarget=require('./agent-copy-draft.cjs').executionTarget(service,settings),sameLocation=run=>{
+    const target=run.executionTarget;
+    if(target)return ['kind','host','hostAlias','sshConfigPath','port','username','workPath','binary'].every(key=>(target[key]??'')===(currentTarget[key]??''));
+    try{const config=store.get('services',run.serviceId);return require('./agent-requests.cjs').requestTargetKey(config,{...agentSettings(config),workPath:run.workPath})===require('./agent-requests.cjs').requestTargetKey(service,settings)&&agentSettings(config).binary===settings.binary;}catch{return false;}
+  };
+  const explicitPrevious=payload.continuedFromRunId?store.get('agent_runs',payload.continuedFromRunId):null;
+  if(explicitPrevious&&(explicitPrevious.reviewId!==review.id||newConversation||!sameLocation(explicitPrevious)))throw new Error('같은 리뷰와 작업 폴더의 요청만 이어서 실행할 수 있습니다.');
+  if(retry&&!newConversation) {
+    const originalPrevious=retry.continuedFromRunId?store.get('agent_runs',retry.continuedFromRunId):null;
+    if(explicitPrevious&&explicitPrevious.id!==retry.id&&explicitPrevious.id!==originalPrevious?.id)throw new Error('재실행은 원본 요청의 대화만 사용할 수 있습니다.');
+    previous=retry.sessionId?retry:originalPrevious;
+    if(!previous?.sessionId||previous.reviewId!==review.id||!sameLocation(previous))throw Object.assign(new Error('원본 요청의 대화를 사용할 수 없습니다. 새 대화를 선택하여 실행하십시오.'),{code:'AGENT_RETRY_SESSION_MISSING'});
+  } else if(explicitPrevious) {
+    if(!explicitPrevious.sessionId)throw Object.assign(new Error('이 요청의 대화를 사용할 수 없습니다. 새 대화를 선택하여 실행하십시오.'),{code:'AGENT_SESSION_MISSING'});
+    previous=explicitPrevious;
+  }
+  const logicalPrevious=newConversation?null:retry?previous:explicitPrevious||previous;
   const snapshot=store.snapshot();
   const history=snapshot.activities.filter(item=>item.reviewId===review.id&&item.type==='comment').slice(-30).map(item=>`${item.role==='agent'?'에이전트':'사용자'}: ${item.body}`).join('\n\n').slice(-60000);
   const materials=agentMaterials(review.id),automaticContext=!materials.hasRequests,initialRequest=retry?(retry.context?.initialRequest??true):automaticContext,selection=retry?.context || (payload.context===undefined?{instruction:payload.includeInstruction??automaticContext,attachmentIds:payload.attachmentIds??materials.attachments.filter(item=>item.mimeType.startsWith('image/')?(payload.includeScreenshots??automaticContext):automaticContext).map(item=>item.id),logIds:payload.includeLogs===false?[]:payload.logCaptureId?[payload.logCaptureId]:(payload.includeLogs??automaticContext)?materials.logs.map(item=>item.id):[]}:payload.context);
@@ -367,7 +413,7 @@ async function agentAction(action,payload) {
   const selectedText=[context.instructionMarkdown,logs.length?`선택한 로그:\n${selectedLogText}`:''].filter(Boolean).join('\n\n');
   const input=initialRequest?`리뷰: ${review.title}\n대상 파일: ${review.targetPath}\n대상 주소: ${review.targetUrl}\n${context.instructionMarkdown?`\n${context.instructionMarkdown}\n`:''}\n선택한 로그:\n${selectedLogText}\n이전 대화:\n${history}\n\n사용자 작업 요청:\n${prompt}`:selectedText?`${selectedText}\n\n사용자 작업 요청:\n${prompt}`:prompt;
   if(logs.length)files.push({name:'review-logs.json',mimeType:'application/json',bytes:Buffer.from(JSON.stringify(logs,null,2))});
-  const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,executionTarget:require('./agent-copy-draft.cjs').executionTarget(service,settings),...(source?{sourceRunId:source.id}:{}),model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
+  const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,executionSettings,...(logicalPrevious?{continuedFromRunId:logicalPrevious.id}:{}),executionTarget:currentTarget,...(source?{sourceRunId:source.id}:{}),model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
   const execution={...job,prompt:input,config:service,settings,images,files};
   manager.validateStart(execution);
   const preflightOperation=`agent-preflight:${id}`;operations.add(preflightOperation);
@@ -380,7 +426,7 @@ async function agentAction(action,payload) {
   assertNoAgent(job=>job.serviceId===service.id);
   assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   manager.validateStart(execution);
-  await saveWithAttachments(tokens,()=>{store.saveAgentRun(job);return store.addActivity({reviewId:review.id,body:displayPrompt.trim(),role:'user',agentRunId:id,status:'in_progress'});},activity=>({reviewId:review.id,activityId:activity.id}));
+  await saveWithAttachments(tokens,()=>{store.saveAgentRun(job);return store.addActivity({reviewId:review.id,body:displayPrompt,role:'user',agentRunId:id,status:'in_progress'});},activity=>({reviewId:review.id,activityId:activity.id}));
   operations.add(`agent:${id}`);agentJobs.set(id,job);
   try{manager.start(execution);return agentJobs.get(id);}
   catch(error){const failed={...job,status:'failed',error:error.message||'에이전트 실행을 시작하지 못했습니다.',errorCode:error.code||'AGENT_START_FAILED',finishedAt:new Date().toISOString()};agentJobs.set(id,failed);store.saveAgentRun(failed);operations.delete(`agent:${id}`);return failed;}
@@ -650,9 +696,21 @@ async function dispatch(action, payload = {}) {
   if(requestWindowContext.getStore())getRequestWindow();
   if(payload.projectId&&!payload.serviceId&&['ssh.test','ssh.run','terminal.open','files.list','files.read','agent.environment','agent.login','agent.logout','agent.loginState','agent.session'].includes(action))payload={...payload,serviceId:store.project(payload.projectId).connection?.id};
   if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('요청이 올바르지 않습니다.');
+  if (action === 'clipboard.writeText') {
+    if(typeof payload.text!=='string'||!payload.text.length||Buffer.byteLength(payload.text)>2*1024*1024)throw new Error('복사할 내용을 다시 선택하십시오.');
+    clipboard.writeText(payload.text);
+    return {copied:true};
+  }
   if (action === 'app.language') {const result=appLanguage.setLanguage(payload.language);updateNativeMenu();return result;}
   if (action.startsWith('update.')) {
     if (!updater) throw new Error('Update settings are not ready.');
+    if (action === 'update.copyInfo') {
+      const state = updater.snapshot();
+      const tr = appLanguage.t;
+      const describe = (label, build) => !build ? [] : [`${tr(label)}: ${build.version} (${tr(build.channel === 'test' ? '테스트' : '정식')})`, ...(build.channel === 'test' ? [`${tr('빌드 번호')}: ${build.buildNumber}`, `${tr('커밋')}: ${build.commit}`, `${tr('생성 시간')}: ${build.builtAt}`] : [])];
+      clipboard.writeText([...describe('설치된 버전', state.installedBuild), ...describe('받을 버전', state.availableBuild || (state.availableVersion ? {channel:'stable',version:state.availableVersion} : null)), `CPU: ${state.arch}`].join('\n'));
+      return { copied: true };
+    }
     const method = { 'update.state':'snapshot', 'update.check':'check', 'update.download':'download', 'update.install':'install', 'update.apply':'apply', 'update.configure':'configure', 'update.openRelease':'openRelease', 'update.rendererReady':'markHealthy' }[action];
     if (!method) throw new Error('Unsupported update action.');
     return updater[method](payload);
@@ -981,7 +1039,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
@@ -993,7 +1051,7 @@ else {
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }});
     });
     updateNativeMenu();
-    updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
+    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
     updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:liveWindows,withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
     codexManager.registerHandlers(ipcMain);

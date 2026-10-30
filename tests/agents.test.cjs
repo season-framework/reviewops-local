@@ -783,7 +783,7 @@ for(const kind of ['local','ssh'])test(`${kind} stored-session checks read metad
  const settings={...f.settings,binary:path.join(f.bin,'does-not-exist')};
  const result=await f.manager.session(f.config,settings,sessionId);assert.equal(result.available,true);assert.equal(result.model,'fixture-model');assert.equal(result.status,'available');
  assert.equal(Object.hasOwn(result,'content'),false);assert.equal(JSON.stringify(result).includes('private conversation'),false);
- const changed=await f.manager.session(f.config,{...settings,model:'another-model'},sessionId);assert.equal(changed.available,false);assert.equal(changed.status,'model_changed');
+ const changed=await f.manager.session(f.config,{...settings,model:'another-model'},sessionId);assert.equal(changed.available,true);assert.equal(changed.status,'available');assert.equal(changed.model,'fixture-model');assert.equal(changed.requestedModel,'another-model');
  const missing=await f.manager.session(f.config,settings,'missing-session');assert.equal(missing.available,false);assert.equal(missing.status,'missing');
  await assert.rejects(f.manager.session(f.config,settings,'bad;session'),{code:'AGENT_SESSION_INVALID'});
  await assert.rejects(fs.access(path.join(f.root,'last-input.json')));assert.equal(f.manager.size,0);
