@@ -144,6 +144,7 @@ async function harness(t, options = {}) {
     }};
     if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
+    if (name === './build-info.cjs') return {getBuildInfo:version=>({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
@@ -1806,4 +1807,14 @@ test('issue 28 native clipboard writes exact original text only for a trusted ap
  h.state.clipboardError=new Error('synthetic clipboard failure');const failed=await h.invoke('clipboard.writeText',{text:'retry text'});assert.equal(failed.ok,false);assert.match(failed.error.message,/synthetic clipboard failure/);assert.equal(h.state.clipboardText,text);
  h.state.clipboardError=null;assert.deepEqual(await h.success('clipboard.writeText',{text:'retry text'}),{copied:true});assert.equal(h.state.clipboardText,'retry text');
  assert.equal(h.state.permissionCheck(host.webContents,'clipboard-read','reviewops://app/index.html'),false);assert.equal(h.state.permissionCheck(host.webContents,'clipboard-sanitized-write','https://external.example'),false);
+});
+
+test('update build information copies through the trusted native clipboard route',async t=>{
+ const h=await harness(t),state=await h.success('update.state');
+ assert.deepEqual(await h.success('update.copyInfo'),{copied:true});
+ assert.ok(h.state.clipboardText.includes(`설치된 버전: ${state.version} (정식)`));
+ assert.ok(h.state.clipboardText.includes(`CPU: ${state.arch}`));
+ assert.ok(!h.state.clipboardText.includes('빌드:'));
+ const host=h.state.window;
+ assert.equal((await h.invoke('update.copyInfo',{}, {sender:host.webContents,senderFrame:{url:'https://external.example/'}})).ok,false);
 });

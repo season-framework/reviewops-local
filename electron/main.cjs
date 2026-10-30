@@ -14,6 +14,7 @@ const { MAX_FILE_BYTES, mimeType, describeBytes, listLocal, readLocal, inside } 
 const { createHtmlPreview, htmlPreviewResponse } = require('./html-preview.cjs');
 const {readAgentOutput} = require('./agent-files.cjs');
 const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
+const {getBuildInfo} = require('./build-info.cjs');
 const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
@@ -703,6 +704,13 @@ async function dispatch(action, payload = {}) {
   if (action === 'app.language') {const result=appLanguage.setLanguage(payload.language);updateNativeMenu();return result;}
   if (action.startsWith('update.')) {
     if (!updater) throw new Error('Update settings are not ready.');
+    if (action === 'update.copyInfo') {
+      const state = updater.snapshot();
+      const tr = appLanguage.t;
+      const describe = (label, build) => !build ? [] : [`${tr(label)}: ${build.version} (${tr(build.channel === 'test' ? '테스트' : '정식')})`, ...(build.channel === 'test' ? [`${tr('빌드 번호')}: ${build.buildNumber}`, `${tr('커밋')}: ${build.commit}`, `${tr('생성 시간')}: ${build.builtAt}`] : [])];
+      clipboard.writeText([...describe('설치된 버전', state.installedBuild), ...describe('받을 버전', state.availableBuild || (state.availableVersion ? {channel:'stable',version:state.availableVersion} : null)), `CPU: ${state.arch}`].join('\n'));
+      return { copied: true };
+    }
     const method = { 'update.state':'snapshot', 'update.check':'check', 'update.download':'download', 'update.install':'install', 'update.apply':'apply', 'update.configure':'configure', 'update.openRelease':'openRelease', 'update.rendererReady':'markHealthy' }[action];
     if (!method) throw new Error('Unsupported update action.');
     return updater[method](payload);
@@ -1031,7 +1039,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.apply','update.configure','update.openRelease','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
@@ -1043,7 +1051,7 @@ else {
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }});
     });
     updateNativeMenu();
-    updater=createUpdateManager({app,dataPath,shell,isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
+    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
     updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:liveWindows,withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
     codexManager.registerHandlers(ipcMain);

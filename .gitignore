@@ -5,6 +5,7 @@ test-results/
 .DS_Store
 *.log
 .local-data/
+electron/reviewops-build.json
 
 # Local credentials and unpublished user data
 .env

@@ -159,7 +159,8 @@ try {
   report.size = (await fs.stat(installer)).size;
   await fs.writeFile(`${installer}.sha256`, `${report.sha256}  ${installerName}\n`);
   check('Installer PE structure, product version, per-user installation, and data retention options');
-  const packagedArchive = path.join(root, 'release', 'win-unpacked', 'resources', 'app.asar');
+  const packageRoot = process.env.REVIEWOPS_VERIFY_PACKAGE_ROOT || path.join(root, 'release');
+  const packagedArchive = path.join(packageRoot, 'win-unpacked', 'resources', 'app.asar');
   const archiveHash = await verifyAsar(packagedArchive);
 
   fixtureRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-windows-release-'));
@@ -333,6 +334,13 @@ try {
   check('Closing both external project windows keeps the original application window open');
   await closeWindow();
   check('Close icon shuts down the installed application');
+  // Test builds share an application version. NSIS must allow installing that
+  // version again without replacing the QA data directory.
+  await nativeProcess(installer, ['/S', `/D=${installDir}`], env);
+  await waitForFileState(executable, true);
+  assert.equal(await hashFile(path.join(installDir, 'resources', 'app.asar')), archiveHash);
+  assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
+  check('Same-version installer runs again and preserves the application archive and existing user files');
   await launch();
   const restored = await invoke('snapshot');
   assert.equal(restored.projects.find(item => item.id === project.id).name, project.name);
