@@ -57,27 +57,26 @@ export function fixtureRequestMatches(input,completeInput,fileNames=[]){
  });
 }
 
-// Rebuild each complete application input from its own saved context. A request
-// suffix is never an execution identifier, even when it is the longest suffix.
+// Only history-free initial requests and saved-context followups are supported.
+// Validate every local run in the workspace before accepting any input match:
+// discarding an unreconstructable run could select another run with identical input.
 export function fixtureRequestCandidates(database,input,workPath,args=[]){
  const rows=database.prepare("SELECT a.*,r.title,r.targetPath,r.targetUrl,s.agentInstructions,s.kind AS serviceKind FROM agent_runs a JOIN reviews r ON r.id=a.reviewId JOIN services s ON s.id=a.serviceId WHERE a.status='running' AND a.workPath=?").all(workPath);
  const matches=[];
  for(const run of rows){
   if(run.serviceKind!=='local')continue;
   const {context}=JSON.parse(run.metadataJson);
-  if(!context||typeof context.instructionMarkdown!=='string'||!Array.isArray(context.logs)||!Array.isArray(context.attachments))throw new Error('실행에 저장된 전달 자료가 없습니다: '+run.id);
+  if(!context||typeof context.initialRequest!=='boolean'||typeof context.instructionMarkdown!=='string'||!Array.isArray(context.logs)||!Array.isArray(context.attachments))throw new Error('실행에 저장된 전달 자료가 없습니다: '+run.id);
   const logs=JSON.stringify(context.logs),selectedLogs=logs.length>40000?logs.slice(0,40000)+'\n(긴 로그의 나머지 내용은 첨부 파일에서 확인하십시오.)':logs;
   const selected=[context.instructionMarkdown,context.logs.length?'선택한 로그:\n'+selectedLogs:''].filter(Boolean).join('\n\n');
   let expected=selected?selected+'\n\n사용자 작업 요청:\n'+run.prompt:run.prompt;
-  if(context.initialRequest!==false){
+  if(context.initialRequest){
    const activities=database.prepare("SELECT rowid,* FROM activities WHERE reviewId=? AND type='comment' ORDER BY createdAt,rowid").all(run.reviewId);
    const own=activities.filter(item=>item.role==='user'&&item.agentRunId===run.id);
    if(own.length!==1)throw new Error('실행의 사용자 대화를 한 개로 찾을 수 없습니다: '+run.id);
    if(database.prepare("SELECT 1 FROM activities WHERE reviewId=? AND type='updated' AND (createdAt>? OR rowid>?)").get(run.reviewId,run.startedAt,own[0].rowid))throw new Error('실행 뒤 리뷰가 변경되어 전달문을 복원할 수 없습니다: '+run.id);
-   const historyRows=activities.filter(item=>item.rowid<own[0].rowid).slice(-30);
-   if(historyRows.some(item=>item.updatedAt>run.startedAt))throw new Error('실행 뒤 이전 대화가 변경되어 전달문을 복원할 수 없습니다: '+run.id);
-   const history=historyRows.map(item=>(item.role==='agent'?'에이전트':'사용자')+': '+item.body).join('\n\n').slice(-60000);
-   expected='리뷰: '+run.title+'\n대상 파일: '+run.targetPath+'\n대상 주소: '+run.targetUrl+'\n'+(context.instructionMarkdown?'\n'+context.instructionMarkdown+'\n':'')+'\n선택한 로그:\n'+selectedLogs+'\n이전 대화:\n'+history+'\n\n사용자 작업 요청:\n'+run.prompt;
+   if(activities.some(item=>item.rowid<own[0].rowid))throw new Error('검사 전용 실행기는 이전 대화가 있는 초기 요청을 지원하지 않습니다. 원래 전달문과 실행을 확정할 수 없습니다: '+run.id);
+   expected='리뷰: '+run.title+'\n대상 파일: '+run.targetPath+'\n대상 주소: '+run.targetUrl+'\n'+(context.instructionMarkdown?'\n'+context.instructionMarkdown+'\n':'')+'\n선택한 로그:\n'+selectedLogs+'\n이전 대화:\n\n\n사용자 작업 요청:\n'+run.prompt;
   }
   if(run.agentInstructions)expected=run.agentInstructions+'\n\n'+expected;
   const materials=[...new Map([...(context.screenshot?[context.screenshot]:[]),...context.attachments].map(item=>[item.id,item])).values()];
