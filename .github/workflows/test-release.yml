@@ -82,7 +82,23 @@ jobs:
         run: node --test tests/updates.test.cjs
       - name: Run existing macOS unit tests
         if: matrix.target == 'darwin-arm64'
-        run: node --test --test-concurrency=4 --test-timeout=90000 tests/*.test.cjs
+        shell: bash
+        run: |
+          set +e
+          node --test --test-concurrency=4 --test-timeout=90000 tests/*.test.cjs > "$RUNNER_TEMP/reviewops-unit-tests.log" 2>&1
+          result=$?
+          cat "$RUNNER_TEMP/reviewops-unit-tests.log"
+          if [ "$result" -ne 0 ]; then
+            node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          const log = fs.readFileSync(path.join(process.env.RUNNER_TEMP, 'reviewops-unit-tests.log'), 'utf8');
+          const match = /(?:^not ok |\ntest at )/m.exec(log);
+          const detail = match ? log.slice(match.index, match.index + 5000) : log.slice(-5000);
+          console.log('::error title=macOS unit tests::' + detail.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A'));
+          JS
+          fi
+          exit "$result"
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
