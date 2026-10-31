@@ -28,6 +28,7 @@ const nativeWindow = fn => app.evaluate(({ BrowserWindow }, expression) => {
 }, fn.toString());
 const enterFullScreen = () => page.getByRole('button', { name: '창 전체 화면', exact: true });
 const leaveFullScreen = () => page.getByRole('button', { name: '창 전체 화면 종료', exact: true });
+const projectWindow = () => page.getByRole('button', { name: '프로젝트 창 열기', exact: true });
 const close = () => page.getByRole('button', { name: '창 닫기', exact: true });
 const nativeContents = (id, expression) => app.evaluate(({ webContents }, { id, expression }) => webContents.fromId(id).executeJavaScript(expression, true), { id, expression });
 const toggleNativeMenuFullScreen = async expected => {
@@ -54,7 +55,8 @@ async function controlsGeometry() {
   return page.locator('.workspace-tabs').evaluate(strip => {
     const box = node => { const { x, y, width, height, right, bottom } = node.getBoundingClientRect(); return { x, y, width, height, right, bottom }; };
     const buttons = [...strip.querySelectorAll('.window-control')];
-    return { strip: box(strip), refresh: box(strip.querySelector('.workspace-refresh')), sidebarControls: document.querySelectorAll('.sidebar .window-control').length, buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region'), cursor: getComputedStyle(button).cursor, text: button.textContent.trim(), icons: button.querySelectorAll('svg').length })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
+    const project = strip.querySelector('.workspace-project-window');
+    return { strip: box(strip), refresh: box(strip.querySelector('.workspace-refresh')), projectWindow: { ...box(project), label: project.getAttribute('aria-label'), cursor: getComputedStyle(project).cursor, appRegion: getComputedStyle(project).getPropertyValue('-webkit-app-region') }, sidebarControls: document.querySelectorAll('.sidebar .window-control').length, buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region'), cursor: getComputedStyle(button).cursor, text: button.textContent.trim(), icons: button.querySelectorAll('svg').length })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
   });
 }
 
@@ -63,7 +65,13 @@ function expectTopRightControls(geometry) {
   assert.equal(geometry.buttons.length, 2);
   assert.match(geometry.buttons[0].label, /^창 전체 화면(?: 종료)?$/);
   assert.equal(geometry.buttons[1].label, '창 닫기');
-  const controls = [geometry.refresh, ...geometry.buttons];
+  assert.equal(geometry.projectWindow.label, '프로젝트 창 열기');
+  assert.equal(geometry.projectWindow.appRegion, 'no-drag');
+  assert.equal(geometry.projectWindow.cursor, 'pointer');
+  assert.ok(geometry.projectWindow.width >= 32 && geometry.projectWindow.height >= 32);
+  assert.ok(geometry.projectWindow.x >= geometry.strip.x && geometry.projectWindow.right <= geometry.strip.right + 1);
+  assert.ok(geometry.projectWindow.y >= geometry.strip.y && geometry.projectWindow.bottom <= geometry.strip.bottom + 1);
+  const controls = [geometry.refresh, geometry.projectWindow, ...geometry.buttons];
   for (const button of geometry.buttons) {
     assert.equal(button.appRegion, 'no-drag');
     assert.equal(button.cursor, 'pointer');
@@ -75,8 +83,12 @@ function expectTopRightControls(geometry) {
   }
   for (let index = 1; index < controls.length; index += 1) {
     assert.ok(controls[index].x >= controls[index - 1].right - 1);
-    assert.ok(controls[index].x - controls[index - 1].right <= 12);
-    assert.ok(Math.abs(controls[index].y + controls[index].height / 2 - controls[index - 1].y - controls[index - 1].height / 2) <= 1);
+    // The project action has a 6px margin after its text button.
+    assert.ok(controls[index].x - controls[index - 1].right <= (index === 2 ? 18 : 12));
+  }
+  const iconControls = [geometry.refresh, ...geometry.buttons];
+  for (let index = 1; index < iconControls.length; index += 1) {
+    assert.ok(Math.abs(iconControls[index].y + iconControls[index].height / 2 - iconControls[index - 1].y - iconControls[index - 1].height / 2) <= 1);
   }
   assert.ok(geometry.strip.right - geometry.buttons[1].right <= 20);
   assert.ok(geometry.scrollWidth <= geometry.width);
@@ -108,6 +120,12 @@ async function controlFeedback() {
   }
   await page.mouse.move(10, 100);
   await page.locator('.workspace-refresh').focus();
+  await page.keyboard.press('Tab');
+  await expect(projectWindow()).toBeFocused();
+  assert.equal(await projectWindow().evaluate(node => node.matches(':focus-visible')), true);
+  const projectFocus = await controlStyle(projectWindow());
+  assert.ok((projectFocus.outline !== 'none' && parseFloat(projectFocus.outlineWidth) >= 1) || projectFocus.shadow !== 'none');
+  states.push({ label: '프로젝트 창 열기', focus: projectFocus });
   for (const button of [enterFullScreen(), close()]) {
     await page.keyboard.press('Tab');
     await expect(button).toBeFocused();
@@ -151,7 +169,7 @@ try {
   const collapsed = await controlsGeometry();
   expectTopRightControls(collapsed);
   const lightFeedback = await controlFeedback();
-  passed('접힌 메뉴에서도 상단 오른쪽에 새로고침·전체 화면·닫기 아이콘을 순서대로 표시하고 마우스·키보드 효과 적용');
+  passed('접힌 메뉴에서도 상단 오른쪽에 새로고침·프로젝트 창 열기·전체 화면·닫기를 순서대로 표시하고 마우스·키보드 효과 적용');
 
   const dragRegions = await page.locator('.workspace-tabs').evaluate(strip => {
     const region = node => getComputedStyle(node).getPropertyValue('-webkit-app-region');
@@ -306,7 +324,7 @@ try {
   await page.getByRole('button', { name: '밝은 화면', exact: true }).click();
   await page.getByRole('button', { name: '메뉴 접기', exact: true }).click();
   await nativeWindow(host => host.setBounds({ x: 100, y: 100, width: 1200, height: 850 }));
-  passed('800px 창에서 메뉴를 접거나 펼쳐도 새로고침·전체 화면·닫기 아이콘을 겹침 없이 표시');
+  passed('800px 창에서 메뉴를 접거나 펼쳐도 새로고침·프로젝트 창 열기·전체 화면·닫기를 겹침 없이 표시');
 
   const group = await invoke('group.save', { name: '창 닫기 검사 그룹' });
   const service = await invoke('service.save', { name: '창 닫기 검사 서비스', groupId: group.id, kind: 'local', rootPath: files, viewerUrl: origin });

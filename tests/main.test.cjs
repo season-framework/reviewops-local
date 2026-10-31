@@ -19,13 +19,14 @@ const MAIN_SOURCE = fs.readFileSync(MAIN_PATH, 'utf8');
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync('/tmp/reviewops-main-test-');
   const dataPath = path.join(root, 'data');
+  const resourcesPath = path.join(root, 'resources');
   const handlers = new Map();
   const appEvents = new EventEmitter();
   const state = { switches: [], window: null, primaryWindow:null, windows:[], browserManagers:[], startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [], dialogCalls:[] };
   const stores = [];
   const app = Object.assign(appEvents, {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
-    isPackaged: true,
+    isPackaged: options.isPackaged !== false,
     setName() {}, setPath() {}, quit() {},
     getPath(name) { if (name === 'temp' || name === 'appData') return root; throw new Error(`Unexpected getPath: ${name}`); },
     getVersion() { return '0.0.0-test'; },
@@ -37,7 +38,7 @@ async function harness(t, options = {}) {
       super(); this.options = windowOptions; this.id=state.windows.length+1;this.messages=[];
       const host=this;
       this.destroyed = false; this.maximized = false; this.fullScreen = false; this.closeCalls = 0;
-      this.visible = true; this.minimized = false; this.bounds = {x:0,y:0,width:1440,height:940};
+      this.visible = windowOptions.show !== false; this.minimized = false; this.bounds = {x:0,y:0,width:1440,height:940};
       this.webContents = Object.assign(new EventEmitter(), {
         id:this.id+1000,
         mainFrame: { url: 'reviewops://app/index.html' },
@@ -67,6 +68,7 @@ async function harness(t, options = {}) {
     isMinimized() { return this.minimized; }
     restore() { this.minimized = false; }
     show() { this.visible = true; }
+    showInactive() { this.visible = true; }
     focus() {state.focusedWindow=this;}
     getBounds() { return this.bounds; }
     getContentBounds(){return this.bounds;}
@@ -142,7 +144,11 @@ async function harness(t, options = {}) {
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
       return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (name === './automation-api.cjs' || name === path.join(resourcesPath,'mcp','automation-api.cjs')) {
+      state.automationModulePath=name;
+      return require('../electron/automation-api.cjs');
+    }
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {getBuildInfo:version=>({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -172,7 +178,7 @@ async function harness(t, options = {}) {
   state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch },
+    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
     URL, Response, Buffer, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate, setTimeout, clearTimeout
   }, { filename: MAIN_PATH, timeout: 5000 });
   await state.startup;
@@ -240,6 +246,15 @@ function savedRemoteFixture({dataPath},change={}) {
     return {run,service};
   }finally{store.close();}
 }
+
+test('packaged and source startup load the shared MCP API from their respective locations',async t=>{
+  for(const isPackaged of [true,false]) {
+    const h=await harness(t,{isPackaged});
+    assert.equal(h.state.automationModulePath,isPackaged?path.join(h.root,'resources','mcp','automation-api.cjs'):'./automation-api.cjs');
+    const result=await h.state.toolIntegration.automationHandler('automation.projects.list',{});
+    assert.deepEqual(result,{projects:[]});
+  }
+});
 
 test('startup reconnects a durable SSH job using its saved target and vault without starting another request',async t=>{
   let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths);}});
