@@ -25,7 +25,7 @@ function intersection(...rects) {
   return {x, y, width:Math.max(0,right-x), height:Math.max(0,bottom-y)};
 }
 
-function createBrowserManager(window, {partition = PARTITION} = {}) {
+function createBrowserManager(window, {partition = PARTITION, backgroundPopups = () => false} = {}) {
   const views = new Map(), popups = new Set();
   const recorder = createEvidenceRecorder();
   function bindContext(item,value){
@@ -94,13 +94,14 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       if (popups.size >= 12) return {action:'deny'};
       // Let Chromium create the popup, retaining opener, POST bodies and session.
       return {action:'allow', overrideBrowserWindowOptions:{
-        parent:window, width:1000, height:780, minWidth:480, minHeight:360,
+        parent:window, show:!backgroundPopups(), width:1000, height:780, minWidth:480, minHeight:360,
         title:'ReviewOps', autoHideMenuBar:true, backgroundColor:'#ffffff',
         webPreferences:{...preferences, preload:undefined}
       }};
     });
     contents.on('did-create-window', popup => {
-      popups.add(popup); owner.popups.add(popup);
+      popups.add(popup); owner.popups.add(popup);popup.qaBrowserId=crypto.randomUUID();
+      if(backgroundPopups())popup.showInactive();
       protect(popup.webContents, owner);
       popup.on('closed', () => { popups.delete(popup); owner.popups.delete(popup); });
     });
@@ -177,6 +178,13 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
     return state(item);
   }
   return {
+    automationTargets() {
+      return [...views.values()].filter(item=>!item.view.webContents.isDestroyed()).map(item=>({
+        browserId:item.id,contents:item.view.webContents,inputScale:item.emulation?JSON.parse(item.emulation).scale:1,ready:item.emulationPromise,visible:item.visible,url:item.view.webContents.getURL(),title:item.view.webContents.getTitle(),
+        bounds:item.area?{x:item.area.x+item.view.getBounds().x,y:item.area.y+item.view.getBounds().y,width:item.view.getBounds().width,height:item.view.getBounds().height}:null,
+        clip:item.area
+      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
+    },
     async dispatch(action, payload) {
       if (action === 'browser.create') {
         const url = browserUrl(payload.url), initialEmulation = emulationFor(payload.viewport || {width:1920,height:1080,scale:1});

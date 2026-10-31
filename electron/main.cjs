@@ -32,7 +32,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'reviewops', privileges: { stand
 const devUrl = !app.isPackaged ? process.env.REVIEWOPS_DEV_URL : null;
 const attachmentPath = path.join(dataPath, 'attachments');
 let window, store, vault, agents, codexManager, updater, modelCache;
-let seasonIntegration, toolIntegration;
+let seasonIntegration, toolIntegration, qaAutomation;
 const windowContexts = new Map(), projectWindows = new Map(), terminalOwners = new Map();
 const requestWindowContext = new AsyncLocalStorage();
 const quitApproved = new WeakSet();
@@ -732,7 +732,9 @@ async function dispatch(action, payload = {}) {
     if(!['review','dashboard','file','terminal','settings'].includes(section)||!['detail','create','edit'].includes(reviewMode))throw new Error('요청한 프로젝트 화면이 올바르지 않습니다.');
     if(payload.reviewId&&store.get('reviews',payload.reviewId).projectId!==project.id)throw new Error('요청한 리뷰의 프로젝트가 일치하지 않습니다.');
     if(reviewMode==='edit'&&!payload.reviewId)throw new Error('수정할 리뷰를 지정하십시오.');
+    const existing=projectWindows.get(project.id);
     const record=projectWindow(project.id),host=record.host;
+    if(payload.preserveNavigation===true&&existing===record){if(host.isMinimized())host.restore();host.show();host.focus();return {windowId:record.id,projectId:project.id};}
     const value={projectId:project.id,section,reviewMode,reviewId:payload.reviewId||'',request:integrationSequence=Math.max(Date.now(),integrationSequence+1)};
     record.pendingDisplay?.reject(new Error('다른 화면을 선택하여 이전 리뷰 표시를 취소했습니다.'));record.pendingReview=null;
     record.pendingNavigation=value;host.show();host.focus();
@@ -773,7 +775,7 @@ async function dispatch(action, payload = {}) {
   }
   if (action.startsWith('browser.')) {
     const record=currentWindowRecord();
-    if(!record.browsers)record.browsers=require('./browser.cjs').createBrowserManager(record.host,record.projectId?{partition:'persist:reviewops-browser-project-'+record.projectId}:{});
+    if(!record.browsers)record.browsers=require('./browser.cjs').createBrowserManager(record.host,{...(record.projectId?{partition:'persist:reviewops-browser-project-'+record.projectId}:{}),backgroundPopups:()=>record.qaActive===true});
     return record.browsers.dispatch(action,payload);
   }
   if (action === 'snapshot') return publicSnapshot();
@@ -940,9 +942,9 @@ function updateNativeMenu() {
       {label:'윈도우',submenu:[{role:'minimize'},{role:'zoom'},{role:'front'}]}
     ])));
 }
-function createWindow(projectId='') {
-  const host=new BrowserWindow({width:1440,height:940,minWidth:800,minHeight:600,title:'ReviewOps',frame:false,fullscreenable:true,simpleFullscreen:false,backgroundColor:'#f7f5f2',
-    webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false}});
+function createWindow(projectId='',{background=false}={}) {
+  const host=new BrowserWindow({show:!background,width:1440,height:940,minWidth:800,minHeight:600,title:'ReviewOps',frame:false,fullscreenable:true,simpleFullscreen:false,backgroundColor:'#f7f5f2',
+    webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false,backgroundThrottling:false}});
   const record={id:crypto.randomUUID(),host,projectId,browsers:null,pendingReview:null,pendingDisplay:null,pendingNavigation:null,presentationQueue:Promise.resolve()};
   windowContexts.set(host,record);if(projectId)projectWindows.set(projectId,record);else window=host;
   const notify=()=>{if(!host.isDestroyed())host.webContents.send('reviewops:window-state',nativeWindowState(host));};
@@ -972,8 +974,8 @@ function createWindow(projectId='') {
   });
   return record;
 }
-function projectWindow(projectId) {const existing=projectWindows.get(projectId);return existing&&!existing.host.isDestroyed()?existing:createWindow(projectId);}
-async function presentReview(record,{reviewId,projectId,fullscreen,displayBounds}) {
+function projectWindow(projectId,options) {const existing=projectWindows.get(projectId);return existing&&!existing.host.isDestroyed()?existing:createWindow(projectId,options);}
+async function presentReview(record,{reviewId,projectId,fullscreen,displayBounds,focus=true}) {
   const host=record.host;if(host.isDestroyed())throw new Error('프로젝트 화면을 표시하기 전에 창이 닫혔습니다.');
   const current=store.get('reviews',reviewId);if(current.projectId!==projectId)throw new Error('요청한 리뷰의 프로젝트가 일치하지 않습니다.');
   const displays=require('electron').screen.getAllDisplays();
@@ -990,7 +992,7 @@ async function presentReview(record,{reviewId,projectId,fullscreen,displayBounds
     host.once('closed',closed);host.webContents.once('render-process-gone',closed);
     timer=setTimeout(()=>{cleanup();reject(new Error('프로젝트 화면을 표시하지 못했습니다. 같은 요청을 다시 보내십시오.'));},8000);
   });
-  host.show();host.focus();
+  if(focus){host.show();host.focus();}else host.showInactive();
   const send=()=>{if(!host.isDestroyed()&&record.pendingReview===requested)host.webContents.send('reviewops:season-review',requested);};
   if(host.webContents.isLoadingMainFrame())host.webContents.once('did-finish-load',send);else send();
   await displayed;
@@ -1062,7 +1064,23 @@ else {
       if(['snapshot','agent.read','agent.cancel'].includes(action))return execute();
       const result=actionQueue.then(execute);actionQueue=result.catch(()=>{});return result;
     };
-    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview});}
+    qaAutomation=require('./qa-automation.cjs').createQaAutomation({
+      getProject:id=>store.snapshot().projects.find(project=>project.id===id),
+      getWindow:id=>[...windowContexts.values()].find(record=>record.id===id),
+      openWindow:async({projectId,reviewId})=>{
+        if(reviewId&&store.get('reviews',reviewId).projectId!==projectId)throw new Error('리뷰의 프로젝트가 일치하지 않습니다.');
+        const record=projectWindow(projectId,{background:true});
+        record.qaActive=true;
+        try {
+        if(reviewId)await presentReview(record,{reviewId,projectId,fullscreen:false,focus:false});
+        else {await require('./qa-automation.cjs').waitForLoad(record.host.webContents);record.host.showInactive();}
+        return record;
+        }catch(error){record.qaActive=false;throw error;}
+      },
+      nativeImage:require('electron').nativeImage
+    });
+    const automation=require(app.isPackaged?path.join(process.resourcesPath,'mcp','automation-api.cjs'):'./automation-api.cjs').createAutomationApi({dispatch:integrationDispatch,qa:(action,payload)=>qaAutomation.handle(action,payload)});
+    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle});}
     catch(error){console.warn('외부 도구 연결을 시작하지 못했습니다:',error.message);}
     if(process.platform!=='win32')try{seasonIntegration=await require('./season-integration.cjs').createSeasonIntegration({dataPath,workspaceRoot:path.join(app.getPath('appData'),'Season AI','reviewops-workspace'),showReview:showProjectReview,dispatch:integrationDispatch});}
     catch(error){console.warn('Season AI 연결을 시작하지 못했습니다:',error.message);}
@@ -1082,5 +1100,5 @@ else {
     terminals.closeAll();
     Promise.all([agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
-  app.on('will-quit',()=>{modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
+  app.on('will-quit',()=>{qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
 }

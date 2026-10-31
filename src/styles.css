@@ -108,6 +108,19 @@
 .workspace-add-tab:hover, .workspace-refresh:hover { background: var(--sidebar); color: var(--text); }
 .workspace-add-tab:focus-visible, .workspace-refresh:focus-visible { outline: 2px solid var(--reviewops-tab-focus); outline-offset: -2px; }
 .workspace-refresh { margin-left: auto; }
+.workspace-project-window{display:inline-flex;flex:0 0 auto;align-items:center;gap:7px;height:36px;margin-right:6px;padding:0 10px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);font-size:12px;white-space:nowrap;-webkit-app-region:no-drag;app-region:no-drag}
+.workspace-project-window:hover:not(:disabled){background:var(--hover)}
+.workspace-project-window:focus-visible,.project-window-list>button:focus-visible{outline:2px solid var(--reviewops-tab-focus);outline-offset:-2px}
+.project-window-picker{display:grid;gap:16px}
+.project-window-picker>p{margin:0;font-size:13px;line-height:1.7}
+.project-window-list{display:grid;gap:8px;max-height:380px;overflow:auto}
+.project-window-list>button{display:flex;align-items:center;gap:12px;min-width:0;padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--surface);color:var(--text);text-align:left}
+.project-window-list>button:hover:not(:disabled){background:var(--hover)}
+.project-window-list>button>span{display:grid;flex:1;min-width:0;gap:4px}
+.project-window-list strong,.project-window-list small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-window-list strong{font-size:14px;font-weight:600}.project-window-list small{font-size:12px;color:var(--muted)}
+.project-window-list svg{flex-shrink:0}
+@media(max-width:1000px){.workspace-project-window{padding:0 9px}.workspace-project-window>span{display:none}}
 .workspace-app .window-controls { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; -webkit-app-region: no-drag; app-region: no-drag; }
 .workspace-app .window-control { display: inline-flex; width: 40px; height: 40px; flex: 0 0 auto; align-items: center; justify-content: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--text); transition: background-color 140ms ease, color 140ms ease; -webkit-app-region: no-drag; app-region: no-drag; }
 .workspace-app .window-control svg { stroke-width: 1.9; transition: transform 140ms ease; }

@@ -1594,5 +1594,11 @@
   "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "The installer check failed. Download it again.",
   "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Could not open the installer. Try again.",
   "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "This file is older than a version installed or previously downloaded.",
-  "정식": "Official"
+  "정식": "Official",
+  "프로젝트 창 열기": "Open project window",
+  "프로젝트마다 별도 창을 엽니다. 이미 열린 프로젝트는 해당 창으로 이동합니다.": "Open a separate window for each project. If a project window is already open, switch to it.",
+  "프로젝트 또는 그룹 이름": "Project or group name",
+  "{0} 창 열기": "Open {0} window",
+  "그룹에서 프로젝트를 등록한 뒤 창을 열 수 있습니다.": "Add a project in a group to open its window.",
+  "별도 창에서 열기": "Open in separate window"
 }

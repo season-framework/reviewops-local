@@ -59,7 +59,9 @@
     "test:agent-models": "node scripts/e2e-host-agent-models.mjs",
     "test:settings-ui": "node scripts/e2e-settings-ui.mjs",
     "test:browser-elements": "node scripts/e2e-browser-elements.mjs",
-    "test:review-categories": "node scripts/e2e-review-categories.mjs"
+    "test:review-categories": "node scripts/e2e-review-categories.mjs",
+    "test:concurrent-qa": "node scripts/e2e-concurrent-qa.mjs",
+    "mcp": "node electron/mcp-server.cjs"
   },
   "dependencies": {
     "github-markdown-css": "5.9.0",
@@ -143,7 +145,17 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "extraResources": [
+      {
+        "from": "electron/mcp-server.cjs",
+        "to": "mcp/reviewops-mcp.cjs"
+      },
+      {
+        "from": "electron/automation-api.cjs",
+        "to": "mcp/automation-api.cjs"
+      }
+    ]
   },
   "repository": {
     "type": "git",
