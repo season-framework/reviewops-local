@@ -1,0 +1,8 @@
+{
+  "schema": 1,
+  "previousVersion": "1.2.10",
+  "version": "1.2.11",
+  "bump": "patch",
+  "reason": "홈 리뷰 작성 접근, SSH 폴더 진단과 긴 목록 스크롤을 호환성 변경 없이 수정. 공개 API와 저장 형식 변화 없음.",
+  "baseCommit": "32f607ba45da1ed1029bc0330986d8078d229658"
+}

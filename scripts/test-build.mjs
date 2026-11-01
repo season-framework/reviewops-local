@@ -25,16 +25,16 @@ export function packagedBuildInfo(archive, expected) {
   if (pkg.version !== expected.version || JSON.stringify(actual) !== JSON.stringify(validateBuildInfo(expected))) throw new Error('패키지의 빌드 정보가 생성한 빌드와 다릅니다.');
   return actual;
 }
-async function inspectMac(bundle, build, arch) {
+export async function inspectMac(bundle, build, arch, inspectArchive = packagedBuildInfo) {
   const plist = path.join(bundle, 'Contents/Info.plist');
   const read = async key => (await run('/usr/libexec/PlistBuddy', ['-c', `Print :${key}`, plist])).stdout.trim();
   if (await read('CFBundleIdentifier') !== 'kr.co.season.reviewops.local' || await read('CFBundleShortVersionString') !== build.version || await read('CFBundleExecutable') !== 'ReviewOps') throw new Error('macOS 앱 정보가 올바르지 않습니다.');
   const { stdout } = await run('/usr/bin/lipo', ['-archs', path.join(bundle, 'Contents/MacOS/ReviewOps')]);
   if (!stdout.trim().split(/\s+/).includes(arch === 'x64' ? 'x86_64' : arch)) throw new Error('macOS 실행파일의 CPU 종류가 다릅니다.');
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle], { timeout: 120000 });
-  packagedBuildInfo(path.join(bundle, 'Contents/Resources/app.asar'), build);
+  await inspectArchive(path.join(bundle, 'Contents/Resources/app.asar'), build);
 }
-async function windowsPublisher(installer) {
+export async function windowsPublisher(installer) {
   const script = "$ErrorActionPreference='Stop'; $s=Get-AuthenticodeSignature -LiteralPath $env:REVIEWOPS_VERIFY_BINARY; [pscustomobject]@{status=[string]$s.Status;subject=if($s.SignerCertificate){$s.SignerCertificate.Subject}else{$null}} | ConvertTo-Json -Compress";
   const env = { ...process.env, REVIEWOPS_VERIFY_BINARY: installer };
   for (const key of Object.keys(env)) if (key.toLowerCase() === 'psmodulepath') delete env[key];
@@ -43,6 +43,15 @@ async function windowsPublisher(installer) {
   if (!['Valid', 'NotSigned'].includes(result.status)) throw new Error('Windows 설치파일 서명 검사가 실패했습니다.');
   // Existing ReviewOps Windows installers are unsigned. Record this truthfully.
   return result;
+}
+export async function buildRenderer() {
+  for (const args of [[path.join(root, 'scripts/licenses.mjs')], [path.join(path.dirname(require.resolve('vite/package.json')), 'bin/vite.js'), 'build'], [path.join(root, 'scripts/copy-locales.mjs')]]) {
+    await run(process.execPath, args, { cwd: root, timeout: 180000, maxBuffer: 8 * 1024 ** 2 });
+  }
+}
+export async function buildNativePackage(target, packageRoot) {
+  const arch = target.split('-')[1], platformArgs = target.startsWith('darwin') ? ['--mac', 'dmg'] : ['--win', 'nsis'];
+  await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
 }
 export async function packageTestBuild({ target, number, commit, builtAt }) {
   if (!TARGETS.includes(target) || !target.startsWith(`${process.platform}-`)) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
@@ -60,11 +69,9 @@ export async function packageTestBuild({ target, number, commit, builtAt }) {
     return await withBuildInfo({ channel: 'test', number, commit, builtAt }, async build => {
       await fs.rm(output, { recursive: true, force: true }); await fs.mkdir(output, { recursive: true });
       // Run the same build steps directly; npm's CLI is not a local dependency.
-      for (const args of [[path.join(root, 'scripts/licenses.mjs')], [path.join(path.dirname(require.resolve('vite/package.json')), 'bin/vite.js'), 'build'], [path.join(root, 'scripts/copy-locales.mjs')]]) {
-        await run(process.execPath, args, { cwd: root, timeout: 180000, maxBuffer: 8 * 1024 ** 2 });
-      }
-      const arch = target.split('-')[1], platformArgs = target.startsWith('darwin') ? ['--mac', 'dmg'] : ['--win', 'nsis'];
-      await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
+      await buildRenderer();
+      const arch = target.split('-')[1];
+      await buildNativePackage(target, packageRoot);
       const files = [], checks = ['packaged-build-info', 'package-structure'];
       const copy = async (from, name) => { const to = path.join(output, name); await fs.copyFile(from, to); files.push(to); return to; };
       const names = namesFor(build);
