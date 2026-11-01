@@ -42,20 +42,29 @@ function createEvidenceRecorder() {
     return contents.isDestroyed()||pages.get(contents.id)?.gone||contents.isCrashed?.()||(contents===item.view.webContents&&item.rendererGone);
   }
   function invalidate(contents) {
-    const state=pages.get(contents.id);if(state)state.revision++;
-    const pending=reading.get(contents.id);if(pending){reading.delete(contents.id);pending.cancel();}
+    const state=pages.get(contents.id);if(state){state.revision++;for(const pending of state.pending)pending.cancel();state.pending.clear();}
+    reading.delete(contents.id);
+  }
+  function runPage(contents,item,code,suppressErrors=true) {
+    if(unavailable(contents,item))return Promise.resolve();
+    const state=pages.get(contents.id),revision=state?.revision,entry={};
+    const cancelled=new Promise(resolve=>{entry.cancel=resolve;});
+    const request=Promise.resolve().then(()=>{
+      if(state!==pages.get(contents.id)||revision!==state?.revision||unavailable(contents,item))return;
+      return contents.executeJavaScriptInIsolatedWorld(WORLD,[{code}]);
+    }).then(value=>state===pages.get(contents.id)&&revision===state?.revision&&!unavailable(contents,item)?value:undefined).catch(error=>{if(!suppressErrors)throw error;});
+    const result=Promise.race([request,cancelled]).finally(()=>state?.pending.delete(entry));
+    state?.pending.add(entry);return result;
   }
   function drain(contents,item) {
     if(unavailable(contents,item)){invalidate(contents);return Promise.resolve();}
     if(reading.has(contents.id))return reading.get(contents.id).promise;
-    const generation=item.evidenceGeneration||0,state=pages.get(contents.id),revision=state?.revision;
-    const entry={};const cancelled=new Promise(resolve=>{entry.cancel=resolve;});
-    const request=Promise.resolve().then(()=>{if(state!==pages.get(contents.id)||revision!==state?.revision||unavailable(contents,item))return;return contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}]);}).then(value=>{
+    const generation=item.evidenceGeneration||0,state=pages.get(contents.id),revision=state?.revision,entry={};
+    entry.promise=runPage(contents,item,'('+readInputRecorder.toString()+')()').then(value=>{
       if(state!==pages.get(contents.id)||revision!==state?.revision||unavailable(contents,item)||generation!==(item.evidenceGeneration||0))return;
       for(const event of value?.logs||[]){const {value:inputValue,...metadata}=event;add(item,'input_log',event.type==='change'?{...metadata,value_length:event.value_length??String(inputValue||'').length,masked:true}:metadata);}
       if(contents===item.view.webContents&&value?.fingerprint)item.evidence.fingerprint_log={...value.fingerprint,url:safeUrl(value.fingerprint.url)};
-    }).catch(()=>{});
-    entry.promise=Promise.race([request,cancelled]).finally(()=>{if(reading.get(contents.id)===entry)reading.delete(contents.id);});
+    }).finally(()=>{if(reading.get(contents.id)===entry)reading.delete(contents.id);});
     reading.set(contents.id,entry);return entry.promise;
   }
   const timer=setInterval(()=>{for(const [id,contents]of tracked){const item=owners.get(id);if(item)drain(contents,item)}},700);
@@ -63,7 +72,7 @@ function createEvidenceRecorder() {
   function track(contents,item) {
     if(!item.evidence)item.evidence={navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};
     owners.set(contents.id,item);
-    tracked.set(contents.id,contents);const state={gone:false,revision:0};pages.set(contents.id,state);
+    tracked.set(contents.id,contents);const state={gone:false,revision:0,pending:new Set()};pages.set(contents.id,state);
     const install=()=>{if(!contents.isDestroyed()&&!state.gone&&!contents.isCrashed?.())contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+installInputRecorder.toString()+')()'}]).catch(()=>{})};
     contents.on('dom-ready',()=>{state.gone=false;invalidate(contents);install();});
     contents.on('render-process-gone',()=>{state.gone=true;invalidate(contents);});
@@ -98,17 +107,17 @@ function createEvidenceRecorder() {
       const generation=item.evidenceGeneration=(item.evidenceGeneration||0)+1;
       item.selectionGeneration=(item.selectionGeneration||0)+1;
       for(const [id,page]of tracked)if(owners.get(id)===item)invalidate(page);
-      if(!unavailable(item.view.webContents,item))await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});
-      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(async([,page])=>{try{if(!unavailable(page,item))await page.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}])}catch{}}));
+      await runPage(item.view.webContents,item,'('+inspectBrowserElement.toString()+')("clear")');
+      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(([,page])=>runPage(page,item,'('+readInputRecorder.toString()+')()')));
       if(generation!==(item.evidenceGeneration||0))return;
       item.evidence={navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};delete item.selectedElement;
       for(const [id,entry]of requests)if(entry.item===item)requests.delete(id);
     },
     counts:item=>Object.fromEntries(['navigation','input','network','console'].map(kind=>[kind,item.evidence?.[kind+'_log']?.length||0])),
     async clear(item,kind='all'){await collect(item);for(const key of ['navigation_log','input_log','network_log','console_log'])if(kind==='all'||key===kind||key===kind+'_log')item.evidence[key]=[];return collect(item)},
-    async pick(item){const generation=item.selectionGeneration=(item.selectionGeneration||0)+1;const result=await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("pick")'}]);if(generation!==item.selectionGeneration)return null;if(result)item.selectedElement=result;return result},
-    async showElement(item){const generation=item.selectionGeneration||0;const result=await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("show")'}]);if(generation!==(item.selectionGeneration||0))return null;if(result)item.selectedElement=result;return result},
-    async clearElement(item){item.selectionGeneration=(item.selectionGeneration||0)+1;delete item.selectedElement;delete item.evidence.fingerprint_log.selectedElement;await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});return null},
+    async pick(item){const generation=item.selectionGeneration=(item.selectionGeneration||0)+1;const result=await runPage(item.view.webContents,item,'('+inspectBrowserElement.toString()+')("pick")',false);if(generation!==item.selectionGeneration)return null;if(result)item.selectedElement=result;return result},
+    async showElement(item){const generation=item.selectionGeneration||0;const result=await runPage(item.view.webContents,item,'('+inspectBrowserElement.toString()+')("show")',false);if(generation!==(item.selectionGeneration||0))return null;if(result)item.selectedElement=result;return result},
+    async clearElement(item){item.selectionGeneration=(item.selectionGeneration||0)+1;delete item.selectedElement;delete item.evidence.fingerprint_log.selectedElement;await runPage(item.view.webContents,item,'('+inspectBrowserElement.toString()+')("clear")');return null},
     close(){clearInterval(timer);for(const page of tracked.values())invalidate(page);owners.clear();tracked.clear();pages.clear();reading.clear();requests.clear()}
   };
 }
