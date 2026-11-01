@@ -43,6 +43,14 @@ within a base version, and the existing global build rollback guard remains.
 The same public development number cannot denote another build. No updater
 preference, project, review or data location is migrated by this change.
 
+Already deployed clients discard the new field when saving their highest build
+and pending installation. `matchesLegacyBuild(actual, remembered)` accepts a
+missing development number only on the remembered side. Version, global build
+number, full commit and timestamp must still match exactly. It is used for both
+the first post-upgrade update check and the new app's startup health acknowledgment.
+Archive/manifest identity, hashes and publisher reservations remain strict; they
+are not legacy preference records.
+
 ## Publication and change history
 
 Change notes are computed from the reserved previous public commit to the

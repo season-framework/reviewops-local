@@ -3,7 +3,7 @@ const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const {execFile}=require('node:child_process'),{promisify}=require('node:util');
 const run=promisify(execFile);
-const {validateBuildInfo,displayBuildVersion,validateChangeNotes}=require('../electron/build-info.cjs');
+const {validateBuildInfo,displayBuildVersion,validateChangeNotes,matchesLegacyBuild}=require('../electron/build-info.cjs');
 const build={channel:'test',version:'1.2.11',buildNumber:11001,commit:'a'.repeat(40),builtAt:'2026-11-01T16:00:00.000Z'};
 test('version labels distinguish real development metadata, legacy builds and stable versions',async()=>{
  const renderer=await import('../src/build-version.mjs');
@@ -12,6 +12,11 @@ test('version labels distinguish real development metadata, legacy builds and st
  }
  for(const developmentNumber of [0,-1,'2',1.2,Number.MAX_SAFE_INTEGER+1])assert.throws(()=>validateBuildInfo({...build,developmentNumber}));
  assert.deepEqual(validateBuildInfo(build),build);
+});
+test('legacy remembered identity may omit only the development number and still requires exact core fields',()=>{
+ const actual={...build,developmentNumber:1};assert.equal(matchesLegacyBuild(actual,build),true);assert.equal(matchesLegacyBuild(actual,actual),true);
+ for(const patch of [{version:'1.2.10'},{buildNumber:11002},{commit:'b'.repeat(40)},{builtAt:'2026-11-01T16:00:01.000Z'},{developmentNumber:2}])assert.equal(matchesLegacyBuild(actual,{...build,...patch}),false);
+ assert.equal(matchesLegacyBuild(build,actual),false);assert.throws(()=>matchesLegacyBuild(actual,{...build,developmentNumber:0}));
 });
 test('change notes reject mismatched identity, control text, duplicate commits and misleading missing base',()=>{
  const notes={schema:1,baseCommit:'b'.repeat(40),commit:build.commit,totalCommits:1,commits:[{commit:build.commit,subject:'Fix test versions (#41)'}]};

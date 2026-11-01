@@ -9,7 +9,7 @@ const { promisify } = require('node:util');
 const { execFile, spawn } = require('node:child_process');
 const { atomicWrite } = require('./vault.cjs');
 const { validateArchive } = require('./update-archive.cjs');
-const { validateBuildInfo, validateChangeNotes } = require('./build-info.cjs');
+const { validateBuildInfo, validateChangeNotes, matchesLegacyBuild } = require('./build-info.cjs');
 const run = promisify(execFile);
 const REPOSITORY = 'season-framework/reviewops-local';
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases`;
@@ -78,7 +78,7 @@ function testManifestFor(manifest, published, arch, currentVersion, installedBui
     if (build.buildNumber < known.buildNumber) throw updateFailure('older_build', '이전에 받은 테스트 빌드보다 오래된 파일입니다. 다시 확인하십시오.');
     // Already deployed clients discard unknown fields when remembering the
     // highest build. Their missing dev number is unknown, not a new identity.
-    if (build.buildNumber === known.buildNumber && (build.commit!==known.commit||build.version!==known.version||build.builtAt!==known.builtAt||(known.developmentNumber!==undefined&&build.developmentNumber!==known.developmentNumber))) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
+    if (build.buildNumber === known.buildNumber && !matchesLegacyBuild(build,known)) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
   }
   const key = `${platform}-${arch}`, legacy = manifest.artifacts?.[key];
   const legacyName=platform==='darwin'?`ReviewOps-${build.version}-test.${build.buildNumber}-${arch}.zip`:`ReviewOps-${build.version}-test.${build.buildNumber}-windows-${arch}.exe`;
@@ -382,7 +382,7 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
     markHealthy() {
       try {
         const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8'));
-        const buildMatches = !pending.build || (installedBuild.channel === 'test' && JSON.stringify(testBuild(pending.build, version)) === JSON.stringify(installedBuild));
+        const buildMatches = !pending.build || (installedBuild.channel === 'test' && matchesLegacyBuild(installedBuild,testBuild(pending.build, version)));
         if (buildMatches && pending.version === version && typeof pending.job === 'string' && path.dirname(pending.job) === root && path.basename(pending.job).startsWith('download-') && app.getPath('exe') === path.join(pending.target, 'Contents/MacOS/ReviewOps')) atomicWrite(path.join(pending.job, 'healthy'), version);
       } catch { /* Ordinary launches have no pending update. */ }
       return { acknowledged: true };

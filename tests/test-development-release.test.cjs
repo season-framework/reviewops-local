@@ -2,6 +2,8 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process'),Module=require('node:module');
+const crypto=require('node:crypto');
+const {createZip}=require('../electron/archive.cjs');
 const {testManifestFor,createUpdateManager,TEST_RELEASE_API}=require('../electron/updates.cjs');
 const release=import('../scripts/test-release.mjs'),ledgerModule=import('../scripts/test-development-ledger.mjs'),metadataModule=import('../scripts/test-development-metadata.mjs');
 const build=(number=11001,developmentNumber=1,version='1.2.11')=>({channel:'test',version,buildNumber:number,developmentNumber,commit:number.toString(16).padStart(40,'0'),builtAt:'2026-11-01T16:00:00.000Z'});
@@ -113,6 +115,25 @@ test('preferences written by the real legacy updater remain current after a deve
   assert.equal(testManifestFor(plan.manifest,published,arch,plan.build.version,plan.build,platform,saved.highestTestBuild),null);
   assert.throws(()=>testManifestFor(plan.manifest,published,arch,plan.build.version,{...plan.build,commit:'f'.repeat(40)},platform,saved.highestTestBuild),/같은 빌드번호/);
   assert.throws(()=>testManifestFor(plan.manifest,published,arch,plan.build.version,{...plan.build,developmentNumber:2},platform,saved.highestTestBuild));
+ }
+});
+test('a pending installation written by the real legacy updater receives health acknowledgment from the development app',async t=>{
+ const old=legacyUpdater(),m=await release,directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-legacy-health-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const dataPath=path.join(directory,'data'),target=path.join(directory,'ReviewOps.app');await fs.mkdir(path.join(target,'Contents/MacOS'),{recursive:true});await fs.writeFile(path.join(target,'Contents/MacOS/ReviewOps'),'synthetic old executable');
+ const executable=await fs.realpath(path.join(target,'Contents/MacOS/ReviewOps')),info=build(),bytes=createZip([{name:'ReviewOps.app/Contents/Info.plist',bytes:Buffer.from('synthetic plist')},{name:'ReviewOps.app/Contents/MacOS/ReviewOps',bytes:crypto.randomBytes(2048)}]);
+ const name=`ReviewOps-${info.version}-test.${info.buildNumber}-x64.zip`,item={name,url:m.ROOT_URL+name,size:bytes.length,sha256:m.hash(bytes)},manifest={schema:2,channel:'test',version:info.version,build:info,artifacts:{'darwin-x64':item}},manifestBytes=m.jsonBytes(manifest),manifestName=m.manifestName(info),pointer={schema:1,buildNumber:info.buildNumber,commit:info.commit,manifest:manifestName,size:manifestBytes.length,sha256:m.hash(manifestBytes)};
+ const published={tag_name:'test-latest',draft:false,prerelease:true,body:`${m.marker}${JSON.stringify(pointer)} -->`,assets:[{name,size:bytes.length,browser_download_url:item.url},{name:manifestName,size:manifestBytes.length,browser_download_url:m.ROOT_URL+manifestName}]};
+ const app={isPackaged:true,getVersion:()=> '1.2.10',getPath:()=>executable,quit(){}};
+ const manager=old.createUpdateManager({app,dataPath,platform:'darwin',arch:'x64',shell:{},inspect:async()=>{},command:async(_file,args)=>{await fs.mkdir(path.join(args.at(-1),'ReviewOps.app'),{recursive:true});return {stdout:''}},request:async(url,options)=>{
+  if(url===TEST_RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('.json'))return manifestBytes;assert.equal(options.expectedHash,item.sha256);await fs.writeFile(options.filename,bytes);return {size:bytes.length};
+ }});t.after(()=>manager.close());
+ await manager.configure({testUpdates:true,automatic:false});assert.equal((await manager.apply()).status,'installing');
+ const pendingFile=path.join(dataPath,'updates/pending.json'),pending=JSON.parse(await fs.readFile(pendingFile,'utf8'));assert.equal(pending.build.developmentNumber,undefined);
+ const current=createUpdateManager({app:{...app,getVersion:()=>info.version},dataPath,platform:'darwin',arch:'x64',shell:{},buildInfo:info});t.after(()=>current.close());
+ current.markHealthy();const healthy=path.join(pending.job,'healthy');assert.equal(await fs.readFile(healthy,'utf8'),info.version);
+ for(const patch of [{buildNumber:11002},{commit:'f'.repeat(40)},{builtAt:'2026-11-01T16:00:01.000Z'},{developmentNumber:2}]){
+  await fs.rm(healthy);await fs.writeFile(pendingFile,JSON.stringify({...pending,build:{...pending.build,...patch}}));current.markHealthy();await assert.rejects(fs.stat(healthy),/ENOENT/);
+  await fs.writeFile(pendingFile,JSON.stringify(pending));current.markHealthy();
  }
 });
 test('numeric development comparison handles 2 to 10, new base dev 1 and server rollback without lexical ordering',async t=>{

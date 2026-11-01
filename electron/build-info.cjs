@@ -15,6 +15,12 @@ function displayBuildVersion(build, fallback = '—') {
   const version = build?.version || fallback;
   return build?.channel !== 'test' ? version : build.developmentNumber ? `${version}-dev-${build.developmentNumber}` : build.buildNumber ? `${version}-test.${build.buildNumber}` : version;
 }
+function matchesLegacyBuild(actual, remembered) {
+  // Only a remembered identity may omit a field discarded by an old client.
+  // Core source/build identity remains exact in both directions.
+  actual=validateBuildInfo(actual);remembered=validateBuildInfo(remembered);
+  return actual.version===remembered.version&&actual.buildNumber===remembered.buildNumber&&actual.commit===remembered.commit&&actual.builtAt===remembered.builtAt&&(remembered.developmentNumber===undefined||actual.developmentNumber===remembered.developmentNumber);
+}
 function validateChangeNotes(value, expectedCommit) {
   const validCommit = commit => /^[a-f0-9]{40}$/.test(commit || '');
   if (!value || value.schema !== 1 || !validCommit(value.commit) || value.commit !== expectedCommit ||
@@ -32,4 +38,4 @@ function getBuildInfo(version) {
   try { return validateBuildInfo(JSON.parse(fs.readFileSync(path.join(__dirname, 'reviewops-build.json'), 'utf8')), version); }
   catch (error) { if (error.code === 'ENOENT') return { channel: 'stable', version, buildNumber: null, commit: null, builtAt: null }; throw error; }
 }
-module.exports = { validateBuildInfo, getBuildInfo, displayBuildVersion, validateChangeNotes };
+module.exports = { validateBuildInfo, getBuildInfo, displayBuildVersion, validateChangeNotes, matchesLegacyBuild };
