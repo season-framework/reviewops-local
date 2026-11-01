@@ -141,7 +141,12 @@ export function githubStore({ token, fetchImpl = fetch, env = process.env, platf
     async createDraft(plan) {
       assertEnvironment({ env, platform, version: plan.version, actualCommit: plan.commit });
       if (plan.tag !== `v${plan.version}`) throw new Error('초안 태그와 앱 버전이 다릅니다.');
-      return request('/releases', { method: 'POST', json: { tag_name: plan.tag, target_commitish: plan.commit, name: `ReviewOps ${plan.version}`, body: 'Native package verification completed. QA report and publication review are pending.', draft: true, prerelease: false, make_latest: 'false' } });
+      const release=await request('/releases', { method: 'POST', json: { tag_name: plan.tag, target_commitish: plan.commit, name: `ReviewOps ${plan.version}`, body: 'Native package verification completed. QA report and publication review are pending.', draft: true, prerelease: false, make_latest: 'false' } });
+      assertDraft(release,plan);
+      // A new draft may not appear in the listing immediately. Retain only its
+      // validated ID; getRelease still fetches its current state before use.
+      releaseIds.set(plan.tag,release.id);
+      return release;
     },
     async getRelease(tag) {
       // The tag endpoint describes published releases. Authenticated listing
