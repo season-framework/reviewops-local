@@ -59,8 +59,8 @@ function assertDraft(release, plan, expectedId) {
   if (!release || !Number.isSafeInteger(release.id) || release.id < 1 || release.tag_name !== plan.tag || release.draft !== true || release.prerelease !== false ||
       release.immutable === true || release.target_commitish !== plan.commit || expectedId && release.id !== expectedId) throw new Error('검토한 커밋을 가리키는 기존 정식 draft만 사용할 수 있습니다.');
 }
-export async function uploadToDraft(plan, store) {
-  assertPlan(plan); store.assertPlanAllowed?.(plan);
+export async function uploadToDraft(plan, store, { validatePlan = assertPlan } = {}) {
+  validatePlan(plan); await store.assertPlanAllowed?.(plan);
   const original = await store.getRelease(plan.tag); assertDraft(original, plan);
   const tagCommit = await store.getTagCommit(plan.tag);
   if (tagCommit && tagCommit !== plan.commit) throw new Error('기존 정식 태그가 검토한 커밋과 다릅니다.');
@@ -98,15 +98,15 @@ export async function uploadToDraft(plan, store) {
 class DownloadUnavailable extends Error {
   constructor(status) { super('서버 파일을 다시 내려받을 수 없습니다.'); this.status = status; }
 }
-export function githubStore({ token, fetchImpl = fetch, env = process.env, platform = process.platform } = {}) {
+export function githubStore({ token, fetchImpl = fetch, env = process.env, platform = process.platform, assertEnvironment = assertUploadEnvironment } = {}) {
   const api = `https://api.github.com/repos/${REPOSITORY}`;
   const releaseIds = new Map();
   const headers = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'ReviewOps-Windows-Release', 'X-GitHub-Api-Version': '2022-11-28', 'Cache-Control': 'no-cache' };
-  async function request(suffix, { method = 'GET', bytes, allow404 = false, upload = false } = {}) {
+  async function request(suffix, { method = 'GET', bytes, json, allow404 = false, upload = false } = {}) {
     if (!token) throw new Error('Actions 업로드 토큰이 없습니다.');
-    if (method !== 'GET') assertUploadEnvironment({ env, platform, version: String(env.REVIEWOPS_RELEASE_TAG || '').slice(1), actualCommit: env.GITHUB_SHA });
+    if (method !== 'GET') assertEnvironment({ env, platform, version: String(env.REVIEWOPS_RELEASE_TAG || '').slice(1), actualCommit: env.GITHUB_SHA });
     const url = upload ? `https://uploads.github.com/repos/${REPOSITORY}${suffix}` : api + suffix;
-    const response = await fetchImpl(url, { method, redirect: 'error', signal: AbortSignal.timeout(120000), headers: { ...headers, ...(bytes ? { 'Content-Type': 'application/octet-stream' } : {}) }, ...(bytes ? { body: bytes } : {}) });
+    const response = await fetchImpl(url, { method, redirect: 'error', signal: AbortSignal.timeout(120000), headers: { ...headers, ...(bytes || json ? { 'Content-Type': json ? 'application/json' : 'application/octet-stream' } : {}) }, ...(bytes || json ? { body: json ? JSON.stringify(json) : bytes } : {}) });
     if (allow404 && response.status === 404) return null;
     if (!response.ok) throw new Error(`GitHub Windows 배포 요청이 실패했습니다: HTTP ${response.status}`);
     return response.json();
@@ -132,7 +132,17 @@ export function githubStore({ token, fetchImpl = fetch, env = process.env, platf
     return hash.digest('hex');
   }
   return {
-    assertPlanAllowed(plan) { assertUploadEnvironment({ env, platform, version: plan.version, actualCommit: plan.commit }); },
+    assertPlanAllowed(plan) { assertEnvironment({ env, platform, version: plan.version, actualCommit: plan.commit }); },
+    async getMainCommit() { const ref = await request('/git/ref/heads/main'); return ref.object?.type === 'commit' ? ref.object.sha : null; },
+    async listReleases() {
+      const all = [];
+      for (let page = 1; ; page++) { const rows = await request(`/releases?per_page=100&page=${page}&cache=${Date.now()}`); if (!Array.isArray(rows)) throw new Error('릴리스 목록이 올바르지 않습니다.'); all.push(...rows); if (rows.length < 100) return all; }
+    },
+    async createDraft(plan) {
+      assertEnvironment({ env, platform, version: plan.version, actualCommit: plan.commit });
+      if (plan.tag !== `v${plan.version}`) throw new Error('초안 태그와 앱 버전이 다릅니다.');
+      return request('/releases', { method: 'POST', json: { tag_name: plan.tag, target_commitish: plan.commit, name: `ReviewOps ${plan.version}`, body: 'Native package verification completed. QA report and publication review are pending.', draft: true, prerelease: false, make_latest: 'false' } });
+    },
     async getRelease(tag) {
       // The tag endpoint describes published releases. Authenticated listing
       // includes drafts; then re-read the selected ID before every upload.

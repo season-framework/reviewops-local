@@ -24,6 +24,40 @@ ditto -c -k --norsrc --keepParent release/mac/ReviewOps.app release/ReviewOps-1.
 
 Use the actual version for each release. Do not put application data, credentials, or installer volumes inside the ZIP. Verify the bundle's version, identifier, signature, and architecture before archiving it. Use `hdiutil verify` for each DMG and compute SHA-256 checksums for every downloadable package.
 
+## Automated stable draft preparation
+
+The chat's daily **04:00 Asia/Seoul** release task prepares a stable release only when reviewed changes have not already been released. The workflow has no separate schedule. The issue monitor and two-hour test-build task continue to use `test-release.yml` and its single `test-latest` prerelease; neither requires a new stable version for each test build.
+
+Choose the version change explicitly after reviewing the included changes:
+
+| Change | Choice | Example from 1.2.10 |
+| --- | --- | --- |
+| Compatible fixes without new behavior | `patch` | 1.2.11 |
+| Compatible new functionality | `minor` | 1.3.0 |
+| An incompatible change requiring migration or changed usage | `major` | 2.0.0 |
+
+Preview the choice, then write it with a short reason. The command updates `package.json`, the two root version entries in `package-lock.json`, and `release-plan.json`. It does not commit, push, tag, or publish anything. Writing requires committed package sources. The release plan records the previous version and source commit so the build can reject a mismatched or stale choice.
+
+```sh
+node scripts/stable-release.mjs version --bump patch --reason "Fix SSH folder diagnostics"
+node scripts/stable-release.mjs version --bump patch --reason "Fix SSH folder diagnostics" --write
+```
+
+Review and commit these files with the release notes, merge the version change to `main`, and select that full reviewed commit. Dispatch `stable-release.yml` from `main` with `reviewed_commit`, `release_version`, and `deliver_to_draft`. Delivery is `false` by default; that mode only retains the verified package set as a workflow artifact. Selecting `true` may create or fill a matching **draft** and still never publishes it.
+
+```sh
+gh workflow run stable-release.yml --ref main \
+  -f reviewed_commit=FULL_REVIEWED_MAIN_SHA \
+  -f release_version=1.2.11 \
+  -F deliver_to_draft=true
+```
+
+The workflow runs on native macOS arm64, macOS Intel, and Windows x64 runners. It checks the explicit version policy against the previous published stable version and requires `main` to remain at the reviewed commit. Each package has a report binding its version, complete SHA, target, size, and SHA-256. The full existing unit suite runs on macOS; release and updater contract tests run on every target. Mac checks include bundle identity, version, architecture, signature, source bytes, DMG integrity, extracted update ZIP, and the existing packaged-app smoke scenario. Windows reuses the installer/startup/persistence/uninstall verification. Test build metadata is rejected in stable archives. Existing ad hoc Mac signing and unsigned Windows delivery remain unchanged.
+
+All five packages and all three successful native reports must be collected before any draft upload. The collection produces five checksum files and `reviewops-update.json`. Native verification reports remain workflow artifacts; the eleven delivery files are the public download candidates. Published releases, a differently targeted tag, and same-name files with different bytes are rejected. An exact retry reuses matching files and verifies them again. Rerun a failed draft job with its original delivery artifact; rebuilding a version can produce different installer bytes and must not overwrite that draft's files.
+
+After native verification, the release task performs issue-linked QA with the QA report skill, prepares the PDF report, and sends it using the sender and recipient configured for the local release task. Review the uploaded names, sizes, checksums, source commit, report, and release notes before publishing the draft. The workflow cannot replace this QA or report delivery. A failed build, changed `main`, unavailable QA environment, or failed report delivery leaves the release unpublished.
+
 ## Windows installer
 
 Run `npm run package:windows` on Windows to build `ReviewOps-<version>-windows-x64.exe`. The installer applies to the current user and retains the application data folder. It includes Start menu and desktop shortcuts.
