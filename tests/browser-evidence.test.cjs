@@ -94,7 +94,7 @@ for(const action of ['clear','reset','navigate'])test(`${action} 이후 도착�
 test('reset clears a crashed source without waiting for scripts in its dead renderer',async t=>{
  const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(77),entry=item(page);recorder.track(page,entry);let calls=0;
  entry.selectedElement={selector:'#old'};recorder.beforeRequest({id:90,webContentsId:page.id,url:page.url,method:'GET'});
- page.isCrashed=()=>true;page.executeJavaScriptInIsolatedWorld=()=>{calls++;return new Promise(()=>{});};
+ entry.rendererGone=true;page.isCrashed=()=>false;page.executeJavaScriptInIsolatedWorld=()=>{calls++;return new Promise(()=>{});};
  await Promise.race([recorder.reset(entry),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('reset waited for a crashed frame')),100);t.after(()=>clearTimeout(timer));})]);
  recorder.completed({id:90,statusCode:200});assert.equal(calls,0);assert.equal(entry.selectedElement,undefined);assert.deepEqual(entry.evidence.network_log,[]);assert.deepEqual(entry.evidence.input_log,[]);
 });
