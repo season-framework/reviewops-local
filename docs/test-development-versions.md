@@ -73,3 +73,22 @@ synthetic publication stores. Those checks are distinct from installing an old
 packaged app, performing the native update and verifying its stored data after
 restart. Source UI tests use isolated generated identities and updater responses;
 they do not publish or install a test release.
+
+The optional native Intel integration harness uses a preserved original public
+legacy ZIP and a local dev-1 candidate:
+
+```sh
+REVIEWOPS_LEGACY_PACKAGE_DIR=/absolute/verified-legacy-package-directory \
+  node scripts/e2e-installed-development-update.mjs
+```
+
+The directory must contain the original ZIP and its `verification.json` public
+identity/hash record. The candidate defaults to `release/test-darwin-x64` and can
+be selected with `REVIEWOPS_CANDIDATE_PACKAGE_DIR`. The harness copies the old
+app into a private temporary directory and uses an isolated HOME and data path.
+It intercepts the GitHub HTTPS transport in memory; source ASAR bytes are not
+modified. ZIP hash/signature checks, the production updater and install helper,
+replacement, new binary startup, health acknowledgment, restart and persisted
+data are real. This is not a live public update or another native target's test.
+QA profiles with a synthetic high global build number must never be reused as
+normal user profiles.

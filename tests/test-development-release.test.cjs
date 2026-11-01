@@ -45,6 +45,7 @@ test('malformed, duplicate or changed published allocation records fail closed',
  const l=await ledgerModule,allocated=l.allocateDevelopment({schema:1,allocations:[]},withoutDevelopment(build()),null);
  assert.throws(()=>l.validateLedger({schema:1,allocations:[allocated.record,allocated.record]}),/중복/);
  assert.throws(()=>l.ledgerFromBody(l.ledgerComment(allocated.ledger)+l.ledgerComment(allocated.ledger)),/중복/);
+ assert.throws(()=>l.ledgerFromBody('<!-- reviewops-test-development:{"schema":1'),/손상/);
  const history={name:l.historyName(build()),size:100,sha256:'a'.repeat(64)},published=l.publishDevelopment(allocated.ledger,build(),null,history);
  assert.deepEqual(l.publishDevelopment(published,build(),null,history),published);
  assert.throws(()=>l.publishDevelopment(published,build(),null,{...history,sha256:'b'.repeat(64)}),/변경할 수/);
@@ -61,6 +62,10 @@ test('metadata rereads the public release and refuses an external body change be
  const {assignMetadata}=await metadataModule,store=await memoryStore(),read=store.getRelease;let reads=0;
  store.getRelease=async()=>{const value=await read();if(++reads===2)value.body+='External update';return value;};
  await assert.rejects(assignMetadata({input:withoutDevelopment(build()),publish:true,store}),/변경/);assert.deepEqual(store.writes,[]);
+});
+test('a truncated allocation ledger never resets the development sequence',async()=>{
+ const {assignMetadata}=await metadataModule,store=await memoryStore(),current=await store.getRelease();store.setRelease({...current,body:'<!-- reviewops-test-development:{"schema":1'});
+ await assert.rejects(assignMetadata({input:withoutDevelopment(build()),publish:true,store}),/손상/);assert.deepEqual(store.writes,[]);
 });
 test('metadata mutations require the matching workflow, metadata job, global lock and explicit publication',async()=>{
  const {assertAllocationCI,allocationStore}=await metadataModule;
@@ -173,6 +178,14 @@ test('a changed allocation during upload prevents pointer publication and packag
  const original=store.upload;let changed=false;
  store.upload=async(...args)=>{await original(...args);if(!changed){changed=true;const r=await store.getRelease();const ledger=l.ledgerFromBody(r.body);ledger.allocations[0].baseCommit='c'.repeat(40);store.setRelease({...r,body:l.replaceLedger(r.body,ledger)});}};
  await assert.rejects(m.publishRelease(plan,store,{dryRun:false}),/할당 이력/);assert.equal(store.writes.includes('switch'),false);assert.equal(store.writes.some(item=>item.startsWith('delete:')),false);
+});
+test('commit subjects containing protocol markers remain text and cannot corrupt the release ledger',async t=>{
+ const baseCommit='b'.repeat(40),f=await fixture(t,build(),baseCommit),store=await memoryStore(),current=await store.getRelease();
+ const pointer={schema:1,buildNumber:8001,commit:baseCommit,manifest:`reviewops-test-update-8001-${baseCommit.slice(0,12)}.json`,size:100,sha256:'c'.repeat(64)};
+ store.setRelease({...current,body:`${f.m.marker}${JSON.stringify(pointer)} -->`});store.reserve(f.info);
+ const changes={...f.changes,commits:[{commit:f.info.commit,subject:'Explain <!-- reviewops-test-development: metadata --> (#41)'}]};await fs.writeFile(path.join(f.directory,'change-notes.json'),JSON.stringify(changes));
+ const plan=await f.m.prepareRelease(f.directory,f.info);await f.m.publishRelease(plan,store,{dryRun:false});const body=(await store.getRelease()).body;
+ assert.ok(body.includes('&lt;!-- reviewops-test-development: metadata --&gt;'));assert.equal(f.l.ledgerFromBody(body).allocations.length,1);assert.equal(f.m.pointerFromBody(body).buildNumber,f.info.buildNumber);
 });
 test('a failed publication history remains immutable while a later complete build can publish',async t=>{
  const first=await fixture(t),store=await memoryStore();store.reserve(first.info);

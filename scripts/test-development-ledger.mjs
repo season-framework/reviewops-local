@@ -26,7 +26,7 @@ export function validateLedger(value) {
 }
 export function ledgerFromBody(body) {
  const matches=[...String(body||'').matchAll(/<!-- reviewops-test-development:(.*?) -->/g)];
- if(!matches.length)return validateLedger({schema:1,allocations:[]});
+ if(!matches.length){if(String(body||'').includes(DEVELOPMENT_MARKER))throw new Error('개발 버전 이력이 손상되어 번호를 다시 지정할 수 없습니다.');return validateLedger({schema:1,allocations:[]});}
  if(matches.length!==1)throw new Error('개발 버전 이력이 중복되었습니다.');
  let value;try{value=JSON.parse(matches[0][1])}catch{throw new Error('개발 버전 이력을 읽을 수 없습니다.');}
  return validateLedger(value);
