@@ -75,7 +75,7 @@ test('version preparation updates only explicit version files and records the ba
 });
 
 test('workflow keeps native targets, reviewed SHA, read-only collection and explicit draft delivery',async()=>{
- const text=await fs.readFile(path.join(__dirname,'../.github/workflows/stable-release.yml'),'utf8').replace(/\r\n/g,'\n');
+ const text=(await fs.readFile(path.join(__dirname,'../.github/workflows/stable-release.yml'),'utf8')).replace(/\r\n/g,'\n');
  assert.match(text,/group: reviewops-stable-release\n  cancel-in-progress: false/);assert.match(text,/deliver_to_draft:[\s\S]*?default: false/);
  for(const runner of ['macos-15','macos-15-intel','windows-latest'])assert.ok(text.includes('runner: '+runner));
  assert.match(text,/ref: \$\{\{ needs.metadata.outputs.commit \}\}/);assert.match(text,/draft:\n    if: inputs.deliver_to_draft == true/);assert.equal((text.match(/contents: write/g)||[]).length,1);
