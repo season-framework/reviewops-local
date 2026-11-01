@@ -9,7 +9,7 @@ import http from 'node:http';
 import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
 const require=createRequire(import.meta.url),{invokeSocket}=require('../electron/mcp-server.cjs');
-const root=process.cwd(),temporary=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-qa-viewer-')),home=path.join(temporary,'home'),data=path.join(temporary,'data'),files=path.join(temporary,'files'),output=path.join(root,'test-results/qa-viewer-sessions');
+const root=process.cwd(),temporary=fs.mkdtempSync(path.join(os.tmpdir(),'rvqa-')),home=path.join(temporary,'home'),data=path.join(temporary,'data'),files=path.join(temporary,'files'),output=path.join(root,'test-results/qa-viewer-sessions');
 for(const dir of [home,files,output,path.join(data,'updates')])fs.mkdirSync(dir,{recursive:true});
 const config=path.join(home,'ssh-config');fs.writeFileSync(config,'# Isolated QA/shared viewer regression\n');fs.writeFileSync(path.join(data,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:10}));
 let app,main,a,b,requests=0;const errors=[],checks=[];
