@@ -136,3 +136,13 @@ test('a delayed navigation cannot cross projects that share the same service con
  ]);
  assert.deepEqual(loaded,['https://fixture.invalid/new-project-b']);
 });
+
+test('a crashed retained WebContents advertises recovery only after its load and viewport are ready',async t=>{
+ const h=harness(t),host=new h.Window(),events=[];let item;
+ const manager=h.manager(host,{backgroundPopups:()=>true,onCreated:value=>{item=value;},onChanged:(value,contextChanged)=>events.push({gone:value.rendererGone,contextChanged}),onClosed:value=>events.push({closed:true,gone:value.rendererGone})});
+ const opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/recovery',projectId:'project-a',contextId:'service-a'}),contents=h.views[0].webContents;
+ contents.emit('render-process-gone');assert.equal(item.rendererGone,true);assert.deepEqual(events.at(-1),{closed:true,gone:true});
+ contents.emit('did-start-navigation',{},'https://fixture.invalid/recovery',false,true);assert.equal(events.at(-1).gone,true);
+ contents.emit('did-finish-load');await item.recovery;assert.equal(item.rendererGone,false);assert.deepEqual(events.at(-1),{gone:false,contextChanged:false});assert.equal((await manager.dispatch('browser.state',{id:opened.id})).id,opened.id);assert.equal(h.views.length,1);
+ contents.emit('render-process-gone');contents.emit('did-finish-load');manager.closeAll();await item.recovery;assert.equal(events.at(-1).closed,true);assert.equal(item.rendererGone,true);
+});

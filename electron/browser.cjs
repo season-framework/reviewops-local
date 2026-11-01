@@ -201,10 +201,19 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
         });
         clipWindow.contentView.addChildView(view);
         clipWindow.on('close',event=>{if(!window.isDestroyed())event.preventDefault();});
-        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
+        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),rendererGone:false,recoveryRevision:0,contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
         views.set(item.id,item);onCreated(item);
         view.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)onChanged(item,false);});
-        view.webContents.on('render-process-gone',()=>onClosed(item));
+        view.webContents.on('render-process-gone',()=>{item.rendererGone=true;item.recoveryRevision++;item.recovery=null;onClosed(item);});
+        view.webContents.on('did-finish-load',()=>{
+          if(!item.rendererGone||item.recovery||views.get(item.id)!==item)return;
+          const revision=item.recoveryRevision;
+          const recovery=(item.emulation?applyEmulation(item,JSON.parse(item.emulation)):Promise.resolve()).then(()=>{
+            if(views.get(item.id)!==item||revision!==item.recoveryRevision||view.webContents.isDestroyed()||view.webContents.isCrashed?.())return;
+            item.rendererGone=false;onChanged(item,false);
+          }).catch(()=>{if(views.get(item.id)===item&&revision===item.recoveryRevision)item.error='화면을 다시 불러오십시오.';}).finally(()=>{if(item.recovery===recovery)item.recovery=null;});
+          item.recovery=recovery;
+        });
         view.webContents.on('destroyed',()=>onClosed(item));
         try {
           // Initialize the target before awaiting CDP; an unnavigated target can

@@ -756,13 +756,14 @@ function validateBrowserBinding(record,payload){
 function registerBrowserSession(record,item){
   if(item.sessionId)viewerSessions.revoke(item.sessionId);
   item.sessionId='';
+  if(item.rendererGone||item.view.webContents.isDestroyed()||item.view.webContents.isCrashed?.())return;
   const project=store.snapshot().projects.find(p=>p.id===item.projectId);
   if(!project||!browserServiceIds(project).includes(item.contextId)){item.sessionDisqualified=true;return;}
   if((record.projectId&&record.projectId!==project.id)||item.sessionDisqualified)return;
   if(item.sessionProjectId&&item.sessionProjectId!==project.id){item.sessionDisqualified=true;return;}
   item.sessionProjectId=project.id;
   const id=viewerSessions.register({projectId:project.id,serviceId:item.contextId,owner:record.id,targetId:item.id,
-    alive:()=>!record.host.isDestroyed()&&!item.view.webContents.isDestroyed(),
+    alive:()=>!record.host.isDestroyed()&&!item.rendererGone&&!item.view.webContents.isDestroyed()&&!item.view.webContents.isCrashed?.(),
     describe:()=>({url:item.view.webContents.getURL()||item.requestedUrl,title:item.view.webContents.getTitle(),loading:item.view.webContents.isLoading()}),
     capture:()=>record.browsers.dispatch('browser.capture',{id:item.id}),
     evidence:()=>record.browsers.dispatch('browser.evidence',{id:item.id})});
@@ -879,8 +880,8 @@ async function dispatch(action, payload = {}) {
     if(!record.browsers)record.browsers=require('./browser.cjs').createBrowserManager(record.host,{
       ...(record.projectId?{partition:'persist:reviewops-browser-project-'+record.projectId}:{}),backgroundPopups:()=>record.qaActive===true,
       onCreated:item=>registerBrowserSession(record,item),
-      onChanged:(item,contextChanged)=>{if(contextChanged)registerBrowserSession(record,item);else if(item.sessionId)viewerSessions.changed(item.sessionId);},
-      onClosed:item=>{if(item.sessionId)viewerSessions.revoke(item.sessionId);}
+      onChanged:(item,contextChanged)=>{if(contextChanged||!item.sessionId)registerBrowserSession(record,item);else viewerSessions.changed(item.sessionId);},
+      onClosed:item=>{if(item.sessionId)viewerSessions.revoke(item.sessionId);item.sessionId='';}
     });
     if(payload.captureContext&&action==='browser.capture'){
       const state=await record.browsers.dispatch('browser.state',{id:payload.id});
