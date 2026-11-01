@@ -2,6 +2,7 @@
 const { BrowserWindow, WebContentsView, session, screen } = require('electron');
 const crypto = require('node:crypto');
 const {createEvidenceRecorder} = require('./browser-evidence.cjs');
+const {createNativeCaptureLease} = require('./browser-capture.cjs');
 
 // Start a separate cookie store instead of attempting to decrypt legacy
 // Keychain-encrypted cookies. The previous partition is left intact.
@@ -25,13 +26,14 @@ function intersection(...rects) {
   return {x, y, width:Math.max(0,right-x), height:Math.max(0,bottom-y)};
 }
 
-function createBrowserManager(window, {partition = PARTITION} = {}) {
+function createBrowserManager(window, {partition = PARTITION, backgroundPopups = () => false,onCreated=()=>{},onChanged=()=>{},onClosed=()=>{}} = {}) {
   const views = new Map(), popups = new Set();
   const recorder = createEvidenceRecorder();
-  function bindContext(item,value){
+  function bindContext(item,value,projectId){
     const next=typeof value==='string'?value.slice(0,120):'';
-    if(item.contextId===next)return item.contextPromise||Promise.resolve();
-    item.contextId=next;
+    const project=projectId===undefined?item.projectId:typeof projectId==='string'?projectId:'';
+    if(item.contextId===next&&item.projectId===project)return item.contextPromise||Promise.resolve();
+    item.contextId=next;item.projectId=project;onChanged(item,true);
     item.contextPromise=(item.contextPromise||Promise.resolve()).catch(()=>{}).then(()=>recorder.reset(item));
     return item.contextPromise;
   }
@@ -94,13 +96,14 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       if (popups.size >= 12) return {action:'deny'};
       // Let Chromium create the popup, retaining opener, POST bodies and session.
       return {action:'allow', overrideBrowserWindowOptions:{
-        parent:window, width:1000, height:780, minWidth:480, minHeight:360,
+        parent:window, show:!backgroundPopups(), width:1000, height:780, minWidth:480, minHeight:360,
         title:'ReviewOps', autoHideMenuBar:true, backgroundColor:'#ffffff',
         webPreferences:{...preferences, preload:undefined}
       }};
     });
     contents.on('did-create-window', popup => {
-      popups.add(popup); owner.popups.add(popup);
+      popups.add(popup); owner.popups.add(popup);popup.qaBrowserId=crypto.randomUUID();
+      if(backgroundPopups())popup.showInactive();
       protect(popup.webContents, owner);
       popup.on('closed', () => { popups.delete(popup); owner.popups.delete(popup); });
     });
@@ -113,23 +116,26 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
   function state(item) {
     const contents = item.view.webContents, currentUrl = contents.getURL();
     const url = !currentUrl || currentUrl === 'about:blank' ? item.requestedUrl : currentUrl;
-    return {id:item.id,url,title:contents.getTitle(),loading:contents.isLoading(),canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),error:item.error,logCounts:recorder.counts(item),selectedElement:item.selectedElement||null};
+    return {id:item.id,url,title:contents.getTitle(),loading:contents.isLoading(),canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),error:item.error,logCounts:recorder.counts(item),selectedElement:item.selectedElement||null,...(item.sessionId?{sessionId:item.sessionId,epoch:item.sessionEpoch()}: {})};
   }
   async function navigate(item, url) {
     const target = browserUrl(url);
+    const revision = ++item.navigationRevision;
     await item.emulationPromise;
     get(item.id);
+    if(revision!==item.navigationRevision)return state(item);
     item.requestedUrl = target; item.error = '';
     // Loading must not hold the UI IPC queue while a slow site responds.
+    // Electron's numeric net error is errno; an aborted load can have empty code text.
     item.view.webContents.loadURL(item.requestedUrl).catch(error => {
-      if (views.has(item.id) && error.code !== 'ERR_ABORTED') item.error = `화면을 열지 못했습니다. ${error.code || error.message}`;
+      if (views.get(item.id)===item && revision===item.navigationRevision && error.errno !== -3 && error.code !== 'ERR_ABORTED') item.error = `화면을 열지 못했습니다. ${error.code || error.message}`;
     });
     return state(item);
   }
   function close(id) {
     const item = views.get(id);
     if (!item) return {closed:true};
-    views.delete(id);
+    views.delete(id);onClosed(item);
     for (const popup of item.popups) if (!popup.isDestroyed()) popup.destroy();
     if (!item.view.webContents.isDestroyed()) item.view.webContents.close({waitForBeforeUnload:false});
     if (!item.clipWindow.isDestroyed()) item.clipWindow.destroy();
@@ -177,6 +183,13 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
     return state(item);
   }
   return {
+    automationTargets() {
+      return [...views.values()].filter(item=>!item.view.webContents.isDestroyed()).map(item=>({
+        browserId:item.id,contents:item.view.webContents,inputScale:item.emulation?JSON.parse(item.emulation).scale:1,ready:item.emulationPromise,visible:item.visible,url:item.view.webContents.getURL(),title:item.view.webContents.getTitle(),
+        bounds:item.area?{x:item.area.x+item.view.getBounds().x,y:item.area.y+item.view.getBounds().y,width:item.view.getBounds().width,height:item.view.getBounds().height}:null,
+        clip:item.area
+      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
+    },
     async dispatch(action, payload) {
       if (action === 'browser.create') {
         const url = browserUrl(payload.url), initialEmulation = emulationFor(payload.viewport || {width:1920,height:1080,scale:1});
@@ -192,8 +205,21 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
         });
         clipWindow.contentView.addChildView(view);
         clipWindow.on('close',event=>{if(!window.isDestroyed())event.preventDefault();});
-        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):''};
-        views.set(item.id,item);
+        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,navigationRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),rendererGone:false,recoveryRevision:0,contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
+        item.captureLease=createNativeCaptureLease(view.webContents,{alive:()=>views.get(item.id)===item&&!item.rendererGone&&!view.webContents.isCrashed?.()});
+        views.set(item.id,item);onCreated(item);
+        view.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)onChanged(item,false);});
+        view.webContents.on('render-process-gone',()=>{item.rendererGone=true;item.recoveryRevision++;item.recovery=null;onClosed(item);});
+        view.webContents.on('did-finish-load',()=>{
+          if(!item.rendererGone||item.recovery||views.get(item.id)!==item)return;
+          const revision=item.recoveryRevision;
+          const recovery=(item.emulation?applyEmulation(item,JSON.parse(item.emulation)):Promise.resolve()).then(()=>{
+            if(views.get(item.id)!==item||revision!==item.recoveryRevision||view.webContents.isDestroyed()||view.webContents.isCrashed?.())return;
+            item.rendererGone=false;onChanged(item,false);
+          }).catch(()=>{if(views.get(item.id)===item&&revision===item.recoveryRevision)item.error='화면을 다시 불러오십시오.';}).finally(()=>{if(item.recovery===recovery)item.recovery=null;});
+          item.recovery=recovery;
+        });
+        view.webContents.on('destroyed',()=>onClosed(item));
         try {
           // Initialize the target before awaiting CDP; an unnavigated target can
           // otherwise hold commands until its first navigation starts.
@@ -223,7 +249,7 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       }
       const item = get(payload.id), contents = item.view.webContents;
       if (['browser.evidence','browser.clearLogs','browser.pickElement','browser.showElement','browser.clearElement','browser.capture'].includes(action)) { await item.emulationPromise;get(item.id); }
-      if (action === 'browser.context') return bindContext(item,payload.contextId).then(()=>state(item));
+      if (action === 'browser.context') return bindContext(item,payload.contextId,payload.projectId).then(()=>state(item));
       if (action === 'browser.evidence') return recorder.collect(item);
       if (action === 'browser.clearLogs') return recorder.clear(item,payload.kind);
       if (action === 'browser.pickElement') return recorder.pick(item);
@@ -233,16 +259,16 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       if (action === 'browser.navigate') {
         if(payload.contextId===undefined)return navigate(item,payload.url);
         const contextId=payload.contextId;
-        return bindContext(item,contextId).then(()=>item.contextId===contextId?navigate(item,payload.url):state(item));
+        return bindContext(item,contextId,payload.projectId).then(()=>item.contextId===contextId&&(payload.projectId===undefined||item.projectId===payload.projectId)?navigate(item,payload.url):state(item));
       }
       if (action === 'browser.state') { syncWindow(item);return state(item); }
       if (action === 'browser.capture') {
-        if (!item.emulation || item.error || !contents.getURL()) throw new Error('캡처할 화면을 먼저 여십시오.');
+        if (!item.emulation || item.error || item.rendererGone || !contents.getURL()) throw new Error('캡처할 화면을 먼저 여십시오.');
         const bounds=item.view.getBounds(),density=screen.getDisplayMatching(item.clipWindow.getBounds()).scaleFactor;
         if (bounds.width*bounds.height*density*density>64*1024*1024) throw new Error('캡처할 화면이 너무 큽니다. 화면 크기나 배율을 줄인 뒤 다시 캡처하십시오.');
         // Capture the external page itself. Capturing the host window excludes
         // WebContentsView, while desktop capture could include unrelated apps.
-        return contents.capturePage(undefined,{stayHidden:true}).then(image => {
+        return item.captureLease.capture(()=>contents.capturePage(undefined,{stayHidden:true})).then(image => {
           if (image.isEmpty()) throw new Error('스크린샷을 만들지 못했습니다. 화면을 다시 불러오십시오.');
           const png=image.toPNG(),capturedAt=new Date().toISOString();
           if (png.length > 20*1024*1024) throw new Error('스크린샷이 20 MB를 초과했습니다. 화면 크기를 줄인 뒤 다시 캡처하십시오.');

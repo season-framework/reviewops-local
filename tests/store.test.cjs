@@ -602,3 +602,11 @@ test('deleting the final file of a files-only activity leaves a restorable histo
   assert.equal(before.activities.find(row=>row.id===comment.id).body,'첨부 파일을 삭제했습니다.');
   assert.deepEqual(store.importData(store.exportData()),before);
 });
+
+test('editing an activity merges capture evidence and preserves earlier log versions through backup',t=>{
+ const {store}=setup(t),{review}=fixture(store);
+ const activity=store.addActivity({reviewId:review.id,body:'before',evidence:{capturedAt:'2026-11-01T00:00:00Z',navigation_log:[{url:'https://example.invalid/before'}],screenshots:[{originalSha256:'1'.repeat(64)}]}});
+ const originalIds=activity.evidence.log_captures.map(c=>c.id),incoming={capturedAt:'2026-11-02T00:00:00Z',screenshots:[{kind:'web',projectId:review.projectId,sessionId:'historical-session',epoch:2,crop:{x:20,y:30,width:100,height:80},originalSha256:'2'.repeat(64),frozenSha256:'3'.repeat(64)}]};
+ const saved=store.updateActivity({id:activity.id,body:'after',evidence:incoming});assert.equal(saved.body,'after');assert.deepEqual(saved.evidence.screenshots,incoming.screenshots);assert.ok(originalIds.every(id=>saved.evidence.log_captures.some(c=>c.id===id)));assert.ok(saved.evidence.log_captures.some(c=>c.navigation_log?.[0]?.url==='https://example.invalid/before'));
+ const exported=store.exportData();store.importData(exported);const restored=store.get('activities',activity.id);assert.deepEqual(restored.evidence,saved.evidence);
+});

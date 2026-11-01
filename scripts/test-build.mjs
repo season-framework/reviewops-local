@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
@@ -23,6 +24,10 @@ export function packagedBuildInfo(archive, expected) {
   const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   const actual = validateBuildInfo(JSON.parse(asar.extractFile(archive, 'electron/reviewops-build.json').toString('utf8')), expected.version);
   if (pkg.version !== expected.version || JSON.stringify(actual) !== JSON.stringify(validateBuildInfo(expected))) throw new Error('패키지의 빌드 정보가 생성한 빌드와 다릅니다.');
+  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+    const bytes=asar.extractFile(archive,path.join('electron',source));
+    if(!bytes.equals(readFileSync(path.join(path.dirname(archive),'mcp',target))))throw new Error('앱과 독립 MCP의 배포 자료가 다릅니다: '+target);
+  }
   return actual;
 }
 export async function inspectMac(bundle, build, arch, inspectArchive = packagedBuildInfo) {
@@ -54,7 +59,7 @@ export async function buildNativePackage(target, packageRoot) {
   const arch = target.split('-')[1], platformArgs = target.startsWith('darwin') ? ['--mac', 'dmg'] : ['--win', 'nsis'];
   await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
 }
-export async function packageTestBuild({ target, number, commit, builtAt }) {
+export async function packageTestBuild({ target, number, developmentNumber, commit, builtAt }) {
   if (!TARGETS.includes(target) || !target.startsWith(`${process.platform}-`)) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
   const actualCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
   if (commit !== actualCommit) throw new Error('작업 폴더의 커밋과 빌드할 커밋이 다릅니다.');
@@ -67,7 +72,7 @@ export async function packageTestBuild({ target, number, commit, builtAt }) {
   const lock = path.join(root, 'release/.test-build.lock');
   const handle = await fs.open(lock, 'wx');
   try {
-    return await withBuildInfo({ channel: 'test', number, commit, builtAt }, async build => {
+    return await withBuildInfo({ channel: 'test', number, developmentNumber, commit, builtAt }, async build => {
       await fs.rm(output, { recursive: true, force: true }); await fs.mkdir(output, { recursive: true });
       // Run the same build steps directly; npm's CLI is not a local dependency.
       await buildRenderer();
@@ -86,9 +91,14 @@ export async function packageTestBuild({ target, number, commit, builtAt }) {
         await run('/usr/bin/ditto', ['-c', '-k', '--norsrc', '--keepParent', bundle, zip], { timeout: 180000 });
         await validateArchive(zip); files.push(zip);
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-test-package-'));
-        try { await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 }); await inspectMac(path.join(temporary, 'ReviewOps.app'), build, arch); }
+        try {
+          await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 });
+          const extracted=path.join(temporary,'ReviewOps.app');await inspectMac(extracted, build, arch);
+          const smokeEnv={...process.env,REVIEWOPS_TEST_EXECUTABLE:path.join(extracted,'Contents/MacOS/ReviewOps')};delete smokeEnv.ELECTRON_RUN_AS_NODE;
+          await run(process.execPath,[path.join(root,'scripts/e2e.mjs')],{cwd:root,env:smokeEnv,timeout:300000,maxBuffer:8*1024**2});
+        }
         finally { await fs.rm(temporary, { recursive: true, force: true }); }
-        checks.push('codesign', 'dmg-verify', 'zip-extraction');
+        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke');
       } else {
         const installer = path.join(packageRoot, `ReviewOps-${build.version}-windows-x64.exe`);
         packagedBuildInfo(path.join(packageRoot, 'win-unpacked/resources/app.asar'), build);
@@ -112,7 +122,7 @@ export async function main(args = process.argv.slice(2)) {
   if (args.shift() !== 'package') throw new Error('test-build 명령은 package를 사용하십시오.');
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
-    const key = { '--target': 'target', '--number': 'number', '--commit': 'commit', '--built-at': 'builtAt' }[args[i]];
+    const key = { '--target': 'target', '--number': 'number', '--development-number': 'developmentNumber', '--commit': 'commit', '--built-at': 'builtAt' }[args[i]];
     if (!key || !args[i + 1]) throw new Error('테스트 패키지 명령의 옵션을 확인하십시오.');
     options[key] = args[i + 1];
   }

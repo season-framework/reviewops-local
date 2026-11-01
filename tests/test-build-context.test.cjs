@@ -1,0 +1,31 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os');
+const build={channel:'test',version:'1.2.11',buildNumber:12001,developmentNumber:1,commit:'a'.repeat(40),builtAt:'2026-11-01T17:00:00.000Z'};
+const context={schema:1,build,baseCommit:'b'.repeat(40),changes:{schema:1,baseCommit:'b'.repeat(40),commit:build.commit,totalCommits:1,commits:[{commit:build.commit,subject:'A source change',references:[{kind:'pull_request',number:44,title:'Original PR title',url:'https://github.com/season-framework/reviewops-local/pull/44',via:'commit_association'}],referenceStatus:'verified'}]}};
+test('frozen context preserves original notes when upstream PR text changes and refuses replacing a successful snapshot',async t=>{
+ const m=await import('../scripts/test-build-context.mjs'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-frozen-context-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const filename=path.join(directory,'build-context.json'),frozen=await m.freezeBuildContext(filename,context);await fs.writeFile(path.join(directory,'build-info.json'),JSON.stringify(build));
+ await fs.writeFile(path.join(directory,'change-notes.json'),JSON.stringify({...context.changes,commits:[{...context.changes.commits[0],subject:'Changed later by an editor'}]}));
+ const actual=await m.consumeBuildContext({filename,directory,expectedHash:frozen.sha256});assert.deepEqual(actual,context);assert.equal(JSON.parse(await fs.readFile(path.join(directory,'change-notes.json'),'utf8')).commits[0].references[0].title,'Original PR title');
+ await assert.rejects(m.freezeBuildContext(filename,{...context,changes:{...context.changes,totalCommits:2}}),/EEXIST/);assert.equal(m.contextHash(await fs.readFile(filename)),frozen.sha256);
+});
+test('context consumption rejects changed bytes, source, build, dev, version, timestamp and change-range identity',async t=>{
+ const m=await import('../scripts/test-build-context.mjs'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-context-tamper-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const filename=path.join(directory,'build-context.json'),frozen=await m.freezeBuildContext(filename,context),original=await fs.readFile(filename);
+ for(const patch of [{commit:'c'.repeat(40)},{buildNumber:12002},{developmentNumber:2},{version:'1.2.12'},{builtAt:'2026-11-01T17:00:01.000Z'}]){await fs.writeFile(path.join(directory,'build-info.json'),JSON.stringify({...build,...patch}));await assert.rejects(m.consumeBuildContext({filename,directory,expectedHash:frozen.sha256}),/정보가 다릅니다/);}
+ await fs.writeFile(path.join(directory,'build-info.json'),JSON.stringify(build));await fs.writeFile(filename,Buffer.concat([original,Buffer.from(' ')]));await assert.rejects(m.consumeBuildContext({filename,directory,expectedHash:frozen.sha256}),/변경/);
+ assert.throws(()=>m.validateBuildContext({...context,baseCommit:'c'.repeat(40)},build));assert.throws(()=>m.validateBuildContext({...context,changes:{...context.changes,commit:'c'.repeat(40)}},build));
+});
+test('workflow freezes references once in metadata and failed publication consumes the original artifact',async()=>{
+ const yaml=require('js-yaml'),workflow=yaml.load(await fs.readFile(path.join(__dirname,'../.github/workflows/test-release.yml'),'utf8'));
+ const artifact=workflow.jobs.metadata.steps.find(step=>step.uses?.startsWith('actions/upload-artifact@'));assert.equal(artifact.with.name,'reviewops-test-build-context');assert.equal(artifact.with['retention-days'],1);assert.equal(workflow.jobs.metadata.steps[0].with['fetch-depth'],0);
+ const validation=workflow.jobs.publish.steps.find(step=>step.id==='validation');assert.match(validation.run,/test-build-context\.mjs/);assert.doesNotMatch(validation.run,/test-release-notes\.mjs/);assert.match(validation.env.TEST_CONTEXT_SHA,/needs\.metadata\.outputs\.context_sha/);
+});
+test('cleanup retains frozen context with a successful four-artifact candidate and a partial retry',async()=>{
+ const {cleanupArtifacts}=await import('../scripts/test-build-artifacts.mjs');let id=0;const entries=[],deleted=new Set(),runs={10:{workflow_id:7,status:'completed',conclusion:'success'},20:{workflow_id:7,status:'in_progress'},30:{workflow_id:99,status:'completed',conclusion:'success'}};
+ for(const run of[10,20,30])for(const target of['darwin-arm64','darwin-x64','win32-x64','context']){if(run===20&&target==='win32-x64')continue;entries.push({id:++id,name:'reviewops-test-build-'+target,workflow_run:{id:run}});}
+ const env={GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_JOB:'publish',GITHUB_WORKFLOW_REF:'season-framework/reviewops-local/.github/workflows/test-release.yml@refs/heads/test',REVIEWOPS_PUBLICATION_GROUP:'reviewops-test-latest',GITHUB_SHA:'a'.repeat(40),GITHUB_RUN_ID:'20',GITHUB_RUN_NUMBER:'12',GITHUB_RUN_ATTEMPT:'1',GITHUB_TOKEN:'synthetic-only'};
+ const fetchImpl=async(url,options)=>{const suffix=new URL(url).pathname.split('/actions/')[1];if(suffix==='workflows/test-release.yml')return Response.json({id:7});if(suffix==='artifacts')return Response.json({artifacts:entries.filter(item=>!deleted.has(item.id))});if(suffix.startsWith('runs/'))return Response.json(runs[Number(suffix.slice(5))]);const target=Number(suffix.slice('artifacts/'.length));if(options.method==='DELETE'){deleted.add(target);return new Response(null,{status:204})}return deleted.has(target)?new Response(null,{status:404}):Response.json(entries.find(item=>item.id===target));};
+ const fallback=await cleanupArtifacts({env,fetchImpl,keepCandidate:true});assert.equal(fallback.retainedRun,10);assert.equal(fallback.artifacts.filter(item=>item.run===20).length,3);
+ const partial=await cleanupArtifacts({env,fetchImpl,keepCurrent:true,remove:true});assert.equal(partial.retainedRun,20);assert.ok(entries.some(item=>item.workflow_run.id===20&&item.name.endsWith('context')&&!deleted.has(item.id)));assert.equal([...deleted].filter(key=>entries.find(item=>item.id===key).workflow_run.id===10).length,4);assert.equal([...deleted].some(key=>entries.find(item=>item.id===key).workflow_run.id===30),false);
+});

@@ -11,6 +11,16 @@ export function windowStorageKeys(projectId='') {
  return {tabs:`reviewops.workspace.tabs${suffix}`,home:`reviewops.home${suffix}`,homeSelected:`reviewops.home${suffix}.selected`};
 }
 
+// QA temporarily hides global navigation without discarding the user's tabs.
+export function qaWindowView(data,tabs,active,projectId='') {
+ if(!projectId)return {data,tabs,active};
+ const projects=data.projects.filter(item=>item.id===projectId),groupIds=new Set(projects.map(item=>item.groupId)),serviceIds=new Set(projects.flatMap(item=>item.serviceIds||[]));
+ const reviews=data.reviews.filter(item=>item.projectId===projectId),reviewIds=new Set(reviews.map(item=>item.id));
+ const visible=tabs.filter(tab=>tab.kind==='home'||tab.kind==='project'&&tab.entityId===projectId);
+ return {data:{...data,projects,groups:data.groups.filter(item=>groupIds.has(item.id)),services:data.services.filter(item=>serviceIds.has(item.id)),reviews,activities:data.activities.filter(item=>reviewIds.has(item.reviewId)),attachments:data.attachments.filter(item=>reviewIds.has(item.reviewId))},
+  tabs:visible,active:visible.some(tab=>tab.id===active)?active:visible.find(tab=>tab.kind==='project')?.id||'home'};
+}
+
 export function restoreWindowTabs(serialized,projectId='') {
  let saved=[];
  try{const value=JSON.parse(serialized||'[]');if(Array.isArray(value))saved=value}catch{}

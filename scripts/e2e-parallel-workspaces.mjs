@@ -88,6 +88,27 @@ try{
  const listed=await external('list');assert.deepEqual(listed.map(project=>project.id).sort(),[projectA.id,projectB.id].sort());assert.ok(listed.every(project=>project.kind==='local'));
  passed('격리된 설정과 외부 JSON 클라이언트로 로컬 프로젝트 목록 조회');
 
+ // Open dedicated windows through visible controls before the external requests.
+ await main.getByRole('button',{name:'프로젝트 창 열기',exact:true}).click();
+ const windowPicker=main.getByRole('dialog',{name:'프로젝트 창 열기',exact:true});
+ await expect(windowPicker.getByRole('button',{name:projectA.name+' 창 열기',exact:true})).toBeVisible();
+ await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(window=>!new URL(window.webContents.getURL()).searchParams.get('projectId')).setContentSize(800,600));
+ await expect.poll(()=>main.evaluate(()=>innerWidth)).toBe(800);
+ const pickerBounds=await windowPicker.boundingBox(),pickerViewport=await main.evaluate(()=>({width:innerWidth,height:innerHeight}));
+ assert.ok(pickerBounds.x>=0&&pickerBounds.y>=0&&pickerBounds.x+pickerBounds.width<=pickerViewport.width&&pickerBounds.y+pickerBounds.height<=pickerViewport.height);
+ await main.screenshot({path:path.join(results,'parallel-window-picker.png'),scale:'css'});
+ await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows().find(window=>!new URL(window.webContents.getURL()).searchParams.get('projectId')).setContentSize(1440,940));
+ await windowPicker.getByLabel('프로젝트 검색',{exact:true}).fill('프로젝트 A');
+ await expect(windowPicker.getByRole('button',{name:projectB.name+' 창 열기',exact:true})).toHaveCount(0);
+ await windowPicker.getByRole('button',{name:projectA.name+' 창 열기',exact:true}).click();
+ a=await projectPage(projectA);await expect(windowPicker).toHaveCount(0);
+ await main.getByRole('button',{name:'프로젝트 창 열기',exact:true}).click();
+ await windowPicker.getByRole('button',{name:projectB.name+' 창 열기',exact:true}).click();
+ b=await projectPage(projectB);await expect(windowPicker).toHaveCount(0);
+ assert.equal(appPages().length,3);
+ await expect(pane(main)).toHaveAttribute('id','pane-home');
+ passed('사용자가 프로젝트를 검색하여 A·B 전용 창을 열고 원래 홈 화면 유지');
+
  const requestA={requestId:'parallel-open-A',projectId:projectA.id,title:'외부 리뷰 A',body:'A_BODY',tool:'fixture-A'},requestB={requestId:'parallel-open-B',projectId:projectB.id,title:'외부 리뷰 B',body:'B_BODY',tool:'fixture-B'};
  const [openedA,openedB]=await Promise.all([external('open',requestA),external('open',requestB)]);
  assert.equal(openedA.shown,true);assert.equal(openedB.shown,true);assert.notEqual(openedA.windowId,openedB.windowId);
@@ -150,6 +171,23 @@ try{
  await agent(a).getByLabel('에이전트 작업 요청',{exact:true}).fill(draftA);await agent(b).getByLabel('에이전트 작업 요청',{exact:true}).fill(draftB);
  await ipc(main,'review.save',{...reviewB,title:'외부에서 수정한 리뷰 B'});await expect(pane(b)).toContainText('외부에서 수정한 리뷰 B');await expect(agent(a).getByLabel('에이전트 작업 요청',{exact:true})).toHaveValue(draftA);await expect(agent(b).getByLabel('에이전트 작업 요청',{exact:true})).toHaveValue(draftB);
  passed('다른 창의 데이터 변경은 반영하면서 두 창의 작성 중 요청 유지');
+
+ await main.getByRole('button',{name:projectB.name+' 프로젝트 열기',exact:true}).click();
+ await pane(main).getByRole('button',{name:'별도 창에서 열기',exact:true}).click();
+ await expect(agent(b).getByLabel('에이전트 작업 요청',{exact:true})).toHaveValue(draftB);
+ assert.equal(appPages().length,3);
+ await main.locator('.main-nav').getByRole('button',{name:'홈',exact:true}).click();
+ passed('프로젝트 화면에서도 별도 창을 열고 기존 프로젝트 창의 작성 내용 유지');
+
+ const bTabsBefore=await b.getByRole('tablist',{name:'작업 탭',exact:true}).getByRole('tab').count();
+ await main.getByRole('button',{name:'프로젝트 창 열기',exact:true}).click();
+ await windowPicker.getByRole('button',{name:projectB.name+' 창 열기',exact:true}).click();
+ await expect(windowPicker).toHaveCount(0);assert.equal(appPages().length,3);
+ assert.equal(await b.getByRole('tablist',{name:'작업 탭',exact:true}).getByRole('tab').count(),bTabsBefore);
+ await expect(agent(b).getByLabel('에이전트 작업 요청',{exact:true})).toHaveValue(draftB);
+ await expect(agent(a).getByLabel('에이전트 작업 요청',{exact:true})).toHaveValue(draftA);
+ assert.equal(await native(contentsB,'window.fixtureInstance'),bInstance);
+ passed('이미 열린 프로젝트를 선택해도 리뷰·입력·검사 화면을 유지하고 창·탭 중복 생성 없음');
 
  const runA=await send(a,reviewA,'WAIT_A'),quickB=await send(b,reviewB,'QUICK_B');await expect.poll(async()=>(await ipc(main,'agent.read',{id:quickB.id})).status).toBe('completed');assert.equal((await ipc(main,'agent.read',{id:runA.id})).status,'running');
  assert.ok(recorded().some(item=>item.input.includes('WAIT_A')&&item.cwd===fs.realpathSync(works.A)));assert.ok(recorded().some(item=>item.input.includes('QUICK_B')&&item.cwd===fs.realpathSync(works.B)));

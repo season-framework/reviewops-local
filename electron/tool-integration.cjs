@@ -59,7 +59,7 @@ const publicRecord = record => ({ requestId: record.payload.requestId, status: r
   projectId: record.projectId || null, serviceId: record.serviceId || null, reviewId: record.reviewId || null,
   windowId: record.windowId ?? null, shown: record.status === 'shown', message: record.message || '', createdAt: record.createdAt, updatedAt: record.updatedAt });
 
-async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000 } = {}) {
+async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler } = {}) {
   if (!path.isAbsolute(dataPath || '') || typeof dispatch !== 'function' || typeof showReview !== 'function') fail('외부 도구 연결 설정이 올바르지 않습니다.');
   const directory = path.join(dataPath, 'integrations');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 }); await fs.chmod(directory, 0o700);
@@ -191,6 +191,7 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
   function handle(action, payload = {}) {
     if (closed) return Promise.reject(Object.assign(new Error('외부 도구 연결이 종료되었습니다.'), { code: 'CLOSED' }));
     object(payload);
+    if (typeof action === 'string' && action.startsWith('automation.') && typeof automationHandler === 'function') return automationHandler(action, payload);
     if (action === 'projects.list') return exclusive(async () => {
       const snapshot = await dispatch('snapshot');
       return snapshot.projects.map(project => {

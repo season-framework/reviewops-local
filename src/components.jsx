@@ -2,6 +2,7 @@ import {t,localized,getLocale} from './i18n/index.js';
 import Select from './Select.jsx';
 import LanguageSettings from './LanguageSettings.jsx';
 import UpdateSettings from './UpdateSettings.jsx';
+import {displayBuildVersion} from './build-version.mjs';
 import ModelCacheSettings from './ModelCacheSettings.jsx';
 import ReviewCategoryPicker from './ReviewCategoryPicker.jsx';
 import {DEFAULT_REVIEW_CATEGORIES} from './review-categories.js';
@@ -111,7 +112,7 @@ function DataSettings({data,invoke,run,reload,setToast,onBeforeRestore,onRestore
  return <div className="page-content settings-content settings-layout">
   <nav className="settings-section-menu" aria-label={t("설정 항목")} onKeyDown={navigate}>{sections.map(([key,name])=><button type="button" key={key} aria-current={section===key?'page':undefined} onClick={()=>choose(key)}>{name}<Icon name="chevron" size={14}/></button>)}</nav>
   <div className="settings-section-content">
-   {section==='general'&&<><LanguageSettings/><div className="app-version"><img src="./assets/brand/reviewops-icon.svg" alt=""/><div><strong>ReviewOps</strong><span>{info?.version?t("버전 {0}",[info.version]):t("버전 정보 없음")}{info?.arch?` · ${info.arch}`:''}</span></div></div></>}
+   {section==='general'&&<><LanguageSettings/><div className="app-version"><img src="./assets/brand/reviewops-icon.svg" alt=""/><div><strong>ReviewOps</strong><span>{info?.version?t("버전 {0}",[displayBuildVersion(info.build,info.version)]):t("버전 정보 없음")}{info?.arch?` · ${info.arch}`:''}</span></div></div></>}
    {section==='automatic'&&<><ModelCacheSettings invoke={invoke}/><UpdateSettings invoke={invoke}/></>}
    {section==='data'&&<>
     <section className="settings-panel"><div className="section-heading"><h2>{t("자료 저장 위치")}</h2><Button icon="folder" onClick={()=>run(()=>invoke('app.openDataFolder'))}>{t("폴더 열기")}</Button></div><p>{t("프로젝트, 리뷰와 첨부파일은 이 컴퓨터에 저장됩니다.")}</p><code className="data-path">{info?.dataPath||t("저장 위치 불러오는 중")}</code><div className="data-counts"><span>{t("그룹")} <strong>{data.groups.length}</strong></span><span>{t("프로젝트")} <strong>{data.projects.length}</strong></span><span>{t("리뷰")} <strong>{data.reviews.length}</strong></span><span>{t("첨부파일")} <strong>{data.attachments.length}</strong></span></div></section>

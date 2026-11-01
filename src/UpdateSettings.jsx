@@ -2,6 +2,7 @@ import React, {useEffect, useId, useRef, useState} from 'react';
 import Icon from './icons.jsx';
 import {formatDate, t, useLocale} from './i18n/index.js';
 import RefreshIntervalField,{intervalValue} from './RefreshIntervalField.jsx';
+import {displayBuildVersion} from './build-version.mjs';
 import './update-settings.css';
 const messages = {
  idle:'업데이트를 확인할 수 있습니다.', checking:'업데이트 확인 중', current:'최신 버전입니다.',
@@ -21,10 +22,10 @@ const invokeUpdate=(action,payload)=>window.reviewops.invoke(action,payload);
 const generation=value=>Number.isSafeInteger(value?.generation)?value.generation:0;
 function BuildInfo({label,build,version}) {
  return <div className="update-build-info"><h3>{label}</h3><dl>
-  <dt>{t('버전')}</dt><dd>{build?.version||version||'—'}{build?.channel==='test'?` · ${t('테스트')}`:''}</dd>
+  <dt>{t('버전')}</dt><dd>{displayBuildVersion(build,version||'—')}{build?.channel==='test'?` · ${t('테스트')}`:''}</dd>
   <dt>{t('빌드 번호')}</dt><dd>{build?.buildNumber??t('정보 없음')}</dd>
   <dt>{t('커밋')}</dt><dd title={build?.commit}>{build?.commit?build.commit.slice(0,12):t('정보 없음')}</dd>
-  <dt>{t('생성 시간')}</dt><dd>{build?.builtAt?<time dateTime={build.builtAt}>{formatDate(build.builtAt)}</time>:t('정보 없음')}</dd>
+  <dt>{t('생성 시간')}</dt><dd>{build?.builtAt?<time dateTime={build.builtAt}>{formatDate(build.builtAt,{timeZoneName:'short'})}</time>:t('정보 없음')}</dd>
  </dl></div>
 }
 export default function UpdateSettings({invoke=invokeUpdate}) {
@@ -79,7 +80,10 @@ export default function UpdateSettings({invoke=invokeUpdate}) {
    <p id={descriptionId} className="muted">{t('정식 출시 전 기능을 확인할 수 있는 버전을 받습니다.')}</p>
    {installed?.channel==='test'&&!testSelected&&<p className="muted">{t('선택 해제 후에는 정식 업데이트를 확인합니다. 설치된 테스트 버전은 바뀌지 않습니다.')}</p>}
   </div>
-  <div className="update-version-row"><span>{t('설치된 버전')} <strong>{installed?.version||state?.version||'—'}</strong>{installed?.channel==='test'&&<span className="update-test-badge">{t('테스트')}</span>}</span>{state?.availableVersion&&<span>{t('받을 버전')} <strong>{state.availableVersion}</strong>{state?.availableBuild?.channel==='test'&&<span className="update-test-badge">{t('테스트')}</span>}</span>}</div>
+  <div className="update-version-row"><span>{t('설치된 버전')} <strong>{displayBuildVersion(installed,state?.version||'—')}</strong>{installed?.channel==='test'&&<span className="update-test-badge">{t('테스트')}</span>}</span>{state?.availableVersion&&<span>{t('받을 버전')} <strong>{displayBuildVersion(state.availableBuild,state.availableVersion)}</strong>{state?.availableBuild?.channel==='test'&&<span className="update-test-badge">{t('테스트')}</span>}</span>}</div>
+  {state?.availableChanges&&<div className="update-change-notes"><h3>{t('이전 테스트 배포 이후 변경')}</h3>
+   {state.availableChanges.baseCommit?<><p className="muted">{t('변경 커밋 {0}개',[state.availableChanges.totalCommits])}</p><ul>{state.availableChanges.commits.map(item=><li key={item.commit}><span>{item.subject}</span> <button type="button" className="text-button" onClick={()=>invoke('external.open',{url:`https://github.com/season-framework/reviewops-local/commit/${item.commit}`}).catch(failure=>setError(failure.message))}>{item.commit.slice(0,12)}</button>{item.references?.map(ref=><button type="button" className="text-button" key={ref.kind+ref.number} title={ref.title} onClick={()=>invoke('external.open',{url:ref.url}).catch(failure=>setError(failure.message))}>{t(ref.kind==='issue'?'이슈 #{0}':'PR #{0}',[ref.number])}</button>)}{item.referenceStatus==='unavailable'&&<small className="muted">{t('관련 이슈·PR 확인 없음')}</small>}</li>)}</ul><button type="button" className="button" onClick={()=>invoke('external.open',{url:`https://github.com/season-framework/reviewops-local/compare/${state.availableChanges.baseCommit}...${state.availableChanges.commit}`}).catch(failure=>setError(failure.message))}>{t('전체 변경 내용 보기')}</button></>:<p className="muted">{t('이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.')}</p>}
+  </div>}
   {state&&!canCheck?<p className="muted">{t(state.testSupported?'정식 버전은 릴리스에서 설치 파일을 받아 설치하십시오.':'자동 업데이트는 설치된 macOS 앱에서 사용할 수 있습니다.')}</p>:<p role="status" aria-live="polite">{t(message)}{state?.status==='downloading'?` ${progress}%`:''}</p>}
   {state?.status==='downloading'&&<progress max="100" value={progress} aria-label={t('업데이트 다운로드 진행률')}/>}
   {updateError&&<p className="form-error" role="alert">{t(updateError)}</p>}

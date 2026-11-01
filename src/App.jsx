@@ -7,10 +7,11 @@ import ProjectWorkspace from './ProjectWorkspace.jsx';
 import {RegistrationScreen,GroupSettings} from './OriginalForms.jsx';
 import GroupResourceList, {GroupListIcon} from './GroupResourceList.jsx';
 import GroupsList from './GroupsList.jsx';
+import {displayBuildVersion} from './build-version.mjs';
 import useWorkspaceTabOrder from './useWorkspaceTabOrder.js';
 import {CodexManagement} from './codex/CodexManagement.jsx';
 import {deletionTargets,deletedTab,clearDeletionDrafts} from './deletion.mjs';
-import {HOME_TAB,readWindowContext,windowStorageKeys,restoreWindowTabs,externalProjectRequest,projectNavigationUpdate,dirtyTabSet,preserveDeletedDrafts} from './window-context.mjs';
+import {HOME_TAB,readWindowContext,windowStorageKeys,restoreWindowTabs,externalProjectRequest,projectNavigationUpdate,dirtyTabSet,preserveDeletedDrafts,qaWindowView} from './window-context.mjs';
 import {EMPTY, date, invoke, Button, Empty, Field, Dialog, TrustDialog, EntityDialog, FileContent, DataSettings} from './components.jsx';
 
 const HOME = HOME_TAB;
@@ -34,6 +35,9 @@ export default function App() {
  useEffect(()=>{if(!ready||!dataLoaded.current)return;const frame=requestAnimationFrame(()=>invoke('update.rendererReady').catch(()=>{}));return()=>cancelAnimationFrame(frame)},[ready]);
  const [dark,setDark]=useState(()=>localStorage.getItem('reviewops.theme')==='dark'),[expanded,setExpanded]=useState(()=>localStorage.getItem('reviewops.sidebar.expanded')==='true');
  const [windowState,setWindowState]=useState({maximized:false,fullScreen:false}),[windowChanging,setWindowChanging]=useState(false);
+ const [qaProject,setQaProject]=useState(''),qaScopeRef=useRef('');
+ const qaScoped=Boolean(windowContext.projectId&&qaProject===windowContext.projectId);
+ const [openingProject,setOpeningProject]=useState(''),projectWindowPending=useRef(false);
  const [homeSelection,setHomeSelection]=useState({id:'',request:0});
  const dirtyTabs=useRef(null),tabsRef=useRef(tabs);tabsRef.current=tabs;
  if(!dirtyTabs.current)dirtyTabs.current=dirtyTabSet(dirty=>{document.documentElement.dataset.reviewopsDirty=String(dirty)});
@@ -47,11 +51,19 @@ export default function App() {
    appliedSnapshot.current=sequence;
    let selected=homeSelection.id;try{selected=localStorage.getItem(storageKeys.homeSelected)||selected}catch{}
    const preserved=preserveDeletedDrafts(dataRef.current,{...EMPTY,...result},tabsRef.current,dirtyTabs.current,selected);
-   dataRef.current=preserved.data;setData(preserved.data);setDeletedDraftNotice(preserved.preserved);dataLoaded.current=true;setReady(true);
+   dataRef.current=preserved.data;setData(preserved.data);setDeletedDraftNotice(preserved.preserved&&!qaScopeRef.current);dataLoaded.current=true;setReady(true);
   }
   return result;
  };
  useEffect(()=>{reload().catch(e=>{setError(e.message);setReady(true)})},[]);
+ useEffect(()=>{
+  let live=true;
+  const apply=value=>{if(!live)return;const project=value===windowContext.projectId?value:'';if(project===qaScopeRef.current)return;qaScopeRef.current=project;setQaProject(project);if(project){setModal(null);setClosePending(null);}reload().catch(error=>{if(live)setError(error.message)});};
+  const unsubscribe=window.reviewops?.onQaScope?.(apply);
+  invoke('window.context').then(value=>apply(value.qaProjectId||'')).catch(()=>{});
+  return()=>{live=false;unsubscribe?.()};
+ },[]);
+ useEffect(()=>{if(qaScoped)invoke('window.qaReady',{projectId:qaProject}).catch(error=>setError(error.message));},[qaScoped,qaProject]);
  useEffect(()=>{
   let live=true,timer,lastRevision=-1;
   const unsubscribe=window.reviewops?.onDataChange?.(value=>{
@@ -112,6 +124,7 @@ export default function App() {
   setWorkspaceRevision(value=>value+1);
  };
  const openTab=(kind,entityId='',extra={})=>{
+  if(qaScoped&&kind!=='home'&&!(kind==='project'&&entityId===qaProject)){setError(t("프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다."));return;}
   const existing=tabsRef.current.find(t=>t.kind===kind&&(t.entityId||'')===entityId);
   if(existing){if(Object.keys(extra).length)setTabs(current=>current.map(t=>t.id===existing.id?{...t,...extra}:t));setActive(existing.id);return existing.id;}
   const tab={id:unique(),kind,entityId,...extra};setTabs(current=>[...current,tab]);setActive(tab.id);return tab.id;
@@ -129,9 +142,20 @@ export default function App() {
  const openHosts=()=>openTab('hosts');
  const openGroup=(id,section='projects')=>openTab('group',id,{section,sectionRequest:Date.now()});
  const openProject=(id,extra={})=>{
+  if(qaScoped&&id!==windowContext.projectId){setError(t("프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다."));return;}
   const request=externalProjectRequest(windowContext.projectId,id,extra);
   if(request)return invoke('window.openProject',request).catch(error=>{setError(error.message);return null});
   return openTab('project',id,{...extra,sectionRequest:Date.now()});
+ };
+ const openProjectWindow=async(projectId,extra={})=>{
+  if(projectWindowPending.current)return;
+  projectWindowPending.current=true;setOpeningProject(projectId);setError('');
+  try{
+   const result=await invoke('window.openProject',{projectId,...extra,preserveNavigation:true});
+   setModal(current=>current?.type==='project-window'?null:current);
+   return result;
+  }catch(cause){setError(cause.message);return null}
+  finally{projectWindowPending.current=false;setOpeningProject('')}
  };
  const openService=(id,extra={})=>{const project=data.projects.find(item=>item.serviceIds?.includes(id));return project?openProject(project.id,extra):openHosts()};
  const openReview=review=>{
@@ -233,29 +257,30 @@ export default function App() {
  };
  const tabTitle=tab=>tab.kind==='home'?t("홈"):tab.kind==='groups'?t("그룹"):tab.kind==='accounts'?t("계정관리"):tab.kind==='hosts'?t("호스트관리"):tab.kind==='settings'?t("설정"):tab.kind==='editor'?t("{0} 등록",[nouns[tab.entityType]]):data[tab.kind==='group'?'groups':tab.kind==='service'?'services':'projects'].find(item=>item.id===tab.entityId)?.name||nouns[tab.kind];
  const tabIcon=tab=>tab.kind==='home'?'home':tab.kind==='groups'||tab.kind==='group'?'group':tab.kind==='accounts'?'users':tab.kind==='hosts'?'service':tab.kind==='settings'?'database':tab.kind==='editor'?'edit':tab.kind==='service'?'service':'project';
+ const qaView=qaWindowView(data,tabs,active,qaScoped?qaProject:''),visibleTabs=qaView.tabs,visibleActive=qaView.active,visibleData=qaView.data;
  const tabOrder=useWorkspaceTabOrder({tabsRef,setTabs,onActivate:setActive,tabTitle});
  const tabKey=(event,index)=>{
-  if(tabOrder.reorderKey(event,tabs[index].id))return;
+  if(tabOrder.reorderKey(event,visibleTabs[index].id))return;
   let target;
-  if(event.key==='ArrowRight')target=tabs[(index+1)%tabs.length];
-  if(event.key==='ArrowLeft')target=tabs[(index+tabs.length-1)%tabs.length];
-  if(event.key==='Home')target=tabs[0];
-  if(event.key==='End')target=tabs.at(-1);
+  if(event.key==='ArrowRight')target=visibleTabs[(index+1)%visibleTabs.length];
+  if(event.key==='ArrowLeft')target=visibleTabs[(index+visibleTabs.length-1)%visibleTabs.length];
+  if(event.key==='Home')target=visibleTabs[0];
+  if(event.key==='End')target=visibleTabs.at(-1);
   if(target){event.preventDefault();setActive(target.id);requestAnimationFrame(()=>document.getElementById(`tab-${target.id}`)?.focus())}
  };
- const duplicateTab=()=>{const current=tabs.find(t=>t.id===active);if(!current||['home','editor'].includes(current.kind)){openGroups();return;}const next={...current,id:unique()};setTabs(list=>[...list,next]);setActive(next.id)};
+ const duplicateTab=()=>{const current=visibleTabs.find(t=>t.id===visibleActive);if(!current||['home','editor'].includes(current.kind)){qaScoped?openProject(qaProject):openGroups();return;}const next={...current,id:unique()};setTabs(list=>[...list,next]);setActive(next.id)};
  const controlWindow=async action=>{
   const changingFullScreen=action==='window.fullscreen';
   if(changingFullScreen)setWindowChanging(true);setError('');
   try{const state=await invoke(action);if(changingFullScreen&&state)setWindowState(state)}catch(e){setError(e.message)}finally{if(changingFullScreen)setWindowChanging(false)}
  };
  const fullscreenLabel=windowState.fullScreen?t("창 전체 화면 종료"):t("창 전체 화면");
- const selectedTab=tabs.find(t=>t.id===active)||HOME;
+ const selectedTab=visibleTabs.find(t=>t.id===visibleActive)||HOME;
  const updateAvailable=Boolean(updateState?.supported&&updateState?.availableVersion);
  const updateWorking=updateApplying||['checking','downloading','verifying','installing'].includes(updateState?.status);
  const updateProgress=Math.max(0,Math.min(100,Number(updateState?.progress)||0));
  const updateLabel=updateState?.status==='downloading'?t('다운로드 중 {0}%',[updateProgress]):updateState?.status==='verifying'?t('다운로드한 앱 검사 중'):updateState?.status==='installing'?t('업데이트 설치 중'):updateWorking?t('업데이트 준비 중'):updateState?.status==='error'?t('업데이트 다시 시도'):t('업데이트 설치');
- const updateDetail=t(updateState?.availableBuild?.channel==='test'?'새 테스트 버전 {0}':'새 버전 {0}',[updateState?.availableVersion||'']);
+ const updateDetail=t(updateState?.availableBuild?.channel==='test'?'새 테스트 버전 {0}':'새 버전 {0}',[displayBuildVersion(updateState?.availableBuild,updateState?.availableVersion||'')]);
  const updateTitle=`${updateLabel} · ${updateDetail}${updateState?.error?` · ${t(updateState.error)}`:''}`;
  const applyUpdate=async()=>{
   if(updateApplyPending.current||updateWorking||!updateAvailable)return;
@@ -266,42 +291,58 @@ export default function App() {
   finally{updateApplyPending.current=false;setUpdateApplying(false)}
  };
  const deleteLinks=modal?.type==='delete'&&modal.entity==='service'?data.projects.filter(project=>project.serviceIds?.includes(modal.record.id)):[];
- return <div className={`app workspace-app ${expanded?'sidebar-expanded':''}`} data-window-project-id={windowContext.projectId}>
+ return <div className={`app workspace-app ${expanded?'sidebar-expanded':''}`} data-window-project-id={windowContext.projectId} data-qa-project-id={qaScoped?qaProject:''}>
   <aside className="sidebar"><div className="sidebar-brand" title={t("드래그하여 창 이동")}><img src={expanded?'./assets/brand/reviewops-logo.svg':'./assets/brand/reviewops-icon.svg'} alt="ReviewOps" draggable={false}/></div>
-   <nav className="main-nav" aria-label={t("주요 메뉴")}>{[['home','home',t("홈")],['groups','group',t("그룹")],['accounts','users',t("계정관리")],['hosts','service',t("호스트관리")]].map(([key,icon,name])=><button key={key} className={`nav-item ${(key==='home'?selectedTab.kind==='home':key==='groups'?['groups','group','project','editor'].includes(selectedTab.kind):selectedTab.kind===key)?'active':''}`} onClick={()=>key==='home'?setActive('home'):key==='groups'?openGroups():openTab(key)} title={name} aria-label={name}><Icon name={icon}/>{expanded&&<span>{name}</span>}</button>)}</nav>
+   <nav className="main-nav" aria-label={t("주요 메뉴")}>{(qaScoped?[['home','home',t("홈")]]:[['home','home',t("홈")],['groups','group',t("그룹")],['accounts','users',t("계정관리")],['hosts','service',t("호스트관리")]]).map(([key,icon,name])=><button key={key} className={`nav-item ${(key==='home'?selectedTab.kind==='home':key==='groups'?['groups','group','project','editor'].includes(selectedTab.kind):selectedTab.kind===key)?'active':''}`} onClick={()=>key==='home'?setActive('home'):key==='groups'?openGroups():openTab(key)} title={name} aria-label={name}><Icon name={icon}/>{expanded&&<span>{name}</span>}</button>)}</nav>
    <div className="sidebar-bottom">
-    {updateAvailable&&<button type="button" className={`nav-item sidebar-update ${updateWorking?'is-working':''} ${updateState.status==='error'?'has-error':''}`} onClick={applyUpdate} disabled={updateWorking} title={updateTitle} aria-label={updateTitle} aria-busy={updateWorking}>
+    {!qaScoped&&updateAvailable&&<button type="button" className={`nav-item sidebar-update ${updateWorking?'is-working':''} ${updateState.status==='error'?'has-error':''}`} onClick={applyUpdate} disabled={updateWorking} title={updateTitle} aria-label={updateTitle} aria-busy={updateWorking}>
      <span className="sidebar-update-icon"><Icon name={updateWorking?'refresh':'download'}/>{!updateWorking&&<small className="sidebar-update-alert" aria-hidden="true"/>}</span>
      <span className="sidebar-update-copy"><strong>{updateLabel}</strong><small>{updateDetail}</small></span>
      {updateState.status==='downloading'&&<progress className="sidebar-update-progress" max="100" value={updateProgress} aria-label={t('업데이트 다운로드 진행률')}/>}
     </button>}
-    <button className="nav-item" onClick={()=>setExpanded(!expanded)} title={expanded?t("메뉴 접기"):t("메뉴 펼치기")} aria-label={expanded?t("메뉴 접기"):t("메뉴 펼치기")}><Icon name="columns"/>{expanded&&<span>{t("메뉴 접기")}</span>}</button><button className={`nav-item ${selectedTab.kind==='settings'?'active':''}`} onClick={()=>openTab('settings')} title={t('설정')} aria-label={t("설정")}><Icon name="settings"/>{expanded&&<span>{t("설정")}</span>}</button><button className="nav-item" onClick={()=>setDark(!dark)} title={dark?t("밝은 화면"):t("어두운 화면")} aria-label={dark?t("밝은 화면"):t("어두운 화면")}><Icon name={dark?'sun':'moon'}/>{expanded&&<span>{dark?t("밝은 화면"):t("어두운 화면")}</span>}</button>
+    <button className="nav-item" onClick={()=>setExpanded(!expanded)} title={expanded?t("메뉴 접기"):t("메뉴 펼치기")} aria-label={expanded?t("메뉴 접기"):t("메뉴 펼치기")}><Icon name="columns"/>{expanded&&<span>{t("메뉴 접기")}</span>}</button>{!qaScoped&&<button className={`nav-item ${selectedTab.kind==='settings'?'active':''}`} onClick={()=>openTab('settings')} title={t('설정')} aria-label={t("설정")}><Icon name="settings"/>{expanded&&<span>{t("설정")}</span>}</button>}<button className="nav-item" onClick={()=>setDark(!dark)} title={dark?t("밝은 화면"):t("어두운 화면")} aria-label={dark?t("밝은 화면"):t("어두운 화면")}><Icon name={dark?'sun':'moon'}/>{expanded&&<span>{dark?t("밝은 화면"):t("어두운 화면")}</span>}</button>
    </div>
   </aside>
   <main className="workspace-main" aria-label={windowProject?`${windowProject.name} · ReviewOps`:'ReviewOps'}>
-   <div className="workspace-tabs" role="tablist" aria-label={t("작업 탭")}><div ref={tabOrder.listRef} className={`workspace-tab-list reviewops-tab-strip ${tabOrder.draggedTabId?'is-reordering':''}`}>{tabs.map((tab,index)=><div key={tab.id} data-tab-id={tab.id} className={`workspace-tab reviewops-tab-item ${active===tab.id?'active is-active':''} ${tabOrder.draggedTabId===tab.id?'dragging':''}`} role="presentation" onPointerDown={event=>tabOrder.beginDrag(event,tab.id)} onDragStart={event=>event.preventDefault()}><button id={`tab-${tab.id}`} type="button" className="workspace-tab-select reviewops-tab-label" role="tab" aria-label={tabTitle(tab)} aria-selected={active===tab.id} aria-controls={`pane-${tab.id}`} aria-describedby={tab.id==='home'?undefined:'workspace-tab-move-help'} aria-keyshortcuts={tab.id==='home'?undefined:'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'} tabIndex={active===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>tabKey(event,index)}><Icon name={tabIcon(tab)} size={16}/><span className="tab-title">{tabTitle(tab)}</span></button>{tab.id!=='home'&&<button className="tab-close reviewops-tab-close" onClick={()=>requestClose(tab.id)} aria-label={t("{0} 닫기",[tabTitle(tab)])} title={t("탭 닫기")}><Icon name="close" size={12}/></button>}</div>)}<button className="workspace-add-tab" aria-label={t("새 작업 탭")} title={t("새 작업 탭")} onClick={duplicateTab}><Icon name="plus" size={17}/></button></div><button className="workspace-refresh" aria-label={t("새로고침")} title={t("새로고침")} onClick={()=>run(reload)} disabled={busy}><Icon name="refresh" size={18}/></button>
-    <div className="window-controls" role="group" aria-label={t("창 제어")}><button type="button" className="window-control" onClick={()=>controlWindow('window.fullscreen')} title={fullscreenLabel} aria-label={fullscreenLabel} aria-pressed={windowState.fullScreen} disabled={windowChanging}><Icon name={windowState.fullScreen?'compress':'expand'} size={17}/></button><button type="button" className="window-control window-control-close" onClick={()=>controlWindow('window.close')} title={t("창 닫기")} aria-label={t("창 닫기")}><Icon name="close" size={17}/></button></div>
+   <div className="workspace-tabs" role="tablist" aria-label={t("작업 탭")}><div ref={tabOrder.listRef} className={`workspace-tab-list reviewops-tab-strip ${tabOrder.draggedTabId?'is-reordering':''}`}>{visibleTabs.map((tab,index)=><div key={tab.id} data-tab-id={tab.id} className={`workspace-tab reviewops-tab-item ${visibleActive===tab.id?'active is-active':''} ${tabOrder.draggedTabId===tab.id?'dragging':''}`} role="presentation" onPointerDown={event=>tabOrder.beginDrag(event,tab.id)} onDragStart={event=>event.preventDefault()}><button id={`tab-${tab.id}`} type="button" className="workspace-tab-select reviewops-tab-label" role="tab" aria-label={tabTitle(tab)} aria-selected={visibleActive===tab.id} aria-controls={`pane-${tab.id}`} aria-describedby={tab.id==='home'?undefined:'workspace-tab-move-help'} aria-keyshortcuts={tab.id==='home'?undefined:'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'} tabIndex={visibleActive===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>tabKey(event,index)}><Icon name={tabIcon(tab)} size={16}/><span className="tab-title">{tabTitle(tab)}</span></button>{tab.id!=='home'&&<button className="tab-close reviewops-tab-close" onClick={()=>requestClose(tab.id)} aria-label={t("{0} 닫기",[tabTitle(tab)])} title={t("탭 닫기")}><Icon name="close" size={12}/></button>}</div>)}<button className="workspace-add-tab" aria-label={t("새 작업 탭")} title={t("새 작업 탭")} onClick={duplicateTab}><Icon name="plus" size={17}/></button></div><button className="workspace-refresh" aria-label={t("새로고침")} title={t("새로고침")} onClick={()=>run(reload)} disabled={busy}><Icon name="refresh" size={18}/></button>
+    {qaScoped?<span className="workspace-qa-scope" role="status">{t("프로젝트 QA")}</span>:<button type="button" className="workspace-project-window" onClick={()=>{setError('');setModal({type:'project-window'})}} title={t("프로젝트 창 열기")} aria-label={t("프로젝트 창 열기")} disabled={!ready}><Icon name="external" size={16}/><span>{t("프로젝트 창 열기")}</span></button>}<div className="window-controls" role="group" aria-label={t("창 제어")}><button type="button" className="window-control" onClick={()=>controlWindow('window.fullscreen')} title={fullscreenLabel} aria-label={fullscreenLabel} aria-pressed={windowState.fullScreen} disabled={windowChanging}><Icon name={windowState.fullScreen?'compress':'expand'} size={17}/></button><button type="button" className="window-control window-control-close" onClick={()=>controlWindow('window.close')} title={t("창 닫기")} aria-label={t("창 닫기")}><Icon name="close" size={17}/></button></div>
    </div>
    <span id="workspace-tab-move-help" className="workspace-tab-assistive">{t("드래그하거나 Alt와 Shift를 누른 채 좌우 방향키로 탭 순서를 바꿀 수 있습니다. 홈 탭은 고정되어 있습니다.")}</span><span className="workspace-tab-assistive" role="status" aria-live="polite">{tabOrder.announcement}</span>
    {error&&<div className="error-banner" role="alert"><Icon name="warning" size={17}/><span>{t(error)}</span><button className="icon-button" onClick={()=>setError('')} aria-label={t("오류 닫기")}><Icon name="close" size={15}/></button></div>}
    {deletedDraftNotice&&<div className="error-banner" role="status"><Icon name="warning" size={17}/><span>{t('다른 창에서 삭제된 항목이 있습니다. 작성 중인 내용은 이 창에 유지됩니다.')}</span></div>}
-   {!ready?<div className="loading"><span className="spinner"/>{t("자료 불러오는 중")}</div>:<div className="workspace-panes">{tabs.map(tab=><section id={`pane-${tab.id}`} key={tab.id} className="workspace-pane" role="tabpanel" aria-labelledby={`tab-${tab.id}`} hidden={active!==tab.id}>
-    {tab.kind==='home'&&<WorkHome key={workspaceRevision} data={data} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onEditReview={review=>edit('review',review)} onCreateReview={createReview} onPreview={previewFile} onError={setError} onRefresh={()=>run(reload)} onGroups={openGroups} initialReviewId={homeSelection.id} selectionRequest={homeSelection.request} storageScope={storageKeys.home} windowProjectId={windowContext.projectId} onDirtyChange={dirty=>dirty?dirtyTabs.current.add('home'):dirtyTabs.current.delete('home')}/>}
-    {['accounts','hosts'].includes(tab.kind)&&active===tab.id&&<CodexManagement page={tab.kind}/>}
+   {!ready?<div className="loading"><span className="spinner"/>{t("자료 불러오는 중")}</div>:<div className="workspace-panes">{tabs.map(tab=><section id={`pane-${tab.id}`} key={tab.id} className="workspace-pane" role="tabpanel" aria-labelledby={`tab-${tab.id}`} hidden={visibleActive!==tab.id||qaScoped&&!visibleTabs.some(item=>item.id===tab.id)}>
+    {tab.kind==='home'&&<WorkHome key={workspaceRevision} data={visibleData} projectOnly={qaScoped} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onEditReview={review=>edit('review',review)} onCreateReview={createReview} onPreview={previewFile} onError={setError} onRefresh={()=>run(reload)} onGroups={qaScoped?()=>openProject(qaProject):openGroups} initialReviewId={homeSelection.id} selectionRequest={homeSelection.request} storageScope={storageKeys.home} windowProjectId={windowContext.projectId} onDirtyChange={dirty=>dirty?dirtyTabs.current.add('home'):dirtyTabs.current.delete('home')}/>}
+    {['accounts','hosts'].includes(tab.kind)&&!qaScoped&&visibleActive===tab.id&&<CodexManagement page={tab.kind}/>}
     {tab.kind==='groups'&&<GroupsList data={data} onOpen={openGroup} onCreate={()=>edit('group')}/>}
     {tab.kind==='group'&&<GroupPane data={data} groupId={tab.entityId} initialSection={tab.section} sectionRequest={tab.sectionRequest} onGroups={openGroups} onOpenProject={openProject} onOpenService={openService} onEdit={edit} onDelete={remove} mutate={mutate} busy={busy} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
-    {['project','service'].includes(tab.kind)&&<ProjectWorkspace data={data} projectId={tab.kind==='project'?tab.entityId:undefined} serviceId={tab.kind==='service'?tab.entityId:undefined} resourceMode={tab.kind} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onOpenService={openService} onDelete={remove} onError={setError} onCreateService={createService} onOpenHosts={openHosts} initialSection={tab.section} sectionRequest={tab.sectionRequest} initialReviewId={tab.reviewId} initialReviewMode={tab.reviewMode} selectionRequest={tab.selectionRequest} integrationRequest={tab.integrationRequest} active={active===tab.id} onIntegrationReady={value=>invoke('integration.displayed',value).catch(error=>setError(error.message))} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
+    {['project','service'].includes(tab.kind)&&<ProjectWorkspace qaScoped={qaScoped} data={visibleData} projectId={tab.kind==='project'?tab.entityId:undefined} serviceId={tab.kind==='service'?tab.entityId:undefined} resourceMode={tab.kind} onOpenWindow={windowContext.projectId?undefined:openProjectWindow} windowOpening={Boolean(openingProject)} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onOpenService={openService} onDelete={remove} onError={setError} onCreateService={createService} onOpenHosts={openHosts} initialSection={tab.section} sectionRequest={tab.sectionRequest} initialReviewId={tab.reviewId} initialReviewMode={tab.reviewMode} selectionRequest={tab.selectionRequest} integrationRequest={tab.integrationRequest} active={visibleActive===tab.id} onIntegrationReady={value=>invoke('integration.displayed',value).catch(error=>setError(error.message))} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
     {tab.kind==='settings'&&<><ResourceHeader title={t("설정")}/><DataSettings data={data} invoke={invoke} run={run} reload={reload} setToast={setToast} onBeforeRestore={beforeRestore} onRestored={restoreWorkspace}/></>}
     {tab.kind==='editor'&&<RegistrationScreen type={tab.entityType} record={tab.record} data={data} busy={busy} onClose={()=>closeTab(tab.id)} onSave={record=>save(tab.entityType,record,tab.id)} onCreateService={createService} onOpenHosts={openHosts} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
    </section>)}</div>}
   </main>
   {toast&&<div className="toast" role="status"><Icon name="check" size={16}/>{toast}</div>}
+  {modal?.type==='project-window'&&<ProjectWindowDialog data={data} openingProject={openingProject} error={error} onOpen={openProjectWindow} onClose={()=>setModal(null)}/>}
   {modal?.type==='group'&&<EntityDialog type="group" record={modal.record} data={data} busy={busy} onClose={()=>setModal(null)} onSave={record=>save('group',record)} run={run} externalError={error}/>}
   {modal?.type==='delete'&&<Dialog title={t("{0} 삭제",[nouns[modal.entity]])} onClose={()=>setModal(null)} footer={<><Button onClick={()=>setModal(null)}>{t("취소")}</Button><Button variant="danger" onClick={deleteRecord} disabled={busy||deleteLinks.length>0||!deleteConfirm||deleteConfirm!==(modal.record.name||modal.record.title)}>{t("삭제")}</Button></>}><p className="delete-message"><strong>{modal.record.name||modal.record.title}</strong>{" "+t("항목을 삭제합니다.")}</p><p className="muted">{modal.entity==='group'?t("그룹의 프로젝트, 리뷰, 작업이력과 첨부 파일을 모두 삭제합니다."):modal.entity==='project'?t("프로젝트의 연결 설정, 리뷰, 작업이력과 첨부 파일을 모두 삭제합니다."):modal.entity==='service'?t("프로젝트 연결을 모두 해제한 서비스만 삭제할 수 있습니다. 기존 리뷰와 작업이력은 유지됩니다."):t("리뷰의 작업이력과 첨부 파일을 모두 삭제합니다.")}</p>{modal.entity!=='service'&&<p className="muted">{t("진행 중인 에이전트 작업도 중지합니다.")}</p>}{deleteLinks.length>0&&<div className="form-error" role="alert"><p>{t("다음 프로젝트에서 서비스 연결을 해제하십시오.")}</p><ul>{deleteLinks.map(project=><li key={project.id}>{project.name}</li>)}</ul></div>}<Field label={t("삭제 확인")} hint={t("삭제하려면 {0}을 그대로 입력하십시오: {1}",[modal.entity==='review'?t("리뷰 제목"):t("이름"),modal.record.name||modal.record.title])}><input aria-label={t("삭제 확인")} autoComplete="off" spellCheck={false} value={deleteConfirm} disabled={busy} onChange={event=>setDeleteConfirm(event.target.value)} placeholder={modal.record.name||modal.record.title}/></Field>{error&&<div className="form-error" role="alert">{error}</div>}</Dialog>}
   {modal?.type==='preview-trust'&&<TrustDialog trust={modal.trust} onClose={()=>setModal(null)} onTrust={()=>run(async()=>{await invoke('ssh.trust',{serviceId:modal.file.serviceId,fingerprint:modal.trust.fingerprint});await reload();await previewFile(modal.file)})}/>}
   {modal?.type==='preview'&&<Dialog title={modal.file.name||modal.file.path||t("파일")} onClose={()=>setModal(null)} wide><FileContent file={modal.file}/></Dialog>}
   {closePending&&<Dialog title={t("작성 중인 내용")} onClose={()=>setClosePending(null)} footer={<><Button onClick={()=>setClosePending(null)}>{t("계속 작성")}</Button><Button variant="danger" onClick={()=>{closeTab(closePending);setClosePending(null)}}>{t("변경 내용 버리기")}</Button></>}><p>{t("저장하지 않은 변경 내용이 있습니다. 내용을 버리고 탭을 닫을 수 있습니다.")}</p></Dialog>}
  </div>;
+}
+
+function ProjectWindowDialog({data,openingProject,error,onOpen,onClose}) {
+ const [query,setQuery]=useState('');
+ const names=new Map(data.groups.map(group=>[group.id,group.name]));
+ const search=query.trim().toLocaleLowerCase();
+ const projects=data.projects.filter(project=>`${project.name} ${names.get(project.groupId)||''}`.toLocaleLowerCase().includes(search));
+ return <Dialog title={t("프로젝트 창 열기")} onClose={onClose} footer={<Button onClick={onClose}>{t("닫기")}</Button>}>
+  <div className="project-window-picker"><p>{t("프로젝트마다 별도 창을 엽니다. 이미 열린 프로젝트는 해당 창으로 이동합니다.")}</p>
+   <Field label={t("프로젝트 검색")}><input autoFocus type="search" value={query} onChange={event=>setQuery(event.target.value)} placeholder={t("프로젝트 또는 그룹 이름")}/></Field>
+   {error&&<div className="form-error" role="alert">{t(error)}</div>}
+   <div className="project-window-list">{projects.map(project=><button type="button" key={project.id} aria-label={t("{0} 창 열기",[project.name])} disabled={Boolean(openingProject)} onClick={()=>onOpen(project.id)}><Icon name="project" size={19}/><span><strong>{project.name}</strong><small>{names.get(project.groupId)||t("그룹 없음")}</small></span><Icon name={openingProject===project.id?'refresh':'external'} size={16}/></button>)}</div>
+   {!projects.length&&<p className="muted">{data.projects.length?t("검색 결과가 없습니다."):t("그룹에서 프로젝트를 등록한 뒤 창을 열 수 있습니다.")}</p>}
+  </div>
+ </Dialog>;
 }
 
 function ResourceHeader({title,children,onBack,backLabel,actions,inlineBack=false}) {

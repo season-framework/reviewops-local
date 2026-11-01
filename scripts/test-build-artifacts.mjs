@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { assertPublicationCI, REPOSITORY } from './test-release.mjs';
-const packageName = /^reviewops-test-build-(?:darwin-arm64|darwin-x64|win32-x64)$/;
+const packageName = /^reviewops-test-build-(?:darwin-arm64|darwin-x64|win32-x64|context)$/;
+const nativeNames=['darwin-arm64','darwin-x64','win32-x64'].map(target=>`reviewops-test-build-${target}`);
 export async function cleanupArtifacts({ remove = false, keepCurrent = false, keepCandidate = false, env = process.env, fetchImpl = fetch } = {}) {
   assertPublicationCI(null, env);
   const token = env.GITHUB_TOKEN;
@@ -37,7 +38,7 @@ export async function cleanupArtifacts({ remove = false, keepCurrent = false, ke
   let retainedRun = keepCurrent ? currentRun : null;
   const unexpired = new Set(candidates.filter(item => !item.expired).map(item => item.id));
   if (keepCurrent || keepCandidate) {
-    const successful = [...runs.entries()].filter(([id, run]) => id !== currentRun && run?.workflow_id === workflow.id && run.conclusion === 'success' && new Set(eligible.filter(item => item.run === id && unexpired.has(item.id)).map(item => item.name)).size === 3);
+    const successful = [...runs.entries()].filter(([id, run]) => {const names=new Set(eligible.filter(item => item.run === id && unexpired.has(item.id)).map(item => item.name));return id !== currentRun && run?.workflow_id === workflow.id && run.conclusion === 'success' && nativeNames.every(name=>names.has(name));});
     retainedRun = Math.max(retainedRun || 0, successful.sort(([left], [right]) => right - left)[0]?.[0] || 0) || null;
   }
   const selected = eligible.filter(item => item.run !== retainedRun);

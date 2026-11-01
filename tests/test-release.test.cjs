@@ -16,7 +16,7 @@ async function fixture(t, n = 1001) {
   }
   for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     await fs.writeFile(path.join(directory, `verification-${target}.json`), JSON.stringify({ schema: 1, ok: true, target, build, files,
-      checks: ['packaged-build-info', 'package-structure', ...(target.startsWith('darwin') ? ['codesign', 'dmg-verify'] : ['publisher-status', 'installed-application'])] }));
+      checks: ['packaged-build-info', 'package-structure', ...(target.startsWith('darwin') ? ['codesign', 'dmg-verify','zip-extraction','native-smoke'] : ['publisher-status', 'installed-application'])] }));
   }
   await fs.writeFile(path.join(directory, 'build-info.json'), JSON.stringify(build));
   return { m, directory, build, plan: await m.prepareRelease(directory, build) };
@@ -59,6 +59,11 @@ test('missing platform verification prevents any publication plan', async t => {
   const { m, directory, build } = await fixture(t);
   await fs.rm(path.join(directory, 'verification-win32-x64.json'));
   await assert.rejects(m.prepareRelease(directory, build), /ENOENT/);
+});
+for(const target of ['darwin-arm64','darwin-x64'])test(`missing native application smoke rejects ${target} before publication`,async t=>{
+  const {m,directory,build}=await fixture(t),file=path.join(directory,`verification-${target}.json`),record=JSON.parse(await fs.readFile(file,'utf8'));
+  record.checks=record.checks.filter(check=>check!=='native-smoke');await fs.writeFile(file,JSON.stringify(record));
+  await assert.rejects(m.prepareRelease(directory,build),/패키지 검사 결과/);
 });
 test('default dry run performs no writes; offline CLI never reads a token', async t => {
   const { m, directory, plan } = await fixture(t), store = await memoryStore();
@@ -195,10 +200,23 @@ test('workflow uses one global lock, native targets, least publishing scope and 
   assert.deepEqual(workflow.on.push.branches, ['codex/test-updates']);
   assert.equal(workflow.permissions.contents, 'read');
   assert.deepEqual(workflow.jobs.package.strategy.matrix.include.map(item => item.target).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  const steps = workflow.jobs.package.steps, mcpIndex = steps.findIndex(step => step.run?.includes('scripts/e2e-mcp-review-categories.mjs'));
+  assert.equal(steps[mcpIndex]?.if, "matrix.target == 'darwin-arm64'");
+  const rendererIndex = steps.findIndex(step => step.run?.includes('buildRenderer({generateLicenses:false})'));
+  const sharedIndex = steps.findIndex(step => step.run?.includes('scripts/e2e-live-web-sessions.mjs'));
+  assert.equal(steps[rendererIndex]?.if, undefined);
+  assert.equal(steps[sharedIndex]?.if, undefined);
+  assert.match(steps[sharedIndex].run, /scripts\/e2e-qa-viewer-sessions\.mjs/);
+  assert.ok(rendererIndex >= 0 && rendererIndex < sharedIndex && sharedIndex < mcpIndex);
+  assert.ok(mcpIndex < steps.findIndex(step => step.name === 'Package and verify the native target'));
   const publish = workflow.jobs.publish.steps.find(step => step.run?.includes('--publish'));
   assert.match(publish.if, /workflow_dispatch/); assert.match(publish.if, /inputs.publish/);
   const stage = workflow.jobs.package.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(stage.with['retention-days'], 1);
+  const diagnostics = steps.find(step => step.with?.name === 'reviewops-shared-session-qa-${{ matrix.target }}');
+  assert.equal(diagnostics?.if, 'always()');
+  assert.equal(diagnostics.with['retention-days'], 1);
+  assert.ok(steps.indexOf(diagnostics) > steps.indexOf(stage));
 });
 
 test('artifact cleanup retains only the reviewed candidate and never deletes another workflow', async () => {

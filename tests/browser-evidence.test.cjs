@@ -90,3 +90,53 @@ for(const action of ['clear','reset','navigate'])test(`${action} 이후 도착�
   if(action==='clear')await recorder.clearElement(entry);else if(action==='reset')await recorder.reset(entry);else page.emit('did-navigate',{},'https://fixture.invalid/next');
   resolve({selector:'#old',rect:{x:0,y:0,width:50,height:30}});assert.equal(await pending,null);assert.equal(entry.selectedElement,undefined);
 });
+
+test('reset clears a crashed source without waiting for scripts in its dead renderer',async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const page=new Contents(77),entry=item(page);recorder.track(page,entry);let calls=0;
+ entry.selectedElement={selector:'#old'};recorder.beforeRequest({id:90,webContentsId:page.id,url:page.url,method:'GET'});
+ entry.rendererGone=true;page.isCrashed=()=>false;page.executeJavaScriptInIsolatedWorld=()=>{calls++;return new Promise(()=>{});};
+ await Promise.race([recorder.reset(entry),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('reset waited for a crashed frame')),100);t.after(()=>clearTimeout(timer));})]);
+ recorder.completed({id:90,statusCode:200});assert.equal(calls,0);assert.equal(entry.selectedElement,undefined);assert.deepEqual(entry.evidence.network_log,[]);assert.deepEqual(entry.evidence.input_log,[]);
+});
+
+test('reset drains a healthy popup old buffer while its owning primary is gone',async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(81),popup=new Contents(82),entry=item(primary);entry.rendererGone=true;primary.isCrashed=()=>true;let deadCalls=0;primary.executeJavaScriptInIsolatedWorld=()=>{deadCalls++;return new Promise(()=>{});};popup.logs.push({type:'click',target:{id:'PROJECT_A_OLD_CLICK'}});recorder.track(primary,entry);recorder.track(popup,entry);
+ await recorder.reset(entry);assert.equal(deadCalls,0);assert.deepEqual(popup.logs,[]);entry.rendererGone=false;primary.isCrashed=()=>false;primary.executeJavaScriptInIsolatedWorld=Contents.prototype.executeJavaScriptInIsolatedWorld;
+ assert.equal((await recorder.collect(entry)).input_log.some(event=>event.target?.id==='PROJECT_A_OLD_CLICK'),false);
+});
+
+test('the real periodic drain skips a dead renderer and does not strand recovery collection',async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(83),entry=item(primary);let crashed=true,deadCalls=0;entry.rendererGone=true;primary.isCrashed=()=>crashed;primary.executeJavaScriptInIsolatedWorld=()=>{if(crashed){deadCalls++;return new Promise(()=>{});}return Promise.resolve({logs:[]});};recorder.track(primary,entry);
+ await new Promise(resolve=>setTimeout(resolve,800));assert.equal(deadCalls,0);crashed=false;entry.rendererGone=false;
+ const result=await Promise.race([recorder.collect(entry),new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('recovery collect retained a dead read')),100);t.after(()=>clearTimeout(timer));})]);assert.deepEqual(result.input_log,[]);
+});
+
+for(const settle of ['resolve','reject'])for(const order of ['old-before-fresh','old-after-fresh'])test(`cancelled ${settle} read cannot poison or remove a fresh read (${order})`,async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(84),entry=item(primary);recorder.track(primary,entry);const pending=[];let reads=0;
+ primary.executeJavaScriptInIsolatedWorld=(_world,scripts)=>{if(!scripts[0].code.includes('function readInputRecorder'))return Promise.resolve(null);reads++;return new Promise((resolve,reject)=>pending.push({resolve,reject}));};
+ const initial=recorder.collect(entry);await new Promise(setImmediate);assert.equal(reads,1);primary.emit('render-process-gone');await initial;primary.emit('dom-ready');const fresh=recorder.collect(entry);await new Promise(setImmediate);assert.equal(reads,2);
+ const settleOld=()=>settle==='resolve'?pending[0].resolve({logs:[{type:'click',target:{id:'STALE_OLD'}}]}):pending[0].reject(new Error('Old frame exited'));
+ let expectedReads,latest;
+ if(order==='old-after-fresh'){pending[1].resolve({logs:[{type:'click',target:{id:'FRESH'}}]});await fresh;latest=recorder.collect(entry);await new Promise(setImmediate);expectedReads=3;settleOld();}
+ else{settleOld();latest=fresh;expectedReads=2;}
+ await new Promise(setImmediate);const sibling=recorder.collect(entry);await new Promise(setImmediate);assert.equal(reads,expectedReads,'old completion must not evict the current pending entry');pending[expectedReads-1].resolve({logs:[{type:'click',target:{id:'FRESH'}}]});const [a,b]=await Promise.all([latest,sibling]);assert.equal(a.input_log.some(event=>event.target?.id==='STALE_OLD'),false);assert.equal(b.input_log.some(event=>event.target?.id==='FRESH'),true);
+});
+
+for(const phase of ['clear','read'])test(`reset cancels its direct ${phase} operation when the renderer exits mid-reset`,async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(85),entry=item(primary);recorder.track(primary,entry);let release,waiting=false,crashed=false;
+ primary.isCrashed=()=>crashed;primary.executeJavaScriptInIsolatedWorld=(_world,scripts)=>{const read=scripts[0].code.includes('function readInputRecorder'),clear=scripts[0].code.endsWith('("clear")');if((phase==='read'&&read)||(phase==='clear'&&clear)){waiting=true;return new Promise(resolve=>{release=resolve;});}return Promise.resolve({logs:[]});};
+ const pending=recorder.reset(entry);for(let i=0;i<10&&!waiting;i++)await new Promise(setImmediate);assert.equal(waiting,true);crashed=true;entry.rendererGone=true;primary.emit('render-process-gone');
+ await Promise.race([pending,new Promise((_,reject)=>{const timer=setTimeout(()=>reject(new Error('reset retained a dead direct script')),100);t.after(()=>clearTimeout(timer));})]);
+ crashed=false;entry.rendererGone=false;primary.executeJavaScriptInIsolatedWorld=Contents.prototype.executeJavaScriptInIsolatedWorld;primary.emit('dom-ready');primary.logs.push({type:'click',target:{id:'FRESH_AFTER_RESET'}});const fresh=await recorder.collect(entry);assert.equal(fresh.input_log.some(event=>event.target?.id==='FRESH_AFTER_RESET'),true);release({logs:[{type:'click',target:{id:'OLD_RESET_FRAME'}}]});await new Promise(setImmediate);assert.equal((await recorder.collect(entry)).input_log.some(event=>event.target?.id==='OLD_RESET_FRAME'),false);
+});
+
+for(const action of ['pick','showElement','clearElement'])test(`${action} cancels a dead renderer operation without overriding a later selection`,async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(86),entry=item(primary);recorder.track(primary,entry);entry.selectedElement={selector:'#before'};let release;
+ primary.executeJavaScriptInIsolatedWorld=()=>new Promise(resolve=>{release=resolve;});const pending=recorder[action](entry);await new Promise(setImmediate);primary.emit('render-process-gone');await pending;
+ primary.executeJavaScriptInIsolatedWorld=Contents.prototype.executeJavaScriptInIsolatedWorld;primary.pickResult={selector:'#fresh'};primary.emit('dom-ready');await recorder.pick(entry);release({selector:'#stale'});await new Promise(setImmediate);assert.equal(entry.selectedElement.selector,'#fresh');
+});
+
+test('live inspector script failures retain their original rejection',async t=>{
+ const recorder=createEvidenceRecorder();t.after(()=>recorder.close());const primary=new Contents(87),entry=item(primary);recorder.track(primary,entry);primary.executeJavaScriptInIsolatedWorld=()=>Promise.reject(new Error('Synthetic inspector failure'));
+ await assert.rejects(recorder.pick(entry),/Synthetic inspector failure/);await assert.rejects(recorder.showElement(entry),/Synthetic inspector failure/);
+});

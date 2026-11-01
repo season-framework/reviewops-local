@@ -19,16 +19,17 @@ const MAIN_SOURCE = fs.readFileSync(MAIN_PATH, 'utf8');
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync('/tmp/reviewops-main-test-');
   const dataPath = path.join(root, 'data');
+  const resourcesPath = path.join(root, 'resources');
   const handlers = new Map();
   const appEvents = new EventEmitter();
   const state = { switches: [], window: null, primaryWindow:null, windows:[], browserManagers:[], startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [], dialogCalls:[] };
   const stores = [];
   const app = Object.assign(appEvents, {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
-    isPackaged: true,
-    setName() {}, setPath() {}, quit() {},
+    isPackaged: options.isPackaged !== false,
+    setName() {}, setPath() {}, quit() {},setAboutPanelOptions(value){state.aboutPanelOptions=value;},
     getPath(name) { if (name === 'temp' || name === 'appData') return root; throw new Error(`Unexpected getPath: ${name}`); },
-    getVersion() { return '0.0.0-test'; },
+    getVersion() { return options.version||'0.0.0-test'; },
     requestSingleInstanceLock() { return true; },
     whenReady() { return { then(callback) { state.startup = callback(); return state.startup; } }; }
   });
@@ -37,7 +38,7 @@ async function harness(t, options = {}) {
       super(); this.options = windowOptions; this.id=state.windows.length+1;this.messages=[];
       const host=this;
       this.destroyed = false; this.maximized = false; this.fullScreen = false; this.closeCalls = 0;
-      this.visible = true; this.minimized = false; this.bounds = {x:0,y:0,width:1440,height:940};
+      this.visible = windowOptions.show !== false; this.minimized = false; this.bounds = {x:0,y:0,width:1440,height:940};
       this.webContents = Object.assign(new EventEmitter(), {
         id:this.id+1000,
         mainFrame: { url: 'reviewops://app/index.html' },
@@ -47,6 +48,7 @@ async function harness(t, options = {}) {
         async executeJavaScript(){return Boolean(host.preventUnload ?? state.preventUnload);},
         send(channel, data) {
           const message={ channel, data: JSON.parse(JSON.stringify(data)) };state.windowMessages.push(message);host.messages.push(message);
+          if(channel==='reviewops:qa-scope'&&data.projectId)setImmediate(()=>handlers.get('reviewops:invoke')({sender:this,senderFrame:this.mainFrame},'window.qaReady',{projectId:data.projectId}));
           if(channel==='reviewops:season-review'&&!options.manualSeasonAcknowledgment)setImmediate(()=>handlers.get('reviewops:invoke')({sender:this,senderFrame:this.mainFrame},'integration.displayed',{...data,section:'review'}));
         },
         async capturePage(bounds){(state.captureCalls||=[]).push({windowId:host.id,bounds});return {isEmpty:()=>false,toPNG:()=>Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64')};},
@@ -67,6 +69,7 @@ async function harness(t, options = {}) {
     isMinimized() { return this.minimized; }
     restore() { this.minimized = false; }
     show() { this.visible = true; }
+    showInactive() { this.visible = true; }
     focus() {state.focusedWindow=this;}
     getBounds() { return this.bounds; }
     getContentBounds(){return this.bounds;}
@@ -140,11 +143,15 @@ async function harness(t, options = {}) {
     if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
+      return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},login({id,serviceId}){const job={id,serviceId,kind:'login',status:'running',output:'synthetic login'};state.agentStarts.push(job);return job;},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
     }};
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (name === './automation-api.cjs' || name === path.join(resourcesPath,'mcp','automation-api.cjs')) {
+      state.automationModulePath=name;
+      return require('../electron/automation-api.cjs');
+    }
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
-    if (name === './build-info.cjs') return {getBuildInfo:version=>({channel:'stable',version})};
+    if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
@@ -161,6 +168,7 @@ async function harness(t, options = {}) {
     } };
     if (name === './tool-integration.cjs') return {createToolIntegration:async options=>{state.toolIntegration=options;return {close:async()=>{state.toolIntegrationClosed=true;}};}};
     if (name.startsWith('node:')) return require(name);
+    if(name==='./viewer-sessions.cjs')return require('../electron/viewer-sessions.cjs');
     throw new Error(`Unexpected module: ${name}`);
   };
   t.after(() => {
@@ -172,7 +180,7 @@ async function harness(t, options = {}) {
   state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch },
+    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
     URL, Response, Buffer, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate, setTimeout, clearTimeout
   }, { filename: MAIN_PATH, timeout: 5000 });
   await state.startup;
@@ -206,6 +214,15 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+test('detailed test identity agrees across app information, native About and copied information',async t=>{
+ const buildInfo={channel:'test',version:'1.2.11',buildNumber:11001,developmentNumber:10,commit:'a'.repeat(40),builtAt:'2026-11-01T16:00:00.000Z'};
+ const h=await harness(t,{version:'1.2.11',buildInfo,isPackaged:false});
+ assert.equal(h.state.aboutPanelOptions.applicationVersion,'1.2.11-dev-10');assert.equal(h.state.aboutPanelOptions.version,'11001');
+ assert.equal((await h.success('app.info')).build.developmentNumber,10);
+ await h.success('update.copyInfo');assert.match(h.state.clipboardText,/1\.2\.11-dev-10/);assert.match(h.state.clipboardText,/11001/);assert.match(h.state.clipboardText,/UTC/);
+ const {project,review}=await seed(h),snapshot=await h.success('snapshot');
+ assert.ok(snapshot.projects.some(item=>item.id===project.id));assert.ok(snapshot.reviews.some(item=>item.id===review.id));
+});
 
 async function waitForValue(read, message) {
   for(let attempt=0;attempt<100;attempt++) {
@@ -240,6 +257,15 @@ function savedRemoteFixture({dataPath},change={}) {
     return {run,service};
   }finally{store.close();}
 }
+
+test('packaged and source startup load the shared MCP API from their respective locations',async t=>{
+  for(const isPackaged of [true,false]) {
+    const h=await harness(t,{isPackaged});
+    assert.equal(h.state.automationModulePath,isPackaged?path.join(h.root,'resources','mcp','automation-api.cjs'):'./automation-api.cjs');
+    const result=await h.state.toolIntegration.automationHandler('automation.projects.list',{});
+    assert.deepEqual(result,{projects:[]});
+  }
+});
 
 test('startup reconnects a durable SSH job using its saved target and vault without starting another request',async t=>{
   let fixture;const h=await harness(t,{prepare:paths=>{fixture=savedRemoteFixture(paths);}});
@@ -1817,4 +1843,92 @@ test('update build information copies through the trusted native clipboard route
  assert.ok(!h.state.clipboardText.includes('빌드:'));
  const host=h.state.window;
  assert.equal((await h.invoke('update.copyInfo',{}, {sender:host.webContents,senderFrame:{url:'https://external.example/'}})).ok,false);
+});
+
+test('project QA rejects global and foreign IPC while its project and the unbound main window still work',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ const gb=await main.success('group.save',{name:'Other QA group'}),sb=await main.success('service.save',{groupId:gb.id,name:'Other connection',kind:'local',rootPath:h.root});
+ const pb=await main.success('project.save',{groupId:gb.id,name:'Other project',serviceIds:[sb.id]}),rb=await main.success('review.save',{projectId:pb.id,serviceId:sb.id,title:'Other review'});
+ await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host);
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'scoped-qa'});
+ const result=await client.success('snapshot');assert.deepEqual(result.projects.map(item=>item.id),[a.project.id]);assert.deepEqual(result.reviews.map(item=>item.id),[a.review.id]);assert.equal(result.groups.some(item=>item.id===gb.id),false);
+ for(const [action,payload]of [['group.save',{id:gb.id,name:'must not change'}],['group.delete',{id:gb.id}],['project.save',{id:pb.id,name:'must not change'}],['review.save',{id:rb.id,body:'must not change'}],['files.list',{serviceId:sb.id}],['window.openProject',{projectId:pb.id}],['agent.list',{}],['settings.save',{theme:'dark'}],['agent.login',{serviceId:a.service.id}],['agent.logout',{serviceId:a.service.id}],['backup.export',{}]]){
+  const denied=await client.invoke(action,payload);assert.equal(denied.ok,false,action);assert.equal(denied.error.code,'TARGET_MISMATCH',action);
+ }
+ assert.throws(()=>h.state.codexOptions.withWindow(client.event(),()=>h.state.codexOptions.trusted(client.event())),{code:'TARGET_MISMATCH'});
+ assert.ok(!h.state.codexOptions.getWindows().includes(host));
+ await client.success('review.save',{id:a.review.id,body:'Own project remains editable'});
+ await main.success('group.save',{id:gb.id,name:'Full app remains editable'});
+ assert.equal((await main.success('snapshot')).groups.find(item=>item.id===gb.id).name,'Full app remains editable');
+ assert.equal((await main.success('snapshot')).reviews.find(item=>item.id===rb.id).body,'');
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+ assert.equal((await client.success('snapshot')).projects.length,2);assert.ok(h.state.codexOptions.getWindows().includes(host));
+ assert.equal(h.state.codexOptions.withWindow(client.event(),()=>h.state.codexOptions.trusted(client.event())),undefined);
+});
+
+test('a queued QA IPC keeps its project guard after the QA session is released',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow),other=await main.success('group.save',{name:'Preserve this group'});
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'queue-qa'});
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Environment probe did not start');
+ const pending=client.invoke('group.save',{id:other.id,name:'must stay blocked'});
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);unblock();await probe;
+ const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'TARGET_MISMATCH');
+ assert.equal((await main.success('snapshot')).groups.find(item=>item.id===other.id).name,'Preserve this group');
+});
+
+test('QA scope readiness does not wait behind a different queued operation',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Environment probe did not start');
+ try{
+  const qa=await Promise.race([h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'ready-qa'}),new Promise((_,reject)=>setTimeout(()=>reject(new Error('QA ready was blocked by the mutation queue')),1000))]);
+  await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+ }finally{unblock();await probe;}
+});
+
+test('project QA cannot inspect or cancel shared login jobs while own review jobs remain usable',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('service.save',{id:a.service.id,agentEnabled:1});
+ await main.success('project.save',{groupId:a.group.id,name:'Shared connection B',serviceIds:[a.service.id]});
+ const login=await main.success('agent.login',{serviceId:a.service.id});
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'auth-scope-qa'}),client=h.forWindow(await projectHost(h,a.project.id));
+ for(const [action,payload] of [['agent.loginState',{serviceId:a.service.id}],['agent.read',{id:login.id}],['agent.cancel',{id:login.id}]]){
+  const result=await client.invoke(action,payload);assert.equal(result.ok,false,action);assert.equal(result.error.code,'TARGET_MISMATCH',action);
+ }
+ assert.deepEqual(h.state.agentCancelled,[]);assert.equal((await main.success('agent.loginState',{serviceId:a.service.id})).status,'running');
+ await main.success('agent.cancel',{id:login.id});
+ const own=await client.success('agent.start',{reviewId:a.review.id,prompt:'Synthetic own project request'});
+ assert.equal((await client.success('agent.read',{id:own.id})).reviewId,a.review.id);
+ await client.success('agent.cancel',{id:own.id});assert.ok(h.state.agentCancelled.includes(own.id));
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+});
+
+test('project QA permits its saved sibling work folder but rejects a symlink escape',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow),files=path.join(h.root,'files'),work=path.join(h.root,'work'),outside=path.join(h.root,'outside');
+ for(const folder of [files,work,outside])fs.mkdirSync(folder);fs.symlinkSync(outside,path.join(work,'other'));
+ const project=await main.success('project.save',{groupId:a.group.id,name:'Separate local work path',connection:{kind:'local',rootPath:files,agentWorkPath:work,agentEnabled:false}});
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:project.id,clientId:'path-scope-qa'}),client=h.forWindow(await projectHost(h,project.id));
+ for(const folder of [files,work]){
+  assert.equal((await client.success('directory.inspect',{path:folder})).status,'ready');
+  await client.success('directory.create',{parent:folder,name:'child'});assert.equal(fs.statSync(path.join(folder,'child')).isDirectory(),true);
+ }
+ for(const target of [outside,path.join(work,'other'),path.join(work,'other','missing')]){
+  const result=await client.invoke('directory.create',{parent:target,name:'blocked'});assert.equal(result.ok,false);assert.equal(result.error.code,'TARGET_MISMATCH');
+ }
+ assert.deepEqual(fs.readdirSync(outside),[]);await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+});
+
+test('a QA window can render an empty snapshot and close after deleting its own project',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('project.save',{groupId:a.group.id,name:'Other project remains',serviceIds:[a.service.id]});
+ await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'deleted-scope-qa'});
+ const host=await projectHost(h,a.project.id),client=h.forWindow(host);
+ await client.success('project.delete',{id:a.project.id});
+ const snapshot=await client.success('snapshot');for(const key of ['projects','groups','services','reviews','activities','attachments'])assert.deepEqual(snapshot[key],[],key);
+ assert.equal((await client.success('window.context')).projectId,a.project.id);await client.success('window.state');
+ const blocked=await client.invoke('project.save',{id:a.project.id,name:'Restore through scope'});assert.equal(blocked.error.code,'TARGET_MISMATCH');
+ await client.success('window.close');await waitForValue(()=>host.isDestroyed(),'Deleted QA window did not close');assert.equal(host.isDestroyed(),true);assert.equal(h.state.primaryWindow.isDestroyed(),false);
 });

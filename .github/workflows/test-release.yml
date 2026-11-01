@@ -28,25 +28,39 @@ jobs:
   metadata:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: read
+      issues: read
     outputs:
       number: ${{ steps.info.outputs.number }}
+      development_number: ${{ steps.info.outputs.development_number }}
       built_at: ${{ steps.info.outputs.built_at }}
+      base_commit: ${{ steps.info.outputs.base_commit }}
+      context_sha: ${{ steps.info.outputs.context_sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
       - id: info
-        name: Assign one build number and timestamp to all packages
+        name: Assign one development identity to all packages under the global lock
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEWOPS_TEST_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
         shell: bash
-        run: |
-          node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          import { ciBuildNumber } from './scripts/test-release.mjs';
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${ciBuildNumber()}\nbuilt_at=${new Date().toISOString()}\n`);
-          JS
+        run: node scripts/test-development-metadata.mjs
+      - name: Preserve this build's frozen change notes and verified references
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-test-build-context
+          path: release/test-context/build-context.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   package:
     needs: metadata
@@ -69,6 +83,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -76,7 +91,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Test publication and updater contracts
-        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs
+        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs tests/test-release-references.test.cjs tests/test-build-context.test.cjs
       - name: Test existing updater contracts on Intel macOS
         if: matrix.target == 'darwin-x64'
         run: node --test tests/updates.test.cjs
@@ -99,12 +114,29 @@ jobs:
           JS
           fi
           exit "$result"
+      - name: Build the reviewed renderer without regenerating platform notices
+        timeout-minutes: 4
+        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; await buildRenderer({generateLicenses:false});"
+      - name: Verify shared web capture and QA recovery on each native target
+        timeout-minutes: 10
+        env:
+          REVIEWOPS_CAPTURE_DIAGNOSTICS: '1'
+          REVIEWOPS_CAPTURE_POSTFAILURE_PROBE: '1'
+        shell: bash
+        run: |
+          node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs
+          node scripts/e2e-live-web-sessions.mjs
+          node scripts/e2e-qa-viewer-sessions.mjs
+      - name: Verify public MCP category requests on native macOS
+        if: matrix.target == 'darwin-arm64'
+        run: node scripts/e2e-mcp-review-categories.mjs
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
+          TEST_DEVELOPMENT_NUMBER: ${{ needs.metadata.outputs.development_number }}
           TEST_BUILT_AT: ${{ needs.metadata.outputs.built_at }}
           TEST_TARGET: ${{ matrix.target }}
-        run: node scripts/test-build.mjs package --target "$TEST_TARGET" --number "$TEST_BUILD_NUMBER" --commit "$GITHUB_SHA" --built-at "$TEST_BUILT_AT"
+        run: node scripts/test-build.mjs package --target "$TEST_TARGET" --number "$TEST_BUILD_NUMBER" --development-number "$TEST_DEVELOPMENT_NUMBER" --commit "$GITHUB_SHA" --built-at "$TEST_BUILT_AT"
         shell: bash
       - name: Clear generated test identity even after a failed build
         if: always()
@@ -122,6 +154,16 @@ jobs:
           compression-level: 0
           retention-days: 1
           overwrite: true
+      - name: Keep native shared-session QA evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-shared-session-qa-${{ matrix.target }}
+          path: |
+            test-results/live-web-sessions/
+            test-results/qa-viewer-sessions/
+          if-no-files-found: warn
+          retention-days: 1
 
   publish:
     if: always()
@@ -135,6 +177,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -148,7 +191,11 @@ jobs:
       - name: Validate complete publication without changing any Release
         id: validation
         if: needs.package.result == 'success'
-        run: node scripts/test-release.mjs --directory release/test --dry-run
+        env:
+          TEST_CONTEXT_SHA: ${{ needs.metadata.outputs.context_sha }}
+        run: |
+          node scripts/test-build-context.mjs --context release/test/build-context.json --directory release/test --expected-sha "$TEST_CONTEXT_SHA"
+          node scripts/test-release.mjs --directory release/test --dry-run
       - name: Publish the complete build and remove previous test packages
         id: publication
         if: needs.package.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish == true

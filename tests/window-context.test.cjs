@@ -79,3 +79,12 @@ test('deleted home review keeps its project while a dirty unrelated tab does not
  assert.equal(home.preserved,true);assert.equal(home.data.reviews[0].id,'r');
  assert.equal(preserveDeletedDrafts(previous,next,[{id:'settings',kind:'settings'}],new Set(['settings']),'r').preserved,false);
 });
+
+test('active QA exposes only its project tabs and records while retaining the unbound workspace',async()=>{
+ const {qaWindowView}=await helpers();
+ const data={groups:[{id:'g'}],projects:[{id:'A',groupId:'g',serviceIds:['sa']},{id:'B',groupId:'g',serviceIds:['sb']}],services:[{id:'sa'},{id:'sb'}],reviews:[{id:'ra',projectId:'A'},{id:'rb',projectId:'B'}],activities:[{id:'aa',reviewId:'ra'},{id:'ab',reviewId:'rb'}],attachments:[{id:'fa',reviewId:'ra'},{id:'fb',reviewId:'rb'}]};
+ const tabs=[{id:'home',kind:'home'},{id:'pa',kind:'project',entityId:'A'},{id:'group',kind:'group',entityId:'g'},{id:'hosts',kind:'hosts'},{id:'settings',kind:'settings'}];
+ const scoped=qaWindowView(data,tabs,'hosts','A');
+ assert.deepEqual(scoped.tabs.map(item=>item.id),['home','pa']);assert.equal(scoped.active,'pa');assert.deepEqual(scoped.data.projects.map(item=>item.id),['A']);assert.deepEqual(scoped.data.attachments.map(item=>item.id),['fa']);
+ const unbound=qaWindowView(data,tabs,'hosts');assert.equal(unbound.tabs,tabs);assert.equal(unbound.data,data);assert.equal(unbound.active,'hosts');
+});

@@ -6,7 +6,7 @@ import {automaticReasoning,availableModels,defaultReasoning,environmentTarget,RE
 import './agent.css';
 import LocalFolderField from './LocalFolderField.jsx';
 
-export default function AgentSettings({form,set,service,busy=false,active=true}) {
+export default function AgentSettings({form,set,service,busy=false,active=true,qaScoped=false}) {
  const [diagnosticResult,setDiagnosticResult]=useState(null),[environmentResult,setEnvironmentResult]=useState(null),[working,setWorking]=useState(false),[error,setError]=useState(''),[login,setLogin]=useState(null),[trust,setTrust]=useState(null);
  const target=environmentTarget(service),request=useRef(0),cacheRequest=useRef(0),currentTarget=useRef(target);currentTarget.current=target;
  const registered=Array.isArray(form.agentModels)?form.agentModels:[];
@@ -22,6 +22,7 @@ export default function AgentSettings({form,set,service,busy=false,active=true})
   catch(cause){if(token===cacheRequest.current&&currentTarget.current===target)setEnvironmentResult(current=>({target,value:current?.target===target?current.value:null,error:cause.message||String(cause)}))}
  };
  const action=async(name,interactive=true)=>{
+  if(qaScoped&&['agent.login','agent.logout'].includes(name))return;
   if(name==='agent.models')return readModels();
   if(!active||!target)return;
   const token=++request.current;setWorking(true);setError('');if(name==='agent.login')setDiagnosticResult(null);
@@ -37,19 +38,19 @@ export default function AgentSettings({form,set,service,busy=false,active=true})
  };
  useEffect(()=>{
   if(!active||!target)return;
-  let live=true;setTrust(null);setLogin(null);
+  let live=true;setTrust(null);setLogin(null);setError('');
   const loginRevision=request.current;
-  invoke('agent.loginState',{serviceId:service.id}).then(result=>{if(live&&result&&loginRevision===request.current)setLogin(result)}).catch(cause=>{if(live&&loginRevision===request.current)setError(cause.message)});
+  if(!qaScoped)invoke('agent.loginState',{serviceId:service.id}).then(result=>{if(live&&result&&loginRevision===request.current)setLogin(result)}).catch(cause=>{if(live&&loginRevision===request.current)setError(cause.message)});
   if(!changed)action('agent.models',false);
   const stop=window.reviewops?.onModelCacheState?.(()=>{if(live&&!changed)action('agent.models',false)});
   return()=>{live=false;request.current++;cacheRequest.current++;setWorking(false);stop?.()};
- },[active,target]);
+ },[active,target,qaScoped]);
  useEffect(()=>{if(!active||!model)return;const value=supportedReasoning(model,form.agentReasoningEffort);if(value!==(form.agentReasoningEffort||''))set('agentReasoningEffort',value)},[active,target,JSON.stringify(model),form.agentReasoningEffort]);
- useEffect(()=>{if(login?.status!=='running')return;let live=true,timer;const poll=async()=>{try{const result=await invoke('agent.read',{id:login.id});if(!live)return;setLogin(result);if(result.status==='running')timer=setTimeout(poll,700);else if(result.status==='completed'&&active&&!changed)action('agent.models',false)}catch(cause){if(live)setError(cause.message)}};timer=setTimeout(poll,400);return()=>{live=false;clearTimeout(timer)}},[login?.id,login?.status,active,changed]);
+ useEffect(()=>{if(qaScoped||login?.status!=='running')return;let live=true,timer;const poll=async()=>{try{const result=await invoke('agent.read',{id:login.id});if(!live)return;setLogin(result);if(result.status==='running')timer=setTimeout(poll,700);else if(result.status==='completed'&&active&&!changed)action('agent.models',false)}catch(cause){if(live)setError(cause.message)}};timer=setTimeout(poll,400);return()=>{live=false;clearTimeout(timer)}},[login?.id,login?.status,active,changed,qaScoped]);
  const chooseBinary=async()=>{try{const selected=await invoke('dialog.executable');if(selected)set('agentBinary',selected)}catch(cause){setError(cause.message)}};
  const updateModel=(index,patch)=>set('agentModels',registered.map((item,row)=>row===index?{...item,...patch}:item));
  const invalidModels=registered.some((item,index)=>!item.id?.trim()||/\s/.test(item.id)||registered.some((other,row)=>row!==index&&other.id?.trim()===item.id?.trim()));
- const loginUrl=login?.output?.match(/https:\/\/[^\s<>]+/)?.[0],disabled=busy||working||changed||login?.status==='running';
+ const loginUrl=login?.output?.match(/https:\/\/[^\s<>]+/)?.[0],disabled=busy||working||changed||!qaScoped&&login?.status==='running';
  const modelError=!unsavedTarget&&environmentResult?.target===target?environmentResult.error||environment?.modelError:'';
  return <div className="agent-settings-fields">
   <label className="agent-enable"><input type="checkbox" checked={Boolean(form.agentEnabled)} onChange={event=>set('agentEnabled',event.target.checked?1:0)}/>{t("에이전트 사용")}</label>
@@ -71,11 +72,12 @@ export default function AgentSettings({form,set,service,busy=false,active=true})
    {invalidModels&&<p className="form-error" role="alert">{t("각 모델에 공백 없이 서로 다른 모델 ID를 입력하십시오.")}</p>}
   </section>
   <Field label={t("작업 지침")}><textarea aria-label={t("에이전트 작업 지침")} rows={5} maxLength={50000} value={form.agentInstructions||''} onChange={event=>set('agentInstructions',event.target.value)} placeholder={t("이 프로젝트의 작업에 공통으로 적용할 내용을 입력하십시오.")}/></Field>
-  <div className="agent-actions"><Button type="button" disabled={disabled} onClick={()=>action('agent.environment')}>{working?t("검사 중"):t("실행 환경 검사")}</Button><Button type="button" disabled={disabled} onClick={()=>action('agent.login')}>{t("Codex 로그인")}</Button>{diagnostic?.loggedIn&&<Button type="button" disabled={disabled} onClick={()=>action('agent.logout')}>{t("Codex 로그아웃")}</Button>}</div>
+  <div className="agent-actions"><Button type="button" disabled={disabled} onClick={()=>action('agent.environment')}>{working?t("검사 중"):t("실행 환경 검사")}</Button>{!qaScoped&&<Button type="button" disabled={disabled} onClick={()=>action('agent.login')}>{t("Codex 로그인")}</Button>}{!qaScoped&&diagnostic?.loggedIn&&<Button type="button" disabled={disabled} onClick={()=>action('agent.logout')}>{t("Codex 로그아웃")}</Button>}</div>
+  {qaScoped&&<p className="agent-help">{t("공유 Codex 로그인·로그아웃은 QA 연결을 해제하거나 기본 창에서 관리하십시오.")}</p>}
   {changed&&<p className="agent-help">{t("설정을 저장한 후 실행 환경과 로그인을 검사할 수 있습니다.")}</p>}
   {modelError&&<p className="agent-help agent-model-notice" role="status">{t("모델 정보를 모두 불러오지 못했습니다.")} {modelSource==='manual'?t("직접 등록한 모델을 사용합니다."):modelSource==='cache'?t("이전에 불러온 모델 목록을 사용합니다."):modelSource==='none'?t("위 목록에 모델을 직접 등록할 수 있습니다."):null}<span>{t(modelError)}</span></p>}
   {diagnostic&&<div className="agent-environment" role="status"><strong>{diagnostic.installed===true?diagnostic.version||t("Codex 설치됨"):diagnostic.installed===false?t("Codex 설치 필요"):t("Codex 설치 미확인")}</strong><span>{diagnostic.installed==null?t('로그인 미확인'):!diagnostic.installed?t('로그인 검사 전'):diagnostic.loggedIn?t("로그인됨"):diagnostic.authState==='unknown'?t('로그인 검사 실패'):t("로그인 필요")}</span><span>{t('실행 파일')}: {diagnostic.binary}</span><span>{t('작업 폴더')}: {diagnostic.workPath}</span>{diagnostic.error&&<p>{t(diagnostic.error)}</p>}{diagnostic.defaultModel&&<span>{t("호스트 기본 모델: {0}",[diagnostic.defaultModel])}</span>}{diagnostic.modelSource==='manual'&&<p>{t("직접 등록한 모델을 사용합니다.")}</p>}{diagnostic.installed===false&&<p>{t("작업 환경에 Codex CLI를 설치하거나 실행 파일의 전체 경로를 지정하십시오.")}</p>}</div>}
-  {login&&<div className="agent-login"><strong>{login.status==='running'?t("브라우저에서 Codex 로그인을 완료하십시오."):login.status==='completed'?t("로그인 완료"):login.status==='cancelled'?t("로그인 중지"):t("로그인 실패")}</strong>{login.status==='running'&&loginUrl&&<Button type="button" onClick={()=>invoke('external.open',{url:loginUrl}).catch(cause=>setError(cause.message))}>{t("로그인 페이지 열기")}</Button>}<pre>{login.output||t("로그인 주소와 코드를 불러오는 중입니다.")}</pre>{login.error&&<p role="alert">{login.error}</p>}{login.status==='running'&&<Button type="button" onClick={async()=>{try{setLogin(await invoke('agent.cancel',{id:login.id}))}catch(cause){setError(cause.message)}}}>{t("로그인 중지")}</Button>}</div>}
+  {!qaScoped&&login&&<div className="agent-login"><strong>{login.status==='running'?t("브라우저에서 Codex 로그인을 완료하십시오."):login.status==='completed'?t("로그인 완료"):login.status==='cancelled'?t("로그인 중지"):t("로그인 실패")}</strong>{login.status==='running'&&loginUrl&&<Button type="button" onClick={()=>invoke('external.open',{url:loginUrl}).catch(cause=>setError(cause.message))}>{t("로그인 페이지 열기")}</Button>}<pre>{login.output||t("로그인 주소와 코드를 불러오는 중입니다.")}</pre>{login.error&&<p role="alert">{login.error}</p>}{login.status==='running'&&<Button type="button" onClick={async()=>{try{setLogin(await invoke('agent.cancel',{id:login.id}))}catch(cause){setError(cause.message)}}}>{t("로그인 중지")}</Button>}</div>}
   {error&&<p className="form-error" role="alert">{t(error)}</p>}
   {trust&&<TrustDialog trust={trust} onClose={()=>setTrust(null)} onTrust={async()=>{try{await invoke('ssh.trust',{serviceId:service.id,fingerprint:trust.fingerprint});setTrust(null);action('agent.environment')}catch(cause){setError(cause.message);setTrust(null)}}}/>}
  </div>;
