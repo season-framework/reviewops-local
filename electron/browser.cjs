@@ -25,13 +25,14 @@ function intersection(...rects) {
   return {x, y, width:Math.max(0,right-x), height:Math.max(0,bottom-y)};
 }
 
-function createBrowserManager(window, {partition = PARTITION} = {}) {
+function createBrowserManager(window, {partition = PARTITION,onCreated=()=>{},onChanged=()=>{},onClosed=()=>{}} = {}) {
   const views = new Map(), popups = new Set();
   const recorder = createEvidenceRecorder();
-  function bindContext(item,value){
+  function bindContext(item,value,projectId){
     const next=typeof value==='string'?value.slice(0,120):'';
-    if(item.contextId===next)return item.contextPromise||Promise.resolve();
-    item.contextId=next;
+    const project=projectId===undefined?item.projectId:typeof projectId==='string'?projectId:'';
+    if(item.contextId===next&&item.projectId===project)return item.contextPromise||Promise.resolve();
+    item.contextId=next;item.projectId=project;onChanged(item,true);
     item.contextPromise=(item.contextPromise||Promise.resolve()).catch(()=>{}).then(()=>recorder.reset(item));
     return item.contextPromise;
   }
@@ -113,7 +114,7 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
   function state(item) {
     const contents = item.view.webContents, currentUrl = contents.getURL();
     const url = !currentUrl || currentUrl === 'about:blank' ? item.requestedUrl : currentUrl;
-    return {id:item.id,url,title:contents.getTitle(),loading:contents.isLoading(),canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),error:item.error,logCounts:recorder.counts(item),selectedElement:item.selectedElement||null};
+    return {id:item.id,url,title:contents.getTitle(),loading:contents.isLoading(),canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),error:item.error,logCounts:recorder.counts(item),selectedElement:item.selectedElement||null,...(item.sessionId?{sessionId:item.sessionId,epoch:item.sessionEpoch()}: {})};
   }
   async function navigate(item, url) {
     const target = browserUrl(url);
@@ -129,7 +130,7 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
   function close(id) {
     const item = views.get(id);
     if (!item) return {closed:true};
-    views.delete(id);
+    views.delete(id);onClosed(item);
     for (const popup of item.popups) if (!popup.isDestroyed()) popup.destroy();
     if (!item.view.webContents.isDestroyed()) item.view.webContents.close({waitForBeforeUnload:false});
     if (!item.clipWindow.isDestroyed()) item.clipWindow.destroy();
@@ -192,8 +193,11 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
         });
         clipWindow.contentView.addChildView(view);
         clipWindow.on('close',event=>{if(!window.isDestroyed())event.preventDefault();});
-        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):''};
-        views.set(item.id,item);
+        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
+        views.set(item.id,item);onCreated(item);
+        view.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)onChanged(item,false);});
+        view.webContents.on('render-process-gone',()=>onClosed(item));
+        view.webContents.on('destroyed',()=>onClosed(item));
         try {
           // Initialize the target before awaiting CDP; an unnavigated target can
           // otherwise hold commands until its first navigation starts.
@@ -223,7 +227,7 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       }
       const item = get(payload.id), contents = item.view.webContents;
       if (['browser.evidence','browser.clearLogs','browser.pickElement','browser.showElement','browser.clearElement','browser.capture'].includes(action)) { await item.emulationPromise;get(item.id); }
-      if (action === 'browser.context') return bindContext(item,payload.contextId).then(()=>state(item));
+      if (action === 'browser.context') return bindContext(item,payload.contextId,payload.projectId).then(()=>state(item));
       if (action === 'browser.evidence') return recorder.collect(item);
       if (action === 'browser.clearLogs') return recorder.clear(item,payload.kind);
       if (action === 'browser.pickElement') return recorder.pick(item);
@@ -233,7 +237,7 @@ function createBrowserManager(window, {partition = PARTITION} = {}) {
       if (action === 'browser.navigate') {
         if(payload.contextId===undefined)return navigate(item,payload.url);
         const contextId=payload.contextId;
-        return bindContext(item,contextId).then(()=>item.contextId===contextId?navigate(item,payload.url):state(item));
+        return bindContext(item,contextId,payload.projectId).then(()=>item.contextId===contextId&&(payload.projectId===undefined||item.projectId===payload.projectId)?navigate(item,payload.url):state(item));
       }
       if (action === 'browser.state') { syncWindow(item);return state(item); }
       if (action === 'browser.capture') {

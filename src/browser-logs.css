@@ -21,3 +21,11 @@
 .home-capture-dialog .dialog-body{display:flex;flex:1;min-height:0;flex-direction:column;padding:0;overflow:hidden}
 .home-capture-dialog .dialog-body>.original-viewer{flex:1;min-height:0}
 .home-capture-dialog .dialog>footer>span{margin-right:auto;align-self:center;font-size:12px;color:var(--muted)}
+
+.live-home-capture-dialog .dialog{width:min(1100px,calc(100vw - 56px));height:auto;max-height:calc(100vh - 56px)}
+.live-home-capture-dialog .dialog-body{padding:20px;gap:12px;overflow:auto}
+.live-home-capture-dialog .dialog-body>p{margin:0}
+.live-home-capture-dialog .dialog-body>.button{align-self:flex-start}
+.live-home-capture-dialog .dialog-body>label{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.live-home-capture-dialog .dialog-body>label select{max-width:100%;min-height:36px}
+.live-home-capture-dialog .dialog-body>img{border:1px solid var(--border);border-radius:6px;background:var(--app);pointer-events:none;user-select:none}
