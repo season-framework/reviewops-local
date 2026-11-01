@@ -19,7 +19,7 @@ const qa=(action,payload)=>invokeSocket(path.join(data,'integrations/tools.json'
 const pass=(name,result)=>{checks.push({name,status:'pass',result});console.log('PASS',name,result)};
 async function denied(page,action,payload,code){const result=await page.evaluate(({action,payload})=>window.reviewops.request(action,payload),{action,payload});assert.equal(result.ok,false,action);if(code)assert.equal(result.error.code,code,action);return result;}
 async function openProject(projectId,reviewId){const next=app.waitForEvent('window');await ipc(main,'window.openProject',{projectId,reviewId});const page=await next;await setTestLocale(page);page.on('pageerror',error=>errors.push(error.message));await expect(page.locator('.native-browser-surface')).toHaveAttribute('data-browser-id',/.+/);return page;}
-async function content(route,expression){return app.evaluate(({webContents},{url,expression})=>webContents.getAllWebContents().find(w=>w.getURL()===url).executeJavaScript(expression),{url:origin+route,expression});}
+async function content(route,expression){return app.evaluate(({webContents},{url,expression})=>webContents.getAllWebContents().find(w=>w.getURL()===url)?.executeJavaScript(expression),{url:origin+route,expression});}
 try{
  const env={...process.env,...isolatedModelRuntime({home,dataPath:data}),REVIEWOPS_DATA_DIR:data,REVIEWOPS_SSH_CONFIG:config,REVIEWOPS_CODEX_SSH_CONFIG:config};for(const key of Object.keys(env))if(/(?:TOKEN|API_KEY|PASSWORD|SECRET)$/.test(key)||['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK'].includes(key))delete env[key];
  app=await electron.launch({args:[root],env});main=await app.firstWindow();await setTestLocale(main);main.on('pageerror',error=>errors.push(error.message));
