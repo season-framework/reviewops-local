@@ -14,7 +14,7 @@ const { MAX_FILE_BYTES, mimeType, describeBytes, listLocal, readLocal, inside } 
 const { createHtmlPreview, htmlPreviewResponse } = require('./html-preview.cjs');
 const {readAgentOutput} = require('./agent-files.cjs');
 const {createUpdateManager,hasActiveWork} = require('./updates.cjs');
-const {getBuildInfo} = require('./build-info.cjs');
+const {getBuildInfo,displayBuildVersion} = require('./build-info.cjs');
 const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
@@ -733,7 +733,7 @@ async function dispatch(action, payload = {}) {
     if (action === 'update.copyInfo') {
       const state = updater.snapshot();
       const tr = appLanguage.t;
-      const describe = (label, build) => !build ? [] : [`${tr(label)}: ${build.version} (${tr(build.channel === 'test' ? '테스트' : '정식')})`, ...(build.channel === 'test' ? [`${tr('빌드 번호')}: ${build.buildNumber}`, `${tr('커밋')}: ${build.commit}`, `${tr('생성 시간')}: ${build.builtAt}`] : [])];
+      const describe = (label, build) => !build ? [] : [`${tr(label)}: ${displayBuildVersion(build)} (${tr(build.channel === 'test' ? '테스트' : '정식')})`, ...(build.channel === 'test' ? [`${tr('빌드 번호')}: ${build.buildNumber}`, `${tr('커밋')}: ${build.commit}`, `${tr('생성 시간')}: ${build.builtAt} (UTC)`] : [])];
       clipboard.writeText([...describe('설치된 버전', state.installedBuild), ...describe('받을 버전', state.availableBuild || (state.availableVersion ? {channel:'stable',version:state.availableVersion} : null)), `CPU: ${state.arch}`].join('\n'));
       return { copied: true };
     }
@@ -806,7 +806,7 @@ async function dispatch(action, payload = {}) {
     return record.browsers.dispatch(action,payload);
   }
   if (action === 'snapshot') return publicSnapshot();
-  if (action === 'app.info') return {version:app.getVersion(),dataPath,platform:process.platform,arch:process.arch};
+  if (action === 'app.info') return {version:app.getVersion(),build:updater?.snapshot().installedBuild||getBuildInfo(app.getVersion()),dataPath,platform:process.platform,arch:process.arch};
   if (action === 'app.openDataFolder') { const error = await shell.openPath(dataPath); if(error) throw new Error(error); return; }
   if (action === 'external.open') {
     const url = new URL(payload.url);

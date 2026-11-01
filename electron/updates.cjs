@@ -9,6 +9,7 @@ const { promisify } = require('node:util');
 const { execFile, spawn } = require('node:child_process');
 const { atomicWrite } = require('./vault.cjs');
 const { validateArchive } = require('./update-archive.cjs');
+const { validateBuildInfo, validateChangeNotes } = require('./build-info.cjs');
 const run = promisify(execFile);
 const REPOSITORY = 'season-framework/reviewops-local';
 const RELEASES_URL = `https://github.com/${REPOSITORY}/releases`;
@@ -50,7 +51,7 @@ function updateFailure(code, message) { return Object.assign(new Error(message),
 function testBuild(value, version) {
   if (!value || value.channel !== 'test' || value.version !== version || !Number.isSafeInteger(value.buildNumber) || value.buildNumber < 1 || !/^[a-f0-9]{40}$/.test(value.commit) || typeof value.builtAt !== 'string' || !Number.isFinite(Date.parse(value.builtAt)) || new Date(value.builtAt).toISOString() !== value.builtAt) throw updateFailure('invalid_manifest', '테스트 버전의 빌드 정보가 올바르지 않습니다.');
   versionParts(value.version);
-  return { channel: 'test', version, buildNumber: value.buildNumber, commit: value.commit, builtAt: value.builtAt };
+  try { return validateBuildInfo(value, version); } catch { throw updateFailure('invalid_manifest', '테스트 버전의 빌드 정보가 올바르지 않습니다.'); }
 }
 function testPointer(release) {
   if (!release || release.draft || !release.prerelease || release.tag_name !== TEST_TAG) throw updateFailure('invalid_manifest', '테스트 버전의 공개 정보가 올바르지 않습니다.');
@@ -78,7 +79,10 @@ function testManifestFor(manifest, published, arch, currentVersion, installedBui
   const asset = published.assets?.find(value => value.name === filename);
   if (!asset || asset.size !== item.size || asset.browser_download_url !== item.url) throw updateFailure('invalid_manifest', '테스트 설치파일과 업데이트 정보가 다릅니다.');
   if (installedBuild?.channel === 'test' && build.buildNumber === installedBuild.buildNumber) return null;
-  return { ...item, version: build.version, build, channel: 'test', releaseUrl: TEST_RELEASE_URL };
+  let changes = null;
+  try { if (manifest.changes) changes = validateChangeNotes(manifest.changes, build.commit); }
+  catch { throw updateFailure('invalid_manifest', '테스트 버전의 변경 내용이 올바르지 않습니다.'); }
+  return { ...item, version: build.version, build, changes, channel: 'test', releaseUrl: TEST_RELEASE_URL };
 }
 function allowedDownload(value) {
   const url = new URL(value);
@@ -215,7 +219,7 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
   const supported = platform === 'darwin' && app.isPackaged && ['arm64','x64'].includes(arch) && /^\d+\.\d+\.\d+$/.test(version);
   const testSupported = supported || (platform === 'win32' && app.isPackaged && arch === 'x64');
   const canCheck = () => supported || (channel === 'test' && testSupported);
-  const snapshot = () => ({ version, arch, supported, testSupported, canCheck: canCheck(), manualInstall: !supported && canCheck(), automatic, intervalMinutes, channel, testUpdates: channel === 'test', installedBuild: { ...installedBuild }, availableBuild: release?.build || null, generation, status, error, errorCode, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || (channel === 'test' ? TEST_RELEASE_URL : RELEASES_URL) });
+  const snapshot = () => ({ version, arch, supported, testSupported, canCheck: canCheck(), manualInstall: !supported && canCheck(), automatic, intervalMinutes, channel, testUpdates: channel === 'test', installedBuild: { ...installedBuild }, availableBuild: release?.build || null, availableChanges: release?.changes || null, generation, status, error, errorCode, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || (channel === 'test' ? TEST_RELEASE_URL : RELEASES_URL) });
   const emit = () => onChange(snapshot());
   const set = (next, message = '', code = '') => { status = next; error = message; errorCode = code; emit(); };
   const stale = Symbol('old update channel');

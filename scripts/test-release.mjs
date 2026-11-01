@@ -5,7 +5,7 @@ import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 const require = createRequire(import.meta.url);
-const { validateBuildInfo } = require('../electron/build-info.cjs');
+const { validateBuildInfo, validateChangeNotes, displayBuildVersion } = require('../electron/build-info.cjs');
 
 export const REPOSITORY = 'season-framework/reviewops-local';
 export const TAG = 'test-latest';
@@ -64,6 +64,9 @@ export function assertPublicationCI(build, env = process.env) {
 }
 export async function prepareRelease(directory, build) {
   build = validateBuildInfo(build);
+  let changes;
+  try { changes = validateChangeNotes(JSON.parse(await fs.readFile(path.join(directory, 'change-notes.json'), 'utf8')), build.commit); }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
   const files = [];
   for (const name of namesFor(build)) {
     const filename = path.join(directory, name), stat = await fs.lstat(filename);
@@ -83,7 +86,7 @@ export async function prepareRelease(directory, build) {
   }
   const descriptor = file => ({ name: file.name, url: file.url, size: file.size, sha256: file.sha256 });
   const bySuffix = suffix => descriptor(files.find(file => file.name.endsWith(suffix)));
-  const manifest = { schema: 2, channel: 'test', version: build.version, build,
+  const manifest = { schema: 2, channel: 'test', version: build.version, build, ...(changes ? { changes } : {}),
     artifacts: { 'darwin-arm64': bySuffix('-arm64.zip'), 'darwin-x64': bySuffix('-x64.zip'), 'win32-x64': bySuffix('-windows-x64.exe') },
     installers: { 'darwin-arm64': bySuffix('-arm64.dmg'), 'darwin-x64': bySuffix('-x64.dmg'), 'win32-x64': bySuffix('-windows-x64.exe') } };
   const manifestBytes = jsonBytes(manifest), name = manifestName(build);
@@ -138,7 +141,10 @@ async function publishLocked(plan, store, dryRun) {
   assertOrder(currentPointer, plan.build, originalPointer);
   if (currentPointer?.buildNumber === plan.build.buildNumber && currentPointer.sha256 !== plan.pointer.sha256) throw new Error('같은 빌드의 안내 파일 내용이 변경되었습니다.');
   if (JSON.stringify(currentPointer) !== JSON.stringify(plan.pointer)) {
-    const body = `# ReviewOps 테스트 버전\n\n정식 출시 전 기능을 확인할 수 있는 버전입니다. 최신 설치파일 한 벌만 유지합니다.\n\n앱 버전: ${plan.build.version} · 빌드: ${plan.build.buildNumber}\n\n커밋: ${plan.build.commit}\n\n빌드 시각: ${plan.build.builtAt}\n\n${marker}${JSON.stringify(plan.pointer)} -->\n`;
+    const notes = plan.manifest.changes;
+    const escapeSubject = value => value.replace(/[\\`*_[\]<>]/g, '\\$&');
+    const changeText = !notes ? '' : notes.baseCommit ? `\n## 이전 테스트 배포 이후 변경\n\n[전체 변경 ${notes.totalCommits}개](https://github.com/${REPOSITORY}/compare/${notes.baseCommit}...${notes.commit})\n\n${notes.commits.map(item => `- ${escapeSubject(item.subject)} ([${item.commit.slice(0,12)}](https://github.com/${REPOSITORY}/commit/${item.commit}))`).join('\n')}\n` : '\n이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.\n';
+    const body = `# ReviewOps 테스트 버전 ${displayBuildVersion(plan.build)}\n\n정식 출시 전 기능을 확인할 수 있는 버전입니다. 최신 설치파일 한 벌만 유지합니다.\n\n앱 버전: ${displayBuildVersion(plan.build)} · 빌드: ${plan.build.buildNumber}\n\n커밋: ${plan.build.commit}\n\n빌드 시각: ${plan.build.builtAt} (UTC)\n${changeText}\n${marker}${JSON.stringify(plan.pointer)} -->\n`;
     // One body PATCH switches the complete set. The workflow's global lock is
     // held through upload, this switch and cleanup. Git tags never move.
     await store.setPointer(release.id, body);

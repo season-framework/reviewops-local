@@ -7,6 +7,7 @@ import ProjectWorkspace from './ProjectWorkspace.jsx';
 import {RegistrationScreen,GroupSettings} from './OriginalForms.jsx';
 import GroupResourceList, {GroupListIcon} from './GroupResourceList.jsx';
 import GroupsList from './GroupsList.jsx';
+import {displayBuildVersion} from './build-version.mjs';
 import useWorkspaceTabOrder from './useWorkspaceTabOrder.js';
 import {CodexManagement} from './codex/CodexManagement.jsx';
 import {deletionTargets,deletedTab,clearDeletionDrafts} from './deletion.mjs';
@@ -279,7 +280,7 @@ export default function App() {
  const updateWorking=updateApplying||['checking','downloading','verifying','installing'].includes(updateState?.status);
  const updateProgress=Math.max(0,Math.min(100,Number(updateState?.progress)||0));
  const updateLabel=updateState?.status==='downloading'?t('다운로드 중 {0}%',[updateProgress]):updateState?.status==='verifying'?t('다운로드한 앱 검사 중'):updateState?.status==='installing'?t('업데이트 설치 중'):updateWorking?t('업데이트 준비 중'):updateState?.status==='error'?t('업데이트 다시 시도'):t('업데이트 설치');
- const updateDetail=t(updateState?.availableBuild?.channel==='test'?'새 테스트 버전 {0}':'새 버전 {0}',[updateState?.availableVersion||'']);
+ const updateDetail=t(updateState?.availableBuild?.channel==='test'?'새 테스트 버전 {0}':'새 버전 {0}',[displayBuildVersion(updateState?.availableBuild,updateState?.availableVersion||'')]);
  const updateTitle=`${updateLabel} · ${updateDetail}${updateState?.error?` · ${t(updateState.error)}`:''}`;
  const applyUpdate=async()=>{
   if(updateApplyPending.current||updateWorking||!updateAvailable)return;

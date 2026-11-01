@@ -140,6 +140,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -153,7 +154,9 @@ jobs:
       - name: Validate complete publication without changing any Release
         id: validation
         if: needs.package.result == 'success'
-        run: node scripts/test-release.mjs --directory release/test --dry-run
+        run: |
+          node scripts/test-release-notes.mjs --directory release/test
+          node scripts/test-release.mjs --directory release/test --dry-run
       - name: Publish the complete build and remove previous test packages
         id: publication
         if: needs.package.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish == true
