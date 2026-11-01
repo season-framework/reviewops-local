@@ -756,12 +756,12 @@ function validateBrowserBinding(record,payload){
 function registerBrowserSession(record,item){
   if(item.sessionId)viewerSessions.revoke(item.sessionId);
   item.sessionId='';
-  if(item.rendererGone||item.view.webContents.isDestroyed()||item.view.webContents.isCrashed?.())return;
   const project=store.snapshot().projects.find(p=>p.id===item.projectId);
   if(!project||!browserServiceIds(project).includes(item.contextId)){item.sessionDisqualified=true;return;}
   if((record.projectId&&record.projectId!==project.id)||item.sessionDisqualified)return;
   if(item.sessionProjectId&&item.sessionProjectId!==project.id){item.sessionDisqualified=true;return;}
   item.sessionProjectId=project.id;
+  if(item.rendererGone||item.view.webContents.isDestroyed()||item.view.webContents.isCrashed?.())return;
   const id=viewerSessions.register({projectId:project.id,serviceId:item.contextId,owner:record.id,targetId:item.id,
     alive:()=>!record.host.isDestroyed()&&!item.rendererGone&&!item.view.webContents.isDestroyed()&&!item.view.webContents.isCrashed?.(),
     describe:()=>({url:item.view.webContents.getURL()||item.requestedUrl,title:item.view.webContents.getTitle(),loading:item.view.webContents.isLoading()}),
