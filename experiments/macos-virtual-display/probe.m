@@ -39,18 +39,35 @@ static NSString *executionRefusal(void) {
 static NSDictionary *bounds(CGRect rect) {
   return @{@"x":@(rect.origin.x), @"y":@(rect.origin.y), @"width":@(rect.size.width), @"height":@(rect.size.height)};
 }
-static NSArray *inventory(void) {
+static NSArray *inventoryForOwned(uint32_t pendingOwnedId) {
   CGDirectDisplayID ids[16]; uint32_t count = 0;
   if (CGGetOnlineDisplayList(16, ids, &count) != kCGErrorSuccess || count >= 16) fail(@"DISPLAY_INVENTORY_UNAVAILABLE_OR_TOO_LARGE");
   NSMutableArray *items = [NSMutableArray array];
   for (uint32_t i = 0; i < count; i++) {
     CGDirectDisplayID ident = ids[i]; CGDisplayModeRef mode = CGDisplayCopyDisplayMode(ident);
-    if (!mode) fail(@"DISPLAY_MODE_UNAVAILABLE");
-    [items addObject:@{@"id":@(ident), @"bounds":bounds(CGDisplayBounds(ident)), @"online":@(CGDisplayIsOnline(ident)), @"active":@(CGDisplayIsActive(ident)), @"mirrored":@(CGDisplayIsInMirrorSet(ident)), @"main":@(CGDisplayIsMain(ident)), @"builtin":@(CGDisplayIsBuiltin(ident)), @"vendor":@(CGDisplayVendorNumber(ident)), @"product":@(CGDisplayModelNumber(ident)), @"serial":@(CGDisplaySerialNumber(ident)), @"modeWidth":@(CGDisplayModeGetWidth(mode)), @"modeHeight":@(CGDisplayModeGetHeight(mode)), @"pixelWidth":@(CGDisplayModeGetPixelWidth(mode)), @"pixelHeight":@(CGDisplayModeGetPixelHeight(mode)), @"refreshRate":@(CGDisplayModeGetRefreshRate(mode))}];
-    CGDisplayModeRelease(mode);
+    if (!mode) {
+      report[@"unavailableModeDisplayId"] = @(ident);
+      report[@"unavailableModeWasOwned"] = ident == pendingOwnedId ? @YES : @NO;
+      if (ident != pendingOwnedId) { saveReport(); fail(@"PREEXISTING_DISPLAY_MODE_UNAVAILABLE"); }
+    }
+    [items addObject:@{
+      @"id":@(ident), @"bounds":bounds(CGDisplayBounds(ident)),
+      @"online":@(CGDisplayIsOnline(ident)), @"active":@(CGDisplayIsActive(ident)),
+      @"mirrored":@(CGDisplayIsInMirrorSet(ident)), @"main":@(CGDisplayIsMain(ident)),
+      @"builtin":@(CGDisplayIsBuiltin(ident)), @"vendor":@(CGDisplayVendorNumber(ident)),
+      @"product":@(CGDisplayModelNumber(ident)), @"serial":@(CGDisplaySerialNumber(ident)),
+      @"modeAvailable":mode ? @YES : @NO,
+      @"modeWidth":mode ? @(CGDisplayModeGetWidth(mode)) : NSNull.null,
+      @"modeHeight":mode ? @(CGDisplayModeGetHeight(mode)) : NSNull.null,
+      @"pixelWidth":mode ? @(CGDisplayModeGetPixelWidth(mode)) : NSNull.null,
+      @"pixelHeight":mode ? @(CGDisplayModeGetPixelHeight(mode)) : NSNull.null,
+      @"refreshRate":mode ? @(CGDisplayModeGetRefreshRate(mode)) : NSNull.null
+    }];
+    if (mode) CGDisplayModeRelease(mode);
   }
   return [items sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) { return [a[@"id"] compare:b[@"id"]]; }];
 }
+static NSArray *inventory(void) { return inventoryForOwned(0); }
 static BOOL preserves(NSArray *before, NSArray *after, uint32_t ownedId) {
   NSMutableArray *retained = [NSMutableArray array];
   for (NSDictionary *item in after) if ([item[@"id"] unsignedIntValue] != ownedId) [retained addObject:item];
@@ -87,6 +104,41 @@ static BOOL privateABI(void) {
   for (NSString *name in @[@"setRedPrimary:", @"setGreenPrimary:", @"setBluePrimary:", @"setWhitePoint:"]) if (!signature(descriptor, name, @encode(void), @[[NSString stringWithUTF8String:@encode(CGPoint)]])) return NO;
   return signature(display, @"initWithDescriptor:", @encode(id), @[@"@"]) && signature(display, @"applySettings:", @encode(BOOL), @[@"@"]) && signature(display, @"displayID", @encode(unsigned int), @[]) && signature(mode, @"initWithWidth:height:refreshRate:", @encode(id), @[@"I", @"I", @"d"]) && signature(settings, @"setModes:", @encode(void), @[@"@"]) && signature(settings, @"setHiDPI:", @encode(void), @[@"I"]);
 }
+static BOOL requestedState(NSDictionary *item) {
+  NSDictionary *rect = item[@"bounds"];
+  return [item[@"modeAvailable"] boolValue] && [item[@"modeWidth"] intValue] == 1920 &&
+         [item[@"modeHeight"] intValue] == 1080 && [item[@"pixelWidth"] intValue] == 1920 &&
+         [item[@"pixelHeight"] intValue] == 1080 && [rect[@"width"] intValue] == 1920 &&
+         [rect[@"height"] intValue] == 1080;
+}
+static NSArray *observeOwnedMode(id<ROVirtualDisplay> display, uint32_t ownedId, unsigned int serial, NSArray *before) {
+  NSTimeInterval start = NSProcessInfo.processInfo.systemUptime, deadline = start + 15;
+  NSMutableArray *observations = [NSMutableArray array];
+  report[@"modeObservations"] = observations; report[@"phase"] = @"owned-mode-pending";
+  report[@"modeWaitBudgetSeconds"] = @15; unsigned int polls = 0;
+  while (!interrupted && NSProcessInfo.processInfo.systemUptime < deadline) {
+    NSArray *current = inventoryForOwned(ownedId);
+    report[@"lastDuring"] = current;
+    report[@"modePollCount"] = @(++polls);
+    report[@"modeWaitElapsedSeconds"] = @(NSProcessInfo.processInfo.systemUptime - start);
+    if (!preserves(before, current, ownedId)) fail(@"PREEXISTING_DISPLAYS_CHANGED_DURING_MODE_TRANSITION");
+    NSDictionary *owned = findDisplay(current, ownedId);
+    id observed = owned ?: NSNull.null;
+    if (![observations.lastObject[@"display"] isEqual:observed] && observations.count < 16) {
+      [observations addObject:@{@"elapsedSeconds":report[@"modeWaitElapsedSeconds"], @"display":observed}]; saveReport();
+    }
+    if (owned && [owned[@"online"] boolValue] && [owned[@"active"] boolValue]) {
+      if (display.displayID != ownedId || findDisplay(before, ownedId)) fail(@"OWNED_MODE_WRITE_IDENTITY_REFUSED");
+      if ([owned[@"mirrored"] boolValue] || CGDisplayMirrorsDisplay(ownedId) != kCGNullDirectDisplay) fail(@"OWNED_MIRRORED_DISPLAY_REFUSED");
+      if ([owned[@"vendor"] unsignedIntValue] == 505 && [owned[@"serial"] unsignedIntValue] == serial) {
+        if (requestedState(owned)) { report[@"modeWaitCompleted"] = @YES; return current; }
+      }
+    }
+    @autoreleasepool { [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]]; }
+  }
+  report[@"modeWaitElapsedSeconds"] = @(NSProcessInfo.processInfo.systemUptime - start);
+  fail(@"OWNED_REQUESTED_MODE_TIMEOUT"); return nil;
+}
 static NSDictionary *placeOwnedWindow(uint32_t ownedId) {
   [NSApplication sharedApplication]; [NSApp setActivationPolicy:NSApplicationActivationPolicyProhibited];
   __block NSScreen *target = nil;
@@ -115,6 +167,7 @@ static int exercise(void) {
     [descriptor setMaxPixelsWide:1920]; [descriptor setMaxPixelsHigh:1080];
     [descriptor setVendorID:505]; [descriptor setProductID:0];
     unsigned int serial = arc4random_uniform(0x7ffffffe) + 1;
+    report[@"requestedIdentity"] = @{@"vendor":@505, @"serial":@(serial)};
     [descriptor setSerialNum:serial];
     if (signature(descriptorClass, @"setSerialNumber:", @encode(void), @[@"I"])) [descriptor setSerialNumber:serial];
     [descriptor setSizeInMillimeters:CGSizeMake(508, 285.75)];
@@ -128,8 +181,7 @@ static int exercise(void) {
     id<ROVirtualMode> mode = [[modeClass alloc] initWithWidth:1920 height:1080 refreshRate:60];
     if (!mode) fail(@"OWNED_MODE_CREATION_FAILED");
     [settings setModes:@[mode]]; if (![display applySettings:settings]) fail(@"OWNED_SETTINGS_REJECTED");
-    if (!waitUntil(15, ^BOOL{ return findDisplay(inventory(), ownedId) != nil && CGDisplayIsActive(ownedId); })) fail(@"OWNED_DISPLAY_ONLINE_TIMEOUT");
-    NSArray *during = inventory(); report[@"during"] = during;
+    NSArray *during = observeOwnedMode(display, ownedId, serial, before); report[@"during"] = during;
     if (!preserves(before, during, ownedId)) fail(@"PREEXISTING_DISPLAYS_CHANGED_DURING_CREATION");
     NSDictionary *actual = findDisplay(during, ownedId), *rect = actual[@"bounds"];
     if (![actual[@"online"] boolValue] || ![actual[@"active"] boolValue] || [actual[@"mirrored"] boolValue] || [actual[@"vendor"] unsignedIntValue] != 505 || [actual[@"serial"] unsignedIntValue] != serial || [actual[@"modeWidth"] intValue] != 1920 || [actual[@"modeHeight"] intValue] != 1080 || [actual[@"pixelWidth"] intValue] != 1920 || [actual[@"pixelHeight"] intValue] != 1080 || [rect[@"width"] intValue] != 1920 || [rect[@"height"] intValue] != 1080) fail(@"OWNED_DISPLAY_MODE_OR_IDENTITY_MISMATCH");
@@ -144,7 +196,7 @@ static int exercise(void) {
     report[@"primaryCode"] = report[@"code"]; report[@"failurePhase"] = report[@"phase"] ?: @"baseline";
   } @finally {
     // The only destruction operation: drop this process's one owned object.
-    // No CGDisplaySetDisplayMode/CGConfigure/restore call touches any existing ID.
+    // No public mode-setting, CGConfigure or restore call targets any display.
     display = nil;
     report[@"phase"] = @"owned-object-released"; saveReport();
     if (before) {
@@ -173,7 +225,7 @@ int main(int argc, const char *argv[]) {
     NSString *architecture = @"unsupported";
 #endif
     NSDictionary *environment = NSProcessInfo.processInfo.environment;
-    report = [@{@"schema":@1, @"outcome":@"not-run", @"runId":environment[@"REVIEWOPS_PROBE_RUN_ID"] ?: @"", @"source":environment[@"GITHUB_SHA"] ?: @"", @"createdDisplays":@0, @"capturedFrames":@0, @"injectedInputs":@0, @"requestedPermissions":@0, @"privateUnsupportedAPI":@YES, @"architecture":architecture, @"os":NSProcessInfo.processInfo.operatingSystemVersionString} mutableCopy];
+    report = [@{@"schema":@1, @"outcome":@"not-run", @"runId":environment[@"REVIEWOPS_PROBE_RUN_ID"] ?: @"", @"source":environment[@"GITHUB_SHA"] ?: @"", @"createdDisplays":@0, @"ownedModeSetCalls":@0, @"capturedFrames":@0, @"injectedInputs":@0, @"requestedPermissions":@0, @"privateUnsupportedAPI":@YES, @"architecture":architecture, @"os":NSProcessInfo.processInfo.operatingSystemVersionString} mutableCopy];
     NSString *refusal = executionRefusal();
     if (refusal) { report[@"outcome"] = @"refused"; report[@"code"] = refusal; saveReport(); return 77; }
     if (inventoryOnly) {

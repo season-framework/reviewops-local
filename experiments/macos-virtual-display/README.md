@@ -22,7 +22,7 @@ Node launcher와 native helper는 모두 repository, branch, push event, GitHub 
 1. public Quartz 조회로 기존 online 디스플레이 ID·bounds·mode·pixel size·online/active·vendor/serial을 기록한다. physical과 virtual을 이름으로 추측하지 않고 **모든 기존 online 디스플레이**를 보존 대상으로 삼는다.
 2. 필요한 private class·선택자·호출 ABI를 조회한다. 부재 또는 형식 불일치는 `unsupported/PRIVATE_API_OR_ABI_UNAVAILABLE`이다. 이 상태는 native 통과가 아니며 CI도 성공 처리하지 않는다.
 3. 고유 serial을 갖는 소유 객체 **하나**를 생성한다. 객체가 반환한 실제 `CGDirectDisplayID`가 0이나 기존 ID가 아님을 확인한다. 해당 객체에만 1920×1080·60 Hz·HiDPI off 설정을 적용한다.
-4. public Quartz 목록에 그 ID가 online/active로 나타나고, 실제 논리 mode·pixel size·bounds가 1920×1080인지 검사한다. vendor/serial도 요청 값과 대조한다. 생성 중에도 기존 ID·bounds·mode를 포함한 기록이 그대로여야 한다. refresh rate는 실제 관측값을 남기며 보장되지 않는 값을 채우지 않는다.
+4. 새 ID의 초기 mode가 없거나 1×1일 수 있으므로, 15초 한도에서 실제 요청 mode를 기다린다. mode가 없는 **새 owned ID만** `modeAvailable:false`로 관측하며 숫자를 만들어 채우지 않는다. 해당 ID·owned 여부도 기록한다. 기존 ID의 mode 부재나 다른 변경은 즉시 실패한다. 매 poll에서 새 ID의 online/active·vendor/serial·미러링 아님·실제 논리 mode·pixel size·bounds를 대조하고, 모두 맞아야 다음 단계로 간다. 생성 중 기존 ID·bounds·mode 기록은 그대로여야 한다. 초기 상태와 바뀐 상태를 최대 16개, 마지막 전체 snapshot·poll 수·경과 시간을 남긴다. 15초 뒤에도 목표 mode가 아니면 실패하며, `CGDisplaySetDisplayMode` 등 추가 mode 변경이나 이미지 확대·축소로 통과시키지 않는다. refresh rate는 실제 관측값을 남기며 보장되지 않는 값을 채우지 않는다.
 5. 그 ID의 NSScreen 안에 이 프로세스의 새 borderless NSWindow만 배치하고 실제 screen ID·frame 포함·visible 상태·window number를 기록한 뒤 닫는다. 다른 앱·창을 이동하지 않는다. **OS frame 수집·NSView 이미지·입력 전달은 수행하지 않는다.**
 6. `@finally`에서 소유 객체의 마지막 strong 참조만 해제한다. 기존 디스플레이를 재설정·복구하거나 이름으로 찾아 제거하는 호출은 없다. 기존 inventory가 정확히 복원되고 새 ID가 사라졌는지 15초 안에 조회하여 확인한다. 두 번째 디스플레이를 만드는 workaround는 사용하지 않는다.
 7. child가 종료된 후 별도 public 조회 프로세스가 inventory를 한 번 더 대조한다. timeout·signal·output 초과는 통과가 될 수 없다. 늦은 제거, 생성 거절, headless runner 한계는 결과에 그대로 남긴다.
@@ -46,7 +46,7 @@ helper 단계 대기는 최대 38초, launcher의 child watchdog은 70초 후 SI
 
 ## 출처와 라이선스
 
-- [Chromium 고정 소스](https://chromium.googlesource.com/chromium/src/+/1b72286560637710932b4ef43908d0d6a121a432/ui/display/mac/test/virtual_display_util_mac.mm): binary-generated private 인터페이스, macOS 14의 nonzero vendor/고유 serial 조건, 객체 수명에 따른 제거의 참고 자료다. 최소 ABI 선언은 이를 참고해 별도 protocol로 줄였다. Chromium의 first-removal workaround·headless 제약을 임의로 지원 완료로 바꾸지 않는다. 파생 인터페이스의 저작권 표시와 [원본 BSD license](CHROMIUM-LICENSE)를 보존했다.
+- [Chromium 고정 소스](https://chromium.googlesource.com/chromium/src/+/1b72286560637710932b4ef43908d0d6a121a432/ui/display/mac/test/virtual_display_util_mac.mm): binary-generated private 인터페이스, macOS 14의 nonzero vendor/고유 serial 조건, 객체 수명에 따른 제거의 참고 자료다. 최소 ABI 선언은 이를 참고해 별도 protocol로 줄였다. Chromium의 별도 mode 선택·first-removal workaround·headless 제약을 임의로 지원 완료로 바꾸지 않는다. 본 증분은 추가 mode 설정이나 두 번째 display workaround를 사용하지 않는다. 파생 인터페이스의 저작권 표시와 [원본 BSD license](CHROMIUM-LICENSE)를 보존했다.
 - [Apple Quartz Display Services](https://developer.apple.com/documentation/coregraphics/quartz-display-services), [CGGetOnlineDisplayList](https://developer.apple.com/documentation/coregraphics/cggetonlinedisplaylist(_:_:_:)), [CGDisplayBounds](https://developer.apple.com/documentation/coregraphics/cgdisplaybounds(_:)): 기존 online display inventory와 bounds 조회의 공개 API다. `CGVirtualDisplay`의 공개 지원 근거가 아니다.
 - [Apple ScreenCaptureKit](https://developer.apple.com/documentation/screencapturekit/capturing-screen-content-in-macos): 이미 있는 화면을 수집하는 별도 권한·처리 경로다. 본 실험은 호출하지 않는다.
 

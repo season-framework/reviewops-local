@@ -31,6 +31,8 @@ export function verifyNativeResult(result) {
   if (result.before.some(x => x.id === result.ownedDisplayId)) return 'owned-id-was-preexisting';
   const owned = result.during.find(x => x.id === result.ownedDisplayId);
   if (!owned || !owned.online || !owned.active || owned.mirrored || owned.modeWidth !== 1920 || owned.modeHeight !== 1080 || owned.pixelWidth !== 1920 || owned.pixelHeight !== 1080 || owned.bounds.width !== 1920 || owned.bounds.height !== 1080) return 'owned-display-mode-not-observed';
+  if (owned.modeAvailable !== true || owned.vendor !== 505 || owned.serial !== result.requestedIdentity?.serial || result.requestedIdentity?.vendor !== 505) return 'owned-display-identity-not-observed';
+  if (result.ownedModeSetCalls !== 0) return 'unexpected-public-mode-write';
   if (inventoryDifference(result.before, result.during, result.ownedDisplayId)) return 'preexisting-changed-during-lifecycle';
   if (inventoryDifference(result.before, result.afterWindow, result.ownedDisplayId)) return 'preexisting-changed-during-window-placement';
   if (inventoryDifference(result.before, result.after)) return 'cleanup-inventory-mismatch';
