@@ -53,7 +53,7 @@ export async function buildNativePackage(target, packageRoot) {
   const arch = target.split('-')[1], platformArgs = target.startsWith('darwin') ? ['--mac', 'dmg'] : ['--win', 'nsis'];
   await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
 }
-export async function packageTestBuild({ target, number, commit, builtAt }) {
+export async function packageTestBuild({ target, number, developmentNumber, commit, builtAt }) {
   if (!TARGETS.includes(target) || !target.startsWith(`${process.platform}-`)) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
   const actualCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
   if (commit !== actualCommit) throw new Error('작업 폴더의 커밋과 빌드할 커밋이 다릅니다.');
@@ -66,7 +66,7 @@ export async function packageTestBuild({ target, number, commit, builtAt }) {
   const lock = path.join(root, 'release/.test-build.lock');
   const handle = await fs.open(lock, 'wx');
   try {
-    return await withBuildInfo({ channel: 'test', number, commit, builtAt }, async build => {
+    return await withBuildInfo({ channel: 'test', number, developmentNumber, commit, builtAt }, async build => {
       await fs.rm(output, { recursive: true, force: true }); await fs.mkdir(output, { recursive: true });
       // Run the same build steps directly; npm's CLI is not a local dependency.
       await buildRenderer();
@@ -111,7 +111,7 @@ export async function main(args = process.argv.slice(2)) {
   if (args.shift() !== 'package') throw new Error('test-build 명령은 package를 사용하십시오.');
   const options = {};
   for (let i = 0; i < args.length; i += 2) {
-    const key = { '--target': 'target', '--number': 'number', '--commit': 'commit', '--built-at': 'builtAt' }[args[i]];
+    const key = { '--target': 'target', '--number': 'number', '--development-number': 'developmentNumber', '--commit': 'commit', '--built-at': 'builtAt' }[args[i]];
     if (!key || !args[i + 1]) throw new Error('테스트 패키지 명령의 옵션을 확인하십시오.');
     options[key] = args[i + 1];
   }

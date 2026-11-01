@@ -1049,6 +1049,8 @@ else {
   app.on('second-instance',()=>{const host=getRequestWindow();if(host){if(host.isMinimized())host.restore();host.show();host.focus();}});
   app.whenReady().then(async()=> {
     app.setName('ReviewOps');
+    const identity=getBuildInfo(app.getVersion());
+    app.setAboutPanelOptions({applicationName:'ReviewOps',applicationVersion:displayBuildVersion(identity),...(identity.channel==='test'?{version:String(identity.buildNumber)}:{})});
     await fsp.mkdir(attachmentPath,{recursive:true,mode:0o700});
     store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
     await cleanDeletedAttachments();

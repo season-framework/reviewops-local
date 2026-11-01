@@ -28,9 +28,10 @@ export async function publicPreviousCommit(fetchImpl=fetch) {
  return pointerFromBody(value.body)?.commit||null;
 }
 export async function main(args=process.argv.slice(2)) {
- if(args.length!==2||args[0]!=='--directory')throw new Error('변경 내용 생성 폴더를 지정하십시오.');
+ if(![2,4].includes(args.length)||args[0]!=='--directory'||(args.length===4&&args[2]!=='--base-commit'))throw new Error('변경 내용 생성 폴더와 이전 공개 커밋을 지정하십시오.');
  const directory=path.resolve(args[1]),build=JSON.parse(await fs.readFile(path.join(directory,'build-info.json'),'utf8'));
- const notes=await collectChangeNotes({build,baseCommit:await publicPreviousCommit()});
+ const baseCommit=args.length===4?(args[3]||null):await publicPreviousCommit();
+ const notes=await collectChangeNotes({build,baseCommit});
  await fs.writeFile(path.join(directory,'change-notes.json'),JSON.stringify(notes,null,2)+'\n');
  return notes;
 }

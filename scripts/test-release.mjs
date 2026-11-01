@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import {ledgerFromBody,historyName,historyAsset,requireAllocation,publishDevelopment,replaceLedger} from './test-development-ledger.mjs';
 const require = createRequire(import.meta.url);
 const { validateBuildInfo, validateChangeNotes, displayBuildVersion } = require('../electron/build-info.cjs');
 
@@ -16,12 +17,17 @@ export const hash = bytes => crypto.createHash('sha256').update(bytes).digest('h
 export const jsonBytes = value => Buffer.from(JSON.stringify(value, null, 2) + '\n');
 export const buildKey = build => `${build.buildNumber}-${build.commit.slice(0, 12)}`;
 export const manifestName = build => `reviewops-test-update-${buildKey(build)}.json`;
-const managedAsset = /^(?:ReviewOps-\d+\.\d+\.\d+-test\.\d+-(?:arm64|x64)\.(?:zip|dmg)(?:\.sha256)?|ReviewOps-\d+\.\d+\.\d+-test\.\d+-windows-x64\.exe(?:\.sha256)?|reviewops-test-update-\d+-[a-f0-9]{12}\.json)$/;
+const managedAsset = /^(?:ReviewOps-\d+\.\d+\.\d+-(?:test\.\d+|dev-[1-9]\d*)-(?:arm64|x64)\.(?:zip|dmg)(?:\.sha256)?|ReviewOps-\d+\.\d+\.\d+-(?:test\.\d+|dev-[1-9]\d*)-windows-x64\.exe(?:\.sha256)?|reviewops-test-update-\d+-[a-f0-9]{12}\.json)$/;
 let publishing = false;
 export function namesFor(build) {
   validateBuildInfo(build);
   const prefix = `ReviewOps-${build.version}-test.${build.buildNumber}`;
   return [`${prefix}-arm64.zip`, `${prefix}-arm64.dmg`, `${prefix}-x64.zip`, `${prefix}-x64.dmg`, `${prefix}-windows-x64.exe`];
+}
+export function canonicalNamesFor(build) {
+  build=validateBuildInfo(build);
+  if(!build.developmentNumber)return [];
+  return namesFor(build).map(name=>name.replace(`${build.version}-test.${build.buildNumber}`,displayBuildVersion(build)));
 }
 export async function fileHash(file) {
   const digest = crypto.createHash('sha256');
@@ -67,6 +73,7 @@ export async function prepareRelease(directory, build) {
   let changes;
   try { changes = validateChangeNotes(JSON.parse(await fs.readFile(path.join(directory, 'change-notes.json'), 'utf8')), build.commit); }
   catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if(build.developmentNumber&&!changes)throw new Error('개발 버전에는 실제 이전 공개 커밋과 연결된 변경 내용이 필요합니다.');
   const files = [];
   for (const name of namesFor(build)) {
     const filename = path.join(directory, name), stat = await fs.lstat(filename);
@@ -86,18 +93,29 @@ export async function prepareRelease(directory, build) {
   }
   const descriptor = file => ({ name: file.name, url: file.url, size: file.size, sha256: file.sha256 });
   const bySuffix = suffix => descriptor(files.find(file => file.name.endsWith(suffix)));
+  // Legacy artifacts keep the exact names understood by already installed
+  // clients. Canonical names are aliases of those very same verified bytes.
+  const canonical=canonicalNamesFor(build).map((name,index)=>({...files[index],name,url:ROOT_URL+name}));
+  const canonicalSuffix=suffix=>descriptor(canonical.find(file=>file.name.endsWith(suffix)));
   const manifest = { schema: 2, channel: 'test', version: build.version, build, ...(changes ? { changes } : {}),
     artifacts: { 'darwin-arm64': bySuffix('-arm64.zip'), 'darwin-x64': bySuffix('-x64.zip'), 'win32-x64': bySuffix('-windows-x64.exe') },
-    installers: { 'darwin-arm64': bySuffix('-arm64.dmg'), 'darwin-x64': bySuffix('-x64.dmg'), 'win32-x64': bySuffix('-windows-x64.exe') } };
+    installers: { 'darwin-arm64': bySuffix('-arm64.dmg'), 'darwin-x64': bySuffix('-x64.dmg'), 'win32-x64': bySuffix('-windows-x64.exe') },
+    ...(canonical.length?{developmentArtifacts:{'darwin-arm64':canonicalSuffix('-arm64.zip'),'darwin-x64':canonicalSuffix('-x64.zip'),'win32-x64':canonicalSuffix('-windows-x64.exe')},developmentInstallers:{'darwin-arm64':canonicalSuffix('-arm64.dmg'),'darwin-x64':canonicalSuffix('-x64.dmg'),'win32-x64':canonicalSuffix('-windows-x64.exe')}}:{}) };
   const manifestBytes = jsonBytes(manifest), name = manifestName(build);
   const pointer = { schema: 1, manifest: name, buildNumber: build.buildNumber, commit: build.commit, size: manifestBytes.length, sha256: hash(manifestBytes) };
-  const assets = [...files];
-  for (const file of files) {
+  const assets = [...files,...canonical];
+  for (const file of [...files,...canonical]) {
     const bytes = Buffer.from(`${file.sha256}  ${file.name}\n`);
     assets.push({ name: `${file.name}.sha256`, bytes, size: bytes.length, sha256: hash(bytes) });
   }
   assets.push({ name, bytes: manifestBytes, size: manifestBytes.length, sha256: hash(manifestBytes) });
-  return { build, manifest, pointer, assets, verification };
+  let history=null;
+  if(build.developmentNumber){
+    const bytes=jsonBytes({schema:1,build,changes,manifest:pointer,files:assets.map(({name,size,sha256})=>({name,size,sha256}))});
+    history={name:historyName(build),size:bytes.length,sha256:hash(bytes)};
+    assets.push({...history,bytes});
+  }
+  return { build, manifest, pointer, assets, history, verification };
 }
 function describe(plan) { return { tag: TAG, releaseUrl: `https://github.com/${REPOSITORY}/releases/tag/${TAG}`, pointer: plan.pointer, files: plan.assets.map(({ name, size, sha256 }) => ({ name, size, sha256 })), build: plan.build }; }
 export async function publishRelease(plan, store, { dryRun = true } = {}) {
@@ -111,16 +129,30 @@ async function publishLocked(plan, store, dryRun) {
   const original = await store.getRelease();
   if (original) assertRelease(original);
   const originalPointer = pointerFromBody(original?.body);
+  const originalLedger=ledgerFromBody(original?.body);
   assertOrder(originalPointer, plan.build);
   // Dry run uses only public reads. No token lookup, upload, PATCH or DELETE.
   if (dryRun) return { dryRun: true, ...describe(plan), replaces: originalPointer, retainedReleaseItems: 1 };
+  let nextLedger=originalLedger;
+  if(plan.build.developmentNumber){
+    const record=requireAllocation(originalLedger,plan.build,plan.manifest.changes?.baseCommit);
+    if(originalPointer?.buildNumber!==plan.build.buildNumber&&(originalPointer?.commit||null)!==record.baseCommit)throw new Error('예약 이후 이전 공개 테스트 버전이 변경되었습니다.');
+    nextLedger=publishDevelopment(originalLedger,plan.build,record.baseCommit,plan.history);
+  }
   let release = original || await store.createRelease(plan.build.commit);
   assertRelease(release);
   const before = await store.listAssets(release.id);
-  for (const asset of before) if (!managedAsset.test(asset.name)) throw new Error(`알 수 없는 파일이 있어 게시를 중단했습니다: ${asset.name}`);
+  const knownHistory=new Set(originalLedger.allocations.map(record=>historyName(record.build)));
+  for (const asset of before) if (!managedAsset.test(asset.name)&&!(historyAsset.test(asset.name)&&knownHistory.has(asset.name))) throw new Error(`알 수 없는 파일이 있어 게시를 중단했습니다: ${asset.name}`);
+  // A retained public history is part of the immutable release record, not an
+  // installer to rotate. Check it before changing any asset or pointer.
+  for(const record of originalLedger.allocations.filter(record=>record.history)){
+    const asset=before.find(item=>item.name===record.history.name);
+    if(!asset||asset.size!==record.history.size||await store.hashAsset(asset)!==record.history.sha256)throw new Error('기존 개발 버전 변경 이력 파일이 없어졌거나 변경되었습니다.');
+  }
   const previousNames = new Set(before.map(item => item.name));
   const wanted = new Set(plan.assets.map(item => item.name));
-  const isCurrent = name => originalPointer && (name === originalPointer.manifest || name.includes(`-test.${originalPointer.buildNumber}-`));
+  const isCurrent = name => originalLedger.allocations.some(record=>record.history?.name===name)||originalPointer&&(name===originalPointer.manifest||name.includes(`-test.${originalPointer.buildNumber}-`)||originalLedger.allocations.some(record=>record.build.buildNumber===originalPointer.buildNumber&&name.startsWith(`ReviewOps-${displayBuildVersion(record.build)}-`)));
   for (const file of plan.assets) {
     let existing = (await store.listAssets(release.id)).find(item => item.name === file.name);
     // GitHub may retain a zero-byte starter after an upload 502. Recover only
@@ -139,19 +171,22 @@ async function publishLocked(plan, store, dryRun) {
   release = await store.getRelease(); assertRelease(release);
   const currentPointer = pointerFromBody(release.body);
   assertOrder(currentPointer, plan.build, originalPointer);
+  if(JSON.stringify(ledgerFromBody(release.body))!==JSON.stringify(originalLedger))throw new Error('게시 준비 중 개발 번호 할당 이력이 변경되었습니다.');
   if (currentPointer?.buildNumber === plan.build.buildNumber && currentPointer.sha256 !== plan.pointer.sha256) throw new Error('같은 빌드의 안내 파일 내용이 변경되었습니다.');
   if (JSON.stringify(currentPointer) !== JSON.stringify(plan.pointer)) {
     const notes = plan.manifest.changes;
     const escapeSubject = value => value.replace(/[\\`*_[\]<>]/g, '\\$&');
     const changeText = !notes ? '' : notes.baseCommit ? `\n## 이전 테스트 배포 이후 변경\n\n[전체 변경 ${notes.totalCommits}개](https://github.com/${REPOSITORY}/compare/${notes.baseCommit}...${notes.commit})\n\n${notes.commits.map(item => `- ${escapeSubject(item.subject)} ([${item.commit.slice(0,12)}](https://github.com/${REPOSITORY}/commit/${item.commit}))`).join('\n')}\n` : '\n이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.\n';
-    const body = `# ReviewOps 테스트 버전 ${displayBuildVersion(plan.build)}\n\n정식 출시 전 기능을 확인할 수 있는 버전입니다. 최신 설치파일 한 벌만 유지합니다.\n\n앱 버전: ${displayBuildVersion(plan.build)} · 빌드: ${plan.build.buildNumber}\n\n커밋: ${plan.build.commit}\n\n빌드 시각: ${plan.build.builtAt} (UTC)\n${changeText}\n${marker}${JSON.stringify(plan.pointer)} -->\n`;
+    const historyText=nextLedger.allocations.filter(record=>record.history).map(record=>`- [${displayBuildVersion(record.build)}](https://github.com/${REPOSITORY}/releases/download/${TAG}/${record.history.name}) · 빌드 ${record.build.buildNumber} · [${record.build.commit.slice(0,12)}](https://github.com/${REPOSITORY}/commit/${record.build.commit})`).join('\n');
+    let body = `# ReviewOps 테스트 버전 ${displayBuildVersion(plan.build)}\n\n정식 출시 전 기능을 확인할 수 있는 버전입니다. 최신 설치파일 한 벌만 유지합니다. 개발 버전 파일과 기존 앱 호환 파일은 같은 내용입니다.\n\n앱 버전: ${displayBuildVersion(plan.build)} · 빌드: ${plan.build.buildNumber}\n\n커밋: ${plan.build.commit}\n\n빌드 시각: ${plan.build.builtAt} (UTC)\n${changeText}${historyText?'\n## 개발 버전별 변경 이력\n\n'+historyText+'\n':''}\n${marker}${JSON.stringify(plan.pointer)} -->\n`;
+    if(plan.build.developmentNumber||originalLedger.allocations.length)body=replaceLedger(body,nextLedger);
     // One body PATCH switches the complete set. The workflow's global lock is
     // held through upload, this switch and cleanup. Git tags never move.
-    await store.setPointer(release.id, body);
+    await store.setPointer(release.id, body, `ReviewOps 테스트 ${displayBuildVersion(plan.build)}`);
   }
   async function assertOwned() {
     const latest = await store.getRelease(); assertRelease(latest);
-    if (latest.id !== release.id || JSON.stringify(pointerFromBody(latest.body)) !== JSON.stringify(plan.pointer)) throw new Error('최신 테스트 빌드 표시가 변경되었습니다. 이전 파일은 삭제하지 않았습니다.');
+    if (latest.id !== release.id || JSON.stringify(pointerFromBody(latest.body)) !== JSON.stringify(plan.pointer)||JSON.stringify(ledgerFromBody(latest.body))!==JSON.stringify(nextLedger)) throw new Error('최신 테스트 빌드 표시 또는 개발 이력이 변경되었습니다. 이전 파일은 삭제하지 않았습니다.');
     return latest;
   }
   const committed = await assertOwned();
@@ -159,14 +194,18 @@ async function publishLocked(plan, store, dryRun) {
     const asset = (await store.listAssets(committed.id)).find(item => item.name === file.name);
     if (!asset || asset.size !== file.size || await store.hashAsset(asset) !== file.sha256) throw new Error('공개한 테스트 파일을 다시 검증하지 못했습니다. 이전 파일은 유지합니다.');
   }
-  const cleanup = (await store.listAssets(committed.id)).filter(item => !wanted.has(item.name));
+  // Failed pre-switch publications may have uploaded their reserved history.
+  // Keep those bytes too, so a retry never overwrites a dev identity.
+  const preservedHistory=new Set((await store.listAssets(committed.id)).filter(asset=>historyAsset.test(asset.name)&&nextLedger.allocations.some(record=>historyName(record.build)===asset.name)).map(asset=>asset.name));
+  const cleanup = (await store.listAssets(committed.id)).filter(item => !wanted.has(item.name)&&!preservedHistory.has(item.name));
   for (const asset of cleanup) {
     if (!managedAsset.test(asset.name)) throw new Error(`알 수 없는 파일을 삭제하지 않았습니다: ${asset.name}`);
     await assertOwned();
     await store.deleteAsset(asset.id);
   }
   const final = await assertOwned(), finalAssets = await store.listAssets(final.id);
-  if (finalAssets.length !== wanted.size || finalAssets.some(item => !wanted.has(item.name))) throw new Error('이전 테스트 파일 정리 결과가 일치하지 않습니다. 같은 빌드를 재실행하십시오.');
+  const retained=new Set([...wanted,...preservedHistory]);
+  if (finalAssets.length !== retained.size || finalAssets.some(item => !retained.has(item.name))) throw new Error('이전 테스트 파일 정리 결과가 일치하지 않습니다. 같은 빌드를 재실행하십시오.');
   for (const asset of cleanup) if (await store.assetExists(asset.id)) throw new Error('삭제한 이전 파일이 아직 조회됩니다. 같은 빌드를 재실행하십시오.');
   return { dryRun: false, ...describe(plan), removed: cleanup.map(item => item.name), reused: [...previousNames].filter(name => wanted.has(name)), retainedReleaseItems: 1 };
 }
@@ -202,7 +241,7 @@ export function githubStore(token, fetchImpl = fetch, env = process.env) {
       if (total !== asset.size) throw new Error('설치파일 크기가 다릅니다.');
       return digest.digest('hex');
     },
-    async setPointer(id, body) { await request(`${api}/releases/${id}`, { method: 'PATCH', body: { body, prerelease: true, make_latest: 'false' } }); },
+    async setPointer(id, body, name) { await request(`${api}/releases/${id}`, { method: 'PATCH', body: { body, ...(name?{name}:{}), prerelease: true, make_latest: 'false' } }); },
     async deleteAsset(id) { await request(`${api}/releases/assets/${id}`, { method: 'DELETE', allow404: true }); },
     async assetExists(id) { return Boolean(await request(`${api}/releases/assets/${id}?cache=${Date.now()}`, { allow404: true })); },
   };

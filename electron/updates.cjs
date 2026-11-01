@@ -70,12 +70,21 @@ function testManifestFor(manifest, published, arch, currentVersion, installedBui
   if (newer(currentVersion, build.version)) throw updateFailure('older_build', '설치된 앱보다 낮은 테스트 버전은 설치하지 않습니다.');
   for (const known of [installedBuild?.channel === 'test' ? installedBuild : null, highestBuild]) {
     if (!known) continue;
+    if(newer(known.version,build.version))throw updateFailure('older_build','이전에 받은 기본 버전보다 오래된 파일입니다.');
+    if(build.version===known.version&&build.developmentNumber&&known.developmentNumber){
+      if(build.developmentNumber<known.developmentNumber)throw updateFailure('older_build','이전에 받은 개발 버전보다 오래된 파일입니다.');
+      if(build.developmentNumber===known.developmentNumber&&build.buildNumber!==known.buildNumber)throw updateFailure('invalid_manifest','이미 공개한 개발 번호가 다른 빌드에 사용되었습니다.');
+    }
     if (build.buildNumber < known.buildNumber) throw updateFailure('older_build', '이전에 받은 테스트 빌드보다 오래된 파일입니다. 다시 확인하십시오.');
-    if (build.buildNumber === known.buildNumber && (build.commit !== known.commit || build.version !== known.version || build.builtAt !== known.builtAt)) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
+    if (build.buildNumber === known.buildNumber && JSON.stringify(build)!==JSON.stringify(testBuild(known,known.version))) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
   }
-  const key = `${platform}-${arch}`, item = manifest.artifacts?.[key];
-  const filename = platform === 'darwin' ? `ReviewOps-${build.version}-test.${build.buildNumber}-${arch}.zip` : `ReviewOps-${build.version}-test.${build.buildNumber}-windows-${arch}.exe`;
+  const key = `${platform}-${arch}`, legacy = manifest.artifacts?.[key];
+  const legacyName=platform==='darwin'?`ReviewOps-${build.version}-test.${build.buildNumber}-${arch}.zip`:`ReviewOps-${build.version}-test.${build.buildNumber}-windows-${arch}.exe`;
+  if(!legacy||legacy.name!==legacyName||legacy.url!==`${RELEASES_URL}/download/${TEST_TAG}/${legacyName}`)throw updateFailure('invalid_manifest','기존 앱 호환 설치파일 정보가 올바르지 않습니다.');
+  const item=build.developmentNumber?manifest.developmentArtifacts?.[key]:legacy;
+  const filename=build.developmentNumber?(platform==='darwin'?`ReviewOps-${build.version}-dev-${build.developmentNumber}-${arch}.zip`:`ReviewOps-${build.version}-dev-${build.developmentNumber}-windows-${arch}.exe`):legacyName;
   if (!['darwin-arm64','darwin-x64','win32-x64'].includes(key) || !item || item.name !== filename || !/^[a-f0-9]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 1024 || item.size > MAX_DOWNLOAD || item.url !== `${RELEASES_URL}/download/${TEST_TAG}/${filename}`) throw updateFailure('test_unavailable', '이 컴퓨터에서 사용할 테스트 설치파일이 없습니다.');
+  if(item.size!==legacy.size||item.sha256!==legacy.sha256)throw updateFailure('invalid_manifest','개발 버전 파일과 기존 앱 호환 파일이 다릅니다.');
   const asset = published.assets?.find(value => value.name === filename);
   if (!asset || asset.size !== item.size || asset.browser_download_url !== item.url) throw updateFailure('invalid_manifest', '테스트 설치파일과 업데이트 정보가 다릅니다.');
   if (installedBuild?.channel === 'test' && build.buildNumber === installedBuild.buildNumber) return null;

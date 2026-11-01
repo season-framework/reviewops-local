@@ -7,7 +7,7 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
 const root=process.cwd(),temp=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-dev-version-'));
-const output=path.join(root,'test-results/development-version/ui');fs.mkdirSync(output,{recursive:true});
+const output=path.join(root,'test-results/development-version',`ui-${new Date().toISOString().replace(/[:.]/g,'-')}`);fs.mkdirSync(output,{recursive:true});
 const identity=path.join(root,'electron/reviewops-build.json'),version=JSON.parse(fs.readFileSync(path.join(root,'package.json'))).version;
 const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 const installed={channel:'test',version,developmentNumber:2,buildNumber:11001,commit,builtAt:'2026-11-01T16:00:00.000Z'};
@@ -67,4 +67,6 @@ try{
  pass('QA-041-006','구형 metadata는 dev 번호를 추정하지 않고 원래 test.빌드번호로 구별하며 800×600에서 가로 넘침이 없다.');
  assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
  fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,commit,version,checks,photos,rendererErrors:errors,externalRequests:external,realUpdates:0,realInstallations:0,fixtureDescription:'Source macOS Intel. Installed identity injected as generated synthetic metadata; available updater responses synthetic. Actual app.info/copyInfo/clipboard used. No release publication or installation.'},null,2));
+ fs.writeFileSync(path.join(root,'test-results/development-version/latest-ui.json'),JSON.stringify({output,results:path.join(output,'results.json')},null,2));
+ console.log(JSON.stringify({ok:true,output,checks:checks.length}));
 }finally{await app?.close().catch(()=>{});if(fs.existsSync(identity))fs.unlinkSync(identity);}

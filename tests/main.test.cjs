@@ -27,9 +27,9 @@ async function harness(t, options = {}) {
   const app = Object.assign(appEvents, {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
     isPackaged: options.isPackaged !== false,
-    setName() {}, setPath() {}, quit() {},
+    setName() {}, setPath() {}, quit() {},setAboutPanelOptions(value){state.aboutPanelOptions=value;},
     getPath(name) { if (name === 'temp' || name === 'appData') return root; throw new Error(`Unexpected getPath: ${name}`); },
-    getVersion() { return '0.0.0-test'; },
+    getVersion() { return options.version||'0.0.0-test'; },
     requestSingleInstanceLock() { return true; },
     whenReady() { return { then(callback) { state.startup = callback(); return state.startup; } }; }
   });
@@ -151,7 +151,7 @@ async function harness(t, options = {}) {
     }
     if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
-    if (name === './build-info.cjs') return {getBuildInfo:version=>({channel:'stable',version})};
+    if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
     if (name === './app-language.cjs') return require('../electron/app-language.cjs');
@@ -213,6 +213,15 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+test('detailed test identity agrees across app information, native About and copied information',async t=>{
+ const buildInfo={channel:'test',version:'1.2.11',buildNumber:11001,developmentNumber:10,commit:'a'.repeat(40),builtAt:'2026-11-01T16:00:00.000Z'};
+ const h=await harness(t,{version:'1.2.11',buildInfo,isPackaged:false});
+ assert.equal(h.state.aboutPanelOptions.applicationVersion,'1.2.11-dev-10');assert.equal(h.state.aboutPanelOptions.version,'11001');
+ assert.equal((await h.success('app.info')).build.developmentNumber,10);
+ await h.success('update.copyInfo');assert.match(h.state.clipboardText,/1\.2\.11-dev-10/);assert.match(h.state.clipboardText,/11001/);assert.match(h.state.clipboardText,/UTC/);
+ const {project,review}=await seed(h),snapshot=await h.success('snapshot');
+ assert.ok(snapshot.projects.some(item=>item.id===project.id));assert.ok(snapshot.reviews.some(item=>item.id===review.id));
+});
 
 async function waitForValue(read, message) {
   for(let attempt=0;attempt<100;attempt++) {

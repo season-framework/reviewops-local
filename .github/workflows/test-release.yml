@@ -28,9 +28,13 @@ jobs:
   metadata:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     outputs:
       number: ${{ steps.info.outputs.number }}
+      development_number: ${{ steps.info.outputs.development_number }}
       built_at: ${{ steps.info.outputs.built_at }}
+      base_commit: ${{ steps.info.outputs.base_commit }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -39,14 +43,12 @@ jobs:
         with:
           node-version: '24'
       - id: info
-        name: Assign one build number and timestamp to all packages
+        name: Assign one development identity to all packages under the global lock
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEWOPS_TEST_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
         shell: bash
-        run: |
-          node --input-type=module <<'JS'
-          import fs from 'node:fs';
-          import { ciBuildNumber } from './scripts/test-release.mjs';
-          fs.appendFileSync(process.env.GITHUB_OUTPUT, `number=${ciBuildNumber()}\nbuilt_at=${new Date().toISOString()}\n`);
-          JS
+        run: node scripts/test-development-metadata.mjs
 
   package:
     needs: metadata
@@ -107,9 +109,10 @@ jobs:
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
+          TEST_DEVELOPMENT_NUMBER: ${{ needs.metadata.outputs.development_number }}
           TEST_BUILT_AT: ${{ needs.metadata.outputs.built_at }}
           TEST_TARGET: ${{ matrix.target }}
-        run: node scripts/test-build.mjs package --target "$TEST_TARGET" --number "$TEST_BUILD_NUMBER" --commit "$GITHUB_SHA" --built-at "$TEST_BUILT_AT"
+        run: node scripts/test-build.mjs package --target "$TEST_TARGET" --number "$TEST_BUILD_NUMBER" --development-number "$TEST_DEVELOPMENT_NUMBER" --commit "$GITHUB_SHA" --built-at "$TEST_BUILT_AT"
         shell: bash
       - name: Clear generated test identity even after a failed build
         if: always()
@@ -154,8 +157,10 @@ jobs:
       - name: Validate complete publication without changing any Release
         id: validation
         if: needs.package.result == 'success'
+        env:
+          TEST_PREVIOUS_COMMIT: ${{ needs.metadata.outputs.base_commit }}
         run: |
-          node scripts/test-release-notes.mjs --directory release/test
+          node scripts/test-release-notes.mjs --directory release/test --base-commit "$TEST_PREVIOUS_COMMIT"
           node scripts/test-release.mjs --directory release/test --dry-run
       - name: Publish the complete build and remove previous test packages
         id: publication
