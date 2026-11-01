@@ -61,7 +61,7 @@ test('metadata mutations require the matching workflow, metadata job, global loc
  const env={GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_JOB:'metadata',GITHUB_WORKFLOW_REF:'season-framework/reviewops-local/.github/workflows/test-release.yml@refs/heads/test',REVIEWOPS_PUBLICATION_GROUP:'reviewops-test-latest',REVIEWOPS_TEST_PUBLISH:'true',GITHUB_SHA:'a'.repeat(40),GITHUB_RUN_NUMBER:'11',GITHUB_RUN_ATTEMPT:'1',GITHUB_TOKEN:'synthetic-only'};
  assert.doesNotThrow(()=>assertAllocationCI(env));
  for(const patch of [{GITHUB_JOB:'publish'},{REVIEWOPS_TEST_PUBLISH:'false'},{REVIEWOPS_PUBLICATION_GROUP:'other'},{GITHUB_REPOSITORY:'other/repo'},{GITHUB_SHA:'short'}])assert.throws(()=>assertAllocationCI({...env,...patch}));
- let calls=0;await assert.rejects(allocationStore({env:{},fetchImpl:async()=>{calls++;}}).saveLedger({id:1},'body'));assert.equal(calls,0);
+ let calls=0;assert.throws(()=>allocationStore({env:{},fetchImpl:async()=>{calls++;}}).saveLedger({id:1},'body'));assert.equal(calls,0);
 });
 test('one verified byte set has canonical development names, legacy names and source-bound immutable history',async t=>{
  const {m,l,info,plan}=await fixture(t);
