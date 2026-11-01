@@ -406,11 +406,40 @@ test('SSH CLI, model cache and stored sessions share the server login profile en
  const record=JSON.parse(await fs.readFile(path.join(f.root,'last-input.json'),'utf8'));assert.equal(record.loginProfile,'loaded');assert.equal(record.codexHome,f.profileCodexHome);assert.deepEqual(record.args.slice(-3),['resume',sessionId,'-']);
 });
 
-test('SSH startup failures explain missing CLI and inaccessible work folders without sending a request',async t=>{
- const f=await remoteFixture(t);
- const missing=await f.manager.environment(f.config,{...f.settings,binary:path.join(f.bin,'missing')});assert.equal(missing.installed,false);assert.match(missing.error,/Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다/);
- const folder=await f.manager.environment(f.config,{...f.settings,workPath:path.join(f.root,'missing-folder')});assert.equal(folder.installed,false);assert.match(folder.error,/SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다/);
+test('SSH diagnostics distinguish a missing executable from an unchecked installation in an inaccessible folder',async t=>{
+ const f=await remoteFixture(t),missingSettings={...f.settings,binary:path.join(f.bin,'missing')},folderSettings={...f.settings,workPath:path.join(f.root,'missing-folder')};
+ const healthy=await f.manager.environment(f.config,f.settings);assert.equal(healthy.installed,true);assert.equal(healthy.loggedIn,true);
+ const missing=await f.manager.environment(f.config,missingSettings);assert.equal(missing.installed,false);assert.equal(missing.authState,'not_installed');assert.equal(missing.errorCode,'AGENT_NOT_INSTALLED');assert.match(missing.error,/Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다/);
+ const folder=await f.manager.environment(f.config,folderSettings);assert.equal(folder.installed,null);assert.equal(folder.authState,'unknown');assert.equal(folder.errorCode,'AGENT_WORK_PATH_INACCESSIBLE');assert.equal(folder.modelSource,'none');assert.match(folder.error,/SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다/);
+ await assert.rejects(f.manager.preflight(f.config,folderSettings),{code:'AGENT_WORK_PATH_INACCESSIBLE'});
+ const job=f.manager.start({config:f.config,settings:folderSettings,prompt:'Do not execute in an inaccessible directory'}),failed=await completed(f.manager,job.id);assert.equal(failed.status,'failed');assert.equal(failed.errorCode,'AGENT_WORK_PATH_INACCESSIBLE');
+ await assert.rejects(f.manager.preflight(f.config,missingSettings),{code:'AGENT_NOT_INSTALLED'});
+ const restored=await f.manager.preflight(f.config,f.settings);assert.equal(restored.installed,true);assert.equal(restored.authState,'authenticated');assert.equal(restored.version,healthy.version);
  await assert.rejects(fs.access(path.join(f.root,'last-input.json')));
+});
+
+test('SSH directory permission denial leaves installation and login unverified',async t=>{
+ const f=await remoteFixture(t),work=path.join(f.root,'restricted');await fs.mkdir(work,{mode:0o700});
+ await fs.chmod(work,0o000);
+ try{
+  const status=await f.manager.environment(f.config,{...f.settings,workPath:work});assert.equal(status.installed,null);assert.equal(status.authState,'unknown');assert.equal(status.errorCode,'AGENT_WORK_PATH_INACCESSIBLE');assert.match(status.error,/Permission denied/);
+  await assert.rejects(f.manager.preflight(f.config,{...f.settings,workPath:work}),{code:'AGENT_WORK_PATH_INACCESSIBLE'});
+ }finally{await fs.chmod(work,0o700);}
+ const restored=await f.manager.preflight(f.config,{...f.settings,workPath:work});assert.equal(restored.installed,true);assert.equal(restored.loggedIn,true);
+});
+
+for(const code of [2,125,127])test(`SSH executable version failure ${code} is not diagnosed as missing CLI or folder`,async t=>{
+ const f=await remoteFixture(t);await fs.writeFile(f.binary,`#!/usr/bin/env node\nconsole.error('Synthetic version check failure');process.exit(${code});\n`,{mode:0o755});
+ const status=await f.manager.environment(f.config,f.settings);assert.equal(status.installed,null);assert.equal(status.authState,'unknown');assert.equal(status.errorCode,'AGENT_ENVIRONMENT_CHECK_FAILED');assert.match(status.error,/Synthetic version check failure/);
+ await assert.rejects(f.manager.preflight(f.config,f.settings),{code:'AGENT_ENVIRONMENT_CHECK_FAILED'});
+});
+
+test('SSH reports a folder removed between version and login checks without requesting sign-in',async t=>{
+ const f=await remoteFixture(t),work=path.join(f.root,'ephemeral');await fs.mkdir(work);
+ await fs.writeFile(f.binary,`#!/usr/bin/env node\nif(process.argv[2]==='--version'){console.log('codex-cli synthetic-disappearing-folder');require('node:fs').rmdirSync(process.cwd());process.exit(0);}process.exit(0);\n`,{mode:0o755});
+ const status=await f.manager.environment(f.config,{...f.settings,workPath:work});assert.equal(status.installed,true);assert.equal(status.loggedIn,false);assert.equal(status.authState,'unknown');assert.equal(status.errorCode,'AGENT_WORK_PATH_INACCESSIBLE');assert.match(status.error,/작업 폴더를 열 수 없습니다/);
+ await fs.mkdir(work);
+ await assert.rejects(f.manager.preflight(f.config,{...f.settings,workPath:work}),{code:'AGENT_WORK_PATH_INACCESSIBLE'});
 });
 
 test('SSH cancellation confirms process group termination instead of only closing the connection',async t=>{
