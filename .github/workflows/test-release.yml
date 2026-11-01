@@ -30,15 +30,19 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      pull-requests: read
+      issues: read
     outputs:
       number: ${{ steps.info.outputs.number }}
       development_number: ${{ steps.info.outputs.development_number }}
       built_at: ${{ steps.info.outputs.built_at }}
       base_commit: ${{ steps.info.outputs.base_commit }}
+      context_sha: ${{ steps.info.outputs.context_sha }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -49,6 +53,14 @@ jobs:
           REVIEWOPS_TEST_PUBLISH: ${{ github.event_name == 'workflow_dispatch' && inputs.publish == true }}
         shell: bash
         run: node scripts/test-development-metadata.mjs
+      - name: Preserve this build's frozen change notes and verified references
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-test-build-context
+          path: release/test-context/build-context.json
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
 
   package:
     needs: metadata
@@ -79,7 +91,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Test publication and updater contracts
-        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs
+        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs tests/test-release-references.test.cjs tests/test-build-context.test.cjs
       - name: Test existing updater contracts on Intel macOS
         if: matrix.target == 'darwin-x64'
         run: node --test tests/updates.test.cjs
@@ -159,9 +171,9 @@ jobs:
         id: validation
         if: needs.package.result == 'success'
         env:
-          TEST_PREVIOUS_COMMIT: ${{ needs.metadata.outputs.base_commit }}
+          TEST_CONTEXT_SHA: ${{ needs.metadata.outputs.context_sha }}
         run: |
-          node scripts/test-release-notes.mjs --directory release/test --base-commit "$TEST_PREVIOUS_COMMIT"
+          node scripts/test-build-context.mjs --context release/test/build-context.json --directory release/test --expected-sha "$TEST_CONTEXT_SHA"
           node scripts/test-release.mjs --directory release/test --dry-run
       - name: Publish the complete build and remove previous test packages
         id: publication

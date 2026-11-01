@@ -183,9 +183,10 @@ test('commit subjects containing protocol markers remain text and cannot corrupt
  const baseCommit='b'.repeat(40),f=await fixture(t,build(),baseCommit),store=await memoryStore(),current=await store.getRelease();
  const pointer={schema:1,buildNumber:8001,commit:baseCommit,manifest:`reviewops-test-update-8001-${baseCommit.slice(0,12)}.json`,size:100,sha256:'c'.repeat(64)};
  store.setRelease({...current,body:`${f.m.marker}${JSON.stringify(pointer)} -->`});store.reserve(f.info);
- const changes={...f.changes,commits:[{commit:f.info.commit,subject:'Explain <!-- reviewops-test-development: metadata --> (#41)'}]};await fs.writeFile(path.join(f.directory,'change-notes.json'),JSON.stringify(changes));
+ const ref={kind:'pull_request',number:44,title:'Verified PR',url:'https://github.com/season-framework/reviewops-local/pull/44',via:'commit_association'};
+ const changes={...f.changes,commits:[{commit:f.info.commit,subject:'Explain <!-- reviewops-test-development: metadata --> (#41)',references:[ref],referenceStatus:'verified'}]};await fs.writeFile(path.join(f.directory,'change-notes.json'),JSON.stringify(changes));
  const plan=await f.m.prepareRelease(f.directory,f.info);await f.m.publishRelease(plan,store,{dryRun:false});const body=(await store.getRelease()).body;
- assert.ok(body.includes('&lt;!-- reviewops-test-development: metadata --&gt;'));assert.equal(f.l.ledgerFromBody(body).allocations.length,1);assert.equal(f.m.pointerFromBody(body).buildNumber,f.info.buildNumber);
+ assert.ok(body.includes('&lt;!-- reviewops-test-development: metadata --&gt;'));assert.ok(body.includes('[PR #44](https://github.com/season-framework/reviewops-local/pull/44)'));assert.deepEqual(JSON.parse(plan.assets.find(asset=>asset.name===plan.history.name).bytes).changes.commits[0].references,[ref]);assert.equal(f.l.ledgerFromBody(body).allocations.length,1);assert.equal(f.m.pointerFromBody(body).buildNumber,f.info.buildNumber);
 });
 test('a failed publication history remains immutable while a later complete build can publish',async t=>{
  const first=await fixture(t),store=await memoryStore();store.reserve(first.info);
@@ -200,4 +201,15 @@ test('a missing or modified published history blocks all subsequent writes',asyn
  const next=await fixture(t,build(12001,2),first.info.commit);store.reserve(next.info);
  const asset=[...store.assets.values()].find(item=>item.name===first.plan.history.name);asset.bytes=Buffer.alloc(asset.size,0);
  const before=store.writes.length;await assert.rejects(next.m.publishRelease(next.plan,store,{dryRun:false}),/이력 파일/);assert.equal(store.writes.length,before);
+});
+test('a frozen reference snapshot makes a partial-upload retry byte-identical after the PR title changes',async t=>{
+ const baseCommit='b'.repeat(40),f=await fixture(t,build(),baseCommit),store=await memoryStore(),current=await store.getRelease(),c=await import('../scripts/test-build-context.mjs');
+ const pointer={schema:1,buildNumber:8001,commit:baseCommit,manifest:`reviewops-test-update-8001-${baseCommit.slice(0,12)}.json`,size:100,sha256:'c'.repeat(64)};store.setRelease({...current,body:`${f.m.marker}${JSON.stringify(pointer)} -->`});store.reserve(f.info);
+ const notes={...f.changes,commits:[{commit:f.info.commit,subject:'A source change',references:[{kind:'pull_request',number:44,title:'Original PR title',url:'https://github.com/season-framework/reviewops-local/pull/44',via:'commit_association'}],referenceStatus:'verified'}]},filename=path.join(f.directory,'build-context.json');
+ const frozen=await c.freezeBuildContext(filename,{schema:1,build:f.info,baseCommit,changes:notes});await fs.writeFile(path.join(f.directory,'build-info.json'),JSON.stringify(f.info));await c.consumeBuildContext({filename,directory:f.directory,expectedHash:frozen.sha256});
+ const original=await f.m.prepareRelease(f.directory,f.info),set=store.setPointer;let fail=true;store.setPointer=async(...args)=>{if(fail){fail=false;throw new Error('Injected response failure before pointer switch')}return set(...args)};
+ await assert.rejects(f.m.publishRelease(original,store,{dryRun:false}),/Injected/);assert.equal(store.assets.size,22);
+ const changed={...notes,commits:[{...notes.commits[0],references:[{...notes.commits[0].references[0],title:'Edited after upload'}]}]};await fs.writeFile(path.join(f.directory,'change-notes.json'),JSON.stringify(changed));
+ await c.consumeBuildContext({filename,directory:f.directory,expectedHash:frozen.sha256});const retried=await f.m.prepareRelease(f.directory,f.info);assert.equal(retried.pointer.sha256,original.pointer.sha256);assert.deepEqual(retried.history,original.history);
+ await f.m.publishRelease(retried,store,{dryRun:false});assert.equal(f.m.pointerFromBody((await store.getRelease()).body).buildNumber,f.info.buildNumber);
 });

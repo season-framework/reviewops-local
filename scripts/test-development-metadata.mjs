@@ -3,6 +3,9 @@ import path from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {REPOSITORY,TAG,PUBLICATION_GROUP,ciBuildNumber,pointerFromBody} from './test-release.mjs';
 import {ledgerFromBody,allocateDevelopment,replaceLedger} from './test-development-ledger.mjs';
+import {collectChangeNotes} from './test-release-notes.mjs';
+import {githubReferenceLookup} from './test-release-references.mjs';
+import {freezeBuildContext} from './test-build-context.mjs';
 
 export function assertAllocationCI(env) {
  if(env.GITHUB_ACTIONS!=='true'||env.GITHUB_REPOSITORY!==REPOSITORY||env.GITHUB_JOB!=='metadata'||env.REVIEWOPS_PUBLICATION_GROUP!==PUBLICATION_GROUP||!String(env.GITHUB_WORKFLOW_REF||'').startsWith(`${REPOSITORY}/.github/workflows/test-release.yml@`)||env.REVIEWOPS_TEST_PUBLISH!=='true'||!/^[a-f0-9]{40}$/.test(env.GITHUB_SHA||''))throw new Error('개발 번호 예약은 전역 잠금 안의 테스트 게시 metadata 작업에서만 실행할 수 있습니다.');
@@ -55,7 +58,9 @@ export async function main(args=process.argv.slice(2),env=process.env) {
  const publish=env.REVIEWOPS_TEST_PUBLISH==='true';if(publish)assertAllocationCI(env);
  const version=JSON.parse(await fs.readFile(new URL('../package.json',import.meta.url),'utf8')).version;
  const value=await assignMetadata({input:{channel:'test',version,buildNumber:ciBuildNumber(env),commit:env.GITHUB_SHA,builtAt:new Date().toISOString()},publish,store:allocationStore({env})});
- if(env.GITHUB_OUTPUT)await fs.appendFile(env.GITHUB_OUTPUT,`number=${value.build.buildNumber}\ndevelopment_number=${value.build.developmentNumber}\nbuilt_at=${value.build.builtAt}\nbase_commit=${value.baseCommit||''}\n`);
- return value;
+ const changes=await collectChangeNotes({build:value.build,baseCommit:value.baseCommit,resolveReferences:githubReferenceLookup({token:env.GITHUB_TOKEN})});
+ const frozen=await freezeBuildContext(path.resolve('release/test-context/build-context.json'),{schema:1,build:value.build,baseCommit:value.baseCommit,changes});
+ if(env.GITHUB_OUTPUT)await fs.appendFile(env.GITHUB_OUTPUT,`number=${value.build.buildNumber}\ndevelopment_number=${value.build.developmentNumber}\nbuilt_at=${value.build.builtAt}\nbase_commit=${value.baseCommit||''}\ncontext_sha=${frozen.sha256}\n`);
+ return {...value,contextSha256:frozen.sha256,changedCommits:changes.totalCommits};
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(path.resolve(process.argv[1])).href)main().then(value=>console.log(JSON.stringify(value,null,2))).catch(error=>{console.error(error.message);process.exitCode=1});

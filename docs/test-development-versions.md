@@ -59,6 +59,25 @@ subjects, full commit links and the full comparison link. A list longer than
 100 commits reports the real total and links the complete comparison. If there
 is no previous public pointer, the UI says that no change range is available.
 
+Related PRs are read separately for each public commit from GitHub's commit/PR
+association API. Explicit issue references in that commit or its associated PR
+body are verified against the repository's issue API. A PR body mentioning its
+dependency PR does not make that dependency a commit association. Each retained
+reference records its verified URL and lookup source. Missing/private commits
+and unavailable lookups remain unknown; another commit's PR is never copied.
+The app, release body and immutable history show the confirmed references.
+Reference kinds, repository URLs, numbers and provenance are validated before
+an update can expose them.
+
+The successful metadata job freezes its build identity, predecessor, change
+notes and verified references into one hash-bound
+`reviewops-test-build-context` Actions artifact with one-day retention. Native
+package identity must match it exactly. A failed publication job consumes that
+original snapshot on retry; it does not re-query mutable PR titles or bodies.
+The artifact is retained with partial package jobs and cleaned up with the
+matching workflow's installers. A complete metadata rerun is a new build and
+can reserve another development number.
+
 Each published development version has a source-bound JSON history asset. It
 records its build identity, predecessor, actual change list, manifest digest and
 all canonical/legacy file hashes. The body links these records. Rotating the

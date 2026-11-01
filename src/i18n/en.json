@@ -1613,5 +1613,8 @@
   "이전 테스트 배포 이후 변경": "Changes since the previous test release",
   "변경 커밋 {0}개": "{0} changed commits",
   "전체 변경 내용 보기": "View all changes",
-  "이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.": "No previous public test version is available to determine the changes."
+  "이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.": "No previous public test version is available to determine the changes.",
+  "이슈 #{0}": "Issue #{0}",
+  "PR #{0}": "PR #{0}",
+  "관련 이슈·PR 확인 없음": "No verified issue or PR reference"
 }
