@@ -1841,7 +1841,7 @@ test('project QA rejects global and foreign IPC while its project and the unboun
  await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host);
  const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'scoped-qa'});
  const result=await client.success('snapshot');assert.deepEqual(result.projects.map(item=>item.id),[a.project.id]);assert.deepEqual(result.reviews.map(item=>item.id),[a.review.id]);assert.equal(result.groups.some(item=>item.id===gb.id),false);
- for(const [action,payload]of [['group.save',{id:gb.id,name:'must not change'}],['group.delete',{id:gb.id}],['project.save',{id:pb.id,name:'must not change'}],['review.save',{id:rb.id,body:'must not change'}],['files.list',{serviceId:sb.id}],['window.openProject',{projectId:pb.id}],['agent.list',{}],['settings.save',{theme:'dark'}],['backup.export',{}]]){
+ for(const [action,payload]of [['group.save',{id:gb.id,name:'must not change'}],['group.delete',{id:gb.id}],['project.save',{id:pb.id,name:'must not change'}],['review.save',{id:rb.id,body:'must not change'}],['files.list',{serviceId:sb.id}],['window.openProject',{projectId:pb.id}],['agent.list',{}],['settings.save',{theme:'dark'}],['agent.login',{serviceId:a.service.id}],['agent.logout',{serviceId:a.service.id}],['backup.export',{}]]){
   const denied=await client.invoke(action,payload);assert.equal(denied.ok,false,action);assert.equal(denied.error.code,'TARGET_MISMATCH',action);
  }
  assert.throws(()=>h.state.codexOptions.withWindow(client.event(),()=>h.state.codexOptions.trusted(client.event())),{code:'TARGET_MISMATCH'});

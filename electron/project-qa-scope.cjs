@@ -62,9 +62,8 @@ function assertProjectAction({projectId,action,payload={},snapshot,run,request,s
   }
   if(action.startsWith('agent.request.')){if(['agent.request.list','agent.request.add'].includes(action))ownReview(payload.reviewId);else ownRequest(payload.id);return;}
   if(['agent.read','agent.cancel'].includes(action)){ownRun(payload.id);return;}
-  if(['agent.models','agent.environment','agent.loginState','agent.login','agent.logout'].includes(action)){
+  if(['agent.models','agent.environment','agent.loginState'].includes(action)){
     ownService(payload.serviceId||project.connection?.id);
-    if(['agent.login','agent.logout'].includes(action)&&snapshot.projects.some(item=>item.id!==projectId&&item.serviceIds?.includes(payload.serviceId||project.connection?.id)))denied();
     return;
   }
   if(['agent.start','agent.list','agent.materials','agent.instructionExport','agent.copyDraft','agent.session','agent.fileRead','agent.fileExport'].includes(action)){ownReview(payload.reviewId);return;}
