@@ -127,6 +127,7 @@ try {
   form=editor(page,'프로젝트 등록');
   await form.getByLabel('프로젝트명',{exact:true}).fill('복원 전 작성 중인 프로젝트');
   await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();
+  await page.getByRole('navigation',{name:'설정 항목',exact:true}).getByRole('button',{name:'자료 관리',exact:true}).click();
   await app.evaluate(({dialog},file)=>{
     globalThis.__reviewopsBackupPickerCalls=0;
     dialog.showOpenDialog=async()=>{globalThis.__reviewopsBackupPickerCalls+=1;return {canceled:false,filePaths:[file]};};
@@ -150,6 +151,7 @@ try {
   await page.getByRole('tablist',{name:'프로젝트 설정 항목',exact:true}).getByRole('tab',{name:'연결',exact:true}).click();
   await expect(page.locator('.original-project-settings:visible').getByLabel('로컬 폴더',{exact:true})).toHaveValue(localRoot);
   await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();
+  await page.getByRole('navigation',{name:'설정 항목',exact:true}).getByRole('button',{name:'자료 관리',exact:true}).click();
   await expect(taskTabs.getByRole('tab',{name:'웹사이트 개선',exact:true})).toHaveCount(1);
   await page.getByRole('button',{name:'백업 파일 열기',exact:true}).click();
   await expect.poll(async()=>(await ipc(page,'snapshot')).reviews[0].title).toBe(review.title);
