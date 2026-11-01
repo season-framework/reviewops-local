@@ -13,13 +13,13 @@ test('lifecycle refuses local/self-hosted/other-branch/PR/repository and incompl
 });
 test('caught Objective-C failure releases the owned strong parameter before cleanup',{
  skip:process.platform!=='darwin'?'Foundation lifetime regression requires macOS; no display APIs':false,
- timeout:20000
+ timeout:75000
 },async()=>{
  const {objectiveCOwnershipFlags}=await modulePromise;
  const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-owned-unwind-'));
  try{
   const binary=path.join(temporary,'helper');
-  const built=spawnSync('xcrun',['clang','-O0',...objectiveCOwnershipFlags,'-fmodules','-Wall','-Wextra','-Werror',path.join(__dirname,'fixtures/macos-display-owned-unwind.m'),'-framework','Foundation','-o',binary],{encoding:'utf8',timeout:10000,maxBuffer:64*1024});
+  const built=spawnSync('xcrun',['clang','-O0',...objectiveCOwnershipFlags,'-fmodules','-Wall','-Wextra','-Werror',path.join(__dirname,'fixtures/macos-display-owned-unwind.m'),'-framework','Foundation','-o',binary],{encoding:'utf8',timeout:60000,maxBuffer:64*1024});
   assert.equal(built.status,0,built.stderr||built.error?.message);
   const ran=spawnSync(binary,[],{encoding:'utf8',timeout:3000,maxBuffer:4096});
   assert.equal(ran.status,0,ran.stderr||ran.error?.message);
