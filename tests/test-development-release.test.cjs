@@ -122,7 +122,7 @@ test('preferences written by the real legacy updater remain current after a deve
   assert.throws(()=>testManifestFor(plan.manifest,published,arch,plan.build.version,{...plan.build,developmentNumber:2},platform,saved.highestTestBuild));
  }
 });
-test('a pending installation written by the real legacy updater receives health acknowledgment from the development app',async t=>{
+test('a pending installation written by the real legacy updater receives health acknowledgment from the development app',{skip:process.platform==='win32'?'Darwin app-bundle filesystem fixture requires POSIX paths; Windows installer contracts run separately.':false},async t=>{
  const old=legacyUpdater(),m=await release,directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-legacy-health-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
  const dataPath=path.join(directory,'data'),target=path.join(directory,'ReviewOps.app');await fs.mkdir(path.join(target,'Contents/MacOS'),{recursive:true});await fs.writeFile(path.join(target,'Contents/MacOS/ReviewOps'),'synthetic old executable');
  const executable=await fs.realpath(path.join(target,'Contents/MacOS/ReviewOps')),info=build(),bytes=createZip([{name:'ReviewOps.app/Contents/Info.plist',bytes:Buffer.from('synthetic plist')},{name:'ReviewOps.app/Contents/MacOS/ReviewOps',bytes:crypto.randomBytes(2048)}]);
@@ -132,7 +132,7 @@ test('a pending installation written by the real legacy updater receives health 
  const manager=old.createUpdateManager({app,dataPath,platform:'darwin',arch:'x64',shell:{},inspect:async()=>{},command:async(_file,args)=>{await fs.mkdir(path.join(args.at(-1),'ReviewOps.app'),{recursive:true});return {stdout:''}},request:async(url,options)=>{
   if(url===TEST_RELEASE_API)return Buffer.from(JSON.stringify(published));if(url.endsWith('.json'))return manifestBytes;assert.equal(options.expectedHash,item.sha256);await fs.writeFile(options.filename,bytes);return {size:bytes.length};
  }});t.after(()=>manager.close());
- await manager.configure({testUpdates:true,automatic:false});assert.equal((await manager.apply()).status,'installing');
+ await manager.configure({testUpdates:true,automatic:false});const applying=await manager.apply();assert.equal(applying.status,'installing',applying.error);
  const pendingFile=path.join(dataPath,'updates/pending.json'),pending=JSON.parse(await fs.readFile(pendingFile,'utf8'));assert.equal(pending.build.developmentNumber,undefined);
  const current=createUpdateManager({app:{...app,getVersion:()=>info.version},dataPath,platform:'darwin',arch:'x64',shell:{},buildInfo:info});t.after(()=>current.close());
  current.markHealthy();const healthy=path.join(pending.job,'healthy');assert.equal(await fs.readFile(healthy,'utf8'),info.version);
