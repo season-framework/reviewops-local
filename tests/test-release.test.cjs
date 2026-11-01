@@ -202,12 +202,21 @@ test('workflow uses one global lock, native targets, least publishing scope and 
   assert.deepEqual(workflow.jobs.package.strategy.matrix.include.map(item => item.target).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
   const steps = workflow.jobs.package.steps, mcpIndex = steps.findIndex(step => step.run?.includes('scripts/e2e-mcp-review-categories.mjs'));
   assert.equal(steps[mcpIndex]?.if, "matrix.target == 'darwin-arm64'");
-  assert.match(steps[mcpIndex].run, /npm run build/);
+  const rendererIndex = steps.findIndex(step => step.run?.includes('buildRenderer({generateLicenses:false})'));
+  const sharedIndex = steps.findIndex(step => step.run?.includes('scripts/e2e-live-web-sessions.mjs'));
+  assert.equal(steps[rendererIndex]?.if, undefined);
+  assert.equal(steps[sharedIndex]?.if, undefined);
+  assert.match(steps[sharedIndex].run, /scripts\/e2e-qa-viewer-sessions\.mjs/);
+  assert.ok(rendererIndex >= 0 && rendererIndex < sharedIndex && sharedIndex < mcpIndex);
   assert.ok(mcpIndex < steps.findIndex(step => step.name === 'Package and verify the native target'));
   const publish = workflow.jobs.publish.steps.find(step => step.run?.includes('--publish'));
   assert.match(publish.if, /workflow_dispatch/); assert.match(publish.if, /inputs.publish/);
   const stage = workflow.jobs.package.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));
   assert.equal(stage.with['retention-days'], 1);
+  const diagnostics = steps.find(step => step.with?.name === 'reviewops-shared-session-qa-${{ matrix.target }}');
+  assert.equal(diagnostics?.if, 'always()');
+  assert.equal(diagnostics.with['retention-days'], 1);
+  assert.ok(steps.indexOf(diagnostics) > steps.indexOf(stage));
 });
 
 test('artifact cleanup retains only the reviewed candidate and never deletes another workflow', async () => {
