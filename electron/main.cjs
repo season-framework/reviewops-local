@@ -484,11 +484,13 @@ async function saveWithAttachments(value, change, references) {
         if(item.captureBinding){
           const review=store.get('reviews',refs.reviewId);
           const request=requestWindowContext.getStore();
-          viewerSessions.assertFrozen(item.captureBinding,{consumer:currentWindowRecord().id,contextId:request?.captureContextId,projectId:review.projectId,reviewId:review.id,purpose:request?.action==='activity.add'?'activity-new':request?.action==='activity.update'?'activity-edit':'review',activityId:refs.activityId||'',creatingReview:request?.action==='review.save'&&!request?.recordId});
+          viewerSessions.assertFrozen(item.captureBinding,{consumer:currentWindowRecord().id,contextId:request?.captureContextId,projectId:review.projectId,reviewId:review.id,purpose:['agent.start','agent.request.add','agent.request.update'].includes(request?.action)?'agent-request':request?.action==='activity.add'?'activity-new':request?.action==='activity.update'?'activity-edit':'review',activityId:refs.activityId||'',creatingReview:request?.action==='review.save'&&!request?.recordId,requestId:request?.recordId||'',agentEditing:request?.action==='agent.request.update'});
           if(digest(item.bytes)!==item.metadata.sha256)throw new Error('임시 스크린샷이 변경되었습니다. 다시 캡처하십시오.');
         }
         return store.addAttachment({...item.metadata,...refs});
       });
+      const captures=staged.filter(item=>item.capture).map(item=>item.capture),request=requestWindowContext.getStore();
+      if(captures.length&&['agent.start','agent.request.add','agent.request.update'].includes(request?.action)){const review=store.get('reviews',references(entity).reviewId);store.saveReview({...review,evidence:{capturedAt:new Date().toISOString(),screenshots:captures}});}
     });
   } catch(error) {
     for (const item of staged) await fsp.rm(path.join(attachmentPath,item.metadata.storageName),{force:true});
@@ -720,6 +722,7 @@ function captureProject(record,projectId,reviewId){
 function captureDestination(record,binding){
  const project=captureProject(record,binding.projectId,binding.reviewId);
  if(binding.serviceId&&!browserServiceIds(project).includes(binding.serviceId))throw Object.assign(new Error('프로젝트에 연결된 검사 화면만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+ if(binding.purpose==='agent-request'&&binding.requestId&&!require('./agent-requests.cjs').listSavedRequests(store.db,binding.reviewId).some(row=>row.id===binding.requestId))throw Object.assign(new Error('수정할 에이전트 요청을 찾을 수 없습니다.'),{code:'TARGET_MISMATCH'});
  if(binding.purpose==='activity-edit'&&store.get('activities',binding.activityId).reviewId!==binding.reviewId)throw Object.assign(new Error('작업이력의 리뷰가 일치하지 않습니다.'),{code:'TARGET_MISMATCH'});
  return project;
 }
@@ -830,7 +833,7 @@ async function dispatch(action, payload = {}) {
   if(action.startsWith('viewerSession.')){
     const record=currentWindowRecord(),consumer=record.id;
     if(action==='viewerSession.closeContext'){viewerSessions.closeContext(consumer,payload.contextId);return {closed:true};}
-    if(action==='viewerSession.end'){viewerSessions.end(consumer,payload.intentId);return {ended:true};}
+    if(action==='viewerSession.end'){if(payload.contextId)viewerSessions.endPending(consumer,payload.contextId);else viewerSessions.end(consumer,payload.intentId);return {ended:true};}
     if(action==='viewerSession.preview'||action==='viewerSession.capture'){
       const binding=viewerSessions.binding(consumer,payload.intentId);captureDestination(record,binding);
       const result=await viewerSessions.capture(consumer,payload.intentId,{preview:action.endsWith('.preview')});captureDestination(record,binding);return result;
