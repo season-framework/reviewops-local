@@ -226,6 +226,7 @@
 .agent-followup-area{min-height:36px;flex:0 0 36px;overflow:hidden}
 .agent-followup-area.is-open{flex:1 1 0;min-height:36px;max-height:32%}
 .agent-followup-area>.agent-followups[open]{display:flex;height:100%;min-height:0;flex-direction:column;overflow:hidden}
+.agent-followup-area>.agent-followups[open]::details-content{display:contents}
 .agent-followup-area .agent-followups>summary{flex:0 0 36px;min-height:36px}
 .agent-followup-area .agent-followups-body{flex:1 1 0;min-height:0;max-height:none;overflow:auto}
 .agent-composer{flex:0 0 auto;overflow:visible;padding-block:8px}
