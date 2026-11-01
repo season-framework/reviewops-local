@@ -60,11 +60,23 @@ test('main advancement or publication between uploads stops the remaining writes
 });
 test('stable archives exclude test identity and verify packaged source bytes',async t=>{
  const {inspectStableArchive}=await import('../scripts/stable-build.mjs'),asar=require('@electron/asar'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-stable-asar-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
- const source=path.join(directory,'source'),archive=path.join(directory,'app.asar');await fs.mkdir(path.join(source,'electron'),{recursive:true});await fs.mkdir(path.join(source,'dist'));
- const content={'electron/main.cjs':'// fixture source','dist/index.html':'<html>fixture</html>','LICENSE':'fixture license','NOTICE':'fixture notice','THIRD-PARTY-NOTICES.txt':'fixture third-party notices','package.json':JSON.stringify({version,main:'electron/main.cjs'})};
- for(const [name,bytes]of Object.entries(content))await fs.writeFile(path.join(source,name),bytes);await asar.createPackage(source,archive);assert.equal((await inspectStableArchive(archive,version,source)).testMetadataAbsent,true);
- await fs.appendFile(path.join(source,'electron/main.cjs'),' changed');await assert.rejects(inspectStableArchive(archive,version,source),/소스와 다릅니다/);
+ const source=path.join(directory,'source'),archive=path.join(directory,'app.asar');
+ const content={'electron/main.cjs':'// fixture source','electron/codex/account-service.cjs':'// nested source from the failing Windows path','dist/index.html':'<html>fixture</html>','dist/assets/nested/한글 icon.svg':'<svg/>','LICENSE':'fixture license','NOTICE':'fixture notice','THIRD-PARTY-NOTICES.txt':'fixture third-party notices','package.json':JSON.stringify({version,main:'electron/main.cjs'})};
+ for(const [name,bytes]of Object.entries(content)){const file=path.join(source,...name.split('/'));await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes)}await asar.createPackage(source,archive);
+ const checked=await inspectStableArchive(archive,version,source);assert.equal(checked.testMetadataAbsent,true);assert.equal(checked.comparedFiles,Object.keys(content).length-1);
+ await fs.appendFile(path.join(source,'electron','codex','account-service.cjs'),' changed');await assert.rejects(inspectStableArchive(archive,version,source),/소스와 다릅니다: electron\/codex\/account-service\.cjs/);
  await fs.writeFile(path.join(source,'electron/reviewops-build.json'),'{}');await asar.createPackage(source,archive);await assert.rejects(inspectStableArchive(archive,version,source),/허용하지 않은/);
+});
+test('the pinned ASAR reader requires native separators for nested Windows source paths',async()=>{
+ const vm=require('node:vm'),{createRequire}=require('node:module'),entry=require.resolve('@electron/asar'),asarRequire=createRequire(entry),exports={};
+ // Execute the actual pinned reader with Windows path semantics on every host.
+ const reader=await fs.readFile(path.join(path.dirname(entry),'filesystem.js'),'utf8');
+ vm.runInNewContext(reader,{exports,require:name=>name==='path'?path.win32:asarRequire(name),Buffer,process});
+ const file={size:1,offset:'0'},archive=new exports.Filesystem('D:\\checkout with spaces');
+ archive.setHeader({files:{electron:{files:{codex:{files:{'account-service.cjs':file}}}}}},0);
+ const native=path.win32.relative('D:\\checkout with spaces','D:\\checkout with spaces\\electron\\codex\\account-service.cjs');
+ assert.throws(()=>archive.getFile(native.replaceAll('\\','/')),/was not found in this archive/);
+ assert.equal(archive.getFile(native),file);
 });
 test('version preparation updates only explicit version files and records the base commit',async t=>{
  const {prepareVersion,validateSource}=await load(),{execFile}=require('node:child_process'),{promisify}=require('node:util'),run=promisify(execFile),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-version-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));const git=async(...args)=>(await run('git',args,{cwd:directory})).stdout.trim();
