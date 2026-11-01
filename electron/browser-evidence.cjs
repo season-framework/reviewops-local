@@ -87,8 +87,8 @@ function createEvidenceRecorder() {
     async reset(item){
       item.evidenceGeneration=(item.evidenceGeneration||0)+1;
       item.selectionGeneration=(item.selectionGeneration||0)+1;
-      await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});
-      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(async([,page])=>{try{if(!page.isDestroyed())await page.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}])}catch{}}));
+      if(!item.view.webContents.isDestroyed()&&!item.view.webContents.isCrashed?.())await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});
+      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(async([,page])=>{try{if(!page.isDestroyed()&&!page.isCrashed?.())await page.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}])}catch{}}));
       item.evidence={navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};delete item.selectedElement;
       for(const [id,entry]of requests)if(entry.item===item)requests.delete(id);
     },
