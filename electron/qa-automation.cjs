@@ -58,11 +58,12 @@ async function capture(record,contents,browserId,nativeImage) {
   const viewport=await contents.executeJavaScript('({width:innerWidth,height:innerHeight})');
   return {mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
 }
-function createQaAutomation({getProject,getWindow,openWindow,nativeImage,now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
+function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiveChange=()=>{},now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
   const sessions=new Map(),projects=new Map(),quarantined=new Set();
   let closed=false;
+  const expiry=setInterval(()=>{if(!closed)prune();},Math.max(1,Math.min(sessionTimeoutMs,60000)));expiry.unref?.();
   const binding=session=>({sessionId:session.id,projectId:session.projectId,windowId:session.windowId,clientId:session.clientId});
-  function forget(session){const record=session.windowId&&getWindow(session.windowId);if(record)record.qaActive=quarantined.has(record.id);sessions.delete(session.id);if(projects.get(session.projectId)===session)projects.delete(session.projectId);}
+  function forget(session){const record=session.windowId&&getWindow(session.windowId);if(record){onActiveChange(record,quarantined.has(record.id));record.qaActive=quarantined.has(record.id);}sessions.delete(session.id);if(projects.get(session.projectId)===session)projects.delete(session.projectId);}
   function prune(){for(const windowId of quarantined){const record=getWindow(windowId);if(!record||record.host.isDestroyed())quarantined.delete(windowId);}for(const session of sessions.values()){const record=session.windowId&&getWindow(session.windowId);if(session.windowId&&(!record||record.host.isDestroyed())||!session.active&&now()-session.touched>sessionTimeoutMs)forget(session);}}
   function check(session,payload){
     if(!session||session.projectId!==payload.projectId||session.windowId!==payload.windowId)fail('프로젝트와 창에 연결된 QA 세션을 지정하십시오.','SESSION_MISMATCH');
@@ -88,7 +89,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,now=Dat
     session={id:crypto.randomUUID(),projectId,clientId,reviewId:payload.reviewId||'',windowId:null,touched:now(),queue:Promise.resolve(),active:1};
     sessions.set(session.id,session);projects.set(projectId,session);
     session.opening=(async()=>{
-      try{const record=await openWindow(payload);if(!record||record.projectId!==projectId||record.host.isDestroyed())fail('연결할 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');if(closed)fail('QA 연결이 종료되었습니다.','CLOSED');session.windowId=record.id;record.qaActive=true;session.touched=now();return binding(session);}
+      try{const record=await openWindow(payload);if(!record||record.projectId!==projectId||record.host.isDestroyed())fail('연결할 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');if(closed)fail('QA 연결이 종료되었습니다.','CLOSED');session.windowId=record.id;onActiveChange(record,true);record.qaActive=true;session.touched=now();return binding(session);}
       catch(error){forget(session);throw error;}finally{session.active--;}
     })();
     return session.opening;
@@ -184,6 +185,6 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,now=Dat
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,close(){closed=true;sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

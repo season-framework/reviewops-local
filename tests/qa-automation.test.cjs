@@ -68,3 +68,13 @@ test('timed-out commands cannot share their old window with another session',asy
  record={...record,id:'window-new',host:{...record.host,isDestroyed:()=>false}};
  assert.equal((await api.handle('open',{projectId:'a',clientId:'two'})).windowId,'window-new');
 });
+
+test('idle expiry removes the project UI scope without requiring another client request',async()=>{
+ let time=1;const changed=[],record={id:'window-a',projectId:'a',host:{isDestroyed:()=>false}};
+ const api=createQaAutomation({getProject:()=>true,getWindow:()=>record,openWindow:async()=>record,now:()=>time,sessionTimeoutMs:20,onActiveChange:(_record,active)=>changed.push(active)});
+ try{
+  await api.handle('open',{projectId:'a',clientId:'one'});assert.equal(record.qaActive,true);time=100;
+  for(let attempt=0;attempt<20&&record.qaActive;attempt++)await new Promise(resolve=>setTimeout(resolve,20));
+  assert.equal(record.qaActive,false);assert.deepEqual(changed,[true,false]);
+ }finally{api.close();}
+});

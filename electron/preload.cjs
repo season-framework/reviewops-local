@@ -8,6 +8,12 @@ async function invoke(action,payload={}) {
 contextBridge.exposeInMainWorld('reviewops', Object.freeze({
   request: (action, payload = {}) => ipcRenderer.invoke('reviewops:invoke', action, payload),
   invoke,
+  onQaScope: callback => {
+    if(typeof callback!=='function')return()=>{};
+    const listener=(_event,value)=>callback(typeof value?.projectId==='string'?value.projectId:'');
+    ipcRenderer.on('reviewops:qa-scope',listener);
+    return()=>ipcRenderer.removeListener('reviewops:qa-scope',listener);
+  },
   ...(process.isMainFrame?{copyText:text=>invoke('clipboard.writeText',{text})}:{}),
   onUpdateState: callback => {
     if (typeof callback !== 'function') return () => {};

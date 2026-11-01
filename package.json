@@ -61,6 +61,7 @@
     "test:browser-elements": "node scripts/e2e-browser-elements.mjs",
     "test:review-categories": "node scripts/e2e-review-categories.mjs",
     "test:concurrent-qa": "node scripts/e2e-concurrent-qa.mjs",
+    "test:qa-project-scope": "node scripts/e2e-qa-project-scope.mjs",
     "mcp": "node electron/mcp-server.cjs"
   },
   "dependencies": {

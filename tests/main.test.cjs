@@ -148,7 +148,7 @@ async function harness(t, options = {}) {
       state.automationModulePath=name;
       return require('../electron/automation-api.cjs');
     }
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {getBuildInfo:version=>({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -1832,4 +1832,37 @@ test('update build information copies through the trusted native clipboard route
  assert.ok(!h.state.clipboardText.includes('빌드:'));
  const host=h.state.window;
  assert.equal((await h.invoke('update.copyInfo',{}, {sender:host.webContents,senderFrame:{url:'https://external.example/'}})).ok,false);
+});
+
+test('project QA rejects global and foreign IPC while its project and the unbound main window still work',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ const gb=await main.success('group.save',{name:'Other QA group'}),sb=await main.success('service.save',{groupId:gb.id,name:'Other connection',kind:'local',rootPath:h.root});
+ const pb=await main.success('project.save',{groupId:gb.id,name:'Other project',serviceIds:[sb.id]}),rb=await main.success('review.save',{projectId:pb.id,serviceId:sb.id,title:'Other review'});
+ await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host);
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'scoped-qa'});
+ const result=await client.success('snapshot');assert.deepEqual(result.projects.map(item=>item.id),[a.project.id]);assert.deepEqual(result.reviews.map(item=>item.id),[a.review.id]);assert.equal(result.groups.some(item=>item.id===gb.id),false);
+ for(const [action,payload]of [['group.save',{id:gb.id,name:'must not change'}],['group.delete',{id:gb.id}],['project.save',{id:pb.id,name:'must not change'}],['review.save',{id:rb.id,body:'must not change'}],['files.list',{serviceId:sb.id}],['window.openProject',{projectId:pb.id}],['agent.list',{}],['settings.save',{theme:'dark'}],['backup.export',{}]]){
+  const denied=await client.invoke(action,payload);assert.equal(denied.ok,false,action);assert.equal(denied.error.code,'TARGET_MISMATCH',action);
+ }
+ assert.throws(()=>h.state.codexOptions.withWindow(client.event(),()=>h.state.codexOptions.trusted(client.event())),{code:'TARGET_MISMATCH'});
+ assert.ok(!h.state.codexOptions.getWindows().includes(host));
+ await client.success('review.save',{id:a.review.id,body:'Own project remains editable'});
+ await main.success('group.save',{id:gb.id,name:'Full app remains editable'});
+ assert.equal((await main.success('snapshot')).groups.find(item=>item.id===gb.id).name,'Full app remains editable');
+ assert.equal((await main.success('snapshot')).reviews.find(item=>item.id===rb.id).body,'');
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+ assert.equal((await client.success('snapshot')).projects.length,2);assert.ok(h.state.codexOptions.getWindows().includes(host));
+ assert.equal(h.state.codexOptions.withWindow(client.event(),()=>h.state.codexOptions.trusted(client.event())),undefined);
+});
+
+test('a queued QA IPC keeps its project guard after the QA session is released',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow),other=await main.success('group.save',{name:'Preserve this group'});
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'queue-qa'});
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Environment probe did not start');
+ const pending=client.invoke('group.save',{id:other.id,name:'must stay blocked'});
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);unblock();await probe;
+ const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'TARGET_MISMATCH');
+ assert.equal((await main.success('snapshot')).groups.find(item=>item.id===other.id).name,'Preserve this group');
 });

@@ -1600,5 +1600,9 @@
   "프로젝트 또는 그룹 이름": "Project or group name",
   "{0} 창 열기": "Open {0} window",
   "그룹에서 프로젝트를 등록한 뒤 창을 열 수 있습니다.": "Add a project in a group to open its window.",
-  "별도 창에서 열기": "Open in separate window"
+  "별도 창에서 열기": "Open in separate window",
+  "프로젝트 QA": "Project QA",
+  "프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다.": "This QA connection can use only its assigned project.",
+  "프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.": "This QA connection can use only its assigned project. Release QA or use the main window for app-wide management.",
+  "프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.": "App-wide account and host management is unavailable during project QA."
 }

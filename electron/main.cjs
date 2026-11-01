@@ -20,6 +20,7 @@ const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
 const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
 const {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions}=require('./review-versions.cjs');
+const {qaProjectId,scopedSnapshot,assertProjectAction}=require('./project-qa-scope.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
@@ -63,7 +64,16 @@ function currentWindowRecord() {
   if(!record)throw new Error('요청한 창이 닫혔습니다.');
   return record;
 }
-function sendToWindows(channel,value) { for(const host of liveWindows())host.webContents.send(channel,value); }
+function sendToWindows(channel,value) { for(const host of liveWindows())if(channel!=='reviewops:model-cache-state'||!qaProjectId(windowContexts.get(host)))host.webContents.send(channel,value); }
+function requestQaProjectId(){const context=requestWindowContext.getStore();return context?.qaProjectId||qaProjectId(context&&windowContexts.get(context.host));}
+function setQaScope(record,active){
+  if(record.qaActive===active)return;
+  record.qaActive=active;
+  if(!record.host.isDestroyed()){
+    record.host.webContents.send('reviewops:qa-scope',{projectId:active?record.projectId:''});
+    record.host.webContents.send('reviewops:data-change',{revision:++dataRevision});
+  }
+}
 function dataChanged() { sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
 function closeWindowResources(host,discardStaged=true) {
   const record=windowContexts.get(host);record?.browsers?.closeAll();if(record)record.browsers=null;
@@ -193,7 +203,7 @@ function agentMaterials(reviewId) {
   const review=store.get('reviews',reviewId),snapshot=store.snapshot(),project=snapshot.projects.find(item=>item.id===review.projectId);
   const metadata=item=>{const owner=snapshot.reviews.find(entry=>entry.id===item.reviewId),ownerProject=snapshot.projects.find(entry=>entry.id===owner?.projectId);return {id:item.id,name:item.name,mimeType:item.mimeType,size:item.size,createdAt:item.createdAt,reviewId:item.reviewId,activityId:item.activityId,reviewTitle:owner?.title || '',projectName:ownerProject?.name || '',source:item.reviewId===review.id?(item.activityId?'activity':'review'):'shared'};};
   const attachments=snapshot.attachments.filter(item=>item.reviewId===review.id).map(metadata);
-  const sharedFiles=snapshot.attachments.filter(item=>item.reviewId!==review.id&&snapshot.projects.some(owner=>owner.id===snapshot.reviews.find(entry=>entry.id===item.reviewId)?.projectId&&owner.groupId===project.groupId)).map(metadata);
+  const sharedFiles=snapshot.attachments.filter(item=>item.reviewId!==review.id&&snapshot.projects.some(owner=>owner.id===snapshot.reviews.find(entry=>entry.id===item.reviewId)?.projectId&&owner.groupId===project.groupId&&(!requestQaProjectId()||owner.id===requestQaProjectId()))).map(metadata);
   const evidence=withoutReviewVersions(review.evidence || {}),captures=evidence.log_captures || [];
   const logs=captures.map((capture,index)=>({...capture,id:capture.id || `capture-${index}`,name:capture.label || `리뷰 로그 ${index+1}`}));
   if(!logs.length&&['navigation_log','input_log','network_log','console_log','fingerprint_log'].some(key=>evidence[key]&&Object.keys(evidence[key]).length))logs.push({...evidence,id:'current',name:'리뷰 로그'});
@@ -544,7 +554,9 @@ function publicSnapshot() {
   snapshot.agentRunning=[...agentJobs.values()].filter(job=>job.kind==='agent'&&job.status==='running').length;
   snapshot.services = snapshot.services.map(service => ({...service, ...vault.flags(service.id)}));
   snapshot.projects=snapshot.projects.map(project=>({...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null}));
-  return snapshot;
+  const scoped=scopedSnapshot(snapshot,requestQaProjectId());
+  if(requestQaProjectId())scoped.agentRunning=[...agentJobs.values()].filter(job=>job.kind==='agent'&&job.status==='running'&&scoped.reviews.some(review=>review.id===job.reviewId)).length;
+  return scoped;
 }
 function credentialValues(service) {
   const fields = service.kind !== 'ssh' || service.hostAlias ? [] : service.authType === 'password' ? ['password'] : service.authType === 'key' ? ['passphrase'] : [];
@@ -694,6 +706,11 @@ function toggleWindowFullScreen(host) {
 
 async function dispatch(action, payload = {}) {
   if(requestWindowContext.getStore())getRequestWindow();
+  const projectScope=requestQaProjectId();
+  if(projectScope)assertProjectAction({projectId:projectScope,action,payload,snapshot:store.snapshot(),
+    run:id=>agentJobs.get(id)||store.listAgentRuns().find(item=>item.id===id),
+    request:id=>require('./agent-requests.cjs').listSavedRequests(store.db).find(item=>item.id===id),
+    stagedAttachment:id=>[...stagedAttachments.values()].some(item=>item.ownerWindow===getRequestWindow()&&item.metadata.id===id)});
   if(payload.projectId&&!payload.serviceId&&['ssh.test','ssh.run','terminal.open','files.list','files.read','agent.environment','agent.login','agent.logout','agent.loginState','agent.session'].includes(action))payload={...payload,serviceId:store.project(payload.projectId).connection?.id};
   if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('요청이 올바르지 않습니다.');
   if (action === 'clipboard.writeText') {
@@ -724,7 +741,7 @@ async function dispatch(action, payload = {}) {
     throw new Error('지원하지 않는 모델 목록 요청입니다.');
   }
   if (updater?.installing && !['snapshot','app.info','integration.pending','integration.displayed'].includes(action) && !windowActions.has(action)) throw new Error('ReviewOps is restarting to install an update.');
-  if (action === 'window.context') {const record=currentWindowRecord();return {windowId:record.id,projectId:record.projectId};}
+  if (action === 'window.context') {const record=currentWindowRecord();return {windowId:record.id,projectId:record.projectId,...(record.qaActive?{qaProjectId:record.projectId}:{})};}
   if (action === 'window.navigation') return currentWindowRecord().pendingNavigation || null;
   if (action === 'window.openProject') {
     const project=store.snapshot().projects.find(item=>item.id===payload.projectId);if(!project)throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -1039,7 +1056,7 @@ else {
     });
     ipcMain.handle('reviewops:invoke',async(event,action,payload)=>{
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
-      return requestWindowContext.run({host},async()=>{try {
+      return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},async()=>{try {
         let result;
         if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
@@ -1055,7 +1072,7 @@ else {
     updateNativeMenu();
     updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
     updater.start();
-    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:liveWindows,withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
+    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
     codexManager.registerHandlers(ipcMain);
     startModelCache();
     createWindow();
@@ -1070,13 +1087,14 @@ else {
       openWindow:async({projectId,reviewId})=>{
         if(reviewId&&store.get('reviews',reviewId).projectId!==projectId)throw new Error('리뷰의 프로젝트가 일치하지 않습니다.');
         const record=projectWindow(projectId,{background:true});
-        record.qaActive=true;
+        setQaScope(record,true);
         try {
         if(reviewId)await presentReview(record,{reviewId,projectId,fullscreen:false,focus:false});
         else {await require('./qa-automation.cjs').waitForLoad(record.host.webContents);record.host.showInactive();}
         return record;
-        }catch(error){record.qaActive=false;throw error;}
+        }catch(error){setQaScope(record,false);throw error;}
       },
+      onActiveChange:setQaScope,
       nativeImage:require('electron').nativeImage
     });
     const automation=require(app.isPackaged?path.join(process.resourcesPath,'mcp','automation-api.cjs'):'./automation-api.cjs').createAutomationApi({dispatch:integrationDispatch,qa:(action,payload)=>qaAutomation.handle(action,payload)});
