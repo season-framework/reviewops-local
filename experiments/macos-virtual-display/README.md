@@ -61,6 +61,26 @@ helper 단계 대기는 최대 38초, launcher의 child watchdog은 70초 후 SI
 
 이는 ARM에서 실패 후 새 owned ID가 프로세스 종료까지 남는 현상에 대응하는 독립적인 정리 버그 수정이다. 최초 기존 ID 1의 크기 변경을 해결했다거나 ARM 수명 검사가 통과했다고 주장하지 않는다. 모드 설정·기존 상태 검사 기준은 바꾸지 않는다. 근거는 [Chromium의 ARC 옵션 설명](https://chromium.googlesource.com/chromium/src/+/277ddb534fd7467b6d33cbbe623121fb21c4fe4f/build/config/compiler/BUILD.gn)과 [Chromium 도구체인의 ARC 예외 명세](https://chromium.googlesource.com/native_client/pnacl-clang/+/99a5501f5ae5b75017dfc386d4abf648234e85df/docs/AutomaticReferenceCounting.rst)다. Chromium은 예외를 fatal로 취급하지만 본 helper는 예외 이후 정리가 필요하므로 같은 옵션 정책을 그대로 따를 수 없다.
 
+## 제한된 topology 진단
+
+이후 실제 [771954 실행 41349822001](https://github.com/season-framework/reviewops-local/actions/runs/41349822001)은 ARM의 첫 poll 약 0.259초에서 기존 ID1의 1024×768→1920×1080 변경으로 실패했다. 새 ID2는 요청 vendor/serial과 일치했지만 mode는 NULL이었다. 현재 관측은 15초 mode timeout이 아니며, 정리는 약 0.078초에 완료되고 종료 후 조회도 원본과 일치했다. Intel은 기존 화면이 처음부터 1920×1080이었고 새 화면 mode가 약 3.117초·14poll 뒤 준비됐다. OS·시작 해상도도 달라 CPU만 원인으로 단정하지 않는다.
+
+추가 진단은 다음 순서를 기록한다. 기존 보존 검사나 실행 gate를 완화하지 않는다.
+
+1. display 생성 전에 public reconfiguration callback을 등록한다. 등록 오류이면 생성하지 않는다. baseline을 두 번 읽고 한 run-loop turn 사이에 달라졌으면 중단한다.
+2. 생성자 전후와 settings 전후에 public inventory, 같은 객체의 displayID, query 시작/끝의 시간·callback sequence를 기록한다. 생성 뒤 기존 화면이 달라졌으면 settings를 호출하지 않는다. `settingsApplyCalls`는 별도 필드다. 새 pending/retiring owned ID의 modeNULL 정책은 유지하며, 자체 창 배치 뒤에는 원래 엄격한 mode 조회를 유지한다.
+3. callback은 C 단조시각·ID·raw flags·숫자 phase만 기록한다. CoreGraphics getter·Foundation·I/O·예외·재구성·대기를 하지 않는다. static userdata는 프로세스 종료까지 해제·재사용하지 않고 display 객체를 retain하지 않는다.
+4. 저장소는 최대128개 append-only slot이다. seq_cst 진입/종료 gate와 in-flight 수, release/acquire ready 게시로 미완성 payload 읽기와 overwrite를 막는다. 용량 초과 또는 최대8회 예약 CAS 시도 소진은 관측 실패다. 후자는 실제128개 미만의 contention에서도 보수적으로 발생할 수 있다.
+5. owned 객체 해제와 원래 cleanup 조회까지 callback을 기록한 뒤 admission을 닫고 등록을 해제한다. remove가 in-flight callback을 drain한다고 가정하지 않는다. 남은 callback·미완성 slot·해제 오류는 실패다. 최종 JSON은 그 cutoff의 ready slot snapshot이며, 프로세스 종료까지 늦게 거절되는 callback 수가 더 늘 수 있다.
+
+`reconfiguration.json`은32KiB, `native.json`은 기존128KiB 이내로 저장한다. 반복된 정상 기존 inventory는 `native.before`를 참조하고 첫 실패 inventory와 cleanup 최초/최종 원본을 구분한다. byte·인코딩·쓰기 실패는 명시적인 failed fallback과 sticky 실패로 남기며 최초 native code를 덮지 않는다. 최종 저장 실패도 프로세스 실패다. launcher는 예전 trace를 지우고 source/runId·사건·stage·완전성을 별도 검증한다. 독립 `--inventory-ci` 경로는 observer 등록이나 trace atomic 읽기를 하지 않는다.
+
+launcher의 `result.json`도128KiB로 제한한다. 별도 trace는 참조·요약만 넣고 원본을 중복하지 않는다. 이 결과의 인코딩·예산·쓰기 실패 역시 실패 상태이며, helper 실행 전 결과 기록에 실패하면 helper를 시작하지 않는다.
+
+`passed`는 원래 inventory 표본 검사 결과다. 표본 사이 기존 ID의 mode/move/main/mirror 변경 플래그가 있으면 연속적으로 불변이었다고 해석하지 않는다. begin/global desktop-shape 플래그만으로 특정 기존 ID의 변경을 확정하지도 않는다. raw flags를 함께 읽어 판독한다. 숫자 phase8은 mode poll과 그 뒤 자체 창 배치 구간을 포함하므로 mode-only 구간이 아니다.
+
+순수 C fixture는 동시 기록·재진입·미완성 publication·종료 경쟁·late rejection·overflow를 검사한다. Foundation-only fixture는 최악 크기 자료의 두 JSON 예산과 overflow/invalid encoding/I/O fallback을 검사한다. 이 fixture는 display API를 사용하지 않으며 Quartz의 실제 callback 종료 보장을 입증하지 않는다. 이 진단 증분의 로컬 검사는 순수 fixture와 실행하지 않는 컴파일로 제한한다. 새 helper lifecycle/CI 실행은 root의 별도 검토 뒤 결정한다. 물리 display 복구·mode 쓰기·두 번째 virtual display를 도입하지 않는다.
+
 ## 출처와 라이선스
 
 - [Chromium 고정 소스](https://chromium.googlesource.com/chromium/src/+/1b72286560637710932b4ef43908d0d6a121a432/ui/display/mac/test/virtual_display_util_mac.mm): binary-generated private 인터페이스, macOS 14의 nonzero vendor/고유 serial 조건, 객체 수명에 따른 제거의 참고 자료다. 최소 ABI 선언은 이를 참고해 별도 protocol로 줄였다. Chromium의 별도 mode 선택·first-removal workaround·headless 제약을 임의로 지원 완료로 바꾸지 않는다. 본 증분은 추가 mode 설정이나 두 번째 display workaround를 사용하지 않는다. 파생 인터페이스의 저작권 표시와 [원본 BSD license](CHROMIUM-LICENSE)를 보존했다.
