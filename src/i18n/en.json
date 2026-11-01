@@ -1608,5 +1608,6 @@
   "프로젝트 QA": "Project QA",
   "프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다.": "This QA connection can use only its assigned project.",
   "프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.": "This QA connection can use only its assigned project. Release QA or use the main window for app-wide management.",
-  "프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.": "App-wide account and host management is unavailable during project QA."
+  "프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.": "App-wide account and host management is unavailable during project QA.",
+  "공유 Codex 로그인·로그아웃은 QA 연결을 해제하거나 기본 창에서 관리하십시오.": "Release QA or use the main window to manage shared Codex sign-in and sign-out."
 }

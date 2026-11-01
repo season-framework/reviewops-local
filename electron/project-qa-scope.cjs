@@ -6,7 +6,7 @@ const qaProjectId=record=>record?.qaActive&&record.projectId||'';
 function scopedSnapshot(snapshot,projectId){
   if(!projectId)return snapshot;
   const projects=snapshot.projects.filter(item=>item.id===projectId),groupIds=new Set(projects.map(item=>item.groupId));
-  const serviceIds=new Set(projects.flatMap(item=>item.serviceIds||[])),reviews=snapshot.reviews.filter(item=>item.projectId===projectId),reviewIds=new Set(reviews.map(item=>item.id));
+  const serviceIds=new Set(projects.flatMap(item=>item.serviceIds||[])),reviews=snapshot.reviews.filter(item=>projects.length&&item.projectId===projectId),reviewIds=new Set(reviews.map(item=>item.id));
   return {...snapshot,projects,groups:snapshot.groups.filter(item=>groupIds.has(item.id)),services:snapshot.services.filter(item=>serviceIds.has(item.id)),reviews,
     activities:snapshot.activities.filter(item=>reviewIds.has(item.reviewId)),attachments:snapshot.attachments.filter(item=>reviewIds.has(item.reviewId))};
 }
@@ -19,15 +19,20 @@ function realLocation(value){
 function assertProjectAction({projectId,action,payload={},snapshot,run,request,stagedAttachment}){
   if(!projectId)return;
   if(!payload||typeof payload!=='object'||Array.isArray(payload))denied();
-  const project=snapshot.projects.find(item=>item.id===projectId);if(!project)denied();
-  const services=new Set(project.serviceIds||[]);
   const ownProject=value=>{if(value!==projectId)denied();};
+  if(payload.projectId!==undefined)ownProject(payload.projectId);
+  const project=snapshot.projects.find(item=>item.id===projectId);
+  // A deleted project must leave its scoped window closable, with an empty view.
+  if(!project){
+    if(['snapshot','app.info','window.context','window.qaReady','window.state','window.navigation','window.fullscreen','window.close','update.state','update.rendererReady'].includes(action))return;
+    denied();
+  }
+  const services=new Set(project.serviceIds||[]);
   const ownReview=value=>{const item=snapshot.reviews.find(row=>row.id===value);if(!item||item.projectId!==projectId)denied();return item;};
   const ownService=value=>{if(!services.has(value))denied();};
-  const ownRun=value=>{const item=run?.(value);if(!item)denied();if(item.reviewId)ownReview(item.reviewId);else ownService(item.serviceId);return item;};
+  const ownRun=value=>{const item=run?.(value);if(!item||item.kind==='login'||!item.reviewId)denied();ownReview(item.reviewId);return item;};
   const ownRequest=value=>{const item=request?.(value);if(!item)denied();ownReview(item.reviewId);return item;};
   const ownAttachment=value=>{const item=snapshot.attachments.find(row=>row.id===value);if(item)ownReview(item.reviewId);else if(!stagedAttachment?.(value))denied();};
-  if(payload.projectId!==undefined)ownProject(payload.projectId);
   if(payload.reviewId!==undefined)ownReview(payload.reviewId);
   if(payload.serviceId!==undefined&&payload.serviceId!==null)ownService(payload.serviceId);
   if(payload.runId!==undefined)ownRun(payload.runId);
@@ -57,12 +62,12 @@ function assertProjectAction({projectId,action,payload={},snapshot,run,request,s
   if(['terminal.read','terminal.write','terminal.resize','terminal.close'].includes(action))return; // The terminal manager separately verifies its owning window.
   if(['directory.inspect','directory.create'].includes(action)){
     const target=realLocation(action==='directory.create'?payload.parent:payload.path);
-    if(!snapshot.services.some(item=>services.has(item.id)&&item.kind==='local'&&item.rootPath&&(()=>{const relative=path.relative(realLocation(item.rootPath),target);return !relative||!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative)})()))denied();
+    if(!snapshot.services.some(item=>services.has(item.id)&&item.kind==='local'&&[item.rootPath,item.agentWorkPath].filter(Boolean).some(root=>{const relative=path.relative(realLocation(root),target);return !relative||!relative.startsWith('..'+path.sep)&&relative!=='..'&&!path.isAbsolute(relative)})))denied();
     return;
   }
   if(action.startsWith('agent.request.')){if(['agent.request.list','agent.request.add'].includes(action))ownReview(payload.reviewId);else ownRequest(payload.id);return;}
   if(['agent.read','agent.cancel'].includes(action)){ownRun(payload.id);return;}
-  if(['agent.models','agent.environment','agent.loginState'].includes(action)){
+  if(['agent.models','agent.environment'].includes(action)){
     ownService(payload.serviceId||project.connection?.id);
     return;
   }
