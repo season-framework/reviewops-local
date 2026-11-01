@@ -1616,5 +1616,15 @@
   "이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.": "No previous public test version is available to determine the changes.",
   "이슈 #{0}": "Issue #{0}",
   "PR #{0}": "PR #{0}",
-  "관련 이슈·PR 확인 없음": "No verified issue or PR reference"
+  "관련 이슈·PR 확인 없음": "No verified issue or PR reference",
+  "작성 화면에서 캡처를 다시 시작하십시오.": "Restart capture from the editor.",
+  "미리보기 새로고침": "Refresh preview",
+  "웹 화면의 읽기 전용 미리보기입니다. 입력과 이동은 원래 프로젝트 창에서 수행하십시오.": "This is a read-only preview of the web page. Use the original project window to interact with or navigate the page.",
+  "실행 중인 웹 화면": "Live web page",
+  "화면 선택": "Select page",
+  "선택한 화면 연결": "Connect selected page",
+  "열려 있는 웹 검사 화면이 없습니다. 프로젝트에서 화면을 연 뒤 다시 캡처하십시오.": "No web page is open for inspection. Open a page in the project, then start capture again.",
+  "웹 화면": "Web page",
+  "대상 다시 선택": "Select another page",
+  "실행 중인 웹 화면 미리보기": "Live web page preview"
 }

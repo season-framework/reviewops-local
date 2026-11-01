@@ -4,6 +4,7 @@ import {Dialog,Button} from './components.jsx';
 import {OriginalViewer} from './ProjectWorkspace.jsx';
 import './browser-logs.css';
 import ScreenshotEditor from './ScreenshotEditor.jsx';
+import Select from './Select.jsx';
 
 function FileHomeCapture({request,service,invoke,onFinish}) {
  const alive=useRef(true),viewer=useRef(null),[file,setFile]=useState(null),[error,setError]=useState(''),[busy,setBusy]=useState(false);
@@ -39,7 +40,7 @@ function LiveHomeCapture({request,invoke,onFinish}){
  return <div className="home-capture-dialog live-home-capture-dialog"><Dialog title={t('스크린샷 캡처')} wide onClose={()=>onFinish(null)} footer={<><Button onClick={()=>onFinish(null)}>{t('취소')}</Button><Button disabled={busy||!acquired} onClick={refresh}>{t('미리보기 새로고침')}</Button><Button variant="primary" disabled={busy||!acquired||!preview} onClick={take}>{busy?t('캡처 중'):t('스크린샷 캡처')}</Button></>}>
   <p>{t('웹 화면의 읽기 전용 미리보기입니다. 입력과 이동은 원래 프로젝트 창에서 수행하십시오.')}</p>
   {error&&<p className="form-error" role="alert">{error}</p>}
-  {!acquired&&<><label>{t('실행 중인 웹 화면')}<select aria-label={t('실행 중인 웹 화면')} value={selected} onChange={event=>setSelected(event.target.value)}><option value="">{t('화면 선택')}</option>{sessions.map(s=><option key={s.sessionId} value={s.sessionId}>{s.title||s.url}</option>)}</select></label><Button disabled={busy||!selected} onClick={connect}>{t('선택한 화면 연결')}</Button>{!sessions.length&&<p role="status">{t('열려 있는 웹 검사 화면이 없습니다. 프로젝트에서 화면을 연 뒤 다시 캡처하십시오.')}</p>}</>}
+  {!acquired&&<><label>{t('실행 중인 웹 화면')}<Select searchable disabled={busy} aria-label={t('실행 중인 웹 화면')} value={selected} onChange={event=>setSelected(event.target.value)}><option value="">{t('화면 선택')}</option>{sessions.map(s=><option key={s.sessionId} value={s.sessionId}>{s.title||s.url}</option>)}</Select></label><Button disabled={busy||!selected} onClick={connect}>{t('선택한 화면 연결')}</Button>{!sessions.length&&<p role="status">{t('열려 있는 웹 검사 화면이 없습니다. 프로젝트에서 화면을 연 뒤 다시 캡처하십시오.')}</p>}</>}
   {acquired&&<><p><strong>{t('웹 화면')}</strong> · {acquired.title||acquired.url}</p><Button disabled={busy} onClick={()=>{invoke('viewerSession.end',{intentId:intent.current}).catch(()=>{});intent.current='';setAcquired(null);setPreview(null);setSelected('');invoke('viewerSession.list',{projectId,reviewId}).then(value=>{if(live.current)setSessions(value.sessions)}).catch(cause=>{if(live.current)setError(cause.message)})}}>{t('대상 다시 선택')}</Button></>}
   {preview&&<img src={preview.dataUrl} alt={t('실행 중인 웹 화면 미리보기')} style={{display:'block',maxWidth:'100%',maxHeight:'55vh',margin:'0 auto',objectFit:'contain'}}/>}
  </Dialog>{capture&&<ScreenshotEditor capture={capture} onConfirm={finish} onCancel={()=>setCapture(null)}/>}</div>;
