@@ -21,7 +21,7 @@ export function validatePolicy(policy,version){
  if(policy?.schema!==1||policy.version!==version||nextVersion(policy.previousVersion,policy.bump)!==version||!sha(policy.baseCommit)||typeof policy.reason!=='string'||!policy.reason.trim()||policy.reason.length>2000||policy.reason.includes('\0'))throw new Error('버전 선택 기록과 정식 버전이 일치하지 않습니다.');return policy;
 }
 async function git(args,directory=root){return (await run('git',args,{cwd:directory})).stdout.trim()}
-export async function assertCleanSource(directory=root){if(await git(['status','--porcelain','--untracked-files=all','--',...packageInputs],directory))throw new Error('패키지 소스와 버전 선택 기록을 먼저 커밋하십시오.')}
+export async function assertCleanSource(directory=root){const changed=await git(['status','--porcelain','--untracked-files=all','--',...packageInputs],directory);if(changed)throw new Error('패키지 소스와 버전 선택 기록을 먼저 커밋하십시오.\n'+changed)}
 export async function prepareVersion({bump,reason,write=false,directory=root}){
  const file=path.join(directory,'package.json'),lockFile=path.join(directory,'package-lock.json');
  const pkg=JSON.parse(await fs.readFile(file,'utf8')),lock=JSON.parse(await fs.readFile(lockFile,'utf8')),version=nextVersion(pkg.version,bump);

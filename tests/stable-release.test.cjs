@@ -60,11 +60,23 @@ test('main advancement or publication between uploads stops the remaining writes
 });
 test('stable archives exclude test identity and verify packaged source bytes',async t=>{
  const {inspectStableArchive}=await import('../scripts/stable-build.mjs'),asar=require('@electron/asar'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-stable-asar-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
- const source=path.join(directory,'source'),archive=path.join(directory,'app.asar');await fs.mkdir(path.join(source,'electron'),{recursive:true});await fs.mkdir(path.join(source,'dist'));
- const content={'electron/main.cjs':'// fixture source','dist/index.html':'<html>fixture</html>','LICENSE':'fixture license','NOTICE':'fixture notice','THIRD-PARTY-NOTICES.txt':'fixture third-party notices','package.json':JSON.stringify({version,main:'electron/main.cjs'})};
- for(const [name,bytes]of Object.entries(content))await fs.writeFile(path.join(source,name),bytes);await asar.createPackage(source,archive);assert.equal((await inspectStableArchive(archive,version,source)).testMetadataAbsent,true);
- await fs.appendFile(path.join(source,'electron/main.cjs'),' changed');await assert.rejects(inspectStableArchive(archive,version,source),/소스와 다릅니다/);
+ const source=path.join(directory,'source'),archive=path.join(directory,'app.asar');
+ const content={'electron/main.cjs':'// fixture source','electron/codex/account-service.cjs':'// nested source from the failing Windows path','dist/index.html':'<html>fixture</html>','dist/assets/nested/한글 icon.svg':'<svg/>','LICENSE':'fixture license','NOTICE':'fixture notice','THIRD-PARTY-NOTICES.txt':'fixture third-party notices','package.json':JSON.stringify({version,main:'electron/main.cjs'})};
+ for(const [name,bytes]of Object.entries(content)){const file=path.join(source,...name.split('/'));await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes)}await asar.createPackage(source,archive);
+ const checked=await inspectStableArchive(archive,version,source);assert.equal(checked.testMetadataAbsent,true);assert.equal(checked.comparedFiles,Object.keys(content).length-1);
+ await fs.appendFile(path.join(source,'electron','codex','account-service.cjs'),' changed');await assert.rejects(inspectStableArchive(archive,version,source),/소스와 다릅니다: electron\/codex\/account-service\.cjs/);
  await fs.writeFile(path.join(source,'electron/reviewops-build.json'),'{}');await asar.createPackage(source,archive);await assert.rejects(inspectStableArchive(archive,version,source),/허용하지 않은/);
+});
+test('the pinned ASAR reader requires native separators for nested Windows source paths',async()=>{
+ const vm=require('node:vm'),{createRequire}=require('node:module'),entry=require.resolve('@electron/asar'),asarRequire=createRequire(entry),exports={};
+ // Execute the actual pinned reader with Windows path semantics on every host.
+ const reader=await fs.readFile(path.join(path.dirname(entry),'filesystem.js'),'utf8');
+ vm.runInNewContext(reader,{exports,require:name=>name==='path'?path.win32:asarRequire(name),Buffer,process});
+ const file={size:1,offset:'0'},archive=new exports.Filesystem('D:\\checkout with spaces');
+ archive.setHeader({files:{electron:{files:{codex:{files:{'account-service.cjs':file}}}}}},0);
+ const native=path.win32.relative('D:\\checkout with spaces','D:\\checkout with spaces\\electron\\codex\\account-service.cjs');
+ assert.throws(()=>archive.getFile(native.replaceAll('\\','/')),/was not found in this archive/);
+ assert.equal(archive.getFile(native),file);
 });
 test('version preparation updates only explicit version files and records the base commit',async t=>{
  const {prepareVersion,validateSource}=await load(),{execFile}=require('node:child_process'),{promisify}=require('node:util'),run=promisify(execFile),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-version-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));const git=async(...args)=>(await run('git',args,{cwd:directory})).stdout.trim();
@@ -72,6 +84,34 @@ test('version preparation updates only explicit version files and records the ba
  const preview=await prepareVersion({bump:'minor',reason:'Compatible new review feature',directory});assert.equal(preview.version,'1.3.0');assert.equal((await git('status','--porcelain')),'');
  const written=await prepareVersion({bump:'minor',reason:'Compatible new review feature',write:true,directory});assert.equal(written.written,true);await assert.rejects(prepareVersion({bump:'patch',reason:'Would overwrite uncommitted release choice',write:true,directory}),/먼저 커밋/);
  await git('add','.');await git('commit','-qm','Choose release version');const actual=await git('rev-parse','HEAD');assert.equal((await validateSource({version:'1.3.0',commit:actual,directory})).bump,'minor');await assert.rejects(validateSource({version:'1.3.0',commit:'e'.repeat(40),directory}));
+});
+test('stable renderer preserves reviewed notices when optional packages are absent on a native checkout',async t=>{
+ const {assertCleanSource}=await load(),{buildRenderer}=await import('../scripts/test-build.mjs'),{execFile}=require('node:child_process'),{promisify}=require('node:util'),run=promisify(execFile);
+ // Spaces and Unicode exercise native cwd/script paths, including Windows
+ // checkouts. All commands execute real files; no shell or URL pathname is used.
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops native 경로 '));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const git=async(...args)=>(await run('git',args,{cwd:directory})).stdout.trim();
+ await fs.mkdir(path.join(directory,'scripts'));await fs.mkdir(path.join(directory,'node_modules/cpu-features'),{recursive:true});
+ await fs.copyFile(path.join(__dirname,'../scripts/licenses.mjs'),path.join(directory,'scripts/licenses.mjs'));
+ await fs.writeFile(path.join(directory,'scripts/copy-locales.mjs'),'// Synthetic no-op locale copy; Vite build below is real.\n');
+ await fs.writeFile(path.join(directory,'package.json'),JSON.stringify({name:'synthetic-renderer',version:'1.0.0',type:'module',private:true}));
+ await fs.writeFile(path.join(directory,'package-lock.json'),JSON.stringify({packages:{'node_modules/cpu-features':{version:'0.0.10',optional:true}}}));
+ await fs.writeFile(path.join(directory,'node_modules/cpu-features/package.json'),JSON.stringify({name:'cpu-features',version:'0.0.10',license:'MIT'}));
+ await fs.writeFile(path.join(directory,'node_modules/cpu-features/LICENSE'),'SYNTHETIC OPTIONAL LICENSE\n');
+ await fs.writeFile(path.join(directory,'index.html'),'<!doctype html><title>Native renderer fixture</title>');
+ await fs.writeFile(path.join(directory,'.gitignore'),'node_modules/\ndist/\n');
+ await run(process.execPath,[path.join(directory,'scripts/licenses.mjs')],{cwd:directory});
+ const notices=await fs.readFile(path.join(directory,'THIRD-PARTY-NOTICES.txt'));assert.match(notices.toString(),/cpu-features 0\.0\.10/);
+ await git('init','-q');await git('config','user.name','Release fixture');await git('config','user.email','fixture@example.invalid');await git('add','.');await git('commit','-qm','Reviewed fixture');
+ await fs.rm(path.join(directory,'node_modules/cpu-features'),{recursive:true});
+ // Reproduce the old packaging path: successful renderer build dirties the
+ // tracked notices solely because an optional dependency was not installed.
+ await buildRenderer({directory});await assert.rejects(assertCleanSource(directory),/THIRD-PARTY-NOTICES\.txt/);
+ await fs.writeFile(path.join(directory,'THIRD-PARTY-NOTICES.txt'),notices);await assertCleanSource(directory);
+ await buildRenderer({directory,generateLicenses:false});await assertCleanSource(directory);
+ assert.deepEqual(await fs.readFile(path.join(directory,'THIRD-PARTY-NOTICES.txt')),notices);assert.match(await fs.readFile(path.join(directory,'dist/index.html'),'utf8'),/Native renderer fixture/);
+ await fs.appendFile(path.join(directory,'scripts/copy-locales.mjs'),'// unreviewed change\n');await assert.rejects(assertCleanSource(directory),/scripts\/copy-locales\.mjs/);
+ const stable=await fs.readFile(path.join(__dirname,'../scripts/stable-build.mjs'),'utf8');assert.ok(stable.includes('buildRenderer({generateLicenses:false})'));assert.ok(stable.includes('await validateSource({version,commit});await buildNativePackage'));
 });
 
 test('workflow keeps native targets, reviewed SHA, read-only collection and explicit draft delivery',async()=>{

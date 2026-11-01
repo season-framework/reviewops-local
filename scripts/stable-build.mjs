@@ -18,7 +18,9 @@ export async function inspectStableArchive(archive,version,directory=root){
  for(const entry of entries)if(!allowed.has(entry.split('/')[0])||/(^|\/)(?:\.git|\.ssh|\.codex|\.env(?:\.[^/]*)?|reviewops-build\.json|reviewops\.sqlite(?:-wal|-shm)?|credentials\.json|auth\.json|accounts\.json|test-results)(?:\/|$)/i.test(entry))throw new Error('정식 패키지에 허용하지 않은 파일이 있습니다: '+entry);
  const pkg=JSON.parse(asar.extractFile(archive,'package.json').toString('utf8'));if(pkg.version!==version||pkg.main!=='electron/main.cjs')throw new Error('정식 패키지 버전 또는 실행 파일이 다릅니다.');
  const files=[...await sourceFiles(path.join(directory,'electron')),...await sourceFiles(path.join(directory,'dist')),...['LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'].map(name=>path.join(directory,name))];
- for(const file of files){const relative=path.relative(directory,file).replaceAll('\\','/');if(hash(asar.extractFile(archive,relative))!==await fileHash(file))throw new Error('정식 패키지가 검사한 소스와 다릅니다: '+relative)}
+ // ASAR's directory traversal splits on the host's path.sep. Keep the native
+ // path for extraction; slash-normalized names are only for display/policies.
+ for(const file of files){const relative=path.relative(directory,file);if(hash(asar.extractFile(archive,relative))!==await fileHash(file))throw new Error('정식 패키지가 검사한 소스와 다릅니다: '+relative.replaceAll('\\','/'))}
  return {version,testMetadataAbsent:true,comparedFiles:files.length};
 }
 export async function packageStable({target,version,commit,env=process.env}){
@@ -28,7 +30,9 @@ export async function packageStable({target,version,commit,env=process.env}){
  const lock=path.join(root,'release/.stable-build.lock'),handle=await fs.open(lock,'wx');
  try{
   await clearBuildInfo();await fs.rm(output,{recursive:true,force:true});await fs.mkdir(output,{recursive:true});
-  await buildRenderer();await validateSource({version,commit});await buildNativePackage(target,packageRoot);
+  // Native installations can omit optional dependencies. Their presence must
+  // not rewrite the reviewed, committed notices during stable packaging.
+  await buildRenderer({generateLicenses:false});await validateSource({version,commit});await buildNativePackage(target,packageRoot);
   const arch=target.split('-')[1],files=[],checks=['stable-package','source-match'];let publisher;
   const copy=async(name)=>{const from=path.join(packageRoot,name),to=path.join(output,name);await fs.copyFile(from,to);files.push(to);return to};
   if(process.platform==='darwin'){
