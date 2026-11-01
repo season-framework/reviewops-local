@@ -76,7 +76,9 @@ function testManifestFor(manifest, published, arch, currentVersion, installedBui
       if(build.developmentNumber===known.developmentNumber&&build.buildNumber!==known.buildNumber)throw updateFailure('invalid_manifest','이미 공개한 개발 번호가 다른 빌드에 사용되었습니다.');
     }
     if (build.buildNumber < known.buildNumber) throw updateFailure('older_build', '이전에 받은 테스트 빌드보다 오래된 파일입니다. 다시 확인하십시오.');
-    if (build.buildNumber === known.buildNumber && JSON.stringify(build)!==JSON.stringify(testBuild(known,known.version))) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
+    // Already deployed clients discard unknown fields when remembering the
+    // highest build. Their missing dev number is unknown, not a new identity.
+    if (build.buildNumber === known.buildNumber && (build.commit!==known.commit||build.version!==known.version||build.builtAt!==known.builtAt||(known.developmentNumber!==undefined&&build.developmentNumber!==known.developmentNumber))) throw updateFailure('invalid_manifest', '같은 빌드번호의 앱 정보가 다릅니다. 설치를 중단했습니다.');
   }
   const key = `${platform}-${arch}`, legacy = manifest.artifacts?.[key];
   const legacyName=platform==='darwin'?`ReviewOps-${build.version}-test.${build.buildNumber}-${arch}.zip`:`ReviewOps-${build.version}-test.${build.buildNumber}-windows-${arch}.exe`;

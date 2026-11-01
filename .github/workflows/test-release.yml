@@ -71,6 +71,7 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
@@ -78,7 +79,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: Test publication and updater contracts
-        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs
+        run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs
       - name: Test existing updater contracts on Intel macOS
         if: matrix.target == 'darwin-x64'
         run: node --test tests/updates.test.cjs

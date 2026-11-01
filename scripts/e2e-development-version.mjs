@@ -6,36 +6,40 @@ import os from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
+import {collectChangeNotes} from './test-release-notes.mjs';
 const root=process.cwd(),temp=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-dev-version-'));
 const output=path.join(root,'test-results/development-version',`ui-${new Date().toISOString().replace(/[:.]/g,'-')}`);fs.mkdirSync(output,{recursive:true});
 const identity=path.join(root,'electron/reviewops-build.json'),version=JSON.parse(fs.readFileSync(path.join(root,'package.json'))).version;
 const commit=execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim();
 const installed={channel:'test',version,developmentNumber:2,buildNumber:11001,commit,builtAt:'2026-11-01T16:00:00.000Z'};
 const available={...installed,developmentNumber:10,buildNumber:12001,builtAt:'2026-11-01T16:30:00.000Z'};
-const checks=[],errors=[],external=[],photos=[];let app,page;
+const baseCommit='176bea3a2b8d604515e0849692fb822318745b49';
+const changes=await collectChangeNotes({build:available,baseCommit,cwd:root});
+const checks=[],errors=[],external=[],photos=[];let app,page,wroteIdentity=false;
 const pass=(id,actual)=>{checks.push({id,status:'pass',actual});console.log(`PASS ${id}: ${actual}`)};
 const settings=()=>page.locator('.workspace-pane:not([hidden]) .update-settings');
 const photograph=async(name)=>{await page.screenshot({path:path.join(output,name)});photos.push(name)};
 try{
  if(fs.existsSync(identity))throw new Error('Existing generated identity must not be overwritten.');
  fs.writeFileSync(identity,JSON.stringify(installed));
+ wroteIdentity=true;
  const dataPath=path.join(temp,'data'),config=path.join(temp,'ssh-config');fs.writeFileSync(config,'# synthetic development version QA\n');
  const env={...process.env,...isolatedModelRuntime({home:path.join(temp,'home'),dataPath}),REVIEWOPS_DATA_DIR:dataPath,REVIEWOPS_SSH_CONFIG:config,REVIEWOPS_CODEX_SSH_CONFIG:config};
  for(const key of ['ELECTRON_RUN_AS_NODE','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[key];
  app=await electron.launch({args:[root],env,timeout:30000});page=await app.firstWindow();page.setDefaultTimeout(10000);await setTestLocale(page);
  page.on('pageerror',error=>errors.push(error.message));page.on('request',request=>{if(/^https?:/.test(request.url()))external.push(request.url())});
  await expect(page.getByRole('heading',{name:'홈',exact:true})).toBeVisible();
- await app.evaluate(({BrowserWindow,ipcMain},{installed,available})=>{
+ await app.evaluate(({BrowserWindow,ipcMain},{installed,available,changes})=>{
   const window=BrowserWindow.getAllWindows().find(item=>item.webContents.getURL().startsWith('reviewops://app/'));window.setSize(1100,800);
   const original=ipcMain._invokeHandlers.get('reviewops:invoke');
-  const f=globalThis.developmentVersionFixture={links:[],state:{version:installed.version,arch:'x64',supported:true,testSupported:true,canCheck:true,automatic:false,intervalMinutes:10,channel:'test',testUpdates:true,installedBuild:installed,availableBuild:available,availableVersion:available.version,generation:1,status:'available',error:'',errorCode:'',availableChanges:{schema:1,baseCommit:'176bea3a2b8d604515e0849692fb822318745b49',commit:available.commit,totalCommits:1,commits:[{commit:available.commit,subject:'Exercise public MCP category workflow before native test packaging'}]}}};
+  const f=globalThis.developmentVersionFixture={links:[],state:{version:installed.version,arch:'x64',supported:true,testSupported:true,canCheck:true,automatic:false,intervalMinutes:10,channel:'test',testUpdates:true,installedBuild:installed,availableBuild:available,availableVersion:available.version,generation:1,status:'available',error:'',errorCode:'',availableChanges:changes}};
   ipcMain.removeHandler('reviewops:invoke');ipcMain.handle('reviewops:invoke',async(event,action,payload={})=>{
    if(action==='update.state')return {ok:true,data:structuredClone(f.state)};
    if(action==='external.open'){f.links.push(payload.url);return {ok:true,data:{}};}
    return original(event,action,payload);
   });
   window.webContents.send('reviewops:update-state',structuredClone(f.state));
- },{installed,available});
+ },{installed,available,changes});
  await page.locator('.sidebar-bottom').getByRole('button',{name:'설정',exact:true}).click();
  await expect(page.locator('.app-version')).toContainText(`${version}-dev-2`);await photograph('01-app-version.png');
  pass('QA-041-001','앱 일반 설정의 실제 설치 identity가 dev-2로 표시된다. 검사 전용 metadata이다.');
@@ -47,10 +51,10 @@ try{
  pass('QA-041-002','자세히 보기를 열기 전에 설치 dev-2와 받을 dev-10이 구별된다. 업데이트 응답은 격리 fixture이다.');
  const sidebar=page.locator('.sidebar-update');await expect(sidebar).toHaveAttribute('title',new RegExp(`${version.replaceAll('.','\\.')}-dev-10`));
  pass('QA-041-003','업데이트 알림의 접근성 이름과 title에도 받을 dev-10이 표시된다.');
- await expect(settings().locator('.update-change-notes')).toContainText('Exercise public MCP category workflow');
+ await expect(settings().locator('.update-change-notes')).toContainText(changes.commits[0].subject);
  await settings().getByRole('button',{name:'전체 변경 내용 보기',exact:true}).click();
  assert.deepEqual(await app.evaluate(()=>globalThis.developmentVersionFixture.links),[`https://github.com/season-framework/reviewops-local/compare/176bea3a2b8d604515e0849692fb822318745b49...${commit}`]);
- pass('QA-041-004','fixture 변경 요약과 연결된 정확한 commit 비교 주소를 확인했다. 외부 브라우저는 열지 않았다.');
+ pass('QA-041-004','보존한 공개8001 소스부터 현재 HEAD까지 실제 git 변경 요약과 정확한 비교 주소를 확인했다. 외부 브라우저는 열지 않았다.');
  await settings().locator('summary').click();
  await expect(settings().locator('time').first()).toContainText(/GMT|UTC|KST/);
  await settings().getByRole('button',{name:'버전 정보 복사',exact:true}).click();
@@ -66,7 +70,7 @@ try{
  assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth),false);await photograph('04-legacy-small-window.png');
  pass('QA-041-006','구형 metadata는 dev 번호를 추정하지 않고 원래 test.빌드번호로 구별하며 800×600에서 가로 넘침이 없다.');
  assert.deepEqual(errors,[]);assert.deepEqual(external,[]);
- fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,commit,version,checks,photos,rendererErrors:errors,externalRequests:external,realUpdates:0,realInstallations:0,fixtureDescription:'Source macOS Intel. Installed identity injected as generated synthetic metadata; available updater responses synthetic. Actual app.info/copyInfo/clipboard used. No release publication or installation.'},null,2));
+ fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,commit,version,checks,photos,changes,rendererErrors:errors,externalRequests:external,realUpdates:0,realInstallations:0,fixtureDescription:'Source macOS Intel. Installed identity injected as generated synthetic metadata; available updater identities synthetic. Change notes are the actual git range from preserved historical public build 8001 to source HEAD, not a claim about the current public pointer. Actual app.info/copyInfo/clipboard used. No release publication or installation.'},null,2));
  fs.writeFileSync(path.join(root,'test-results/development-version/latest-ui.json'),JSON.stringify({output,results:path.join(output,'results.json')},null,2));
  console.log(JSON.stringify({ok:true,output,checks:checks.length}));
-}finally{await app?.close().catch(()=>{});if(fs.existsSync(identity))fs.unlinkSync(identity);}
+}finally{await app?.close().catch(()=>{});if(wroteIdentity&&fs.existsSync(identity))fs.unlinkSync(identity);}

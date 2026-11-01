@@ -2,10 +2,14 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:path');
 const {execFileSync}=require('node:child_process'),Module=require('node:module');
-const {testManifestFor}=require('../electron/updates.cjs');
+const {testManifestFor,createUpdateManager,TEST_RELEASE_API}=require('../electron/updates.cjs');
 const release=import('../scripts/test-release.mjs'),ledgerModule=import('../scripts/test-development-ledger.mjs'),metadataModule=import('../scripts/test-development-metadata.mjs');
 const build=(number=11001,developmentNumber=1,version='1.2.11')=>({channel:'test',version,buildNumber:number,developmentNumber,commit:number.toString(16).padStart(40,'0'),builtAt:'2026-11-01T16:00:00.000Z'});
 const withoutDevelopment=value=>{const {developmentNumber,...rest}=value;return rest;};
+function legacyUpdater(){
+ const code=execFileSync('git',['show','176bea3a2b8d604515e0849692fb822318745b49:electron/updates.cjs'],{cwd:path.join(__dirname,'..'),encoding:'utf8'});
+ const old=new Module(path.join(__dirname,'../electron/legacy-updater.cjs'));old.filename=path.join(__dirname,'../electron/legacy-updater.cjs');old.paths=Module._nodeModulePaths(path.dirname(old.filename));old._compile(code,old.filename);return old.exports;
+}
 async function fixture(t,info=build(),baseCommit=null){
  const m=await release,l=await ledgerModule,directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-dev-release-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
  const files=[];
@@ -74,12 +78,27 @@ test('one verified byte set has canonical development names, legacy names and so
 });
 test('existing deployed updater accepts legacy aliases while the new updater selects identical canonical bytes',async t=>{
  const {m,plan}=await fixture(t),published={tag_name:'test-latest',draft:false,prerelease:true,assets:plan.assets.map(item=>({name:item.name,size:item.size,browser_download_url:m.ROOT_URL+item.name}))};
- const legacyCode=execFileSync('git',['show','de78a8f681232039a7f053569a1ea029a50ac14d:electron/updates.cjs'],{cwd:path.join(__dirname,'..'),encoding:'utf8'});
- const old=new Module(path.join(__dirname,'../electron/legacy-updater.cjs'));old.filename=path.join(__dirname,'../electron/legacy-updater.cjs');old.paths=Module._nodeModulePaths(path.dirname(old.filename));old._compile(legacyCode,old.filename);
+ const old=legacyUpdater();
  for(const [platform,arch] of [['darwin','arm64'],['darwin','x64'],['win32','x64']]){
-  const before=old.exports.testManifestFor(plan.manifest,published,arch,'1.2.10',null,platform);
+  const before=old.testManifestFor(plan.manifest,published,arch,'1.2.10',null,platform);
   const after=testManifestFor(plan.manifest,published,arch,'1.2.10',null,platform);
   assert.match(before.name,/-test\.11001-/);assert.match(after.name,/-dev-1-/);assert.equal(before.sha256,after.sha256);assert.equal(before.size,after.size);
+ }
+});
+test('preferences written by the real legacy updater remain current after a development app starts',async t=>{
+ const {m,plan,directory}=await fixture(t),old=legacyUpdater();
+ const published={tag_name:'test-latest',draft:false,prerelease:true,body:`${m.marker}${JSON.stringify(plan.pointer)} -->`,assets:plan.assets.map(item=>({name:item.name,size:item.size,browser_download_url:m.ROOT_URL+item.name}))};
+ for(const [platform,arch]of[['darwin','arm64'],['darwin','x64'],['win32','x64']]){
+  const dataPath=path.join(directory,platform+'-'+arch),app={isPackaged:true,getVersion:()=> '1.2.10'};
+  const options={app,dataPath,platform,arch,shell:{openExternal(){}},request:async url=>Buffer.from(JSON.stringify(url===TEST_RELEASE_API?published:plan.manifest))};
+  const previous=old.createUpdateManager(options);t.after(()=>previous.close());
+  const state=await previous.configure({testUpdates:true,automatic:false});assert.equal(state.status,'available');
+  const saved=JSON.parse(await fs.readFile(path.join(dataPath,'updates/settings.json'),'utf8'));assert.equal(saved.highestTestBuild.developmentNumber,undefined);
+  const current=createUpdateManager({...options,app:{...app,getVersion:()=>plan.build.version},buildInfo:plan.build});t.after(()=>current.close());
+  const actual=await current.check();assert.equal(actual.status,'current');assert.equal(actual.errorCode,'');assert.equal(actual.availableVersion,null);assert.equal(actual.installedBuild.developmentNumber,1);
+  assert.equal(testManifestFor(plan.manifest,published,arch,plan.build.version,plan.build,platform,saved.highestTestBuild),null);
+  assert.throws(()=>testManifestFor(plan.manifest,published,arch,plan.build.version,{...plan.build,commit:'f'.repeat(40)},platform,saved.highestTestBuild),/같은 빌드번호/);
+  assert.throws(()=>testManifestFor(plan.manifest,published,arch,plan.build.version,{...plan.build,developmentNumber:2},platform,saved.highestTestBuild));
  }
 });
 test('numeric development comparison handles 2 to 10, new base dev 1 and server rollback without lexical ordering',async t=>{
