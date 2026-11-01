@@ -84,3 +84,11 @@ test('agent draft pictures are isolated from review/activity purposes and queued
  f.registry.consume(image.captureProof);const pending=await f.registry.capture('consumer-a',f.registry.begin({...binding,sessionId:f.sessionId,epoch:1}).intentId);f.registry.endPending('consumer-a','agent-draft');assert.throws(()=>f.registry.freeze('consumer-a',pending.captureProof),{code:'STALE_CAPTURE'});f.registry.assertFrozen(frozen.binding,destination);
  const editing={...f.binding,contextId:'queued-edit',purpose:'agent-request',requestId:'queued-a'};f.registry.setContext(editing);const editImage=await f.registry.capture('consumer-a',f.registry.begin({...editing,sessionId:f.sessionId,epoch:1}).intentId),editFrozen=f.registry.freeze('consumer-a',editImage.captureProof),editDestination={...destination,contextId:'queued-edit',agentEditing:true,requestId:'queued-a'};f.registry.assertFrozen(editFrozen.binding,editDestination);assert.throws(()=>f.registry.assertFrozen(editFrozen.binding,{...editDestination,requestId:'queued-b'}),{code:'TARGET_MISMATCH'});assert.throws(()=>f.registry.assertFrozen(editFrozen.binding,{...editDestination,agentEditing:false}),{code:'TARGET_MISMATCH'});
 });
+
+test('begin requires the exact valid draft generation rather than an unpinned intent',async()=>{
+ const f=fixture();
+ for(const generation of [undefined,null,0,-1,1.5,'1',false])assert.throws(()=>f.registry.begin({...f.binding,generation,sessionId:f.sessionId,epoch:1}),{code:'INVALID_INPUT'});
+ assert.throws(()=>f.registry.begin({...f.binding,generation:2,sessionId:f.sessionId,epoch:1}),{code:'STALE_CAPTURE'});
+ const {intentId}=f.begin();f.registry.setContext({...f.binding,generation:2});
+ await assert.rejects(f.registry.capture('consumer-a',intentId),{code:'STALE_CAPTURE'});
+});

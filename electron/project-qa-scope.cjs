@@ -33,7 +33,8 @@ function assertProjectAction({projectId,action,payload={},snapshot,run,request,s
   const ownRun=value=>{const item=run?.(value);if(!item||item.kind==='login'||!item.reviewId)denied();ownReview(item.reviewId);return item;};
   const ownRequest=value=>{const item=request?.(value);if(!item)denied();ownReview(item.reviewId);return item;};
   const ownAttachment=value=>{const item=snapshot.attachments.find(row=>row.id===value);if(item)ownReview(item.reviewId);else if(!stagedAttachment?.(value))denied();};
-  if(payload.reviewId!==undefined)ownReview(payload.reviewId);
+  const newReviewSession=payload.reviewId===''&&payload.projectId===projectId&&['viewerSession.list','viewerSession.context','viewerSession.begin'].includes(action);
+  if(payload.reviewId!==undefined&&!newReviewSession)ownReview(payload.reviewId);
   if(payload.serviceId!==undefined&&payload.serviceId!==null)ownService(payload.serviceId);
   if(payload.runId!==undefined)ownRun(payload.runId);
   for(const key of ['retryOf','sourceRunId','continuedFromRunId','predecessorId'])if(payload[key]){if(key==='predecessorId'&&request?.(payload[key]))ownRequest(payload[key]);else ownRun(payload[key]);}

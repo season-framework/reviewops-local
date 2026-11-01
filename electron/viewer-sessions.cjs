@@ -47,6 +47,7 @@ function createViewerSessions({now=()=>Date.now(),ttl=30*60*1000}={}){
   },
   closeContext(consumer,contextId){const c=contexts.get(key(consumer,contextId));if(c)c.closed=true;},
   begin({consumer,contextId,generation,sessionId,epoch}){
+   if(!Number.isSafeInteger(generation)||generation<1)fail('INVALID_INPUT','캡처 작성 세대가 올바르지 않습니다.');
    prune();const c=context(consumer,contextId,generation),s=source(sessionId,c.projectId,epoch);
    if(intents.size>=100)fail('CAPTURE_LIMIT','사용하지 않는 캡처 창을 닫은 뒤 다시 시도하십시오.');
    const id=crypto.randomUUID();intents.set(id,{id,consumer,contextId,generation,sessionId:s.id,epoch:s.epoch,expires:now()+ttl});return {intentId:id,...descriptor(s)};

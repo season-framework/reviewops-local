@@ -52,3 +52,12 @@ test('QA permits only implemented read-only viewer session verbs and rejects for
  }
  for(const action of ['viewerSession.input','viewerSession.navigate','viewerSession.click','viewerSession.future'])assert.throws(()=>check(action,{projectId:'a'}),{code:'TARGET_MISMATCH'},action);
 });
+
+test('new-review session contexts permit only an explicit empty review in the bound project',()=>{
+ const {check}=fixture();
+ for(const action of ['viewerSession.list','viewerSession.context','viewerSession.begin']){
+  assert.doesNotThrow(()=>check(action,{projectId:'a',reviewId:'',contextId:'new-review',purpose:'review'}));
+  for(const payload of [{projectId:'b',reviewId:''},{reviewId:''},{projectId:'a',reviewId:'rb'},{projectId:'a',reviewId:null},{projectId:'a',reviewId:false}])assert.throws(()=>check(action,payload),{code:'TARGET_MISMATCH'});
+ }
+ for(const action of ['agent.list','activity.add','attachment.add','viewerSession.preview'])assert.throws(()=>check(action,{projectId:'a',reviewId:''}),{code:'TARGET_MISMATCH'});
+});
