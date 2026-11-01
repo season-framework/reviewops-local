@@ -42,7 +42,9 @@ function assertProjectAction({projectId,action,payload={},snapshot,run,request,s
     for(const key of ['attachmentIds','removeAttachmentIds'])if(Array.isArray(source[key]))for(const value of source[key])ownAttachment(value);
   }
   const simple=new Set(['snapshot','app.info','window.context','window.qaReady','window.state','window.navigation','window.fullscreen','window.close','integration.pending','integration.displayed','update.state','update.rendererReady','clipboard.writeText','viewer.capture','screenshot.export','attachment.stage','attachment.stageFiles','attachment.stageData','attachment.staged','attachment.stagePreview','attachment.discard','dialog.directory','dialog.key','dialog.executable']);
-  if(simple.has(action)||action.startsWith('browser.'))return;
+  const viewerSessions=new Set(['viewerSession.list','viewerSession.context','viewerSession.begin','viewerSession.preview','viewerSession.capture','viewerSession.end','viewerSession.closeContext']);
+  // Session handlers additionally bind consumer, project/review and intent IDs.
+  if(simple.has(action)||viewerSessions.has(action)||action.startsWith('browser.'))return;
   if(action==='window.openProject'){ownProject(payload.projectId);return;}
   if(action==='project.save'){
     ownProject(payload.id);

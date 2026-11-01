@@ -16,10 +16,10 @@ export default function ScreenshotEditor({capture,onConfirm,onCancel}) {
  const confirm=()=>{
   try{
    if(!image.current?.complete||!image.current.naturalWidth)throw new Error(t("스크린샷을 불러오고 있습니다."));
-   if(mode==='all'){onConfirm({...capture,...size});return}
+   if(mode==='all'){onConfirm({...capture,...size,crop:{x:0,y:0,width:size.width,height:size.height}});return}
    const canvas=document.createElement('canvas');canvas.width=Math.min(selected.width,size.width-selected.x);canvas.height=Math.min(selected.height,size.height-selected.y);
    canvas.getContext('2d').drawImage(image.current,selected.x,selected.y,canvas.width,canvas.height,0,0,canvas.width,canvas.height);
-   onConfirm({...capture,dataUrl:canvas.toDataURL('image/png'),width:canvas.width,height:canvas.height});
+   onConfirm({...capture,dataUrl:canvas.toDataURL('image/png'),width:canvas.width,height:canvas.height,crop:{...selected,width:canvas.width,height:canvas.height}});
   }catch(cause){setError(cause.message||t("스크린샷을 만들지 못했습니다."))}
  };
  return <Dialog title={t("스크린샷")} wide onClose={onCancel} footer={<><Button onClick={onCancel}>{t("취소")}</Button><Button variant="primary" onClick={confirm} disabled={!image.current?.naturalWidth}>{t("사용하기")}</Button></>}>

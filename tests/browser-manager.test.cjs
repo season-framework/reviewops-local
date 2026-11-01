@@ -126,3 +126,13 @@ test('the default browser partition stays compatible and project popups inherit 
     assert.equal(session.permissionCheck(null,'media'),false);assert.equal(session.permissionCheck(null,'fullscreen'),true);
   }
 });
+
+test('a delayed navigation cannot cross projects that share the same service context',async t=>{
+ const h=harness(t),manager=h.manager(new h.Window()),opened=await manager.dispatch('browser.create',{projectId:'project-a',contextId:'shared-service',url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ const loaded=[],load=contents.loadURL.bind(contents);contents.loadURL=url=>{loaded.push(url);return load(url)};
+ await Promise.all([
+  manager.dispatch('browser.navigate',{id:opened.id,projectId:'project-a',contextId:'shared-service',url:'https://fixture.invalid/old-project-a'}),
+  manager.dispatch('browser.navigate',{id:opened.id,projectId:'project-b',contextId:'shared-service',url:'https://fixture.invalid/new-project-b'})
+ ]);
+ assert.deepEqual(loaded,['https://fixture.invalid/new-project-b']);
+});

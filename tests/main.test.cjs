@@ -168,6 +168,7 @@ async function harness(t, options = {}) {
     } };
     if (name === './tool-integration.cjs') return {createToolIntegration:async options=>{state.toolIntegration=options;return {close:async()=>{state.toolIntegrationClosed=true;}};}};
     if (name.startsWith('node:')) return require(name);
+    if(name==='./viewer-sessions.cjs')return require('../electron/viewer-sessions.cjs');
     throw new Error(`Unexpected module: ${name}`);
   };
   t.after(() => {

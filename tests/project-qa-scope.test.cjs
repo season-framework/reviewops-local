@@ -43,3 +43,12 @@ test('directory checks allow both saved local roots while denying symlink escape
   for(const target of [b,path.join(root,'other'),path.join(root,'other','missing')])assert.throws(()=>f.check('directory.create',{parent:target,name:'wrong'}),{code:'TARGET_MISMATCH'});
  }
 });
+
+test('QA permits only implemented read-only viewer session verbs and rejects foreign explicit targets',()=>{
+ const {check}=fixture();
+ for(const action of ['viewerSession.list','viewerSession.context','viewerSession.begin','viewerSession.preview','viewerSession.capture','viewerSession.end','viewerSession.closeContext']){
+  assert.doesNotThrow(()=>check(action,{projectId:'a',reviewId:'ra',contextId:'own-draft',intentId:'own-intent'}),action);
+  for(const payload of [{projectId:'b'},{projectId:'a',reviewId:'rb'},{projectId:'a',serviceId:'sb'}])assert.throws(()=>check(action,payload),{code:'TARGET_MISMATCH'},action);
+ }
+ for(const action of ['viewerSession.input','viewerSession.navigate','viewerSession.click','viewerSession.future'])assert.throws(()=>check(action,{projectId:'a'}),{code:'TARGET_MISMATCH'},action);
+});

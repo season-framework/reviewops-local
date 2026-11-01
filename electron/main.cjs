@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { createStore } = require('./store.cjs');
+const viewerSessions=require('./viewer-sessions.cjs').createViewerSessions();
 const { createVault, atomicWrite } = require('./vault.cjs');
 const { createSshService } = require('./ssh.cjs');
 const { createTerminalManager } = require('./terminal.cjs');
@@ -85,7 +86,7 @@ async function waitForQaScope(record){
 }
 function dataChanged() { sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
 function closeWindowResources(host,discardStaged=true) {
-  const record=windowContexts.get(host);record?.browsers?.closeAll();if(record)record.browsers=null;
+  const record=windowContexts.get(host);if(record)viewerSessions.closeOwner(record.id);record?.browsers?.closeAll();if(record)record.browsers=null;
   for(const [id,owner] of terminalOwners)if(owner===host){try{terminals.close(id)}catch{}terminalOwners.delete(id);}
   if(discardStaged)for(const [token,item] of stagedAttachments)if(item.ownerWindow===host)stagedAttachments.delete(token);
 }
@@ -109,12 +110,21 @@ function screenshotName(value) {
   return name&&/\.png$/i.test(name)?name:`스크린샷-${new Date().toISOString().replace(/[:.]/g,'-')}.png`;
 }
 function stageScreenshot(payload) {
-  const bytes=screenshotBytes(payload);
+  let bytes=screenshotBytes(payload),frozen=null;
+  if(payload.captureProof){
+    frozen=viewerSessions.freeze(currentWindowRecord().id,payload.captureProof,payload.crop);
+    captureDestination(currentWindowRecord(),frozen.binding);
+    const image=require('electron').nativeImage.createFromBuffer(frozen.bytes,{scaleFactor:1});
+    const rect=frozen.source.crop;bytes=image.crop(rect).toPNG();
+    if(!bytes.length||bytes.length>MAX_FILE_BYTES)throw new Error('스크린샷은 20 MB 이하의 PNG 파일이어야 합니다.');
+  }
   for(const [token,item] of stagedAttachments)if(item.expires<Date.now())stagedAttachments.delete(token);
   if(stagedAttachments.size>=100 || [...stagedAttachments.values()].reduce((sum,item)=>sum+item.bytes.length,bytes.length)>200*1024*1024)throw new Error('작성 중인 첨부파일을 저장한 후 다시 시도하십시오.');
   const token=crypto.randomUUID(),metadata={name:screenshotName(payload.name),mimeType:'image/png',size:bytes.length,storageName:crypto.randomUUID()+'.png',sha256:digest(bytes)};
-  stagedAttachments.set(token,{token,bytes,metadata,ownerWindow:getRequestWindow(),expires:Date.now()+30*60*1000});
-  return {token,name:metadata.name,mimeType:metadata.mimeType,size:metadata.size};
+  const capture=frozen?{...frozen.source,frozenSha256:metadata.sha256}:null;
+  stagedAttachments.set(token,{token,bytes,metadata,ownerWindow:getRequestWindow(),expires:Date.now()+30*60*1000,...(frozen?{captureBinding:frozen.binding,capture}: {})});
+  if(frozen)viewerSessions.consume(payload.captureProof);
+  return {token,name:metadata.name,mimeType:metadata.mimeType,size:metadata.size,...(capture?{capture}: {})};
 }
 function agentSettings(service) {
   return {binary:service.agentBinary||'codex',workPath:service.agentWorkPath||service.rootPath,model:service.agentModel||'',reasoningEffort:service.agentReasoningEffort||'',instructions:service.agentInstructions||''};
@@ -488,7 +498,18 @@ async function saveWithAttachments(value, change, references) {
     for (const item of staged) atomicWrite(path.join(attachmentPath,item.metadata.storageName),item.bytes);
     store.transaction(()=>{
       entity = change(staged.length);
-      attachments = staged.map(item=>store.addAttachment({...item.metadata,...references(entity)}));
+      attachments = staged.map(item=>{
+        const refs=references(entity);
+        if(item.captureBinding){
+          const review=store.get('reviews',refs.reviewId);
+          const request=requestWindowContext.getStore();
+          viewerSessions.assertFrozen(item.captureBinding,{consumer:currentWindowRecord().id,contextId:request?.captureContextId,projectId:review.projectId,reviewId:review.id,purpose:['agent.start','agent.request.add','agent.request.update'].includes(request?.action)?'agent-request':request?.action==='activity.add'?'activity-new':request?.action==='activity.update'?'activity-edit':'review',activityId:refs.activityId||'',creatingReview:request?.action==='review.save'&&!request?.recordId,requestId:request?.recordId||'',agentEditing:request?.action==='agent.request.update'});
+          if(digest(item.bytes)!==item.metadata.sha256)throw new Error('임시 스크린샷이 변경되었습니다. 다시 캡처하십시오.');
+        }
+        return store.addAttachment({...item.metadata,...refs});
+      });
+      const captures=staged.filter(item=>item.capture).map(item=>item.capture),request=requestWindowContext.getStore();
+      if(captures.length&&['agent.start','agent.request.add','agent.request.update'].includes(request?.action)){const review=store.get('reviews',references(entity).reviewId);store.saveReview({...review,evidence:{capturedAt:new Date().toISOString(),screenshots:captures}});}
     });
   } catch(error) {
     for (const item of staged) await fsp.rm(path.join(attachmentPath,item.metadata.storageName),{force:true});
@@ -713,6 +734,44 @@ function toggleWindowFullScreen(host) {
   return result;
 }
 
+function captureProject(record,projectId,reviewId){
+  const project=store.snapshot().projects.find(p=>p.id===projectId);
+  if(!project||(record.projectId&&record.projectId!==project.id))throw Object.assign(new Error('같은 프로젝트의 검사 화면만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+  if(reviewId&&store.get('reviews',reviewId).projectId!==project.id)throw Object.assign(new Error('리뷰의 프로젝트가 일치하지 않습니다.'),{code:'TARGET_MISMATCH'});
+  return project;
+}
+function captureDestination(record,binding){
+ const project=captureProject(record,binding.projectId,binding.reviewId);
+ if(binding.serviceId&&!browserServiceIds(project).includes(binding.serviceId))throw Object.assign(new Error('프로젝트에 연결된 검사 화면만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+ if(binding.purpose==='agent-request'&&binding.requestId&&!require('./agent-requests.cjs').listSavedRequests(store.db,binding.reviewId).some(row=>row.id===binding.requestId))throw Object.assign(new Error('수정할 에이전트 요청을 찾을 수 없습니다.'),{code:'TARGET_MISMATCH'});
+ if(binding.purpose==='activity-edit'&&store.get('activities',binding.activityId).reviewId!==binding.reviewId)throw Object.assign(new Error('작업이력의 리뷰가 일치하지 않습니다.'),{code:'TARGET_MISMATCH'});
+ return project;
+}
+function browserServiceIds(project){return [...new Set([project.connection?.id,...(project.serviceIds||[])].filter(Boolean))];}
+function validateBrowserBinding(record,payload){
+  if(!payload.projectId)return;
+  const project=captureProject(record,payload.projectId);
+  if(!browserServiceIds(project).includes(payload.contextId))throw Object.assign(new Error('프로젝트에 연결된 화면만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+}
+function registerBrowserSession(record,item){
+  if(item.sessionId)viewerSessions.revoke(item.sessionId);
+  item.sessionId='';
+  const project=store.snapshot().projects.find(p=>p.id===item.projectId);
+  if(!project||!browserServiceIds(project).includes(item.contextId)){item.sessionDisqualified=true;return;}
+  if((record.projectId&&record.projectId!==project.id)||item.sessionDisqualified)return;
+  if(item.sessionProjectId&&item.sessionProjectId!==project.id){item.sessionDisqualified=true;return;}
+  item.sessionProjectId=project.id;
+  const id=viewerSessions.register({projectId:project.id,serviceId:item.contextId,owner:record.id,targetId:item.id,
+    alive:()=>!record.host.isDestroyed()&&!item.view.webContents.isDestroyed(),
+    describe:()=>({url:item.view.webContents.getURL()||item.requestedUrl,title:item.view.webContents.getTitle(),loading:item.view.webContents.isLoading()}),
+    capture:()=>record.browsers.dispatch('browser.capture',{id:item.id}),
+    evidence:()=>record.browsers.dispatch('browser.evidence',{id:item.id})});
+  item.sessionId=id;item.sessionEpoch=()=>viewerSessions.list(project.id).find(s=>s.sessionId===id)?.epoch;
+}
+function withCaptureEvidence(payload){
+  const screenshots=attachmentTokens(payload.attachmentTokens).map(token=>ownedStaged(token)?.capture).filter(Boolean);
+  return screenshots.length?{...payload,evidence:{...(payload.evidence||{}),capturedAt:new Date().toISOString(),screenshots}}:payload;
+}
 async function dispatch(action, payload = {}) {
   if(requestWindowContext.getStore())getRequestWindow();
   const projectScope=requestQaProjectId();
@@ -800,9 +859,36 @@ async function dispatch(action, payload = {}) {
     if(image.isEmpty())throw new Error('화면을 캡처하지 못했습니다.');
     const bytes=image.toPNG();return {dataUrl:`data:image/png;base64,${bytes.toString('base64')}`,mimeType:'image/png',name:screenshotName(),width:bytes.readUInt32BE(16),height:bytes.readUInt32BE(20),capturedAt:new Date().toISOString()};
   }
+  if(action.startsWith('viewerSession.')){
+    const record=currentWindowRecord(),consumer=record.id;
+    if(action==='viewerSession.closeContext'){viewerSessions.closeContext(consumer,payload.contextId);return {closed:true};}
+    if(action==='viewerSession.end'){if(payload.contextId)viewerSessions.endPending(consumer,payload.contextId);else viewerSessions.end(consumer,payload.intentId);return {ended:true};}
+    if(action==='viewerSession.preview'||action==='viewerSession.capture'){
+      const binding=viewerSessions.binding(consumer,payload.intentId);captureDestination(record,binding);
+      const result=await viewerSessions.capture(consumer,payload.intentId,{preview:action.endsWith('.preview')});captureDestination(record,binding);return result;
+    }
+    const project=captureProject(record,payload.projectId,payload.reviewId);
+    if(action==='viewerSession.list')return {capabilities:{provider:'web',preview:true,capture:true,input:false,virtualDisplay:false},sessions:viewerSessions.list(project.id).filter(s=>browserServiceIds(project).includes(s.serviceId))};
+    if(action==='viewerSession.context'){captureDestination(record,payload);return viewerSessions.setContext({...payload,consumer,projectId:project.id});}
+    if(action==='viewerSession.begin')return viewerSessions.begin({...payload,consumer});
+    throw new Error('지원하지 않는 화면 세션 기능입니다.');
+  }
   if (action.startsWith('browser.')) {
     const record=currentWindowRecord();
-    if(!record.browsers)record.browsers=require('./browser.cjs').createBrowserManager(record.host,{...(record.projectId?{partition:'persist:reviewops-browser-project-'+record.projectId}:{}),backgroundPopups:()=>record.qaActive===true});
+    if(['browser.create','browser.context','browser.navigate'].includes(action))validateBrowserBinding(record,payload);
+    if(!record.browsers)record.browsers=require('./browser.cjs').createBrowserManager(record.host,{
+      ...(record.projectId?{partition:'persist:reviewops-browser-project-'+record.projectId}:{}),backgroundPopups:()=>record.qaActive===true,
+      onCreated:item=>registerBrowserSession(record,item),
+      onChanged:(item,contextChanged)=>{if(contextChanged)registerBrowserSession(record,item);else if(item.sessionId)viewerSessions.changed(item.sessionId);},
+      onClosed:item=>{if(item.sessionId)viewerSessions.revoke(item.sessionId);}
+    });
+    if(payload.captureContext&&action==='browser.capture'){
+      const state=await record.browsers.dispatch('browser.state',{id:payload.id});
+      captureProject(record,payload.captureContext.projectId,payload.captureContext.reviewId);
+      const acquired=viewerSessions.begin({...payload.captureContext,consumer:record.id,sessionId:state.sessionId,epoch:state.epoch});
+      try{const binding=viewerSessions.binding(record.id,acquired.intentId);captureDestination(record,binding);const result=await viewerSessions.capture(record.id,acquired.intentId);captureDestination(record,binding);return {...result,intentId:acquired.intentId};}
+      catch(error){viewerSessions.end(record.id,acquired.intentId);throw error;}
+    }
     return record.browsers.dispatch(action,payload);
   }
   if (action === 'snapshot') return publicSnapshot();
@@ -862,7 +948,7 @@ async function dispatch(action, payload = {}) {
   if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
   if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment);
   if (action === 'review.version.target') return changeReviewTarget(store,payload);
-  if (action === 'review.save') {const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
+  if (action === 'review.save') {payload=withCaptureEvidence(payload);const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {
     if(payload.id)assertNoAgent(job=>job.serviceId===payload.id);
     const previous = payload.id ? store.get('services',payload.id) : null;
@@ -882,8 +968,9 @@ async function dispatch(action, payload = {}) {
     return {...service,...vault.flags(service.id)};
   }
   if (['group.delete','project.delete','service.delete','review.delete'].includes(action)) return deleteEntity(action.split('.')[0],payload.id);
-  if (action === 'activity.add') return (await saveWithAttachments(payload.attachmentTokens,count=>store.addActivity({...payload,allowEmpty:count>0}),activity=>({reviewId:payload.reviewId,activityId:activity.id}))).entity;
+  if (action === 'activity.add') {payload=withCaptureEvidence(payload);return (await saveWithAttachments(payload.attachmentTokens,count=>store.addActivity({...payload,allowEmpty:count>0}),activity=>({reviewId:payload.reviewId,activityId:activity.id}))).entity;}
   if (action === 'activity.update') {
+    payload=withCaptureEvidence(payload);
     const remove=attachmentTokens(payload.removeAttachmentIds),deleted=remove.map(id=>attachmentById(id));
     const result=(await saveWithAttachments(payload.attachmentTokens,count=>store.updateActivity({...payload,allowEmpty:count>0}),activity=>({reviewId:activity.reviewId,activityId:activity.id}))).entity;
     for(const file of deleted)await fsp.rm(path.join(attachmentPath,file.storageName),{force:true}).catch(()=>{});
@@ -1068,9 +1155,9 @@ else {
     });
     ipcMain.handle('reviewops:invoke',async(event,action,payload)=>{
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
-      return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},async()=>{try {
+      return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});

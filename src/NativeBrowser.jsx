@@ -31,12 +31,12 @@ function measure(element,enabled,viewport) {
 
 // The native page is separate from this renderer. This element only reserves its
 // position and keeps the native view beneath application dialogs and hidden tabs.
-const NativeBrowser=forwardRef(function NativeBrowser({invoke,url,contextId='',navigationRequest=0,enabled=true,viewport,onState,onError},ref){
+const NativeBrowser=forwardRef(function NativeBrowser({invoke,url,contextId='',projectId='',navigationRequest=0,enabled=true,viewport,onState,onError},ref){
  const surface=useRef(null),id=useRef(''),creation=useRef(null),alive=useRef(false),visible=useRef(false),lastLayout=useRef(''),lastTarget=useRef(''),lastRequest=useRef(0),browserError=useRef(''),syncLayout=useRef(()=>{});
- const latest=useRef({invoke,url,contextId,navigationRequest,enabled,viewport,onState,onError});latest.current={invoke,url,contextId,navigationRequest,enabled,viewport,onState,onError};
+ const latest=useRef({invoke,url,contextId,projectId,navigationRequest,enabled,viewport,onState,onError});latest.current={invoke,url,contextId,projectId,navigationRequest,enabled,viewport,onState,onError};
  const [state,setState]=useState({...emptyState,url}),[popupPreview,setPopupPreview]=useState(null);
  const published=useRef({...emptyState,url}),preview=useRef(null),previewEpisode=useRef({key:'',attempted:false}),previewEpoch=useRef(0),navigationRevision=useRef(0),navigationPending=useRef(0);
- const previewIdentity=()=>{const current=latest.current,page=published.current;return JSON.stringify([id.current,current.contextId,current.url,current.navigationRequest,current.enabled,current.viewport?.width,current.viewport?.height,current.viewport?.scale,page.url,page.loading,page.error,navigationRevision.current])};
+ const previewIdentity=()=>{const current=latest.current,page=published.current;return JSON.stringify([id.current,current.contextId,current.projectId,current.url,current.navigationRequest,current.enabled,current.viewport?.width,current.viewport?.height,current.viewport?.scale,page.url,page.loading,page.error,navigationRevision.current])};
  const clearPreview=()=>{if(previewEpisode.current.key){previewEpoch.current++;previewEpisode.current={key:'',attempted:false}}if(preview.current){preview.current=null;setPopupPreview(null)}};
  const beginNavigation=()=>{navigationRevision.current++;navigationPending.current++;clearPreview()};
  const updatePreview=measured=>{
@@ -63,23 +63,23 @@ const NativeBrowser=forwardRef(function NativeBrowser({invoke,url,contextId='',n
   const initial=latest.current.url,initialRequest=latest.current.navigationRequest;
   if(!initial)return '';
   lastTarget.current=initial;lastRequest.current=initialRequest;
- creation.current=latest.current.invoke('browser.create',{url:initial,contextId:latest.current.contextId,viewport:latest.current.viewport}).then(result=>{
+ creation.current=latest.current.invoke('browser.create',{url:initial,contextId:latest.current.contextId,projectId:latest.current.projectId,viewport:latest.current.viewport}).then(result=>{
    if(!alive.current){latest.current.invoke('browser.close',{id:result.id}).catch(()=>{});return ''}
-   id.current=result.id;publish(result);syncLayout.current();if(latest.current.url&&(latest.current.url!==initial||latest.current.navigationRequest!==initialRequest)){lastTarget.current=latest.current.url;lastRequest.current=latest.current.navigationRequest;beginNavigation();latest.current.invoke('browser.navigate',{id:result.id,url:latest.current.url,contextId:latest.current.contextId}).then(publish).catch(report).finally(()=>{navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()})}return result.id;
+   id.current=result.id;publish(result);syncLayout.current();if(latest.current.url&&(latest.current.url!==initial||latest.current.navigationRequest!==initialRequest)){lastTarget.current=latest.current.url;lastRequest.current=latest.current.navigationRequest;beginNavigation();latest.current.invoke('browser.navigate',{id:result.id,url:latest.current.url,contextId:latest.current.contextId,projectId:latest.current.projectId}).then(publish).catch(report).finally(()=>{navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()})}return result.id;
   }).finally(()=>{creation.current=null});
   return creation.current;
  };
  const command=async(action,payload={})=>{
   const navigates=['navigate','back','forward','reload'].includes(action);if(navigates)beginNavigation();
-  try{const current=id.current||await ensure();if(!current||!alive.current)return;const result=await latest.current.invoke(`browser.${action}`,{id:current,...(action==='navigate'?{contextId:latest.current.contextId}:{}),...payload});publish(result);return result}catch(error){report(error)}finally{if(navigates){navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()}}
+  try{const current=id.current||await ensure();if(!current||!alive.current)return;const result=await latest.current.invoke(`browser.${action}`,{id:current,...(action==='navigate'?{contextId:latest.current.contextId,projectId:latest.current.projectId}:{}),...payload});publish(result);return result}catch(error){report(error)}finally{if(navigates){navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()}}
  };
  const dataCommand=async(action,payload={})=>{const current=id.current||await ensure();if(!current||!alive.current)throw new Error(t("대상 화면을 먼저 여십시오."));return latest.current.invoke('browser.'+action,{id:current,...payload})};
- useImperativeHandle(ref,()=>({navigate:url=>command('navigate',{url}),back:()=>command('back'),forward:()=>command('forward'),reload:()=>command('reload'),stop:()=>command('stop'),capture:()=>dataCommand('capture'),evidence:()=>dataCommand('evidence'),clearLogs:kind=>dataCommand('clearLogs',{kind}),pickElement:()=>dataCommand('pickElement'),showElement:()=>dataCommand('showElement'),clearElement:()=>command('clearElement')}),[]);
+ useImperativeHandle(ref,()=>({navigate:url=>command('navigate',{url}),back:()=>command('back'),forward:()=>command('forward'),reload:()=>command('reload'),stop:()=>command('stop'),capture:payload=>dataCommand('capture',payload),evidence:()=>dataCommand('evidence'),clearLogs:kind=>dataCommand('clearLogs',{kind}),pickElement:()=>dataCommand('pickElement'),showElement:()=>dataCommand('showElement'),clearElement:()=>command('clearElement')}),[]);
  useLayoutEffect(()=>{
   alive.current=true;
   return()=>{alive.current=false;visible.current=false;previewEpoch.current++;previewEpisode.current={key:'',attempted:false};preview.current=null;const current=id.current;id.current='';if(current)latest.current.invoke('browser.close',{id:current}).catch(()=>{})};
  },[]);
- useLayoutEffect(()=>{clearPreview();if(id.current){beginNavigation();latest.current.invoke('browser.context',{id:id.current,contextId}).catch(report).finally(()=>{navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()})}},[contextId]);
+ useLayoutEffect(()=>{clearPreview();if(id.current){beginNavigation();latest.current.invoke('browser.context',{id:id.current,contextId,projectId}).catch(report).finally(()=>{navigationPending.current=Math.max(0,navigationPending.current-1);if(alive.current)syncLayout.current()})}},[contextId,projectId]);
  useLayoutEffect(()=>{
   if(!url)return;
   const current=id.current;
@@ -112,7 +112,7 @@ const NativeBrowser=forwardRef(function NativeBrowser({invoke,url,contextId='',n
   update();
   return()=>{disposed=true;resize.disconnect();mutation.disconnect();clearInterval(timer);window.removeEventListener('resize',update);document.removeEventListener('scroll',update,true);document.removeEventListener('fullscreenchange',update);document.removeEventListener('visibilitychange',update);syncLayout.current=()=>{}};
  },[]);
- useLayoutEffect(()=>{clearPreview();syncLayout.current()},[enabled,url,contextId,navigationRequest,viewport.width,viewport.height,viewport.scale]);
+ useLayoutEffect(()=>{clearPreview();syncLayout.current()},[enabled,url,contextId,projectId,navigationRequest,viewport.width,viewport.height,viewport.scale]);
  return <div ref={surface} className="native-browser-surface" hidden={!enabled} data-browser-id={state.id||undefined} data-browser-loading={state.loading?'true':'false'} aria-label={t("검토 화면")}>{popupPreview&&popupPreview.identity===previewIdentity()&&<img className="native-browser-popup-preview" src={popupPreview.dataUrl} alt="" aria-hidden="true" style={{position:'absolute',inset:0,width:'100%',height:'100%',objectFit:'fill',pointerEvents:'none'}} onError={()=>{if(preview.current===popupPreview){preview.current=null;setPopupPreview(null)}}}/>}{state.error&&<div className="native-browser-error" role="status"><p>{t("페이지를 열 수 없습니다.")}</p><small>{state.error}</small><button type="button" onClick={()=>command('reload')}>{t("다시 시도")}</button></div>}</div>;
 });
 export default NativeBrowser;

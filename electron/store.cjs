@@ -679,7 +679,8 @@ class LocalStore {
       for(const fileId of remove){const file=this.get('attachments',fileId);if(file.activityId!==previous.id||file.reviewId!==previous.reviewId)fail('이 작업이력의 첨부파일만 삭제할 수 있습니다.');this.db.prepare('DELETE FROM attachments WHERE id=?').run(fileId);}
       const hasFiles = this.db.prepare('SELECT 1 FROM attachments WHERE activityId=? LIMIT 1').get(previous.id);
       const body = text(input.body, '작업 내용', 100000, !hasFiles && !input.allowEmpty && !Object.keys(previous.evidence || {}).length);
-      const row = {...previous,body,updatedAt:timestamp()};
+      const evidence=input.evidence===undefined?previous.evidence:mergeEvidence(previous.evidence,input.evidence,'작업이력 로그');
+      const row = {...previous,body,evidence,updatedAt:timestamp()};
       this.upsert('activities',row);
       this.db.prepare('UPDATE reviews SET updatedAt=? WHERE id=?').run(row.updatedAt,row.reviewId);
       return row;
