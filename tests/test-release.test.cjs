@@ -195,6 +195,10 @@ test('workflow uses one global lock, native targets, least publishing scope and 
   assert.deepEqual(workflow.on.push.branches, ['codex/test-updates']);
   assert.equal(workflow.permissions.contents, 'read');
   assert.deepEqual(workflow.jobs.package.strategy.matrix.include.map(item => item.target).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  const steps = workflow.jobs.package.steps, mcpIndex = steps.findIndex(step => step.run?.includes('scripts/e2e-mcp-review-categories.mjs'));
+  assert.equal(steps[mcpIndex]?.if, "matrix.target == 'darwin-arm64'");
+  assert.match(steps[mcpIndex].run, /npm run build/);
+  assert.ok(mcpIndex < steps.findIndex(step => step.name === 'Package and verify the native target'));
   const publish = workflow.jobs.publish.steps.find(step => step.run?.includes('--publish'));
   assert.match(publish.if, /workflow_dispatch/); assert.match(publish.if, /inputs.publish/);
   const stage = workflow.jobs.package.steps.find(step => step.uses?.startsWith('actions/upload-artifact@'));

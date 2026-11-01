@@ -99,6 +99,11 @@ jobs:
           JS
           fi
           exit "$result"
+      - name: Verify public MCP category requests on native macOS
+        if: matrix.target == 'darwin-arm64'
+        run: |
+          npm run build
+          node scripts/e2e-mcp-review-categories.mjs
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
