@@ -73,6 +73,34 @@ test('version preparation updates only explicit version files and records the ba
  const written=await prepareVersion({bump:'minor',reason:'Compatible new review feature',write:true,directory});assert.equal(written.written,true);await assert.rejects(prepareVersion({bump:'patch',reason:'Would overwrite uncommitted release choice',write:true,directory}),/먼저 커밋/);
  await git('add','.');await git('commit','-qm','Choose release version');const actual=await git('rev-parse','HEAD');assert.equal((await validateSource({version:'1.3.0',commit:actual,directory})).bump,'minor');await assert.rejects(validateSource({version:'1.3.0',commit:'e'.repeat(40),directory}));
 });
+test('stable renderer preserves reviewed notices when optional packages are absent on a native checkout',async t=>{
+ const {assertCleanSource}=await load(),{buildRenderer}=await import('../scripts/test-build.mjs'),{execFile}=require('node:child_process'),{promisify}=require('node:util'),run=promisify(execFile);
+ // Spaces and Unicode exercise native cwd/script paths, including Windows
+ // checkouts. All commands execute real files; no shell or URL pathname is used.
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops native 경로 '));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const git=async(...args)=>(await run('git',args,{cwd:directory})).stdout.trim();
+ await fs.mkdir(path.join(directory,'scripts'));await fs.mkdir(path.join(directory,'node_modules/cpu-features'),{recursive:true});
+ await fs.copyFile(path.join(__dirname,'../scripts/licenses.mjs'),path.join(directory,'scripts/licenses.mjs'));
+ await fs.writeFile(path.join(directory,'scripts/copy-locales.mjs'),'// Synthetic no-op locale copy; Vite build below is real.\n');
+ await fs.writeFile(path.join(directory,'package.json'),JSON.stringify({name:'synthetic-renderer',version:'1.0.0',type:'module',private:true}));
+ await fs.writeFile(path.join(directory,'package-lock.json'),JSON.stringify({packages:{'node_modules/cpu-features':{version:'0.0.10',optional:true}}}));
+ await fs.writeFile(path.join(directory,'node_modules/cpu-features/package.json'),JSON.stringify({name:'cpu-features',version:'0.0.10',license:'MIT'}));
+ await fs.writeFile(path.join(directory,'node_modules/cpu-features/LICENSE'),'SYNTHETIC OPTIONAL LICENSE\n');
+ await fs.writeFile(path.join(directory,'index.html'),'<!doctype html><title>Native renderer fixture</title>');
+ await fs.writeFile(path.join(directory,'.gitignore'),'node_modules/\ndist/\n');
+ await run(process.execPath,[path.join(directory,'scripts/licenses.mjs')],{cwd:directory});
+ const notices=await fs.readFile(path.join(directory,'THIRD-PARTY-NOTICES.txt'));assert.match(notices.toString(),/cpu-features 0\.0\.10/);
+ await git('init','-q');await git('config','user.name','Release fixture');await git('config','user.email','fixture@example.invalid');await git('add','.');await git('commit','-qm','Reviewed fixture');
+ await fs.rm(path.join(directory,'node_modules/cpu-features'),{recursive:true});
+ // Reproduce the old packaging path: successful renderer build dirties the
+ // tracked notices solely because an optional dependency was not installed.
+ await buildRenderer({directory});await assert.rejects(assertCleanSource(directory),/THIRD-PARTY-NOTICES\.txt/);
+ await fs.writeFile(path.join(directory,'THIRD-PARTY-NOTICES.txt'),notices);await assertCleanSource(directory);
+ await buildRenderer({directory,generateLicenses:false});await assertCleanSource(directory);
+ assert.deepEqual(await fs.readFile(path.join(directory,'THIRD-PARTY-NOTICES.txt')),notices);assert.match(await fs.readFile(path.join(directory,'dist/index.html'),'utf8'),/Native renderer fixture/);
+ await fs.appendFile(path.join(directory,'scripts/copy-locales.mjs'),'// unreviewed change\n');await assert.rejects(assertCleanSource(directory),/scripts\/copy-locales\.mjs/);
+ const stable=await fs.readFile(path.join(__dirname,'../scripts/stable-build.mjs'),'utf8');assert.ok(stable.includes('buildRenderer({generateLicenses:false})'));assert.ok(stable.includes('await validateSource({version,commit});await buildNativePackage'));
+});
 
 test('workflow keeps native targets, reviewed SHA, read-only collection and explicit draft delivery',async()=>{
  const text=(await fs.readFile(path.join(__dirname,'../.github/workflows/stable-release.yml'),'utf8')).replace(/\r\n/g,'\n');

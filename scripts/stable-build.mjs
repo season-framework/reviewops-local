@@ -28,7 +28,9 @@ export async function packageStable({target,version,commit,env=process.env}){
  const lock=path.join(root,'release/.stable-build.lock'),handle=await fs.open(lock,'wx');
  try{
   await clearBuildInfo();await fs.rm(output,{recursive:true,force:true});await fs.mkdir(output,{recursive:true});
-  await buildRenderer();await validateSource({version,commit});await buildNativePackage(target,packageRoot);
+  // Native installations can omit optional dependencies. Their presence must
+  // not rewrite the reviewed, committed notices during stable packaging.
+  await buildRenderer({generateLicenses:false});await validateSource({version,commit});await buildNativePackage(target,packageRoot);
   const arch=target.split('-')[1],files=[],checks=['stable-package','source-match'];let publisher;
   const copy=async(name)=>{const from=path.join(packageRoot,name),to=path.join(output,name);await fs.copyFile(from,to);files.push(to);return to};
   if(process.platform==='darwin'){

@@ -44,9 +44,10 @@ export async function windowsPublisher(installer) {
   // Existing ReviewOps Windows installers are unsigned. Record this truthfully.
   return result;
 }
-export async function buildRenderer() {
-  for (const args of [[path.join(root, 'scripts/licenses.mjs')], [path.join(path.dirname(require.resolve('vite/package.json')), 'bin/vite.js'), 'build'], [path.join(root, 'scripts/copy-locales.mjs')]]) {
-    await run(process.execPath, args, { cwd: root, timeout: 180000, maxBuffer: 8 * 1024 ** 2 });
+export async function buildRenderer({ directory = root, generateLicenses = true } = {}) {
+  const commands = [...(generateLicenses ? [[path.join(directory, 'scripts/licenses.mjs')]] : []), [path.join(path.dirname(require.resolve('vite/package.json')), 'bin/vite.js'), 'build'], [path.join(directory, 'scripts/copy-locales.mjs')]];
+  for (const args of commands) {
+    await run(process.execPath, args, { cwd: directory, timeout: 180000, maxBuffer: 8 * 1024 ** 2 });
   }
 }
 export async function buildNativePackage(target, packageRoot) {
