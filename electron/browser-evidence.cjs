@@ -36,34 +36,44 @@ function readInputRecorder() {
   return {logs:logs.splice(0),fingerprint:{url:location.href,title:document.title,userAgent:navigator.userAgent,language:navigator.language,platform:navigator.platform,viewport:{width:innerWidth,height:innerHeight},screen:{width:screen.width,height:screen.height},devicePixelRatio}};
 }
 function createEvidenceRecorder() {
-  const owners=new Map(),tracked=new Map(),requests=new Map(),reading=new Map();
+  const owners=new Map(),tracked=new Map(),requests=new Map(),reading=new Map(),pages=new Map();
   const add=(item,kind,value)=>{const list=item.evidence[kind];list.push(value);if(list.length>LIMIT)list.splice(0,list.length-LIMIT)};
+  function unavailable(contents,item) {
+    return contents.isDestroyed()||pages.get(contents.id)?.gone||contents.isCrashed?.()||(contents===item.view.webContents&&item.rendererGone);
+  }
+  function invalidate(contents) {
+    const state=pages.get(contents.id);if(state)state.revision++;
+    const pending=reading.get(contents.id);if(pending){reading.delete(contents.id);pending.cancel();}
+  }
   function drain(contents,item) {
-    if(contents.isDestroyed())return Promise.resolve();
-    if(reading.has(contents.id))return reading.get(contents.id);
-    const generation=item.evidenceGeneration||0;
-    const promise=contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}]).then(value=>{
-      if(generation!==(item.evidenceGeneration||0))return;
+    if(unavailable(contents,item)){invalidate(contents);return Promise.resolve();}
+    if(reading.has(contents.id))return reading.get(contents.id).promise;
+    const generation=item.evidenceGeneration||0,state=pages.get(contents.id),revision=state?.revision;
+    const entry={};const cancelled=new Promise(resolve=>{entry.cancel=resolve;});
+    const request=Promise.resolve().then(()=>{if(state!==pages.get(contents.id)||revision!==state?.revision||unavailable(contents,item))return;return contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}]);}).then(value=>{
+      if(state!==pages.get(contents.id)||revision!==state?.revision||unavailable(contents,item)||generation!==(item.evidenceGeneration||0))return;
       for(const event of value?.logs||[]){const {value:inputValue,...metadata}=event;add(item,'input_log',event.type==='change'?{...metadata,value_length:event.value_length??String(inputValue||'').length,masked:true}:metadata);}
       if(contents===item.view.webContents&&value?.fingerprint)item.evidence.fingerprint_log={...value.fingerprint,url:safeUrl(value.fingerprint.url)};
-    }).catch(()=>{}).finally(()=>reading.delete(contents.id));
-    reading.set(contents.id,promise);return promise;
+    }).catch(()=>{});
+    entry.promise=Promise.race([request,cancelled]).finally(()=>{if(reading.get(contents.id)===entry)reading.delete(contents.id);});
+    reading.set(contents.id,entry);return entry.promise;
   }
   const timer=setInterval(()=>{for(const [id,contents]of tracked){const item=owners.get(id);if(item)drain(contents,item)}},700);
   timer.unref?.();
   function track(contents,item) {
     if(!item.evidence)item.evidence={navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};
     owners.set(contents.id,item);
-    tracked.set(contents.id,contents);
-    const install=()=>{if(!contents.isDestroyed())contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+installInputRecorder.toString()+')()'}]).catch(()=>{})};
-    contents.on('dom-ready',install);
+    tracked.set(contents.id,contents);const state={gone:false,revision:0};pages.set(contents.id,state);
+    const install=()=>{if(!contents.isDestroyed()&&!state.gone&&!contents.isCrashed?.())contents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+installInputRecorder.toString()+')()'}]).catch(()=>{})};
+    contents.on('dom-ready',()=>{state.gone=false;invalidate(contents);install();});
+    contents.on('render-process-gone',()=>{state.gone=true;invalidate(contents);});
     contents.on('did-navigate',(_event,url)=>{add(item,'navigation_log',{type:'navigate',url:safeUrl(url),at:new Date().toISOString()});if(contents===item.view.webContents){item.selectionGeneration=(item.selectionGeneration||0)+1;delete item.selectedElement;delete item.evidence.fingerprint_log.selectedElement;}});
     contents.on('did-navigate-in-page',(_event,url,isMainFrame)=>{if(isMainFrame)add(item,'navigation_log',{type:'navigate-in-page',url:safeUrl(url),at:new Date().toISOString()})});
     contents.on('console-message',(_event,...args)=>{
       const details=typeof args[0]==='object'?args[0]:{level:args[0],message:args[1],lineNumber:args[2],sourceId:args[3]};
       add(item,'console_log',{level:details.level??'info',message:safeText(details.message),line:details.lineNumber||0,source:safeUrl(details.sourceId),at:new Date().toISOString()});
     });
-    contents.on('destroyed',()=>{owners.delete(contents.id);tracked.delete(contents.id);reading.delete(contents.id);for(const [id,entry]of requests)if(entry.contentsId===contents.id)requests.delete(id)});
+    contents.on('destroyed',()=>{invalidate(contents);owners.delete(contents.id);tracked.delete(contents.id);pages.delete(contents.id);for(const [id,entry]of requests)if(entry.contentsId===contents.id)requests.delete(id)});
   }
   function beforeRequest(details) {
     const item=owners.get(details.webContentsId);
@@ -85,10 +95,12 @@ function createEvidenceRecorder() {
   }
   return {track,beforeRequest,completed:details=>complete(details),failed:details=>complete(details,true),collect,
     async reset(item){
-      item.evidenceGeneration=(item.evidenceGeneration||0)+1;
+      const generation=item.evidenceGeneration=(item.evidenceGeneration||0)+1;
       item.selectionGeneration=(item.selectionGeneration||0)+1;
-      if(!item.rendererGone&&!item.view.webContents.isDestroyed()&&!item.view.webContents.isCrashed?.())await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});
-      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(async([,page])=>{try{if(!item.rendererGone&&!page.isDestroyed()&&!page.isCrashed?.())await page.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}])}catch{}}));
+      for(const [id,page]of tracked)if(owners.get(id)===item)invalidate(page);
+      if(!unavailable(item.view.webContents,item))await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});
+      await Promise.all([...tracked].filter(([id])=>owners.get(id)===item).map(async([,page])=>{try{if(!unavailable(page,item))await page.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+readInputRecorder.toString()+')()'}])}catch{}}));
+      if(generation!==(item.evidenceGeneration||0))return;
       item.evidence={navigation_log:[],input_log:[],network_log:[],console_log:[],fingerprint_log:{}};delete item.selectedElement;
       for(const [id,entry]of requests)if(entry.item===item)requests.delete(id);
     },
@@ -97,7 +109,7 @@ function createEvidenceRecorder() {
     async pick(item){const generation=item.selectionGeneration=(item.selectionGeneration||0)+1;const result=await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("pick")'}]);if(generation!==item.selectionGeneration)return null;if(result)item.selectedElement=result;return result},
     async showElement(item){const generation=item.selectionGeneration||0;const result=await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("show")'}]);if(generation!==(item.selectionGeneration||0))return null;if(result)item.selectedElement=result;return result},
     async clearElement(item){item.selectionGeneration=(item.selectionGeneration||0)+1;delete item.selectedElement;delete item.evidence.fingerprint_log.selectedElement;await item.view.webContents.executeJavaScriptInIsolatedWorld(WORLD,[{code:'('+inspectBrowserElement.toString()+')("clear")'}]).catch(()=>{});return null},
-    close(){clearInterval(timer);owners.clear();tracked.clear();reading.clear();requests.clear()}
+    close(){clearInterval(timer);for(const page of tracked.values())invalidate(page);owners.clear();tracked.clear();pages.clear();reading.clear();requests.clear()}
   };
 }
 module.exports={createEvidenceRecorder,safeUrl,safeText,LIMIT};
