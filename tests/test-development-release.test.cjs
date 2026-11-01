@@ -67,6 +67,20 @@ test('metadata mutations require the matching workflow, metadata job, global loc
  for(const patch of [{GITHUB_JOB:'publish'},{REVIEWOPS_TEST_PUBLISH:'false'},{REVIEWOPS_PUBLICATION_GROUP:'other'},{GITHUB_REPOSITORY:'other/repo'},{GITHUB_SHA:'short'}])assert.throws(()=>assertAllocationCI({...env,...patch}));
  let calls=0;assert.throws(()=>allocationStore({env:{},fetchImpl:async()=>{calls++;}}).saveLedger({id:1},'body'));assert.equal(calls,0);
 });
+test('the metadata API store can append only this run reservation while preserving the public pointer',async()=>{
+ const {allocationStore}=await metadataModule,l=await ledgerModule,m=await release,info=build();
+ const env={GITHUB_ACTIONS:'true',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_JOB:'metadata',GITHUB_WORKFLOW_REF:'season-framework/reviewops-local/.github/workflows/test-release.yml@refs/heads/test',REVIEWOPS_PUBLICATION_GROUP:'reviewops-test-latest',REVIEWOPS_TEST_PUBLISH:'true',GITHUB_SHA:info.commit,GITHUB_RUN_NUMBER:'11',GITHUB_RUN_ATTEMPT:'1',GITHUB_TOKEN:'synthetic-only'};
+ const pointer={schema:1,buildNumber:8001,commit:'b'.repeat(40),manifest:`reviewops-test-update-8001-${'b'.repeat(12)}.json`,size:100,sha256:'c'.repeat(64)};
+ const current={id:1,tag_name:'test-latest',draft:false,prerelease:true,body:`${m.marker}${JSON.stringify(pointer)} -->`};
+ const allocation=l.allocateDevelopment({schema:1,allocations:[]},withoutDevelopment(info),pointer.commit),body=l.replaceLedger(current.body,allocation.ledger),calls=[];
+ const store=allocationStore({env,fetchImpl:async(url,options)=>{calls.push({url,method:options.method,body:JSON.parse(options.body)});return Response.json({ok:true})}});
+ await store.saveLedger(current,body);assert.equal(calls.length,1);assert.equal(calls[0].url,'https://api.github.com/repos/season-framework/reviewops-local/releases/1');assert.equal(calls[0].method,'PATCH');assert.deepEqual(m.pointerFromBody(calls[0].body.body),pointer);
+ assert.throws(()=>store.saveLedger({...current,tag_name:'v1.2.11'},body));
+ assert.throws(()=>store.saveLedger(current,body.replace(pointer.commit,'d'.repeat(40))));
+ const altered=l.allocateDevelopment({schema:1,allocations:[]},{...withoutDevelopment(info),commit:'f'.repeat(40)},pointer.commit);
+ assert.throws(()=>store.saveLedger(current,l.replaceLedger(current.body,altered.ledger)));
+ assert.equal(calls.length,1);
+});
 test('one verified byte set has canonical development names, legacy names and source-bound immutable history',async t=>{
  const {m,l,info,plan}=await fixture(t);
  assert.deepEqual(m.canonicalNamesFor(info),['ReviewOps-1.2.11-dev-1-arm64.zip','ReviewOps-1.2.11-dev-1-arm64.dmg','ReviewOps-1.2.11-dev-1-x64.zip','ReviewOps-1.2.11-dev-1-x64.dmg','ReviewOps-1.2.11-dev-1-windows-x64.exe']);
