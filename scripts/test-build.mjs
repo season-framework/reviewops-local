@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import {readFileSync} from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execFile } from 'node:child_process';
@@ -23,6 +24,10 @@ export function packagedBuildInfo(archive, expected) {
   const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   const actual = validateBuildInfo(JSON.parse(asar.extractFile(archive, 'electron/reviewops-build.json').toString('utf8')), expected.version);
   if (pkg.version !== expected.version || JSON.stringify(actual) !== JSON.stringify(validateBuildInfo(expected))) throw new Error('패키지의 빌드 정보가 생성한 빌드와 다릅니다.');
+  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+    const bytes=asar.extractFile(archive,path.join('electron',source));
+    if(!bytes.equals(readFileSync(path.join(path.dirname(archive),'mcp',target))))throw new Error('앱과 독립 MCP의 배포 자료가 다릅니다: '+target);
+  }
   return actual;
 }
 export async function inspectMac(bundle, build, arch, inspectArchive = packagedBuildInfo) {
@@ -85,9 +90,14 @@ export async function packageTestBuild({ target, number, commit, builtAt }) {
         await run('/usr/bin/ditto', ['-c', '-k', '--norsrc', '--keepParent', bundle, zip], { timeout: 180000 });
         await validateArchive(zip); files.push(zip);
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-test-package-'));
-        try { await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 }); await inspectMac(path.join(temporary, 'ReviewOps.app'), build, arch); }
+        try {
+          await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 });
+          const extracted=path.join(temporary,'ReviewOps.app');await inspectMac(extracted, build, arch);
+          const smokeEnv={...process.env,REVIEWOPS_TEST_EXECUTABLE:path.join(extracted,'Contents/MacOS/ReviewOps')};delete smokeEnv.ELECTRON_RUN_AS_NODE;
+          await run(process.execPath,[path.join(root,'scripts/e2e.mjs')],{cwd:root,env:smokeEnv,timeout:300000,maxBuffer:8*1024**2});
+        }
         finally { await fs.rm(temporary, { recursive: true, force: true }); }
-        checks.push('codesign', 'dmg-verify', 'zip-extraction');
+        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke');
       } else {
         const installer = path.join(packageRoot, `ReviewOps-${build.version}-windows-x64.exe`);
         packagedBuildInfo(path.join(packageRoot, 'win-unpacked/resources/app.asar'), build);

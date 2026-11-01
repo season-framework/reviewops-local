@@ -75,7 +75,7 @@ export async function prepareRelease(directory, build) {
     const record = JSON.parse(await fs.readFile(path.join(directory, `verification-${target}.json`), 'utf8'));
     if (record.schema !== 1 || record.target !== target || record.ok !== true || JSON.stringify(validateBuildInfo(record.build)) !== JSON.stringify(build) ||
         !Array.isArray(record.checks) || !record.checks.includes('packaged-build-info') || !record.checks.includes('package-structure') ||
-        (target.startsWith('darwin') && (!record.checks.includes('codesign') || !record.checks.includes('dmg-verify'))) ||
+        (target.startsWith('darwin') && (!record.checks.includes('codesign') || !record.checks.includes('dmg-verify') || !record.checks.includes('zip-extraction') || !record.checks.includes('native-smoke'))) ||
         (target === 'win32-x64' && (!record.checks.includes('publisher-status') || !record.checks.includes('installed-application')))) throw new Error(`패키지 검사 결과가 올바르지 않습니다: ${target}`);
     const expected = files.filter(file => target === 'win32-x64' ? file.name.endsWith('.exe') : file.name.endsWith(`-${target.slice(7)}.zip`) || file.name.endsWith(`-${target.slice(7)}.dmg`));
     for (const file of expected) if (!record.files?.some(item => item.name === file.name && item.size === file.size && item.sha256 === file.sha256)) throw new Error(`검사 후 설치파일이 변경되었습니다: ${file.name}`);

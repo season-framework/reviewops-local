@@ -100,6 +100,7 @@
       "THIRD-PARTY-NOTICES.txt"
     ],
     "asar": true,
+    "afterPack": "./scripts/after-pack.cjs",
     "npmRebuild": false,
     "mac": {
       "category": "public.app-category.productivity",
@@ -148,21 +149,7 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false
-    },
-    "extraResources": [
-      {
-        "from": "electron/mcp-server.cjs",
-        "to": "mcp/reviewops-mcp.cjs"
-      },
-      {
-        "from": "electron/automation-api.cjs",
-        "to": "mcp/automation-api.cjs"
-      },
-      {
-        "from": "electron/review-categories.json",
-        "to": "mcp/review-categories.json"
-      }
-    ]
+    }
   },
   "repository": {
     "type": "git",
