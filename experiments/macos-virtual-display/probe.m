@@ -48,6 +48,7 @@ static NSArray *inventoryForOwned(uint32_t pendingOwnedId) {
     if (!mode) {
       report[@"unavailableModeDisplayId"] = @(ident);
       report[@"unavailableModeWasOwned"] = ident == pendingOwnedId ? @YES : @NO;
+      report[@"unavailableModePhase"] = report[@"phase"] ?: @"baseline";
       if (ident != pendingOwnedId) { saveReport(); fail(@"PREEXISTING_DISPLAY_MODE_UNAVAILABLE"); }
     }
     [items addObject:@{
@@ -201,12 +202,43 @@ static int exercise(void) {
     report[@"phase"] = @"owned-object-released"; saveReport();
     if (before) {
       @try {
-        BOOL cleaned = waitUntil(15, ^BOOL{ return [before isEqual:inventory()]; });
-        report[@"after"] = inventory(); report[@"cleanupVerified"] = @(cleaned);
-        if (!cleaned) { report[@"outcome"] = @"failed"; report[@"code"] = @"CLEANUP_OR_PREEXISTING_STATE_MISMATCH"; }
-      } @catch (NSException *exception) { (void)exception; report[@"cleanupVerified"] = @NO; report[@"outcome"] = @"failed"; report[@"code"] = @"CLEANUP_INVENTORY_UNAVAILABLE"; }
+        // A just-released owned ID may remain online briefly without a mode.
+        // It must disappear; existing IDs still require their original modes.
+        uint32_t retiringId = initialized && ownedId && !findDisplay(before, ownedId) ? ownedId : 0;
+        NSTimeInterval start = NSProcessInfo.processInfo.systemUptime;
+        __block unsigned int polls = 0;
+        NSMutableArray *observations = [NSMutableArray array];
+        report[@"cleanupObservations"] = observations; report[@"cleanupWaitBudgetSeconds"] = @15;
+        BOOL cleaned = waitUntil(15, ^BOOL{
+          NSArray *current = inventoryForOwned(retiringId);
+          report[@"lastCleanup"] = current; report[@"cleanupPollCount"] = @(++polls);
+          report[@"cleanupWaitElapsedSeconds"] = @(NSProcessInfo.processInfo.systemUptime - start);
+          NSDictionary *owned = retiringId ? findDisplay(current, retiringId) : nil;
+          NSDictionary *state = @{@"ownedIdPresent":owned ? @YES : @NO,
+                                  @"ownedModeAvailable":owned[@"modeAvailable"] ?: NSNull.null,
+                                  @"preexistingMatches":preserves(before, current, retiringId) ? @YES : @NO};
+          if (![observations.lastObject[@"state"] isEqual:state] && observations.count < 16)
+            [observations addObject:@{@"elapsedSeconds":report[@"cleanupWaitElapsedSeconds"], @"state":state}];
+          return [before isEqual:current];
+        });
+        NSArray *after = inventoryForOwned(retiringId);
+        BOOL verified = cleaned && [before isEqual:after];
+        report[@"after"] = after; report[@"cleanupVerified"] = @(verified);
+        report[@"cleanupWaitElapsedSeconds"] = @(NSProcessInfo.processInfo.systemUptime - start);
+        if (!verified) {
+          report[@"outcome"] = @"failed"; report[@"cleanupCode"] = @"CLEANUP_OR_PREEXISTING_STATE_MISMATCH";
+          if (!report[@"code"]) report[@"code"] = report[@"cleanupCode"];
+        }
+      } @catch (NSException *exception) {
+        (void)exception; report[@"cleanupVerified"] = @NO; report[@"outcome"] = @"failed";
+        report[@"cleanupCode"] = @"CLEANUP_INVENTORY_UNAVAILABLE";
+        if (!report[@"code"]) report[@"code"] = report[@"cleanupCode"];
+      }
     }
-    if (interrupted) { report[@"outcome"] = @"failed"; report[@"code"] = @"INTERRUPTED"; }
+    if (interrupted) {
+      report[@"outcome"] = @"failed"; report[@"interruptionCode"] = @"INTERRUPTED";
+      if (!report[@"code"]) report[@"code"] = report[@"interruptionCode"];
+    }
     if (initialized && !report[@"code"] && [report[@"cleanupVerified"] boolValue]) report[@"outcome"] = @"passed";
     report[@"phase"] = @"complete"; saveReport();
   }

@@ -26,6 +26,7 @@ export function inventoryDifference(before, after, ownedId = null) {
 
 export function verifyNativeResult(result) {
   if (result.outcome !== 'passed') return `native:${result.outcome || 'missing-outcome'}:${result.code || 'unknown'}`;
+  if (result.code || result.primaryCode || result.cleanupCode) return 'native-failure-must-not-be-masked';
   if (!['before','during','after'].every(k => Array.isArray(result[k]))) return 'invalid-inventory';
   if (result.createdDisplays !== 1 || !Number.isInteger(result.ownedDisplayId) || result.ownedDisplayId < 1) return 'invalid-owned-display';
   if (result.before.some(x => x.id === result.ownedDisplayId)) return 'owned-id-was-preexisting';

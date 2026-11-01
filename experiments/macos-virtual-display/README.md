@@ -24,7 +24,7 @@ Node launcher와 native helper는 모두 repository, branch, push event, GitHub 
 3. 고유 serial을 갖는 소유 객체 **하나**를 생성한다. 객체가 반환한 실제 `CGDirectDisplayID`가 0이나 기존 ID가 아님을 확인한다. 해당 객체에만 1920×1080·60 Hz·HiDPI off 설정을 적용한다.
 4. 새 ID의 초기 mode가 없거나 1×1일 수 있으므로, 15초 한도에서 실제 요청 mode를 기다린다. mode가 없는 **새 owned ID만** `modeAvailable:false`로 관측하며 숫자를 만들어 채우지 않는다. 해당 ID·owned 여부도 기록한다. 기존 ID의 mode 부재나 다른 변경은 즉시 실패한다. 매 poll에서 새 ID의 online/active·vendor/serial·미러링 아님·실제 논리 mode·pixel size·bounds를 대조하고, 모두 맞아야 다음 단계로 간다. 생성 중 기존 ID·bounds·mode 기록은 그대로여야 한다. 초기 상태와 바뀐 상태를 최대 16개, 마지막 전체 snapshot·poll 수·경과 시간을 남긴다. 15초 뒤에도 목표 mode가 아니면 실패하며, `CGDisplaySetDisplayMode` 등 추가 mode 변경이나 이미지 확대·축소로 통과시키지 않는다. refresh rate는 실제 관측값을 남기며 보장되지 않는 값을 채우지 않는다.
 5. 그 ID의 NSScreen 안에 이 프로세스의 새 borderless NSWindow만 배치하고 실제 screen ID·frame 포함·visible 상태·window number를 기록한 뒤 닫는다. 다른 앱·창을 이동하지 않는다. **OS frame 수집·NSView 이미지·입력 전달은 수행하지 않는다.**
-6. `@finally`에서 소유 객체의 마지막 strong 참조만 해제한다. 기존 디스플레이를 재설정·복구하거나 이름으로 찾아 제거하는 호출은 없다. 기존 inventory가 정확히 복원되고 새 ID가 사라졌는지 15초 안에 조회하여 확인한다. 두 번째 디스플레이를 만드는 workaround는 사용하지 않는다.
+6. `@finally`에서 소유 객체의 마지막 strong 참조만 해제한다. 기존 디스플레이를 재설정·복구하거나 이름으로 찾아 제거하는 호출은 없다. 제거 중인 알려진 새 owned ID만 mode 부재를 허용하며, 그 ID가 사라지고 기존 inventory가 정확히 같아지는지 15초 안에 조회한다. 기존 ID의 mode 부재는 계속 실패한다. 정리 단계의 상태 변화·마지막 inventory·경과 시간을 별도로 남긴다. 생성 중 기존 화면이 바뀌었다면 정리 뒤 돌아와도 원래 실패를 유지한다. cleanup 오류는 별도 `cleanupCode`로 기록하여 처음 실패를 덮지 않는다. 두 번째 디스플레이를 만드는 workaround는 사용하지 않는다.
 7. child가 종료된 후 별도 public 조회 프로세스가 inventory를 한 번 더 대조한다. timeout·signal·output 초과는 통과가 될 수 없다. 늦은 제거, 생성 거절, headless runner 한계는 결과에 그대로 남긴다.
 
 ## 경계와 결과 판독
@@ -43,6 +43,17 @@ helper 단계 대기는 최대 38초, launcher의 child watchdog은 70초 후 SI
 출력은 JSON 파일당 최대 128 KiB, 각 프로세스 stdout/stderr 합계 최대 128 KiB이다. artifact는 JSON·로그만 포함하고 helper 실행파일은 제외한다. 이름은 `reviewops-virtual-display-probe-darwin-{arm64,x64}`, 보존 7일이다. test-release 정리 대상인 `reviewops-test-build-*` 이름을 사용하지 않는다.
 
 통과해도 해당 GitHub runner OS·CPU에서 관측한 실험 결과일 뿐이다. 정식 provider·서명/공증·재배포·앱 패키지·권한 거부/철회·화면 기록·앱 입력·Retina/4K·잠자기/잠금·프로그램 crash 후 복구·macOS 전체 지원은 입증하지 않는다. native 결과가 나오기 전에는 클래스 존재나 로컬 컴파일로 생성 성공을 주장하지 않는다. Windows에는 이 실험을 적용하지 않는다.
+
+## 관측한 runner 결과
+
+[실행 41344755568](https://github.com/season-framework/reviewops-local/actions/runs/41344755568), 소스 `fd902a0948082e88f11714c954bf9cd403f293d4`의 원본 JSON 기준이다. 전체 workflow는 arm64 때문에 실패했으며 두 타깃을 함께 통과로 집계하지 않는다.
+
+| 실제 환경 | 관측과 판정 |
+| --- | --- |
+| macOS 15.7.9 Intel | 새 ID 4128833이 초기 1×1에서 2.563초·16회 poll 뒤 실제 1920×1080 mode·pixel·bounds로 바뀌었다. 그 ID의 자체 창 배치와 해제, 기존 inventory 및 독립 post 조회까지 통과했다. 추가 public mode 쓰기는 0회다. 이 환경의 lifecycle만 실제 통과했다. |
+| macOS 15.8.2 arm64 | 첫 poll 0.114초에 기존 ID 1의 1024×768 mode·bounds가 1920×1080으로 바뀌어 보존 검사에서 실패했다. 새 ID 2의 mode는 NULL이었다. ID 1의 vendor 0·serial 305419896·main 1·mirror 0은 유지됐으나 물리/가상 종류는 확정하지 않았다. 원본 helper의 cleanup은 미검증(`false`), 종료 후 별도 public 조회는 원래 1024×768 inventory로 돌아온 것을 확인했다. 목표 mode·자체 창 통과가 아니며 ARM 전체 지원/미지원으로 일반화하지 않는다. |
+
+이 결과는 요청 mode가 15초 동안 1×1에 고정됐다는 근거가 아니므로 추가 mode 설정 호출을 도입하지 않았다. 정리 진단의 보완이 기존 화면 변경 실패를 없애는 것은 아니다.
 
 ## 출처와 라이선스
 
