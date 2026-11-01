@@ -1,10 +1,10 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict');
 const {createViewerSessions,cropRectangle}=require('../electron/viewer-sessions.cjs');
-function fixture(){
+function fixture({evidence=async()=>({available:true}),capture}={}){
  let tick=1,alive=true,loading=false,calls=0,resolve;
  const registry=createViewerSessions({now:()=>tick,ttl:1000});
- const details={projectId:'project-a',serviceId:'service-a',owner:'owner-a',targetId:'target-a',alive:()=>alive,describe:()=>({title:'A private title',url:'http://a.invalid',loading}),capture:async()=>{calls++;if(resolve)await new Promise(done=>{resolve.done=done});return {dataUrl:'data:image/png;base64,eA==',width:1920,height:1080,capturedAt:'2026-11-02T00:00:00Z'}},evidence:async()=>({available:true})};
+ const details={projectId:'project-a',serviceId:'service-a',owner:'owner-a',targetId:'target-a',alive:()=>alive,describe:()=>({title:'A private title',url:'http://a.invalid',loading}),capture:async()=>{calls++;if(capture)return capture();if(resolve)await new Promise(done=>{resolve.done=done});return {dataUrl:'data:image/png;base64,eA==',width:1920,height:1080,capturedAt:'2026-11-02T00:00:00Z'}},evidence};
  const sessionId=registry.register(details);registry.register({...details,projectId:'project-b',owner:'owner-b',targetId:'target-b',describe:()=>({title:'B secret',url:'http://secret.invalid'})});
  const binding={consumer:'consumer-a',contextId:'draft-a',projectId:'project-a',reviewId:'review-a',generation:1};registry.setContext(binding);
  const begin=()=>registry.begin({...binding,sessionId,epoch:1});
@@ -91,4 +91,30 @@ test('begin requires the exact valid draft generation rather than an unpinned in
  assert.throws(()=>f.registry.begin({...f.binding,generation:2,sessionId:f.sessionId,epoch:1}),{code:'STALE_CAPTURE'});
  const {intentId}=f.begin();f.registry.setContext({...f.binding,generation:2});
  await assert.rejects(f.registry.capture('consumer-a',intentId),{code:'STALE_CAPTURE'});
+});
+
+test('overlapping capture or preview on one intent is busy without duplicating the adapter or invalidating the first proof',async()=>{
+ for(const duplicatePreview of [false,true]){
+  const f=fixture(),{intentId}=f.begin(),finish=f.defer(),first=f.registry.capture('consumer-a',intentId);await Promise.resolve();
+  await assert.rejects(f.registry.capture('consumer-a',intentId,{preview:duplicatePreview}),{code:'CAPTURE_BUSY'});assert.equal(f.calls,1);
+  finish();const completed=await first;assert.equal(f.registry.freeze('consumer-a',completed.captureProof).bytes.toString(),'x');
+ }
+});
+test('the same-intent single flight covers evidence collection and permits a later sequential capture',async()=>{
+ let finishEvidence,evidenceCalls=0;const evidence=new Promise(resolve=>{finishEvidence=resolve;}),f=fixture({evidence:()=>{evidenceCalls++;return evidence;}}),{intentId}=f.begin(),first=f.registry.capture('consumer-a',intentId);await Promise.resolve();await Promise.resolve();assert.equal(evidenceCalls,1);
+ await assert.rejects(f.registry.capture('consumer-a',intentId),{code:'CAPTURE_BUSY'});assert.equal(f.calls,1);finishEvidence({available:true});const original=await first;assert.equal(f.registry.freeze('consumer-a',original.captureProof).bytes.toString(),'x');
+ const next=await f.registry.capture('consumer-a',intentId);assert.equal(f.calls,2);assert.equal(f.registry.freeze('consumer-a',next.captureProof).bytes.toString(),'x');assert.throws(()=>f.registry.freeze('consumer-a',original.captureProof),{code:'STALE_CAPTURE'});
+});
+test('preview-first overlap rejects a capture without fabricating a preview proof and releases on success',async()=>{
+ const f=fixture(),{intentId}=f.begin(),finish=f.defer(),first=f.registry.capture('consumer-a',intentId,{preview:true});await Promise.resolve();await assert.rejects(f.registry.capture('consumer-a',intentId),{code:'CAPTURE_BUSY'});finish();assert.equal((await first).captureProof,undefined);const finishNext=f.defer(),next=f.registry.capture('consumer-a',intentId);await Promise.resolve();finishNext();assert.ok((await next).captureProof);assert.equal(f.calls,2);
+});
+test('single-flight rejection does not leak intent activity to another consumer and cancelled late work still fails closed',async()=>{
+ const f=fixture(),{intentId}=f.begin(),finish=f.defer(),first=f.registry.capture('consumer-a',intentId);await Promise.resolve();await assert.rejects(f.registry.capture('consumer-b',intentId),{code:'STALE_CAPTURE'});f.registry.end('consumer-a',intentId);finish();await assert.rejects(first,{code:'STALE_CAPTURE'});assert.equal(f.calls,1);
+ const replacement=f.begin(),finishNext=f.defer(),next=f.registry.capture('consumer-a',replacement.intentId);await Promise.resolve();finishNext();assert.ok((await next).captureProof);
+});
+test('adapter and evidence failures release only their own single-flight slot for a deliberate retry',async()=>{
+ for(const phase of ['capture','evidence']){
+  let attempts=0;const problem=new Error('synthetic '+phase+' failure'),image={dataUrl:'data:image/png;base64,eA==',width:1,height:1,capturedAt:'2026-11-02T00:00:00Z'};
+  const f=fixture(phase==='capture'?{capture:async()=>{if(++attempts===1)throw problem;return image;}}:{evidence:async()=>{if(++attempts===1)throw problem;return {available:true};}}),{intentId}=f.begin();await assert.rejects(f.registry.capture('consumer-a',intentId),error=>error===problem);assert.ok((await f.registry.capture('consumer-a',intentId)).captureProof);assert.equal(f.calls,2);
+ }
 });

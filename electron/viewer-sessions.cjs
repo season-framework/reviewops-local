@@ -9,7 +9,7 @@ function cropRectangle(rect,width,height){
   return {x:rect.x,y:rect.y,width:rect.width,height:rect.height};
 }
 function createViewerSessions({now=()=>Date.now(),ttl=30*60*1000}={}){
- const sources=new Map(),contexts=new Map(),intents=new Map(),proofs=new Map();
+ const sources=new Map(),contexts=new Map(),intents=new Map(),proofs=new Map(),pendingCaptures=new WeakMap();
  const key=(consumer,id)=>JSON.stringify([consumer,id]);
  const prune=()=>{for(const map of [contexts,intents,proofs])for(const [id,v] of map)if(v.expires<=now())map.delete(id);};
  function source(id,projectId,epoch){
@@ -57,6 +57,9 @@ function createViewerSessions({now=()=>Date.now(),ttl=30*60*1000}={}){
   end(consumer,id){const i=intents.get(id);if(i?.consumer===consumer){intents.delete(id);for(const [key,p] of proofs)if(p.intentId===id)proofs.delete(key);}},
   async capture(consumer,id,{preview=false}={}){
    const {i,c}=intent(consumer,id),s=source(i.sessionId,c.projectId,i.epoch);
+   if(pendingCaptures.has(i))fail('CAPTURE_BUSY','이 화면의 다른 캡처가 진행 중입니다. 잠시 후 다시 시도하십시오.');
+   const attempt={};pendingCaptures.set(i,attempt);
+   try{
    if(s.describe().loading)fail('FRAME_NOT_READY','페이지를 불러온 뒤 다시 캡처하십시오.');
    const captured=await s.capture();intent(consumer,id);
    if(s.describe().loading)fail('FRAME_NOT_READY','페이지가 변경 중입니다. 다시 캡처하십시오.');
@@ -69,6 +72,7 @@ function createViewerSessions({now=()=>Date.now(),ttl=30*60*1000}={}){
    for(const [key,p] of proofs)if(p.intentId===id)proofs.delete(key);
    const proofId=crypto.randomUUID();proofs.set(proofId,{intentId:id,consumer,contextId:c.contextId,projectId:c.projectId,reviewId:c.reviewId,purpose:c.purpose,activityId:c.activityId,requestId:c.requestId,generation:c.generation,sessionId:s.id,epoch:s.epoch,bytes,source:provenance,expires:now()+ttl});
    return {...captured,captureProof:proofId,source:provenance,evidence:{...evidence,capture_source:provenance},capabilities};
+   }finally{if(pendingCaptures.get(i)===attempt)pendingCaptures.delete(i);}
   },
   freeze(consumer,proofId,rect){
    const p=proofs.get(proofId);if(!p||p.consumer!==consumer||p.expires<=now())fail('STALE_CAPTURE','캡처가 취소되거나 만료되었습니다. 다시 캡처하십시오.');

@@ -24,7 +24,7 @@ function LiveHomeCapture({request,invoke,onFinish}){
  const live=useRef(true),intent=useRef(''),accepted=useRef(false),sequence=useRef(0);
  const projectId=request.review.projectId,reviewId=request.review.id,context=request.options.captureContext;
  useEffect(()=>{live.current=true;invoke('viewerSession.list',{projectId,reviewId}).then(value=>{if(live.current){setSessions(value.sessions);if(value.sessions.length===1)setSelected(value.sessions[0].sessionId)}}).catch(cause=>{if(live.current)setError(cause.message)});return()=>{live.current=false;sequence.current++;if(intent.current&&!accepted.current)invoke('viewerSession.end',{intentId:intent.current}).catch(()=>{})}},[]);
- const run=async action=>{setBusy(true);setError('');const revision=++sequence.current;try{await action(revision)}catch(cause){if(live.current&&revision===sequence.current){setError(cause.message);if(['SESSION_GONE','TARGET_CHANGED','STALE_CAPTURE'].includes(cause.code))setPreview(null)}}finally{if(live.current&&revision===sequence.current)setBusy(false)}};
+ const run=async action=>{setBusy(true);setError('');const revision=++sequence.current;try{await action(revision)}catch(cause){if(live.current&&revision===sequence.current){setError(t(cause.message));if(['SESSION_GONE','TARGET_CHANGED','STALE_CAPTURE'].includes(cause.code))setPreview(null)}}finally{if(live.current&&revision===sequence.current)setBusy(false)}};
  const connect=()=>run(async revision=>{
   if(!context)throw new Error(t('작성 화면에서 캡처를 다시 시작하십시오.'));
   if(intent.current)await invoke('viewerSession.end',{intentId:intent.current});

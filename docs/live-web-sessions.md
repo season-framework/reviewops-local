@@ -21,6 +21,16 @@
 
 기존 파일 미리보기·일반 파일 첨부·직접 뷰어 toolbar의 저장 동작은 기존 경로를 사용한다. 이 증분의 intent/frozen 검증은 프로젝트·홈 리뷰 작성기의 세션 캡처와 기존 작업이력 편집·에이전트 앨범의 새 캡처 경로에 적용한다. 에이전트 초안은 같은 consumer와 저장된 초안 ID에 수락한 사진을 유지하며, 패널을 벗어나면 수락 전 요청만 중단하고 명시적 초안 삭제·수정 취소 때 작성 context를 폐기한다.
 
+## 숨겨진 원본의 native 캡처 수명
+
+숨긴 프로젝트 화면은 native compositor가 프레임을 내보내지 않아 캡처가 대기하거나 이전 프레임을 반환할 수 있다. `electron/browser-capture.cjs`는 실제 캡처 요청 동안 그 대상 WebContents의 `backgroundThrottling`을 임시로 끄고, 완료·거절·동기 오류 때 이전 boolean을 복원한다. 원래 꺼져 있던 대상은 그대로 유지한다. 기존 `capturePage(undefined,{stayHidden:true})`의 NativeImage와 PNG 바이트·픽셀 크기·자르기 경로를 사용한다.
+
+이 임시 설정은 [Electron의 Page Visibility 동작](https://www.electronjs.org/docs/latest/api/web-contents/#contentssetbackgroundthrottlingallowed)에도 영향을 준다. 숨긴 페이지가 캡처 중 `visible`로 바뀌고 복원 뒤 `hidden`으로 돌아가므로 페이지의 visibility 이벤트와 타이머가 동작할 수 있다. 창을 표시하거나 포커스를 옮기는 방식은 사용하지 않으며 원본 WebContents·URL·폼을 유지한다. 합성 실험의 폼과 요청 수 보존은 실제 웹사이트의 visibility 이벤트 동작을 대신 검증하지 않는다.
+
+대상 WebContents에는 native 캡처 하나만 진행할 수 있다. 별도로 같은 intent의 캡처와 evidence 수집이 끝나기 전 중복 요청도 `CAPTURE_BUSY`로 거절한다. 서로 다른 작성 세대가 같은 대기 프레임을 공유하지 않는다. 원본 종료·renderer 종료는 native 요청의 호출자를 실패시키고 가능한 설정 복원을 마친다. 이후 도착한 이전 native 결과는 새 renderer의 캡처 설정이나 결과를 정리하지 않는다. 원래 native Promise 자체에는 취소 API가 없으며 이 변경은 별도 시간제한을 추가하지 않는다.
+
+복원 setter가 renderer 전환 중 실패한 경우에는 다음 캡처를 시작하기 전에 저장된 원래 설정 복원을 재시도한다. 설정 복원 중 원본이 종료돼도 성공한 사진으로 반환하지 않는다. 기존 consumer·context·generation·session/epoch 검사는 각 비동기 경계 뒤에서 계속 적용한다.
+
 ## 제공 범위와 검사
 
 실제로 연결된 provider는 웹 화면이며, 공유 미리보기의 input과 virtual-display capability는 `false`, OS 캡처 권한은 `notRequired`이다. OS 가상 모니터 생성, native 앱 캡처·입력, 드라이버, OS 권한·설정 변경과 외부 네트워크 공개 기능은 구현하지 않았다. #8·#9의 가상 모니터 완료를 뜻하지 않는다.
@@ -28,7 +38,7 @@
 관련 검사:
 
 ```sh
-node --test tests/viewer-sessions.test.cjs tests/browser-manager.test.cjs tests/review-capture.test.cjs tests/store.test.cjs
+node --test tests/viewer-sessions.test.cjs tests/browser-capture.test.cjs tests/browser-manager.test.cjs tests/review-capture.test.cjs tests/store.test.cjs
 npm run build
 node scripts/e2e-live-web-sessions.mjs
 node scripts/e2e-screenshots.mjs

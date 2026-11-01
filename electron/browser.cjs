@@ -2,6 +2,7 @@
 const { BrowserWindow, WebContentsView, session, screen } = require('electron');
 const crypto = require('node:crypto');
 const {createEvidenceRecorder} = require('./browser-evidence.cjs');
+const {createNativeCaptureLease} = require('./browser-capture.cjs');
 
 // Start a separate cookie store instead of attempting to decrypt legacy
 // Keychain-encrypted cookies. The previous partition is left intact.
@@ -202,6 +203,7 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
         clipWindow.contentView.addChildView(view);
         clipWindow.on('close',event=>{if(!window.isDestroyed())event.preventDefault();});
         const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),rendererGone:false,recoveryRevision:0,contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
+        item.captureLease=createNativeCaptureLease(view.webContents,{alive:()=>views.get(item.id)===item&&!item.rendererGone&&!view.webContents.isCrashed?.()});
         views.set(item.id,item);onCreated(item);
         view.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)onChanged(item,false);});
         view.webContents.on('render-process-gone',()=>{item.rendererGone=true;item.recoveryRevision++;item.recovery=null;onClosed(item);});
@@ -258,12 +260,12 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
       }
       if (action === 'browser.state') { syncWindow(item);return state(item); }
       if (action === 'browser.capture') {
-        if (!item.emulation || item.error || !contents.getURL()) throw new Error('캡처할 화면을 먼저 여십시오.');
+        if (!item.emulation || item.error || item.rendererGone || !contents.getURL()) throw new Error('캡처할 화면을 먼저 여십시오.');
         const bounds=item.view.getBounds(),density=screen.getDisplayMatching(item.clipWindow.getBounds()).scaleFactor;
         if (bounds.width*bounds.height*density*density>64*1024*1024) throw new Error('캡처할 화면이 너무 큽니다. 화면 크기나 배율을 줄인 뒤 다시 캡처하십시오.');
         // Capture the external page itself. Capturing the host window excludes
         // WebContentsView, while desktop capture could include unrelated apps.
-        return contents.capturePage(undefined,{stayHidden:true}).then(image => {
+        return item.captureLease.capture(()=>contents.capturePage(undefined,{stayHidden:true})).then(image => {
           if (image.isEmpty()) throw new Error('스크린샷을 만들지 못했습니다. 화면을 다시 불러오십시오.');
           const png=image.toPNG(),capturedAt=new Date().toISOString();
           if (png.length > 20*1024*1024) throw new Error('스크린샷이 20 MB를 초과했습니다. 화면 크기를 줄인 뒤 다시 캡처하십시오.');

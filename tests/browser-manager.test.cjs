@@ -7,6 +7,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {EventEmitter}=require('node:events');
 const {createEvidenceRecorder}=require('../electron/browser-evidence.cjs');
+const {createNativeCaptureLease}=require('../electron/browser-capture.cjs');
 
 function harness(t) {
   const sessions=new Map(),views=[],windows=[],managers=[];
@@ -25,11 +26,14 @@ function harness(t) {
   }
   class Contents extends EventEmitter {
     constructor(preferences={}) {
-      super();this.id=++contentsId;this.preferences=preferences;this.url='';this.destroyed=false;
+      super();this.id=++contentsId;this.preferences=preferences;this.url='';this.destroyed=false;this.backgroundThrottling=preferences.backgroundThrottling!==false;
       this.debugger=Object.assign(new EventEmitter(),{attached:false,isAttached(){return this.attached;},attach(){this.attached=true;},async sendCommand(){}});
       this.navigationHistory={canGoBack:()=>false,canGoForward:()=>false};
     }
     isDestroyed(){return this.destroyed;}
+    isCrashed(){return false;}
+    getBackgroundThrottling(){return this.backgroundThrottling;}
+    setBackgroundThrottling(value){this.backgroundThrottling=value;}
     getZoomFactor(){return 1;}
     getURL(){return this.url;}
     getTitle(){return this.url;}
@@ -69,6 +73,7 @@ function harness(t) {
     require(name){
       if(name==='electron')return {BrowserWindow:Window,WebContentsView:View,session:{fromPartition:sessionFor},screen:{getDisplayMatching:()=>({scaleFactor:1})}};
       if(name==='./browser-evidence.cjs')return {createEvidenceRecorder};
+      if(name==='./browser-capture.cjs')return {createNativeCaptureLease};
       return require(name);
     },URL,Buffer
   });
@@ -145,4 +150,21 @@ test('a crashed retained WebContents advertises recovery only after its load and
  contents.emit('did-start-navigation',{},'https://fixture.invalid/recovery',false,true);assert.equal(events.at(-1).gone,true);
  contents.emit('did-finish-load');await item.recovery;assert.equal(item.rendererGone,false);assert.deepEqual(events.at(-1),{gone:false,contextChanged:false});assert.equal((await manager.dispatch('browser.state',{id:opened.id})).id,opened.id);assert.equal(h.views.length,1);
  contents.emit('render-process-gone');contents.emit('did-finish-load');manager.closeAll();await item.recovery;assert.equal(events.at(-1).closed,true);assert.equal(item.rendererGone,true);
+});
+
+test('native capture keeps the same source, hidden window, exact native options and original PNG bytes',async t=>{
+ const h=harness(t),host=new h.Window(),manager=h.manager(host),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/native-capture'}),contents=h.views[0].webContents,child=h.windows.find(window=>window.options.parent===host);
+ const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==','base64');
+ let resolve,entered;const ready=new Promise(done=>{entered=done;}),raw=new Promise(done=>{resolve=done;});let calls=0;
+ contents.capturePage=function(...args){assert.equal(this,contents);assert.equal(this.getBackgroundThrottling(),false);assert.equal(args[0],undefined);assert.equal(args[1].stayHidden,true);assert.equal(args.length,2);calls++;entered();return raw;};
+ const capture=manager.dispatch('browser.capture',{id:opened.id});await ready;await assert.rejects(manager.dispatch('browser.capture',{id:opened.id}),{code:'CAPTURE_BUSY'});assert.equal(calls,1);
+ resolve({isEmpty:()=>false,toPNG:()=>png});const result=await capture;assert.equal(result.dataUrl,'data:image/png;base64,'+png.toString('base64'));assert.equal(result.width,1);assert.equal(result.height,1);assert.equal(result.url,'https://fixture.invalid/native-capture');assert.equal(contents.getBackgroundThrottling(),true);assert.equal(h.views.length,1);assert.equal(child.isVisible(),false);
+});
+
+test('renderer exit cancels native capture and the gone flag blocks capture even when isCrashed is false',async t=>{
+ const h=harness(t);let item;
+ const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/gone'}),contents=h.views[0].webContents;
+ let entered;const ready=new Promise(done=>{entered=done;});let nativeCalls=0;contents.capturePage=()=>{nativeCalls++;entered();return new Promise(()=>{});};
+ const pending=manager.dispatch('browser.capture',{id:opened.id});await ready;const rejected=assert.rejects(pending,{code:'SESSION_GONE'});contents.emit('render-process-gone');await rejected;assert.equal(contents.getBackgroundThrottling(),true);
+ contents.emit('did-start-loading');assert.equal(item.error,'');assert.equal(item.rendererGone,true);await assert.rejects(manager.dispatch('browser.capture',{id:opened.id}),/캡처할 화면/);assert.equal(nativeCalls,1);
 });

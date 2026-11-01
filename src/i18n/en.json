@@ -1626,5 +1626,7 @@
   "열려 있는 웹 검사 화면이 없습니다. 프로젝트에서 화면을 연 뒤 다시 캡처하십시오.": "No web page is open for inspection. Open a page in the project, then start capture again.",
   "웹 화면": "Web page",
   "대상 다시 선택": "Select another page",
-  "실행 중인 웹 화면 미리보기": "Live web page preview"
+  "실행 중인 웹 화면 미리보기": "Live web page preview",
+  "이 화면의 다른 캡처가 진행 중입니다. 잠시 후 다시 시도하십시오.": "Another capture of this page is in progress. Try again shortly.",
+  "원본 검사 화면이 종료되었습니다. 프로젝트에서 화면을 다시 선택하십시오.": "The source page has closed. Select a page again in the project."
 }
