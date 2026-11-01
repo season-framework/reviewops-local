@@ -120,12 +120,15 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
   }
   async function navigate(item, url) {
     const target = browserUrl(url);
+    const revision = ++item.navigationRevision;
     await item.emulationPromise;
     get(item.id);
+    if(revision!==item.navigationRevision)return state(item);
     item.requestedUrl = target; item.error = '';
     // Loading must not hold the UI IPC queue while a slow site responds.
+    // Electron's numeric net error is errno; an aborted load can have empty code text.
     item.view.webContents.loadURL(item.requestedUrl).catch(error => {
-      if (views.has(item.id) && error.code !== 'ERR_ABORTED') item.error = `화면을 열지 못했습니다. ${error.code || error.message}`;
+      if (views.get(item.id)===item && revision===item.navigationRevision && error.errno !== -3 && error.code !== 'ERR_ABORTED') item.error = `화면을 열지 못했습니다. ${error.code || error.message}`;
     });
     return state(item);
   }
@@ -202,7 +205,7 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
         });
         clipWindow.contentView.addChildView(view);
         clipWindow.on('close',event=>{if(!window.isDestroyed())event.preventDefault();});
-        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),rendererGone:false,recoveryRevision:0,contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
+        const item = {id:crypto.randomUUID(),view,clipWindow,visible:false,area:null,layoutRevision:0,navigationRevision:0,popups:new Set(),requestedUrl:url,error:'',emulation:null,appliedEmulation:null,emulationPromise:Promise.resolve(),rendererGone:false,recoveryRevision:0,contextId:typeof payload.contextId==='string'?payload.contextId.slice(0,120):'',projectId:typeof payload.projectId==='string'?payload.projectId:''};
         item.captureLease=createNativeCaptureLease(view.webContents,{alive:()=>views.get(item.id)===item&&!item.rendererGone&&!view.webContents.isCrashed?.()});
         views.set(item.id,item);onCreated(item);
         view.webContents.on('did-start-navigation',(_event,_url,_inPlace,isMainFrame)=>{if(isMainFrame)onChanged(item,false);});

@@ -168,3 +168,46 @@ test('renderer exit cancels native capture and the gone flag blocks capture even
  const pending=manager.dispatch('browser.capture',{id:opened.id});await ready;const rejected=assert.rejects(pending,{code:'SESSION_GONE'});contents.emit('render-process-gone');await rejected;assert.equal(contents.getBackgroundThrottling(),true);
  contents.emit('did-start-loading');assert.equal(item.error,'');assert.equal(item.rendererGone,true);await assert.rejects(manager.dispatch('browser.capture',{id:opened.id}),/캡처할 화면/);assert.equal(nativeCalls,1);
 });
+
+test('Electron numeric aborted navigation with empty description does not poison the capture guard',async t=>{
+ const h=harness(t),manager=h.manager(new h.Window()),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ const aborted=Object.assign(new Error(" (-3) loading 'https://fixture.invalid/a'"),{errno:-3,code:''});
+ contents.loadURL=async url=>{contents.url=url;throw aborted;};
+ await manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/a'});await Promise.resolve();assert.equal((await manager.dispatch('browser.state',{id:opened.id})).error,'');
+ let captures=0;const png=Buffer.alloc(24);png.writeUInt32BE(1,16);png.writeUInt32BE(1,20);contents.capturePage=async()=>{captures++;return {isEmpty:()=>false,toPNG:()=>png};};
+ await manager.dispatch('browser.capture',{id:opened.id});assert.equal(captures,1);
+});
+
+test('legacy ERR_ABORTED stays ignored but numeric/string and genuine current failures remain distinct',async t=>{
+ const h=harness(t),manager=h.manager(new h.Window()),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ for(const entry of [
+  {error:Object.assign(new Error('legacy abort'),{code:'ERR_ABORTED'}),expected:''},
+  {error:Object.assign(new Error('numeric-looking text is not an abort'),{errno:'-3',code:''}),expected:'화면을 열지 못했습니다. numeric-looking text is not an abort'},
+  {error:Object.assign(new Error('real error mentioning ERR_ABORTED'),{errno:-105,code:''}),expected:'화면을 열지 못했습니다. real error mentioning ERR_ABORTED'},
+  {error:Object.assign(new Error('connection refused'),{errno:-102,code:'ERR_CONNECTION_REFUSED'}),expected:'화면을 열지 못했습니다. ERR_CONNECTION_REFUSED'}
+ ]) {
+  contents.loadURL=async url=>{contents.url=url;throw entry.error;};await manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/a'});await Promise.resolve();assert.equal((await manager.dispatch('browser.state',{id:opened.id})).error,entry.expected);
+ }
+});
+
+test('an older load rejection cannot overwrite a newer navigation even when both URLs are identical',async t=>{
+ for(const sameUrl of [false,true])for(const newestFailsFirst of [false,true])await t.test(`${sameUrl?'same':'different'} URL; ${newestFailsFirst?'new':'old'} rejects first`,async t=>{
+  const h=harness(t),manager=h.manager(new h.Window()),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;const loads=[];
+  contents.loadURL=url=>{contents.url=url;return new Promise((_resolve,reject)=>loads.push({url,reject}));};
+  await manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/first'});await manager.dispatch('browser.navigate',{id:opened.id,url:sameUrl?'https://fixture.invalid/first':'https://fixture.invalid/second'});assert.equal(loads.length,2);
+  const failOld=()=>loads[0].reject(Object.assign(new Error('older request failed'),{errno:-105,code:'ERR_NAME_NOT_RESOLVED'})),failNew=()=>loads[1].reject(Object.assign(new Error('latest request failed'),{errno:-102,code:'ERR_CONNECTION_REFUSED'}));
+  if(newestFailsFirst){failNew();await Promise.resolve();failOld();}else{failOld();await Promise.resolve();assert.equal((await manager.dispatch('browser.state',{id:opened.id})).error,'');failNew();}
+  await Promise.resolve();assert.equal((await manager.dispatch('browser.state',{id:opened.id})).error,'화면을 열지 못했습니다. ERR_CONNECTION_REFUSED');
+ });
+});
+
+test('only the latest navigate request starts after a pending emulation update',async t=>{
+ const h=harness(t);let item;const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ let ready;item.emulationPromise=new Promise(resolve=>{ready=resolve;});const loaded=[];contents.loadURL=async url=>{loaded.push(url);contents.url=url;};
+ const first=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/old'}),second=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/new'});ready();await Promise.all([first,second]);assert.deepEqual(loaded,['https://fixture.invalid/new']);
+});
+
+test('a delayed navigation failure cannot change a closed browser item',async t=>{
+ const h=harness(t);let item;const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ let reject;contents.loadURL=()=>new Promise((_resolve,no)=>{reject=no;});await manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/old'});await manager.dispatch('browser.close',{id:opened.id});reject(new Error('late closed request'));await Promise.resolve();assert.equal(item.error,'');
+});
