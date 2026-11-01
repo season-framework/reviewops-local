@@ -4,7 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import {randomUUID} from 'node:crypto';
 import {fileURLToPath} from 'node:url';
-import {executionRefusal, inventoryDifference, verifyNativeResult} from './policy.mjs';
+import {executionRefusal, inventoryDifference, verifyNativeResult, objectiveCOwnershipFlags} from './policy.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const output = path.join(root, 'test-results/virtual-display-probe');
@@ -38,7 +38,7 @@ try {
   if(process.platform!=='darwin')throw new Error('Compilation requires macOS/Xcode.');
   if(ci){const refusal=executionRefusal(process.env);if(refusal)throw new Error(refusal);if(process.env.GITHUB_SHA!==result.source||result.dirty)throw new Error('checkout-source-mismatch-or-dirty');if(process.env.PROBE_EXPECTED_ARCH!==process.arch)throw new Error('runner-architecture-mismatch')}
   const binary=path.join(output,'probe');
-  const args=['clang','-fobjc-arc','-fmodules','-Wall','-Wextra','-Werror','-mmacosx-version-min=13.0',...(ci?['-DREVIEWOPS_VIRTUAL_DISPLAY_CI_EXECUTION=1']:[]),'experiments/macos-virtual-display/probe.m','-framework','Foundation','-framework','AppKit','-framework','CoreGraphics','-o',binary];
+  const args=['clang',...objectiveCOwnershipFlags,'-fmodules','-Wall','-Wextra','-Werror','-mmacosx-version-min=13.0',...(ci?['-DREVIEWOPS_VIRTUAL_DISPLAY_CI_EXECUTION=1']:[]),'experiments/macos-virtual-display/probe.m','-framework','Foundation','-framework','AppKit','-framework','CoreGraphics','-o',binary];
   const built=await bounded('xcrun',args,60000);
   fs.writeFileSync(path.join(output,'compile.log'),built.stdout+built.stderr);
   result.build={status:built.status,reason:built.reason,ciExecutionCompiled:ci};

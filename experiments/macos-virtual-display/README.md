@@ -55,6 +55,12 @@ helper 단계 대기는 최대 38초, launcher의 child watchdog은 70초 후 SI
 
 이 결과는 요청 mode가 15초 동안 1×1에 고정됐다는 근거가 아니므로 추가 mode 설정 호출을 도입하지 않았다. 정리 진단의 보완이 기존 화면 변경 실패를 없애는 것은 아니다.
 
+## 예외 경로의 소유 객체 정리
+
+이 helper는 Objective-C 예외를 잡은 뒤 정리를 계속하므로 `-fobjc-arc-exceptions`로 빌드한다. 기본 pure Objective-C ARC에서는 예외로 빠져나간 strong 인자·임시 참조가 해제되지 않을 수 있다. 로컬 컴파일 IR에서 `observeOwnedMode`의 strong display 인자가 기본 옵션의 예외 경로에서는 해제되지 않고, 위 옵션을 더하면 unwind 해제가 생성됨을 확인했다. 같은 O0·Foundation-only 재현도 기본 옵션은 해제 0회, helper 옵션은 1회였다. 회귀 검사는 실제 NSObject의 dealloc 횟수를 읽으며 디스플레이·AppKit·CoreGraphics API를 사용하지 않는다.
+
+이는 ARM에서 실패 후 새 owned ID가 프로세스 종료까지 남는 현상에 대응하는 독립적인 정리 버그 수정이다. 최초 기존 ID 1의 크기 변경을 해결했다거나 ARM 수명 검사가 통과했다고 주장하지 않는다. 모드 설정·기존 상태 검사 기준은 바꾸지 않는다. 근거는 [Chromium의 ARC 옵션 설명](https://chromium.googlesource.com/chromium/src/+/277ddb534fd7467b6d33cbbe623121fb21c4fe4f/build/config/compiler/BUILD.gn)과 [Chromium 도구체인의 ARC 예외 명세](https://chromium.googlesource.com/native_client/pnacl-clang/+/99a5501f5ae5b75017dfc386d4abf648234e85df/docs/AutomaticReferenceCounting.rst)다. Chromium은 예외를 fatal로 취급하지만 본 helper는 예외 이후 정리가 필요하므로 같은 옵션 정책을 그대로 따를 수 없다.
+
 ## 출처와 라이선스
 
 - [Chromium 고정 소스](https://chromium.googlesource.com/chromium/src/+/1b72286560637710932b4ef43908d0d6a121a432/ui/display/mac/test/virtual_display_util_mac.mm): binary-generated private 인터페이스, macOS 14의 nonzero vendor/고유 serial 조건, 객체 수명에 따른 제거의 참고 자료다. 최소 ABI 선언은 이를 참고해 별도 protocol로 줄였다. Chromium의 별도 mode 선택·first-removal workaround·headless 제약을 임의로 지원 완료로 바꾸지 않는다. 본 증분은 추가 mode 설정이나 두 번째 display workaround를 사용하지 않는다. 파생 인터페이스의 저작권 표시와 [원본 BSD license](CHROMIUM-LICENSE)를 보존했다.

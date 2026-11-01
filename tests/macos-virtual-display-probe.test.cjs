@@ -1,5 +1,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
+const fs=require('node:fs'),os=require('node:os'),path=require('node:path');
+const {spawnSync}=require('node:child_process');
 const modulePromise=import('../experiments/macos-virtual-display/policy.mjs');
 const env={GITHUB_ACTIONS:'true',CI:'true',RUNNER_ENVIRONMENT:'github-hosted',RUNNER_OS:'macOS',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_REF:'refs/heads/codex/macos-virtual-display-prototype',GITHUB_EVENT_NAME:'push',GITHUB_SHA:'a'.repeat(40)};
 test('lifecycle refuses local/self-hosted/other-branch/PR/repository and incomplete runner contexts',async()=>{
@@ -8,6 +10,22 @@ test('lifecycle refuses local/self-hosted/other-branch/PR/repository and incompl
  for(const key of Object.keys(env)){const altered={...env};delete altered[key];assert.ok(executionRefusal(altered,'darwin','x64'),key)}
  for(const [key,value] of Object.entries({RUNNER_ENVIRONMENT:'self-hosted',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY:'other/repo'}))assert.ok(executionRefusal({...env,[key]:value},'darwin','arm64'));
  assert.equal(executionRefusal(env,'darwin','x64'),null);assert.equal(executionRefusal(env,'darwin','arm64'),null);assert.ok(executionRefusal(env,'linux','x64'));
+});
+test('caught Objective-C failure releases the owned strong parameter before cleanup',{
+ skip:process.platform!=='darwin'?'Foundation lifetime regression requires macOS; no display APIs':false,
+ timeout:20000
+},async()=>{
+ const {objectiveCOwnershipFlags}=await modulePromise;
+ const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-owned-unwind-'));
+ try{
+  const binary=path.join(temporary,'helper');
+  const built=spawnSync('xcrun',['clang','-O0',...objectiveCOwnershipFlags,'-fmodules','-Wall','-Wextra','-Werror',path.join(__dirname,'fixtures/macos-display-owned-unwind.m'),'-framework','Foundation','-o',binary],{encoding:'utf8',timeout:10000,maxBuffer:64*1024});
+  assert.equal(built.status,0,built.stderr||built.error?.message);
+  const ran=spawnSync(binary,[],{encoding:'utf8',timeout:3000,maxBuffer:4096});
+  assert.equal(ran.status,0,ran.stderr||ran.error?.message);
+  const observed=JSON.parse(ran.stdout);assert.equal(observed.caught,true);
+  assert.equal(observed.deallocationsBeforePoolExit,1,'helper flags must release the real NSObject before cleanup');
+ }finally{fs.rmSync(temporary,{recursive:true,force:true})}
 });
 const baseline={id:1,bounds:{x:0,y:0,width:1280,height:800},online:true,active:true,modeWidth:1280,modeHeight:800};
 const owned={id:2,bounds:{x:1280,y:0,width:1920,height:1080},online:true,active:true,mirrored:false,modeAvailable:true,modeWidth:1920,modeHeight:1080,pixelWidth:1920,pixelHeight:1080,vendor:505,serial:77};

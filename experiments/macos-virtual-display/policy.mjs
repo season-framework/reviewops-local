@@ -1,6 +1,8 @@
 // No native calls or dependencies: the launcher and its tests share this gate.
 export const branch = 'refs/heads/codex/macos-virtual-display-prototype';
 export const repository = 'season-framework/reviewops-local';
+// This helper catches Objective-C exceptions and continues into owned cleanup.
+export const objectiveCOwnershipFlags = ['-fobjc-arc', '-fobjc-arc-exceptions'];
 export function executionRefusal(env, platform = process.platform, arch = process.arch) {
   if (platform !== 'darwin' || !['arm64', 'x64'].includes(arch)) return 'unsupported-platform';
   const exact = {GITHUB_ACTIONS:'true', CI:'true', RUNNER_ENVIRONMENT:'github-hosted', RUNNER_OS:'macOS', GITHUB_REPOSITORY:repository, GITHUB_REF:branch, GITHUB_EVENT_NAME:'push'};
