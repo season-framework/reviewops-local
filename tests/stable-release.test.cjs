@@ -123,9 +123,35 @@ test('workflow keeps native targets, reviewed SHA, read-only collection and expl
 });
 test('real draft adapter fixes draft=true and rejects mismatched version input before transmission',async()=>{
  const {githubStore}=await import('../scripts/upload-windows-release.mjs'),{assertDraftEnvironment}=await load(),calls=[];
- const store=githubStore({token:'synthetic-only',env:env(),platform:'linux',assertEnvironment:assertDraftEnvironment,fetchImpl:async(url,options)=>{calls.push({url,options});return {ok:true,json:async()=>({id:3})}}});
+ const store=githubStore({token:'synthetic-only',env:env(),platform:'linux',assertEnvironment:assertDraftEnvironment,fetchImpl:async(url,options)=>{calls.push({url,options});return Response.json({id:3,tag_name:`v${version}`,target_commitish:commit,draft:true,prerelease:false,immutable:false})}});
  await store.createDraft({version,commit,tag:`v${version}`});const body=JSON.parse(calls[0].options.body);assert.equal(body.draft,true);assert.equal(body.prerelease,false);assert.equal(body.target_commitish,commit);assert.equal(calls[0].options.headers['Content-Type'],'application/json');
  await assert.rejects(store.createDraft({version:'1.3.0',commit,tag:'v1.3.0'}));assert.equal(calls.length,1);
+});
+test('a created draft ID bypasses a stale listing and is still re-read before use',async()=>{
+ const {githubStore}=await import('../scripts/upload-windows-release.mjs'),{assertDraftEnvironment}=await load(),calls=[];
+ let release={id:71,tag_name:`v${version}`,target_commitish:commit,draft:true,prerelease:false,immutable:false};
+ const store=githubStore({token:'synthetic-only',env:env(),platform:'linux',assertEnvironment:assertDraftEnvironment,fetchImpl:async(input,options)=>{
+  const url=new URL(input);calls.push({path:url.pathname,method:options.method});
+  if(options.method==='POST'){assert.ok(url.pathname.endsWith('/releases'));return Response.json(release)}
+  if(url.pathname.endsWith('/releases'))return Response.json([]); // Creation is not yet visible in listing.
+  assert.ok(url.pathname.endsWith('/releases/71'));return Response.json(release);
+ }});
+ const plan={version,commit,tag:`v${version}`};assert.equal(await store.getRelease(plan.tag),null);
+ await store.createDraft(plan);assert.equal((await store.getRelease(plan.tag)).id,71);
+ release={...release,draft:false};assert.equal((await store.getRelease(plan.tag)).draft,false);
+ assert.equal(calls.filter(call=>call.method==='GET'&&call.path.endsWith('/releases')).length,1);
+ assert.equal(calls.filter(call=>call.path.endsWith('/releases/71')).length,2);
+});
+test('invalid draft creation responses cannot seed a cached release identity',async()=>{
+ const {githubStore}=await import('../scripts/upload-windows-release.mjs'),{assertDraftEnvironment}=await load();
+ for(const patch of [{id:null},{draft:false},{prerelease:true},{immutable:true},{target_commitish:'c'.repeat(40)},{tag_name:'v9.0.0'}]){
+  const calls=[],store=githubStore({token:'synthetic-only',env:env(),platform:'linux',assertEnvironment:assertDraftEnvironment,fetchImpl:async(input,options)=>{
+   calls.push({path:new URL(input).pathname,method:options.method});
+   return Response.json(options.method==='POST'?{id:71,tag_name:`v${version}`,target_commitish:commit,draft:true,prerelease:false,immutable:false,...patch}:[]);
+  }});
+  await assert.rejects(store.createDraft({version,commit,tag:`v${version}`}),/기존 정식 draft/);
+  assert.equal(await store.getRelease(`v${version}`),null);assert.equal(calls.length,2);assert.equal(calls[1].path.endsWith('/releases'),true);
+ }
 });
 
 test('collection requires the recorded Windows signature result',async t=>{
