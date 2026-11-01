@@ -62,6 +62,7 @@ export default function App() {
   invoke('window.context').then(value=>apply(value.qaProjectId||'')).catch(()=>{});
   return()=>{live=false;unsubscribe?.()};
  },[]);
+ useEffect(()=>{if(qaScoped)invoke('window.qaReady',{projectId:qaProject}).catch(error=>setError(error.message));},[qaScoped,qaProject]);
  useEffect(()=>{
   let live=true,timer,lastRevision=-1;
   const unsubscribe=window.reviewops?.onDataChange?.(value=>{

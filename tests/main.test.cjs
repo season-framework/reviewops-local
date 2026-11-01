@@ -48,6 +48,7 @@ async function harness(t, options = {}) {
         async executeJavaScript(){return Boolean(host.preventUnload ?? state.preventUnload);},
         send(channel, data) {
           const message={ channel, data: JSON.parse(JSON.stringify(data)) };state.windowMessages.push(message);host.messages.push(message);
+          if(channel==='reviewops:qa-scope'&&data.projectId)setImmediate(()=>handlers.get('reviewops:invoke')({sender:this,senderFrame:this.mainFrame},'window.qaReady',{projectId:data.projectId}));
           if(channel==='reviewops:season-review'&&!options.manualSeasonAcknowledgment)setImmediate(()=>handlers.get('reviewops:invoke')({sender:this,senderFrame:this.mainFrame},'integration.displayed',{...data,section:'review'}));
         },
         async capturePage(bounds){(state.captureCalls||=[]).push({windowId:host.id,bounds});return {isEmpty:()=>false,toPNG:()=>Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6cyYAAAAASUVORK5CYII=','base64')};},
@@ -1865,4 +1866,15 @@ test('a queued QA IPC keeps its project guard after the QA session is released',
  await h.state.toolIntegration.automationHandler('automation.qa.release',qa);unblock();await probe;
  const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'TARGET_MISMATCH');
  assert.equal((await main.success('snapshot')).groups.find(item=>item.id===other.id).name,'Preserve this group');
+});
+
+test('QA scope readiness does not wait behind a different queued operation',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Environment probe did not start');
+ try{
+  const qa=await Promise.race([h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'ready-qa'}),new Promise((_,reject)=>setTimeout(()=>reject(new Error('QA ready was blocked by the mutation queue')),1000))]);
+  await h.state.toolIntegration.automationHandler('automation.qa.release',qa);
+ }finally{unblock();await probe;}
 });

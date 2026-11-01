@@ -69,10 +69,19 @@ function requestQaProjectId(){const context=requestWindowContext.getStore();retu
 function setQaScope(record,active){
   if(record.qaActive===active)return;
   record.qaActive=active;
+  record.qaScopeReady=false;
+  if(!active)record.pendingQaScope?.reject(new Error('프로젝트 QA 연결이 해제되었습니다.'));
   if(!record.host.isDestroyed()){
     record.host.webContents.send('reviewops:qa-scope',{projectId:active?record.projectId:''});
     record.host.webContents.send('reviewops:data-change',{revision:++dataRevision});
   }
+}
+async function waitForQaScope(record){
+  if(record.qaScopeReady)return;
+  let timer;const pending={};
+  const ready=new Promise((resolve,reject)=>{pending.resolve=resolve;pending.reject=reject;timer=setTimeout(()=>reject(new Error('프로젝트 QA 화면을 준비하지 못했습니다.')),8000);});
+  record.pendingQaScope=pending;
+  try{await ready;}finally{clearTimeout(timer);if(record.pendingQaScope===pending)record.pendingQaScope=null;}
 }
 function dataChanged() { sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
 function closeWindowResources(host,discardStaged=true) {
@@ -742,6 +751,7 @@ async function dispatch(action, payload = {}) {
   }
   if (updater?.installing && !['snapshot','app.info','integration.pending','integration.displayed'].includes(action) && !windowActions.has(action)) throw new Error('ReviewOps is restarting to install an update.');
   if (action === 'window.context') {const record=currentWindowRecord();return {windowId:record.id,projectId:record.projectId,...(record.qaActive?{qaProjectId:record.projectId}:{})};}
+  if (action === 'window.qaReady') {const record=currentWindowRecord();if(!record.qaActive||payload.projectId!==record.projectId)return {accepted:false};record.qaScopeReady=true;record.pendingQaScope?.resolve();return {accepted:true};}
   if (action === 'window.navigation') return currentWindowRecord().pendingNavigation || null;
   if (action === 'window.openProject') {
     const project=store.snapshot().projects.find(item=>item.id===payload.projectId);if(!project)throw new Error('프로젝트를 찾을 수 없습니다.');
@@ -985,7 +995,7 @@ function createWindow(projectId='',{background=false}={}) {
   if(projectId){url.searchParams.set('projectId',projectId);url.searchParams.set('windowId',record.id);}
   host.loadURL(projectId?url.href:location)?.catch(error=>{record.loadError=error.message;record.pendingDisplay?.reject(error);});
   host.on('closed',()=>{
-    closeWindowResources(host);record.pendingDisplay?.reject(new Error('프로젝트 화면을 표시하기 전에 창이 닫혔습니다.'));
+    closeWindowResources(host);record.pendingDisplay?.reject(new Error('프로젝트 화면을 표시하기 전에 창이 닫혔습니다.'));record.pendingQaScope?.reject(new Error('프로젝트 QA 창이 닫혔습니다.'));
     windowContexts.delete(host);if(projectWindows.get(projectId)===record)projectWindows.delete(projectId);if(window===host)window=null;
     if(quitting&&!liveWindows().length){quitting=false;app.quit();}
   });
@@ -1058,7 +1068,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
@@ -1091,6 +1101,7 @@ else {
         try {
         if(reviewId)await presentReview(record,{reviewId,projectId,fullscreen:false,focus:false});
         else {await require('./qa-automation.cjs').waitForLoad(record.host.webContents);record.host.showInactive();}
+        await waitForQaScope(record);
         return record;
         }catch(error){setQaScope(record,false);throw error;}
       },
