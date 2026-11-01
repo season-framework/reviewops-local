@@ -14,6 +14,7 @@
     "test": "node --test tests/*.test.cjs",
     "test:e2e": "node scripts/e2e.mjs",
     "test:ssh-ui": "node scripts/e2e-ssh.mjs",
+    "test:ssh-diagnostics": "node scripts/e2e-ssh-diagnostics.mjs",
     "package": "node scripts/build-info.mjs --clear && npm run build && electron-builder --mac dmg --arm64 --publish never",
     "package:intel": "node scripts/build-info.mjs --clear && npm run build && electron-builder --mac dmg --x64 --publish never",
     "package:test": "node scripts/test-build.mjs package",

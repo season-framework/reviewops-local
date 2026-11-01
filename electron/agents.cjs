@@ -18,6 +18,8 @@ const {executionSettings}=require('./agent-execution-settings.cjs');
 const FINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_PROMPT = 256 * 1024;
 const MAX_OUTPUT = 512 * 1024;
+const SSH_WORK_PATH_ERROR = 'SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다. 폴더 경로와 접근 권한을 확인하십시오.';
+const SSH_BINARY_ERROR = 'SSH 로그인 환경에서 Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다. 프로젝트의 실행 파일 경로와 서버 파일 권한을 확인하십시오.';
 const quote = value => `'${String(value).replace(/'/g, `'"'"'`)}'`;
 const clean = value => String(value || '').replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -589,7 +591,7 @@ function createAgentManager(options = {}) {
     const executable = `${quote(settings.binary)} ${imageArguments(args,imagePaths).map(quote).join(' ')}`;
     // A process group lets cancellation stop the CLI and every command it started.
     const childScript = `printf '%s\\n' "$$" > ${quote(controlDirectory+'/pid')}\nexec ${executable}`;
-    const script = `${remotePrefix}set -e\numask 077\n${assets.length?'':`mkdir ${quote(controlDirectory)}`}\ncleanup() { if [ -s ${quote(controlDirectory+'/pid')} ]; then p=$(cat ${quote(controlDirectory+'/pid')}); kill -TERM -- "-$p" 2>/dev/null || true; fi; rm -f ${[controlDirectory+'/pid',...assetPaths].map(quote).join(' ')}; rmdir ${quote(controlDirectory)} 2>/dev/null || true; }\ntrap cleanup EXIT\ntrap 'exit 143' HUP INT TERM\ncd -- ${quote(settings.workPath)} || { printf '%s\\n' 'SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다. 폴더 경로와 접근 권한을 확인하십시오.' >&2; exit 125; }\ncommand -v ${quote(settings.binary)} >/dev/null 2>&1 || { printf '%s\\n' 'SSH 로그인 환경에서 Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다. 프로젝트의 실행 파일 경로와 서버 파일 권한을 확인하십시오.' >&2; exit 127; }\ncommand -v setsid >/dev/null 2>&1 || { printf '%s\\n' 'SSH 서버에 setsid 명령이 필요합니다.' >&2; exit 127; }\nset +e\nsetsid --wait bash -c ${quote(childScript)}\nresult=$?\nexit "$result"`;
+    const script = `${remotePrefix}set -e\numask 077\n${assets.length?'':`mkdir ${quote(controlDirectory)}`}\ncleanup() { if [ -s ${quote(controlDirectory+'/pid')} ]; then p=$(cat ${quote(controlDirectory+'/pid')}); kill -TERM -- "-$p" 2>/dev/null || true; fi; rm -f ${[controlDirectory+'/pid',...assetPaths].map(quote).join(' ')}; rmdir ${quote(controlDirectory)} 2>/dev/null || true; }\ntrap cleanup EXIT\ntrap 'exit 143' HUP INT TERM\ncd -- ${quote(settings.workPath)} || { printf '%s\\n' ${quote(SSH_WORK_PATH_ERROR)} >&2; exit 125; }\ncommand -v ${quote(settings.binary)} >/dev/null 2>&1 || { printf '%s\\n' ${quote(SSH_BINARY_ERROR)} >&2; exit 127; }\ncommand -v setsid >/dev/null 2>&1 || { printf '%s\\n' 'SSH 서버에 setsid 명령이 필요합니다.' >&2; exit 124; }\nset +e\nsetsid --wait bash -c ${quote(childScript)}\nresult=$?\nexit "$result"`;
     client.exec(remoteLoginCommand(script),{pty:false},(error,value)=>{
       if(error){finishRemote({code:null,error:error.message,terminationConfirmed:true});return;}
       stream=value;
@@ -704,21 +706,30 @@ function createAgentManager(options = {}) {
     const version=await remoteCommand(config,settings,['--version']);
     assertMetadataCurrent(settings);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
-    if(version.code!==0)return {installed:false,version:'',loggedIn:false,authState:'not_installed',binary:settings.binary,workPath:settings.workPath,models:[],error:clean(version.stderr||version.error).slice(0,2000)};
+    if(version.code!==0){
+      const output=clean(version.stderr||version.error||version.stdout),missing=version.code===127&&output.includes(SSH_BINARY_ERROR);
+      const errorCode=version.code===125&&output.includes(SSH_WORK_PATH_ERROR)?'AGENT_WORK_PATH_INACCESSIBLE':missing?'AGENT_NOT_INSTALLED':'AGENT_ENVIRONMENT_CHECK_FAILED';
+      return {installed:missing?false:null,version:'',loggedIn:false,authState:missing?'not_installed':'unknown',binary:settings.binary,workPath:settings.workPath,models:[],modelSource:'none',errorCode,error:output.slice(0,2000)||'Codex 설치 상태를 검사하지 못했습니다. 실행 환경을 다시 검사하십시오.'};
+    }
     const auth=await remoteCommand(config,settings,['login','status']);
     assertMetadataCurrent(settings);
     if(closing)throw new SshError('AGENT_CLOSING','앱이 종료 중입니다.');
     const models=includeModels?await availableModels(config,settings):{models:[]};
     assertMetadataCurrent(settings);
-    return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:settings.workPath,...models};
+    const authError=auth.code===125&&clean(auth.stderr).includes(SSH_WORK_PATH_ERROR)?{errorCode:'AGENT_WORK_PATH_INACCESSIBLE',error:clean(auth.stderr||auth.error).slice(0,2000)}:{};
+    return {installed:true,version:clean(version.stdout||version.stderr).trim().split('\n')[0].slice(0,160),loggedIn:auth.code===0,authState:auth.code===0?'authenticated':auth.code===1?'not_authenticated':'unknown',binary:settings.binary,workPath:settings.workPath,...models,...authError};
+  }
+  function requireReadyEnvironment(status) {
+    if(status.errorCode)throw new SshError(status.errorCode,status.error);
+    if(!status.installed)throw new SshError('AGENT_NOT_INSTALLED',status.error||'Codex 실행 파일을 찾을 수 없습니다. 프로젝트 설정에서 실행 파일을 선택하거나 전체 경로를 입력하십시오.');
+    if(!status.loggedIn)throw new SshError(status.authState==='unknown'?'AGENT_AUTH_CHECK_FAILED':'AGENT_AUTH_REQUIRED',status.authState==='unknown'?'Codex 로그인 상태를 검사하지 못했습니다. 프로젝트 설정에서 실행 환경을 다시 검사하십시오.':'Codex 로그인이 필요합니다. 프로젝트 설정의 에이전트 탭에서 로그인하십시오.');
   }
   async function execute(job,prompt,args) {
     try {
       if(job.data.kind==='agent'){
         const status=await probe(job.config,job.settings);
         if(job.data.cancelRequested){finish(job,'cancelled');return;}
-        if(!status.installed)throw new SshError('AGENT_NOT_INSTALLED',status.error||'Codex가 설치되어 있지 않습니다. 프로젝트 설정에서 실행 파일 경로를 지정하십시오.');
-        if(!status.loggedIn)throw new SshError('AGENT_AUTH_REQUIRED','Codex 로그인이 필요합니다. 프로젝트 설정의 에이전트 탭에서 로그인하십시오.');
+        requireReadyEnvironment(status);
       }
       if(job.data.cancelRequested){finish(job,'cancelled');return;}
       const settings=job.config.kind==='local'?await prepareLocal(job.settings):job.settings;
@@ -779,8 +790,7 @@ function createAgentManager(options = {}) {
     environment(config,settings={}){return probe(config,metadataSettings(normalize(settings,config)),true);},
     async preflight(config,settings={}){
       const status=await probe(config,metadataSettings(normalize(settings,config)));
-      if(!status.installed)throw new SshError('AGENT_NOT_INSTALLED',status.error||'Codex 실행 파일을 찾을 수 없습니다. 프로젝트 설정에서 실행 파일을 선택하거나 전체 경로를 입력하십시오.');
-      if(!status.loggedIn)throw new SshError(status.authState==='unknown'?'AGENT_AUTH_CHECK_FAILED':'AGENT_AUTH_REQUIRED',status.authState==='unknown'?'Codex 로그인 상태를 검사하지 못했습니다. 프로젝트 설정에서 실행 환경을 다시 검사하십시오.':'Codex 로그인이 필요합니다. 프로젝트 설정의 에이전트 탭에서 로그인하십시오.');
+      requireReadyEnvironment(status);
       return status;
     },
     validateStart(input){prepareStart(input);},
