@@ -1,6 +1,7 @@
 // Private-API lifecycle experiment, never a shipping ReviewOps provider.
 #import "private-interface.h"
 #import "bounded-json.h"
+#import "topology-json.h"
 #include "topology-trace.h"
 #import <objc/runtime.h>
 #include <signal.h>
@@ -85,7 +86,8 @@ static void saveDiagnostics(void) {
   topology[@"rejectedAfterStopAtSnapshot"]=@(observerStopped?cutoffRejected:atomic_load_explicit(&topologyTrace.rejectedAfterStop,memory_order_relaxed));
   topology[@"overflow"]=@(overflow);topology[@"clockFailed"]=@(clockFailed);
   topology[@"cutoffMeaning"]=@"Ready immutable slots at this snapshot; rejected late callbacks can still occur until process exit.";
-  topology[@"completeAtCutoff"]=@(observerStopped && inFlight==0 && events.count==reserved && !overflow && !clockFailed && !observerFailure && !traceOutputFailure);
+  topology[@"completeAtCutoff"]=ROTopologyCompletionValue(observerStopped,inFlight,events.count,reserved,
+    overflow,clockFailed,observerFailure!=nil,traceOutputFailure!=nil);
   NSString *path=[outputPath.stringByDeletingLastPathComponent stringByAppendingPathComponent:@"reconfiguration.json"];
   if(observerFailure)topology[@"failureCode"]=observerFailure;
   ROWriteProbeJSON(topology,path,32*1024,@"TOPOLOGY_JSON_WRITE_OR_BUDGET_FAILED",&traceOutputFailure,NULL);

@@ -1,9 +1,25 @@
 #import "../../experiments/macos-virtual-display/bounded-json.h"
+#import "../../experiments/macos-virtual-display/topology-json.h"
 #include <assert.h>
 
 int main(int argc,const char *argv[]) {
   @autoreleasepool {
     assert(argc==2);NSString *folder=[NSString stringWithUTF8String:argv[1]];
+    // Evaluate the exact production completion function, then serialize it for
+    // the actual strict JS consumer. Expected JSON booleans are not hand-written.
+    NSArray *completionCases=@[
+      @{@"name":@"complete",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,1,1,NO,NO,NO,NO)},
+      @{@"name":@"complete-empty",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,0,0,NO,NO,NO,NO)},
+      @{@"name":@"not-stopped",@"completeAtCutoff":ROTopologyCompletionValue(NO,0,1,1,NO,NO,NO,NO)},
+      @{@"name":@"in-flight",@"completeAtCutoff":ROTopologyCompletionValue(YES,1,1,1,NO,NO,NO,NO)},
+      @{@"name":@"unready",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,0,1,NO,NO,NO,NO)},
+      @{@"name":@"overflow",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,1,1,YES,NO,NO,NO)},
+      @{@"name":@"clock-failed",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,1,1,NO,YES,NO,NO)},
+      @{@"name":@"observer-failed",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,1,1,NO,NO,YES,NO)},
+      @{@"name":@"output-failed",@"completeAtCutoff":ROTopologyCompletionValue(YES,0,1,1,NO,NO,NO,YES)}];
+    NSString *completionFailure=nil;
+    assert(ROWriteProbeJSON(@{@"cases":completionCases},[folder stringByAppendingPathComponent:@"completion-roundtrip.json"],4096,@"COMPLETION_JSON_FAILED",&completionFailure,NULL));
+    assert(!completionFailure);
     NSString *clock=@"18446744073709551615",*source=[@"a" stringByPaddingToLength:40 withString:@"a" startingAtIndex:0];
     NSDictionary *display=@{@"id":@4294967295u,@"bounds":@{@"x":@(-1.7976931348623157e308),@"y":@1.7976931348623157e308,@"width":@1.7976931348623157e308,@"height":@1.7976931348623157e308},@"online":@1,@"active":@1,@"mirrored":@0,@"main":@1,@"builtin":@1,@"vendor":@4294967295u,@"product":@4294967295u,@"serial":@4294967295u,@"mirrorParent":@4294967295u,@"hardwareMirrorPrimary":@4294967295u,@"modeAvailable":@YES,@"modeWidth":@18446744073709551615ull,@"modeHeight":@18446744073709551615ull,@"pixelWidth":@18446744073709551615ull,@"pixelHeight":@18446744073709551615ull,@"refreshRate":@1.7976931348623157e308};
     NSDictionary *query=@{@"startNS":clock,@"endNS":clock,@"sequenceBefore":@128,@"sequenceAfter":@128,@"inFlightBefore":@128,@"inFlightAfter":@128,@"objectIDBefore":@4294967295u,@"objectIDAfter":@4294967295u};

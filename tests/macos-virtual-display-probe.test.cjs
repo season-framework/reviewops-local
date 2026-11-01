@@ -31,6 +31,7 @@ const baseline={id:1,bounds:{x:0,y:0,width:1280,height:800},online:true,active:t
 const owned={id:2,bounds:{x:1280,y:0,width:1920,height:1080},online:true,active:true,mirrored:false,modeAvailable:true,modeWidth:1920,modeHeight:1080,pixelWidth:1920,pixelHeight:1080,vendor:505,serial:77};
 // Native JSON snapshots contain independent records, not shared object aliases.
 const fixture=()=>JSON.parse(JSON.stringify({source:'a'.repeat(40),runId:'11111111-1111-4111-8111-111111111111',outcome:'passed',createdDisplays:1,settingsApplyCalls:1,ownedDisplayId:2,ownedModeSetCalls:0,requestedIdentity:{vendor:505,serial:77},before:[baseline],during:[baseline,owned],afterWindow:[baseline,owned],after:[baseline],cleanupVerified:true,windowPlacement:{verified:true,observedScreenId:2,windowNumber:42},capturedFrames:0,injectedInputs:0,requestedPermissions:0,topologyDiagnostics:{registered:true,stopped:true,completeAtCutoff:true,reserved:1,ready:1}}));
+const traceFor=native=>({schema:1,source:native.source,runId:native.runId,registrationError:0,removalError:0,completeAtCutoff:true,inFlightAtSnapshot:0,overflow:false,clockFailed:false,reserved:1,ready:1,events:[[1,'2',2,16,4]],stages:['baseline-first','baseline-confirmed','before-init','after-init','before-apply','after-apply','after-window'].map((stage,index)=>({stage,preexistingMatches:true,query:{startNS:'1',endNS:'2',sequenceBefore:0,sequenceAfter:1,objectIDBefore:index<3?0:2,objectIDAfter:index<3?0:2}}))});
 test('existing display inventory detects identity, bounds and mode changes without restoring anything',async()=>{
  const {inventoryDifference}=await modulePromise;
  assert.equal(inventoryDifference([baseline],[owned,baseline],2),null);
@@ -48,7 +49,6 @@ test('only one actual new online mode plus unchanged existing displays and verif
 
 test('a separate correlated topology artifact must be complete and cannot mask lifecycle failure',async()=>{
  const {verifyTopologyTrace}=await modulePromise;
- const traceFor=native=>({schema:1,source:native.source,runId:native.runId,registrationError:0,removalError:0,completeAtCutoff:true,inFlightAtSnapshot:0,overflow:false,clockFailed:false,reserved:1,ready:1,events:[[1,'2',2,16,4]],stages:['baseline-first','baseline-confirmed','before-init','after-init','before-apply','after-apply','after-window'].map((stage,index)=>({stage,preexistingMatches:true,query:{startNS:'1',endNS:'2',sequenceBefore:0,sequenceAfter:1,objectIDBefore:index<3?0:2,objectIDAfter:index<3?0:2}}))});
  const native=fixture();assert.equal(verifyTopologyTrace(traceFor(native),native),null);
  for(const alter of [x=>x.source='b'.repeat(40),x=>x.runId='foreign',x=>x.rawReportOmitted=true,x=>x.registrationError=1,x=>x.removalError=1,x=>x.failureCode='FAILED',x=>x.inFlightAtSnapshot=1,x=>x.overflow=true,x=>x.clockFailed=true,x=>x.ready=0,x=>x.events=[],x=>x.events[0][0]=2,x=>x.events[0][1]='18446744073709551616',x=>x.events[0][3]=-1,x=>x.stages.pop(),x=>x.stages[3].query.objectIDAfter=1,x=>x.stages[4].preexistingMatches=false,x=>x.stages[4].query.sequenceAfter=2]){
   const value=traceFor(native);alter(value);assert.ok(verifyTopologyTrace(value,native));
@@ -81,7 +81,19 @@ test('Foundation-only worst-case JSON fits budgets and output failures preserve 
   const ran=spawnSync(binary,[temporary],{encoding:'utf8',timeout:5000,maxBuffer:4096});assert.equal(ran.status,0,ran.stderr||ran.error?.message);
   const value=JSON.parse(ran.stdout);assert.equal(value.ok,true);assert.equal(value.checks,6);assert.equal(value.displayCalls,0);assert.ok(value.nativeBytes<=128*1024);assert.ok(value.traceBytes<=32*1024);
   t.diagnostic(JSON.stringify({fixture:'Foundation-only',...value}));
-  const {encodeProbeJSON}=await modulePromise;
+  const {encodeProbeJSON,verifyTopologyTrace}=await modulePromise;
+  const completions=JSON.parse(fs.readFileSync(path.join(temporary,'completion-roundtrip.json'),'utf8')).cases;
+  assert.deepEqual(completions.map(row=>row.name),['complete','complete-empty','not-stopped','in-flight','unready','overflow','clock-failed','observer-failed','output-failed']);
+  for(const row of completions){
+   const expected=row.name.startsWith('complete');
+   assert.equal(typeof row.completeAtCutoff,'boolean',row.name+' must survive Foundation→JSON→JS as boolean');
+   assert.equal(row.completeAtCutoff,expected,row.name);
+   const producerNative=fixture(),producerTrace={...traceFor(producerNative),completeAtCutoff:row.completeAtCutoff};
+   assert.equal(verifyTopologyTrace(producerTrace,producerNative),expected?null:'topology-observation-failed',row.name);
+   // Keep the real consumer fail-closed for numeric and string lookalikes.
+   for(const invalid of [Number(row.completeAtCutoff),String(row.completeAtCutoff),null])assert.equal(verifyTopologyTrace({...producerTrace,completeAtCutoff:invalid},producerNative),'topology-observation-failed',row.name);
+  }
+  t.diagnostic(JSON.stringify({fixture:'production-completion-Foundation-JSON-JS',cases:completions.length,trueCases:2,falseCases:7,strictConsumer:true,displayCalls:0}));
   const native=JSON.parse(fs.readFileSync(path.join(temporary,'native.json'),'utf8'));
   const wrapped={schema:1,outcome:'failed',code:native.code,native,postProcess:{displays:native.before},topologyArtifact:{file:'reconfiguration.json',source:native.source,reserved:128,ready:128,completeAtCutoff:true}};
   const encoded=encodeProbeJSON(wrapped);assert.equal(encoded.ok,true);assert.ok(Buffer.byteLength(encoded.bytes)<=128*1024);
