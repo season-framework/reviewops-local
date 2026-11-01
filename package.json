@@ -60,7 +60,8 @@
     "test:agent-models": "node scripts/e2e-host-agent-models.mjs",
     "test:settings-ui": "node scripts/e2e-settings-ui.mjs",
     "test:browser-elements": "node scripts/e2e-browser-elements.mjs",
-    "test:review-categories": "node scripts/e2e-review-categories.mjs"
+    "test:review-categories": "node scripts/e2e-review-categories.mjs",
+    "test:service-readiness": "node scripts/e2e-service-readiness.mjs"
   },
   "dependencies": {
     "github-markdown-css": "5.9.0",

@@ -696,6 +696,25 @@ async function dispatch(action, payload = {}) {
   if(requestWindowContext.getStore())getRequestWindow();
   if(payload.projectId&&!payload.serviceId&&['ssh.test','ssh.run','terminal.open','files.list','files.read','agent.environment','agent.login','agent.logout','agent.loginState','agent.session'].includes(action))payload={...payload,serviceId:store.project(payload.projectId).connection?.id};
   if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('요청이 올바르지 않습니다.');
+  if (action === 'viewer.readiness' || action === 'viewer.agentState') {
+    // Private renderer observations: external integrations cannot issue HTTP
+    // probes or fingerprint files through these actions.
+    if (!requestWindowContext.getStore()) throw new Error('프로젝트 화면에서만 검사할 수 있습니다.');
+    const record = currentWindowRecord();
+    if (record.projectId && record.projectId !== payload.projectId) throw new Error('이 창의 프로젝트만 검사할 수 있습니다.');
+    const project = store.project(payload.projectId);
+    const { checkHttp, compareFile, summarizeAgents } = require('./service-readiness.cjs');
+    const agents = () => summarizeAgents(store.listAgentRuns(), new Set(store.snapshot().reviews.filter(review => review.projectId === project.id).map(review => review.id)));
+    if (action === 'viewer.agentState') return agents();
+    if (payload.path !== undefined && (typeof payload.path !== 'string' || payload.path.length > 4096)) throw new Error('프로젝트 안의 상대 파일 경로를 입력하십시오.');
+    const service = serviceById(project.connection?.id), identity = JSON.stringify(project.connection);
+    const token = crypto.randomUUID(); operations.add(token);
+    try {
+      const [http, comparisonFile] = await Promise.all([checkHttp(payload.url), compareFile(service, payload.path)]);
+      if (JSON.stringify(store.project(project.id).connection) !== identity) throw new Error('검사 중 프로젝트 연결이 변경되었습니다. 다시 검사하십시오.');
+      return { http, comparisonFile, agents: agents(), execution: { verified: false, pid: null, command: '', file: null } };
+    } finally { operations.delete(token); }
+  }
   if (action === 'clipboard.writeText') {
     if(typeof payload.text!=='string'||!payload.text.length||Buffer.byteLength(payload.text)>2*1024*1024)throw new Error('복사할 내용을 다시 선택하십시오.');
     clipboard.writeText(payload.text);
@@ -1039,7 +1058,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});

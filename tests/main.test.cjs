@@ -152,6 +152,7 @@ async function harness(t, options = {}) {
     if (name === './archive.cjs') return require('../electron/archive.cjs');
     if (name === './html-preview.cjs') return require('../electron/html-preview.cjs');
     if (name === './files.cjs') return files;
+    if (name === './service-readiness.cjs') return require('../electron/service-readiness.cjs');
     if (name === './agent-files.cjs') return require('../electron/agent-files.cjs');
     if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
@@ -1817,4 +1818,29 @@ test('update build information copies through the trusted native clipboard route
  assert.ok(!h.state.clipboardText.includes('빌드:'));
  const host=h.state.window;
  assert.equal((await h.invoke('update.copyInfo',{}, {sender:host.webContents,senderFrame:{url:'https://external.example/'}})).ok,false);
+});
+
+test('readiness observations are renderer-only and cannot escape the selected project file root', async t => {
+ const h=await harness(t),http=require('node:http');let requests=0;
+ const server=http.createServer((_req,res)=>{requests++;res.end('ready');});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+ const url=`http://127.0.0.1:${server.address().port}/health`;
+ const group=await h.success('group.save',{name:'readiness'});
+ const folder=path.join(h.root,'project');fs.mkdirSync(folder);fs.writeFileSync(path.join(folder,'bundle.js'),'synthetic bundle');
+ const project=await h.success('project.save',{groupId:group.id,name:'readiness project',connection:{kind:'local',rootPath:folder,viewerUrl:url}});
+ const otherFolder=path.join(h.root,'other');fs.mkdirSync(otherFolder);fs.writeFileSync(path.join(otherFolder,'outside.js'),'private other file');
+ const other=await h.success('project.save',{groupId:group.id,name:'other',connection:{kind:'local',rootPath:otherFolder}});
+ const before=await h.success('snapshot');
+ const result=await h.success('viewer.readiness',{projectId:project.id,serviceId:other.connection.id,url,path:'bundle.js'});
+ assert.equal(result.http.status,'responding');assert.equal(result.comparisonFile.sha256,crypto.createHash('sha256').update('synthetic bundle').digest('hex'));
+ assert.deepEqual(result.execution,{verified:false,pid:null,command:'',file:null});assert.equal(result.agents.running,0);
+ const escaped=await h.success('viewer.readiness',{projectId:project.id,serviceId:other.connection.id,url,path:'../other/outside.js'});
+ assert.equal(escaped.http.status,'responding');assert.ok(escaped.comparisonFile.error);assert.equal(escaped.comparisonFile.sha256,undefined);
+ assert.deepEqual(await h.success('snapshot'),before);
+ await assert.rejects(h.state.toolIntegration.dispatch('viewer.readiness',{projectId:project.id,url}),/프로젝트 화면/);
+ await assert.rejects(h.state.toolIntegration.dispatch('viewer.agentState',{projectId:project.id}),/프로젝트 화면/);
+ const invalid=await h.invoke('viewer.readiness',{projectId:project.id,url}, {sender:{},senderFrame:{url:'http://127.0.0.1/'}});
+ assert.equal(invalid.ok,false);assert.equal(requests,2);
+ await h.success('window.openProject',{projectId:project.id});const host=await projectHost(h,project.id);
+ const forbidden=await h.forWindow(host).invoke('viewer.readiness',{projectId:other.id,url});assert.equal(forbidden.ok,false);assert.equal(requests,2);
 });
