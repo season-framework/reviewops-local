@@ -16,7 +16,7 @@ async function fixture(t, n = 1001) {
   }
   for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     await fs.writeFile(path.join(directory, `verification-${target}.json`), JSON.stringify({ schema: 1, ok: true, target, build, files,
-      checks: ['packaged-build-info', 'package-structure', ...(target.startsWith('darwin') ? ['codesign', 'dmg-verify'] : ['publisher-status', 'installed-application'])] }));
+      checks: ['packaged-build-info', 'package-structure', ...(target.startsWith('darwin') ? ['codesign', 'dmg-verify','zip-extraction','native-smoke'] : ['publisher-status', 'installed-application'])] }));
   }
   await fs.writeFile(path.join(directory, 'build-info.json'), JSON.stringify(build));
   return { m, directory, build, plan: await m.prepareRelease(directory, build) };
@@ -59,6 +59,11 @@ test('missing platform verification prevents any publication plan', async t => {
   const { m, directory, build } = await fixture(t);
   await fs.rm(path.join(directory, 'verification-win32-x64.json'));
   await assert.rejects(m.prepareRelease(directory, build), /ENOENT/);
+});
+for(const target of ['darwin-arm64','darwin-x64'])test(`missing native application smoke rejects ${target} before publication`,async t=>{
+  const {m,directory,build}=await fixture(t),file=path.join(directory,`verification-${target}.json`),record=JSON.parse(await fs.readFile(file,'utf8'));
+  record.checks=record.checks.filter(check=>check!=='native-smoke');await fs.writeFile(file,JSON.stringify(record));
+  await assert.rejects(m.prepareRelease(directory,build),/패키지 검사 결과/);
 });
 test('default dry run performs no writes; offline CLI never reads a token', async t => {
   const { m, directory, plan } = await fixture(t), store = await memoryStore();

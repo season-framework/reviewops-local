@@ -40,10 +40,17 @@ test('bound MCP connection filters project discovery and rejects another project
 test('packaged MCP resources include category definitions and load without the source checkout',async()=>{
   const directory=await fs.mkdtemp(path.join(require('node:os').tmpdir(),'reviewops-mcp-package-'));
   try{
-    const resources=require('../package.json').build.extraResources.filter(item=>item.to.startsWith('mcp/'));
-    for(const resource of resources){const target=path.join(directory,resource.to);await fs.mkdir(path.dirname(target),{recursive:true});await fs.copyFile(path.resolve(__dirname,'..',resource.from),target);}
+    const asar=require('@electron/asar'),source=path.join(directory,'app-source'),archive=path.join(directory,'app.asar');
+    await fs.mkdir(path.join(source,'electron'),{recursive:true});
+    const canonical=[['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']];
+    for(const [file]of canonical)await fs.copyFile(path.resolve(__dirname,'../electron',file),path.join(source,'electron',file));
+    await asar.createPackage(source,archive);
+    const build=require('../package.json').build;
+    assert.equal(build.extraResources?.some(item=>canonical.some(([file])=>item.from==='electron/'+file))??false,false,'The canonical MCP files must remain in app.asar rather than extraResources');
+    await require(path.resolve(__dirname,'..',build.afterPack))({appOutDir:directory,packager:{getResourcesDir:()=>directory}});
+    for(const [file,target]of canonical)assert.deepEqual(await fs.readFile(path.join(directory,'mcp',target)),asar.extractFile(archive,path.join('electron',file)));
     const input=[{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'package-smoke',version:'1'}}},{jsonrpc:'2.0',id:2,method:'tools/list',params:{}}].map(value=>JSON.stringify(value)+'\n').join('');
-    const result=spawnSync(process.execPath,[path.join(directory,'mcp/reviewops-mcp.cjs'),'--data-path',directory],{input,encoding:'utf8',timeout:5000});
+    const result=spawnSync(process.execPath,[path.join(directory,'mcp/reviewops-mcp.cjs'),'--data-path',directory],{cwd:directory,input,encoding:'utf8',timeout:5000});
     assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
     const responses=result.stdout.trim().split('\n').map(line=>JSON.parse(line));
     assert.ok(responses.find(value=>value.id===2).result.tools.some(tool=>tool.name==='reviewops_review_categories_list'));
