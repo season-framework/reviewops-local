@@ -93,6 +93,7 @@ args = ["/Applications/ReviewOps.app/Contents/Resources/mcp/reviewops-mcp.cjs", 
 | 도구 | 필수 입력 | 처리 결과 |
 | --- | --- | --- |
 | `reviewops_projects_list` | 없음 | 프로젝트와 연결 목록 |
+| `reviewops_review_categories_list` | `projectId` | 허용 분류 ID·표시명·종류와 기본 분류 |
 | `reviewops_reviews_list` | `projectId` | 해당 프로젝트의 리뷰 목록 |
 | `reviewops_review_get` | `projectId`, `reviewId` | 리뷰 내용과 작업 이력 |
 | `reviewops_review_create` | `projectId`, `requestId`, `title` | 새 리뷰 ID와 저장 내용 |
@@ -103,6 +104,23 @@ args = ["/Applications/ReviewOps.app/Contents/Resources/mcp/reviewops-mcp.cjs", 
 | `reviewops_run_cancel` | `projectId`, `reviewId`, `runId` | 지정한 실행의 취소 요청 결과 |
 
 리뷰 작성에는 `body`, `status`, `priority`, `category`, `targetPath`, `targetUrl`, `serviceId`를 추가할 수 있다. 프로젝트에 연결이 여러 개면 `serviceId`를 지정한다. 리뷰 수정은 전달한 항목만 변경하며 프로젝트와 연결은 옮기지 않는다. 실행 시작에는 `model`, `reasoningEffort`, `newConversation`을 추가할 수 있다.
+
+### 리뷰 분류 ID 조회
+
+`category`는 표시명이 아닌 분류 ID이다. 먼저 `reviewops_review_categories_list`에 대상 `projectId`를 전달하고 응답의 `categories[].id`를 작성·수정 요청에 사용한다. 로컬 automation bridge의 같은 호출은 `automation.reviewCategories.list`이다.
+
+```json
+{
+  "name": "reviewops_review_categories_list",
+  "arguments": { "projectId": "PROJECT_B_ID" }
+}
+```
+
+응답에는 `projectId`, `defaultCategory: "ux"`, `categories`가 있다. 각 분류는 `id`, `name`, `kind`를 제공한다. `kind`는 기본 항목 `builtin`, 이전 버전 항목 `legacy`, 사용자가 추가한 항목 `custom` 중 하나이다. 기본 표시명은 앱의 한국어 원문이며 사용자 분류 이름은 등록한 그대로 반환한다. 분류는 앱 전체에서 공유하지만, 조회에도 유효한 프로젝트 ID가 필요하다. `--project-id`로 연결한 MCP에서는 다른 프로젝트의 조회를 거절한다. 이 호출은 분류를 만들거나 창을 열지 않는다.
+
+기본 ID는 `bug`, `ux`, `content`, `performance`, `accessibility`, `security`, `other`이다. 기존 자료와 호환되는 `feature`, `structure`, `design`, `data`, `message`, `typo`도 허용한다. 사용자 분류는 `custom_...` 형식의 등록된 ID를 사용한다. 예를 들어 앱에서 `연구`를 추가했으면 조회 결과에서 이름이 `연구`인 항목의 `id`를 읽어 전달한다. 이름 자체나 임의로 만든 ID는 거절한다.
+
+새 리뷰에서 `category`를 생략하면 `ux`를 사용하고, 수정에서 생략하면 기존 분류를 유지한다. 잘못된 분류에는 `INVALID_INPUT`과 ID 조회 경로를 반환한다. 표시명이나 알 수 없는 ID는 저장하지 않는다.
 
 `requestId`는 새 작업마다 다른 값으로 지정한다. 응답이 끊겨 같은 작업을 다시 요청할 때는 ID와 내용을 그대로 사용한다. 같은 ID로 내용을 바꾸면 오류를 반환한다. 리뷰 작성 결과에는 `projectId`·`reviewId`, 실행 결과에는 `runId`도 함께 들어 있다.
 

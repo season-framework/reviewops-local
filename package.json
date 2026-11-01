@@ -154,6 +154,10 @@
       {
         "from": "electron/automation-api.cjs",
         "to": "mcp/automation-api.cjs"
+      },
+      {
+        "from": "electron/review-categories.json",
+        "to": "mcp/review-categories.json"
       }
     ]
   },

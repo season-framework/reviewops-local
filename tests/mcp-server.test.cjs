@@ -2,7 +2,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {PassThrough}=require('node:stream');
-const {spawn}=require('node:child_process');
+const {spawn,spawnSync}=require('node:child_process');
 const fs=require('node:fs/promises');
 const path=require('node:path');
 const {createToolIntegration}=require('../electron/tool-integration.cjs');
@@ -23,6 +23,8 @@ test('MCP initializes, advertises schemas and rejects calls before initializatio
     assert.equal((await c.read(c.send('tools/list'))).error.code,-32002);
     const init=await c.initialize('2025-06-18');assert.equal(init.result.protocolVersion,'2025-06-18');assert.deepEqual(init.result.capabilities,{tools:{listChanged:false}});
     const listed=await c.read(c.send('tools/list'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_review_create'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_qa_capture'));
+    const categories=listed.result.tools.find(t=>t.name==='reviewops_review_categories_list');assert.ok(categories.annotations.readOnlyHint);assert.deepEqual(categories.inputSchema.required,['projectId']);
+    for(const name of ['reviewops_review_create','reviewops_review_update'])assert.match(listed.result.tools.find(t=>t.name===name).inputSchema.properties.category.description,/category ID, not a display name.*reviewops_review_categories_list/);
     assert.ok(listed.result.tools.every(t=>!t.action&&t.inputSchema.additionalProperties===false));
     assert.equal((await c.call('not_a_tool',{})).error.code,-32602);
   }finally{await c.close();}
@@ -31,8 +33,21 @@ test('bound MCP connection filters project discovery and rejects another project
   const calls=[],c=client({projectId:'A',invoke:async(action,args)=>{calls.push({action,args});return{projects:[{id:'A'},{id:'B'}]};}});
   try{await c.initialize();assert.deepEqual((await c.call('reviewops_projects_list',{})).result.structuredContent.projects,[{id:'A'}]);
     assert.equal((await c.call('reviewops_reviews_list',{projectId:'B'})).result.isError,true);assert.equal(calls.length,1);
+    const categoryAttempt=await c.call('reviewops_review_categories_list',{projectId:'B'});assert.equal(JSON.parse(categoryAttempt.result.content[0].text).code,'TARGET_MISMATCH');assert.equal(calls.length,1);
     assert.equal((await c.call('reviewops_review_update',{projectId:'A',reviewId:'r',body:'X',serviceId:'foreign'})).result.isError,true);assert.equal(calls.length,1);
   }finally{await c.close();}
+});
+test('packaged MCP resources include category definitions and load without the source checkout',async()=>{
+  const directory=await fs.mkdtemp(path.join(require('node:os').tmpdir(),'reviewops-mcp-package-'));
+  try{
+    const resources=require('../package.json').build.extraResources.filter(item=>item.to.startsWith('mcp/'));
+    for(const resource of resources){const target=path.join(directory,resource.to);await fs.mkdir(path.dirname(target),{recursive:true});await fs.copyFile(path.resolve(__dirname,'..',resource.from),target);}
+    const input=[{jsonrpc:'2.0',id:1,method:'initialize',params:{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'package-smoke',version:'1'}}},{jsonrpc:'2.0',id:2,method:'tools/list',params:{}}].map(value=>JSON.stringify(value)+'\n').join('');
+    const result=spawnSync(process.execPath,[path.join(directory,'mcp/reviewops-mcp.cjs'),'--data-path',directory],{input,encoding:'utf8',timeout:5000});
+    assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
+    const responses=result.stdout.trim().split('\n').map(line=>JSON.parse(line));
+    assert.ok(responses.find(value=>value.id===2).result.tools.some(tool=>tool.name==='reviewops_review_categories_list'));
+  }finally{await fs.rm(directory,{recursive:true,force:true});}
 });
 test('concurrent MCP calls complete independently and preserve their request IDs',async()=>{
   const hold=deferred(),c=client({invoke:async(action,args)=>{if(args.projectId==='A')await hold.promise;return{projectId:args.projectId};}});

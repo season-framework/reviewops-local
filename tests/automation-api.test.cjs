@@ -45,6 +45,43 @@ test('project discovery excludes credentials and data operations never invoke a 
     assert.equal(f.qaCalls.length,0);
   }finally{await f.close();}
 });
+test('category discovery returns the allowed IDs and names without exposing settings or opening windows',async()=>{
+  const f=await fixture();try{
+    const custom=f.store.saveReviewCategory({name:'연구'});
+    const result=await f.handle('reviewCategories.list',{projectId:f.a.id});
+    assert.equal(result.projectId,f.a.id);assert.equal(result.defaultCategory,'ux');
+    assert.deepEqual(result.categories.find(item=>item.id===custom.id),{...custom,kind:'custom'});
+    assert.deepEqual(result.categories.find(item=>item.id==='ux'),{id:'ux',name:'UX',kind:'builtin'});
+    assert.deepEqual(result.categories.find(item=>item.id==='feature'),{id:'feature',name:'기능',kind:'legacy'});
+    assert.equal(new Set(result.categories.map(item=>item.id)).size,result.categories.length);
+    assert.deepEqual(Object.keys(result).sort(),['categories','defaultCategory','projectId']);
+    await assert.rejects(f.handle('reviewCategories.list',{}),{code:'INVALID_REQUEST'});
+    await assert.rejects(f.handle('reviewCategories.list',{projectId:'missing'}),{code:'NOT_FOUND'});
+    assert.equal(f.store.snapshot().reviews.length,0);assert.equal(f.qaCalls.length,0);
+    assert.ok(f.calls.every(call=>call.action==='snapshot'));
+  }finally{await f.close();}
+});
+test('review category IDs are discoverable while display names and unregistered IDs remain invalid',async()=>{
+  const f=await fixture();try{
+    const custom=f.store.saveReviewCategory({name:'연구'});
+    const args={projectId:f.a.id,requestId:'category-create',title:'Category QA'};
+    for(const category of ['연구','not_registered','custom_00000000-0000-0000-0000-000000000000']){
+      await assert.rejects(f.handle('reviews.create',{...args,category}),error=>error.code==='INVALID_INPUT'&&/표시명이 아닌 ID/.test(error.message)&&/reviewops_review_categories_list/.test(error.message)&&/automation.reviewCategories.list/.test(error.message));
+    }
+    assert.equal(f.store.snapshot().reviews.length,0);
+    const created=await f.handle('reviews.create',{...args,category:custom.id});
+    assert.equal(created.review.category,custom.id);
+    const edit={projectId:f.a.id,reviewId:created.reviewId};
+    assert.equal((await f.handle('reviews.update',{...edit,body:'Keep category'})).review.category,custom.id);
+    await assert.rejects(f.handle('reviews.update',{...edit,category:'연구'}),{code:'INVALID_INPUT'});
+    assert.equal(f.store.get('reviews',created.reviewId).category,custom.id);
+    assert.equal((await f.handle('reviews.update',{...edit,category:'other'})).review.category,'other');
+    assert.equal((await f.handle('reviews.create',{...args,requestId:'default-category'})).review.category,'ux');
+    assert.equal((await f.handle('reviews.create',{...args,requestId:'legacy-category',category:'feature'})).review.category,'feature');
+    await assert.rejects(f.handle('reviews.update',{projectId:f.b.id,reviewId:created.reviewId,category:'연구'}),{code:'TARGET_MISMATCH'});
+    assert.throws(()=>f.store.saveReview({projectId:f.a.id,title:'Direct invalid category',category:'연구'}),{code:'INVALID_INPUT'});
+  }finally{await f.close();}
+});
 test('concurrent identical creation and retry after restart create one review without overwriting edits',async()=>{
   const f=await fixture();try{
     const [first,second]=await Promise.all([f.create(),f.create()]);

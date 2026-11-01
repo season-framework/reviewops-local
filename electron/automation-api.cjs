@@ -1,24 +1,37 @@
 'use strict';
 const crypto = require('node:crypto');
+const categoryDefinitions = require('./review-categories.json');
 
 const fail = (message, code = 'INVALID_REQUEST') => { throw Object.assign(new Error(message), { code }); };
 const ID = { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' };
 const string = maxLength => ({ type: 'string', maxLength });
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
 const target = { projectId: ID, reviewId: ID };
-const reviewFields = { title: { ...string(300), minLength: 1 }, body: string(100000), status: { type: 'string', enum: ['open','in_progress','in_review','resolved','recheck','closed'] }, priority: { type: 'string', enum: ['low','normal','high','critical'] }, category: string(128), targetPath: string(4096), targetUrl: string(8192) };
+const reviewFields = { title: { ...string(300), minLength: 1 }, body: string(100000), status: { type: 'string', enum: ['open','in_progress','in_review','resolved','recheck','closed'] }, priority: { type: 'string', enum: ['low','normal','high','critical'] }, category: { ...string(128), description: 'Review category ID, not a display name. Call reviewops_review_categories_list with projectId for allowed built-in and custom IDs. When omitted, new reviews default to ux and updates preserve the current category.', examples: ['ux','other'] }, targetPath: string(4096), targetUrl: string(8192) };
 const dataTools = [
   ['projects_list', 'projects.list', 'List ReviewOps projects and connection names without opening a window.', schema({})],
+  ['review_categories_list', 'reviewCategories.list', 'List allowed review category IDs and display names, including built-in, legacy and custom categories. Categories are shared by this app installation; a valid projectId is required. Use categories[].id, not name, in review_create and review_update. New reviews default to ux when category is omitted.', schema({ projectId: ID }, ['projectId'])],
   ['reviews_list', 'reviews.list', 'List reviews belonging to the specified project without changing a window.', schema({ projectId: ID }, ['projectId'])],
   ['review_get', 'reviews.get', 'Read one review and its activity history. Project and review must match.', schema(target, ['projectId','reviewId'])],
-  ['review_create', 'reviews.create', 'Create a review without opening a window. Reuse requestId only for an identical retry.', schema({ projectId: ID, requestId: ID, serviceId: ID, ...reviewFields }, ['projectId','requestId','title'])],
-  ['review_update', 'reviews.update', 'Edit a review in its existing project. Only supplied fields change.', schema({ ...target, ...reviewFields }, ['projectId','reviewId'])],
+  ['review_create', 'reviews.create', 'Create a review without opening a window. category is an ID from reviewops_review_categories_list and defaults to ux when omitted. Reuse requestId only for an identical retry.', schema({ projectId: ID, requestId: ID, serviceId: ID, ...reviewFields }, ['projectId','requestId','title'])],
+  ['review_update', 'reviews.update', 'Edit a review in its existing project. Only supplied fields change. category must be an ID from reviewops_review_categories_list; omit it to keep the current category.', schema({ ...target, ...reviewFields }, ['projectId','reviewId'])],
   ['run_start', 'runs.start', 'Start work in the review project using its configured agent. Returns immediately with a run ID; use run_get for progress, logs and result. Reuse requestId only for an identical retry.', schema({ ...target, requestId: ID, prompt: { ...string(100000), minLength: 1 }, model: string(256), reasoningEffort: { type: 'string', enum: ['','none','minimal','low','medium','high','xhigh','max','ultra'] }, newConversation: { type: 'boolean' } }, ['projectId','reviewId','requestId','prompt'])],
   ['run_list', 'runs.list', 'List runs belonging to a review, including their status. Project and review must match.', schema(target, ['projectId','reviewId'])],
   ['run_get', 'runs.get', 'Read status, progress, output log, response and error for one run. All three target IDs must match.', schema({ ...target, runId: ID }, ['projectId','reviewId','runId'])],
   ['run_cancel', 'runs.cancel', 'Cancel only the specified run after checking its project and review.', schema({ ...target, runId: ID }, ['projectId','reviewId','runId'])]
 ].map(([name, action, description, inputSchema]) => ({ name: 'reviewops_' + name, action: 'automation.' + action, description, inputSchema,
-  annotations: { readOnlyHint: ['projects.list','reviews.list','reviews.get','runs.list','runs.get'].includes(action), destructiveHint: action === 'runs.cancel', openWorldHint: action === 'runs.start' } }));
+  annotations: { readOnlyHint: ['projects.list','reviewCategories.list','reviews.list','reviews.get','runs.list','runs.get'].includes(action), destructiveHint: action === 'runs.cancel', openWorldHint: action === 'runs.start' } }));
+
+function reviewCategories(snapshot) {
+  return [
+    ...categoryDefinitions.defaults.map(([id,name]) => ({id,name,kind:'builtin'})),
+    ...categoryDefinitions.legacy.map(([id,name]) => ({id,name,kind:'legacy'})),
+    ...(snapshot.settings?.reviewCategories || []).map(({id,name}) => ({id,name,kind:'custom'}))
+  ];
+}
+function validateCategory(payload, snapshot) {
+  if (payload.category !== undefined && !reviewCategories(snapshot).some(item => item.id === payload.category)) fail('리뷰 분류는 표시명이 아닌 ID로 지정하십시오. reviewops_review_categories_list 또는 automation.reviewCategories.list에 projectId를 전달하여 categories[].id를 조회하십시오.', 'INVALID_INPUT');
+}
 
 function validate(schema, value, label = 'arguments') {
   if (schema.type === 'object') {
@@ -53,6 +66,7 @@ function createAutomationApi({ dispatch, qa } = {}) {
     const project = snapshot.projects.find(item => item.id === id(payload.projectId));
     if (!project) fail('프로젝트를 찾을 수 없습니다.', 'NOT_FOUND');
     const projectId = project.id;
+    if (action === 'automation.reviewCategories.list') return { projectId, defaultCategory: 'ux', categories: reviewCategories(snapshot) };
     if (action === 'automation.reviews.list') return { projectId, reviews: snapshot.reviews.filter(review => review.projectId === projectId) };
     if (action === 'automation.reviews.create') {
       const requestId = id(payload.requestId), fingerprint = hash(payload);
@@ -64,6 +78,7 @@ function createAutomationApi({ dispatch, qa } = {}) {
       if (fields.serviceId === undefined && services.length > 1) fail('프로젝트 연결이 여러 개입니다. serviceId를 지정하십시오.', 'AMBIGUOUS_TARGET');
       if (fields.serviceId !== undefined && !services.includes(fields.serviceId)) fail('연결이 지정한 프로젝트에 속하지 않습니다.', 'TARGET_MISMATCH');
       if (fields.serviceId === undefined && services.length === 1) fields.serviceId = services[0];
+      validateCategory(fields, snapshot);
       const review = await dispatch('review.save', { ...fields, evidence: { automation: { version: 1, requestId, fingerprint } } });
       return { projectId, reviewId: review.id, review, reused: false };
     }
@@ -74,6 +89,7 @@ function createAutomationApi({ dispatch, qa } = {}) {
     if (action === 'automation.reviews.update') {
       const { projectId: unusedProject, reviewId: unusedReview, ...fields } = payload;
       if (!Object.keys(fields).length) fail('수정할 내용을 지정하십시오.');
+      validateCategory(fields, snapshot);
       return { projectId, reviewId, review: await dispatch('review.save', { id: reviewId, projectId, ...fields }) };
     }
     if (action === 'automation.runs.start') {
