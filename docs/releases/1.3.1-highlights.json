@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "version": "1.3.1",
+  "entries": [
+    {
+      "category": "fixes",
+      "title": "Show clear errors when selecting Codex CLI",
+      "description": "Show the original CLI-selection failure reason without Electron's internal method prefix. Keep existing executable settings and diagnostic details available when a new selection fails.",
+      "commits": [
+        "7635d746af728cc90c9ca44bfdc278020625f268"
+      ]
+    }
+  ]
+}
