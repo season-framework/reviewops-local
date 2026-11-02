@@ -7,9 +7,41 @@ const path = require('node:path');
 const { createRequire } = require('node:module');
 const { execFile } = require('node:child_process');
 const { promisify } = require('node:util');
+const { performance } = require('node:perf_hooks');
 const { macExecutableArchitectures } = require('./native-architecture.cjs');
 
 const runFile = promisify(execFile);
+const FAILURE_COOLDOWN_MS = 30_000;
+const MAX_FAILURES = 64;
+const MAX_DIAGNOSTICS = 16;
+
+// AbortController targets only the execFile child retained here. Keep ownership
+// until close, even if abort rejects the callback before the process exits.
+function createVersionExecutor(launch = execFile) {
+  const children = new Map();
+  const key = (command, args) => JSON.stringify([command, args]);
+  const execute = (command, args, options) => new Promise((resolve, reject) => {
+    const id = key(command, args);
+    const child = launch(command, args, { ...options, timeout: 0 }, (error, stdout) => {
+      if (error) reject(error); else resolve({ stdout });
+    });
+    children.set(id, child);
+    child.once('close', () => { if (children.get(id) === child) children.delete(id); });
+  });
+  execute.isPending = (command, args) => children.has(key(command, args));
+  return execute;
+}
+
+function probeError(kind) {
+  return {
+    missing: 'Codex CLI를 찾을 수 없습니다. 설치하거나 실행 파일을 선택해 주십시오.',
+    permissions: 'Codex 실행 파일에 실행 권한이 없습니다. 파일 권한을 확인하거나 다른 실행 파일을 선택하십시오.',
+    'invalid-version': '선택한 파일은 Codex CLI가 아니거나 버전 응답이 올바르지 않습니다.',
+    'owned-timeout': 'Codex 실행 파일의 버전 검사 시간이 초과되었습니다. 다시 검사하거나 다른 실행 파일을 선택하십시오.',
+    'abnormal-exit': 'Codex 실행 파일의 버전 검사가 비정상 종료되었습니다. 다시 검사하거나 다른 실행 파일을 선택하십시오.',
+    architecture: 'Codex 실행 파일이 Apple Silicon을 지원하지 않습니다. Apple Silicon용 Codex CLI를 설치하거나 선택해 주십시오.',
+  }[kind];
+}
 
 function platformTarget(platform, arch) {
   const targets = {
@@ -119,7 +151,7 @@ async function resolveNative(candidate, target) {
       return native;
     } catch { /* Try the next bounded vendor layout. */ }
   }
-  throw new Error('Codex 실행 파일이 없습니다. Codex CLI를 다시 설치해 주십시오.');
+  throw Object.assign(new Error('Codex 실행 파일이 없습니다. Codex CLI를 다시 설치해 주십시오.'), { code: 'CODEX_NATIVE_MISSING' });
 }
 
 /** Dependency injection keeps discovery tests independent of the user's installations. */
@@ -128,7 +160,19 @@ function createRuntimeFinder(options = {}) {
   const arch = options.arch || process.arch;
   const home = options.home || os.homedir();
   const env = options.env || process.env;
-  const execute = options.execute || runFile;
+  const execute = options.execute || createVersionExecutor(options.execFile);
+  const now = options.clock?.now || (() => performance.now());
+  const schedule = options.clock?.setTimeout || setTimeout;
+  const unschedule = options.clock?.clearTimeout || clearTimeout;
+  const timeoutMs = Math.min(5000, Math.max(1, options.timeout || 5000));
+  const failures = new Map(), records = [];
+  const canonicalHome = fs.realpath(home).catch(() => home);
+  let omitted = 0;
+  const omit = () => { omitted = Math.min(Number.MAX_SAFE_INTEGER, omitted + 1); };
+  const diagnostics = () => ({ records: records.map(row => ({ ...row })), omitted });
+  const add = row => { if (records.length === MAX_DIAGNOSTICS) { records.shift(); omit(); } records.push(row); };
+  const finish = (value, errorKind = null) => ({ ...value, errorKind, diagnostics: diagnostics() });
+  const fail = (kind, message = probeError(kind)) => finish(unavailable(message), kind);
   const detectAppleSilicon = options.detectAppleSilicon || (async () => {
     try {
       const { stdout } = await runFile('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'], { timeout: 2000, maxBuffer: 1024, shell: false });
@@ -136,78 +180,119 @@ function createRuntimeFinder(options = {}) {
     } catch { return false; }
   });
   let hostArch;
-  return async function findRuntime(customPath = '', { rediscoverMissingAppPath = false } = {}) {
+  return async function findRuntime(customPath = '', { rediscoverMissingAppPath = false, bypassCooldown = false } = {}) {
     const custom = typeof customPath === 'string' ? customPath.trim() : '';
-    if (customPath && !custom) return unavailable('Codex 실행 파일 경로가 올바르지 않습니다.');
+    if (customPath && !custom) return fail('invalid-version', 'Codex 실행 파일 경로가 올바르지 않습니다.');
     const expanded = custom.startsWith('~/') ? path.join(home, custom.slice(2)) : custom;
-    if (custom && !path.isAbsolute(expanded)) return unavailable('Codex 실행 파일의 전체 경로를 입력해 주십시오.');
-    // An Intel build of the manager can also run on Apple Silicon through Rosetta.
-    // Select the hardware's native Codex package in that case.
+    if (custom && !path.isAbsolute(expanded)) return fail('invalid-version', 'Codex 실행 파일의 전체 경로를 입력해 주십시오.');
+    const realHome = await canonicalHome;
+    const safePath = value => {
+      if (!value) return null;
+      let result = String(value).replace(/[\x00-\x1f\x7f]/g, '');
+      for (const prefix of [...new Set([home, realHome])].sort((a, b) => b.length - a.length)) {
+        if (result === prefix || result.startsWith(prefix + path.sep)) { result = '$HOME' + result.slice(prefix.length); break; }
+      }
+      return result.slice(0, 1024);
+    };
+    const record = (kind, file, started, extra = {}) => ({
+      kind, path: safePath(file),
+      version: typeof extra.version === 'string' ? extra.version.slice(0, 128) : null,
+      architecture: ['arm64', 'x64', 'arm64,x64', 'x64,arm64'].includes(extra.architecture) ? extra.architecture : null,
+      code: Number.isSafeInteger(extra.code) ? extra.code : null,
+      signal: /^SIG[A-Z0-9]{1,16}$/.test(extra.signal || '') ? extra.signal : null,
+      elapsedMs: Math.min(600_000, Math.max(0, Math.round(now() - started))),
+    });
     hostArch ||= platform === 'darwin' && arch === 'x64'
       ? Promise.resolve().then(detectAppleSilicon).then((nativeArm64) => nativeArm64 ? 'arm64' : arch)
       : Promise.resolve(arch);
-    const nativeArch = await hostArch;
-    const target = platformTarget(platform, nativeArch);
+    const nativeArch = await hostArch, target = platformTarget(platform, nativeArch);
     const candidates = custom ? [expanded] : options.candidates || defaultCandidates({
       home, env, platform, target, resourcesPath: options.resourcesPath || process.resourcesPath,
     });
     const visited = new Set();
-    let lastError;
-    let architectureError;
+    let lastError, lastKind = 'missing';
     for (const candidate of candidates) {
+      const started = now();
+      let command, fingerprint, architecture = null, phase = 'resolve', ownedTimeout = false;
       try {
-        const command = await resolveNative(candidate, target);
+        command = await resolveNative(candidate, target);
         if (visited.has(command)) continue;
         visited.add(command);
-        if (platform === 'darwin' && nativeArch === 'arm64') {
+        const stat = await fs.stat(command);
+        fingerprint = [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode].join(':');
+        const cached = failures.get(command);
+        if (cached && cached.fingerprint !== fingerprint) failures.delete(command);
+        if (!custom && !bypassCooldown && cached?.fingerprint === fingerprint && cached.until > now()) {
+          lastKind = cached.row.kind;
+          continue;
+        }
+        if (platform === 'darwin') {
           const architectures = await macExecutableArchitectures(command);
-          if (!architectures.includes('arm64')) {
-            throw Object.assign(new Error('Codex 실행 파일이 Apple Silicon을 지원하지 않습니다. Apple Silicon용 Codex CLI를 설치하거나 선택해 주십시오.'), { code: 'CODEX_ARCHITECTURE' });
+          architecture = architectures.join(',');
+          if (nativeArch === 'arm64' && !architectures.includes('arm64')) {
+            throw Object.assign(new Error('Incompatible architecture'), { code: 'CODEX_ARCHITECTURE' });
           }
         }
-        // Universal executables can inherit an Intel parent's architecture.
-        // The same launch command is reused for version checks and app-server.
         const forceArm64 = platform === 'darwin' && nativeArch === 'arm64' && arch === 'x64';
         const launchCommand = forceArm64 ? '/usr/bin/arch' : command;
         const launchArgs = forceArm64 ? ['-arm64', command] : [];
-        const { stdout } = await execute(launchCommand, [...launchArgs, '--version'], {
-          timeout: options.timeout || 5000,
-          maxBuffer: 64 * 1024,
-          windowsHide: true,
-          shell: false,
-          env,
+        const args = [...launchArgs, '--version'];
+        phase = 'execute';
+        if (execute.isPending?.(launchCommand, args)) {
+          lastKind = 'owned-timeout';
+          continue;
+        }
+        const controller = new AbortController();
+        let timer;
+        const deadline = new Promise((_, reject) => {
+          timer = schedule(() => {
+            ownedTimeout = true;
+            controller.abort();
+            reject(Object.assign(new Error('Owned version-probe deadline'), { code: 'CODEX_PROBE_TIMEOUT' }));
+          }, timeoutMs);
         });
+        let stdout;
+        try {
+          ({ stdout } = await Promise.race([Promise.resolve().then(() => execute(launchCommand, args, {
+            timeout: timeoutMs, maxBuffer: 64 * 1024, windowsHide: true, shell: false, env, signal: controller.signal,
+          })), deadline]));
+        } finally { unschedule(timer); }
         const version = /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*$/m.exec(String(stdout).trim())?.[1];
-        if (!version) throw new Error('선택한 파일은 Codex CLI가 아닙니다.');
-        return { available: true, path: command, version, command: launchCommand, args: launchArgs };
+        if (!version) throw Object.assign(new Error('Invalid version response'), { code: 'CODEX_INVALID_VERSION' });
+        failures.delete(command);
+        add(record('available', command, started, { version, architecture, code: 0 }));
+        return finish({ available: true, path: command, version, command: launchCommand, args: launchArgs });
       } catch (error) {
         lastError = error;
-        if (error.code === 'CODEX_ARCHITECTURE') architectureError = error;
-      }
-    }
-    if (custom) {
-      // Only a cached account-manager selection may recover after an app update.
-      // Explicit file choices and project executables remain strict, as do
-      // existing files with invalid versions, permissions, or architectures.
-      if (rediscoverMissingAppPath && platform === 'darwin'
-        && ['ENOENT', 'ENOTDIR'].includes(lastError?.code)
-        && macAppCandidates({ home, target }).includes(path.normalize(expanded))) {
-        // A launcher or missing loader can report these codes for an existing
-        // executable. Confirm the selected path itself is gone before switching.
-        try { await fs.stat(expanded); }
-        catch (error) {
-          if (['ENOENT', 'ENOTDIR'].includes(error.code)) return findRuntime();
+        const kind = ownedTimeout ? 'owned-timeout'
+          : ['EACCES', 'EPERM'].includes(error.code) ? 'permissions'
+            : error.code === 'CODEX_ARCHITECTURE' ? 'architecture'
+              : error.code === 'CODEX_INVALID_VERSION' ? 'invalid-version'
+                : phase === 'resolve' && ['ENOENT', 'ENOTDIR', 'CODEX_NATIVE_MISSING'].includes(error.code) ? 'missing'
+                  : 'abnormal-exit';
+        // Missing potential auto-discovery paths are counted without filling
+        // the recent executable-probe history or exposing a full path inventory.
+        if (kind === 'missing' && !custom) { omit(); continue; }
+        lastKind = kind;
+        const row = record(kind, command || candidate, started, { architecture, code: error.code, signal: error.signal });
+        add(row);
+        if (command && fingerprint) {
+          failures.delete(command);
+          failures.set(command, { fingerprint, until: now() + FAILURE_COOLDOWN_MS, row });
+          if (failures.size > MAX_FAILURES) failures.delete(failures.keys().next().value);
         }
       }
-      const message = lastError?.code === 'ENOENT' ? '선택한 Codex 실행 파일을 찾을 수 없습니다.'
-        : lastError?.killed || lastError?.code === 'ETIMEDOUT' ? 'Codex 실행 파일이 응답하지 않습니다.'
-          : lastError?.code === 'EACCES' ? 'Codex 실행 파일에 실행 권한이 없습니다.'
-            : lastError?.message?.startsWith('Codex') || lastError?.message?.startsWith('선택한') || lastError?.message?.startsWith('실행 파일')
-              ? lastError.message : '선택한 Codex 실행 파일을 실행할 수 없습니다.';
-      return unavailable(message);
     }
-    if (architectureError) return unavailable(architectureError.message);
-    return unavailable('Codex CLI를 찾을 수 없습니다. 설치하거나 실행 파일을 선택해 주십시오.');
+    if (custom && rediscoverMissingAppPath && platform === 'darwin'
+      && ['ENOENT', 'ENOTDIR'].includes(lastError?.code)
+      && macAppCandidates({ home, target }).includes(path.normalize(expanded))) {
+      try { await fs.stat(expanded); }
+      catch (error) {
+        if (['ENOENT', 'ENOTDIR'].includes(error.code)) return findRuntime('', { bypassCooldown });
+      }
+    }
+    if (lastKind === 'missing' && !custom) add(record('missing', null, now()));
+    return fail(lastKind);
   };
 }
 
