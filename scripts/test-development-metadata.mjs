@@ -25,7 +25,7 @@ export function allocationStore({env=process.env,fetchImpl=fetch}={}) {
   createRelease:build=>{
    assertAllocationCI(env);
    if(build.commit!==env.GITHUB_SHA||build.buildNumber!==ciBuildNumber(env))throw new Error('예약할 소스와 현재 Actions 실행이 다릅니다.');
-   return request('/releases',{method:'POST',body:{tag_name:TAG,target_commitish:build.commit,name:'ReviewOps 테스트 버전',body:'',prerelease:true,draft:false,make_latest:'false'}});
+   return request('/releases',{method:'POST',body:{tag_name:TAG,target_commitish:build.commit,name:'ReviewOps Test builds',body:'',prerelease:true,draft:false,make_latest:'false'}});
   },
   saveLedger:(release,body)=>{
    assertAllocationCI(env);

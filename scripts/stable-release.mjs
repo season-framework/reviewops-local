@@ -8,7 +8,7 @@ import {githubStore,uploadToDraft,REPOSITORY} from './upload-windows-release.mjs
 const run=promisify(execFile),root=fileURLToPath(new URL('..',import.meta.url));
 const sha=value=>/^[a-f0-9]{40}$/.test(value||'');
 export const TARGETS=['darwin-arm64','darwin-x64','win32-x64'];
-const packageInputs=['src','electron','build','scripts','package.json','package-lock.json','release-plan.json','vite.config.*','LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'];
+const packageInputs=['src','electron','build','scripts','package.json','package-lock.json','release-plan.json','release-notes.json','vite.config.*','LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'];
 export function parseVersion(value){
  if(typeof value!=='string'||!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value))throw new Error('정식 버전은 1.2.3 형식을 사용하십시오.');
  const parts=value.split('.').map(Number);if(parts.some(part=>!Number.isSafeInteger(part)))throw new Error('버전 숫자가 너무 큽니다.');return parts;

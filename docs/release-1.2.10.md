@@ -1,27 +1,27 @@
 # ReviewOps 1.2.10
 
-요청별 모델·추론 기록을 저장하고, 에이전트 대화의 복사·실행 기록·후속 요청 입력을 정리했습니다. 정식 출시 전 버전을 다른 PC에서 설치할 수 있도록 테스트 버전 선택을 추가했습니다.
+This release records models and reasoning per request, improves copying and run history in agent conversations, and unifies follow-up request entry. The optional test channel lets another computer install builds before a stable release.
 
-## 대화와 요청 기록
+## Conversation and request history
 
-- [#27](https://github.com/season-framework/reviewops-local/issues/27): 요청마다 선택한 모델·추론 수준, 실행에 전달한 값, 실행 프로그램이 알려준 실제 사용값을 구분하여 저장합니다. 재실행과 후속 요청도 각각 기록하며, 값이 없는 과거 기록을 이후 설정으로 채우지 않습니다.
-- [#28](https://github.com/season-framework/reviewops-local/issues/28): 요청문과 응답을 원문으로 복사하고, 복사 성공·실패를 표시합니다. 실행 중인 응답은 작성 중임을 표시합니다.
-- 실행 중에는 대화 하단에서 마지막 작업을 읽고 저장된 실행 기록을 펼칠 수 있습니다. 긴 목록은 정해진 높이 안에서 스크롤하며, 이전 내용을 읽는 동안 새 출력이 와도 읽던 위치를 유지합니다.
-- 요청과 후속 요청을 하나의 작성창에서 입력합니다. 실행 중에도 다음 요청을 대기 목록에 저장할 수 있으며, 저장한 요청은 사용자가 실행합니다. 대기 요청을 수정하거나 이전 요청을 가져올 때 다른 초안을 보존합니다.
-- 상세 설정, 요청·실행 ID와 원본 로그는 **더보기**에서 엽니다. 요청별 사용 모델과 추론 정보는 대화에서 읽을 수 있습니다.
+- [#27](https://github.com/season-framework/reviewops-local/issues/27): Each request separately records the selected model/reasoning level, values passed to execution, and actual values reported by the executable. Reruns and follow-up requests each keep their own record. Missing historical values are not filled from later settings.
+- [#28](https://github.com/season-framework/reviewops-local/issues/28): Copy original request and response text with success/failure feedback. Responses still being written are identified as in progress.
+- During execution, read the latest operation at the bottom of the conversation and expand its saved run record. Long lists scroll within a fixed height. New output preserves your position while reading earlier content.
+- Write initial and follow-up requests in one composer. Save the next request to the waiting list during execution and start it manually. Editing a waiting request or importing an earlier request preserves other drafts.
+- Open **More** for detailed settings, request/run IDs, and original logs. Per-request model and reasoning information remains visible in the conversation.
 
-## 테스트 버전 받기
+## Optional test versions
 
-- **설정 → 자동 확인 → 앱 업데이트**의 **테스트 버전 받기**를 켜면 정식 출시 전 최신 테스트 버전을 확인할 수 있습니다. 기본값은 꺼짐입니다.
-- 테스트 배포는 최신 빌드 하나만 유지합니다. 새 빌드가 나오면 이전 테스트 설치 파일을 교체하며, 테스트 릴리스 기록을 계속 추가하지 않습니다.
-- 설치된 버전과 받을 버전을 구분하고, **자세히 보기**에서 빌드 번호·커밋·생성 시간을 읽거나 복사할 수 있습니다.
-- macOS에서는 기존 업데이트 방식으로 다운로드·검사·설치 후 앱을 다시 시작합니다. Windows에서는 **설치 파일 받기**로 내려받고 검사한 뒤 **설치 파일 열기**를 선택합니다. Windows 앱은 자동으로 종료되지 않으며, 설치 안내에 따라 진행해야 합니다.
-- 확인·다운로드 중에도 테스트 버전 선택을 바꿀 수 있습니다. 이전 선택의 응답이나 다운로드 파일을 새 선택의 설치에 사용하지 않습니다. 테스트 버전이 없거나 통신에 실패하면 해당 상태를 안내합니다.
-- 선택을 해제하면 이후 정식 업데이트를 확인합니다. 설치된 앱이나 자료를 이전 버전으로 되돌리지 않으며, 정식 버전의 업데이트 방식은 유지합니다.
+- Enable **Settings → Automatic checks → App updates → Get test versions** to check the latest prerelease build. It is off by default.
+- The test release keeps the latest installer set. New builds replace earlier test installers instead of adding a separate release for every build.
+- Installed and available versions are separate. **Show details** displays the build number, commit, and build time; version information can also be copied.
+- macOS uses the existing download/verification/install/restart flow. On Windows, select **Download installer**, wait for verification, then select **Open installer**. The Windows app does not close automatically; follow the installer instructions.
+- Change the test-channel selection during a check or download. A response or download from the old selection cannot install a build for the new selection. Missing test versions and communication failures have separate status messages.
+- Disabling the option selects stable updates for future checks. It does not downgrade the installed app or data, and the stable update method is unchanged.
 
-## 설치와 자료 보관
+## Install and preserve data
 
-- macOS 13 이상에서는 Apple Silicon용 `ReviewOps-1.2.10-arm64.dmg` 또는 Intel용 `ReviewOps-1.2.10-x64.dmg`를 선택하십시오.
-- Windows 10·11 x64에서는 `ReviewOps-1.2.10-windows-x64.exe`를 사용하십시오.
-- 프로젝트·리뷰·첨부 자료와 설정은 앱 설치 폴더와 별도로 보관하며 업데이트 후에도 유지합니다.
-- 1.2.10에서 저장한 자료는 1.2.9에서 열 수 없습니다. 이전 앱으로 돌아갈 필요가 있다면 업데이트 전에 백업하십시오. 테스트 버전 선택을 해제해도 자료를 삭제하거나 이전 백업으로 자동 교체하지 않습니다.
+- On macOS 13 or later, choose `ReviewOps-1.2.10-arm64.dmg` for Apple Silicon or `ReviewOps-1.2.10-x64.dmg` for Intel.
+- On Windows 10/11 x64, use `ReviewOps-1.2.10-windows-x64.exe`.
+- Projects, reviews, attachments, and settings are stored separately from the installation folder and preserved during updates.
+- Data saved by 1.2.10 cannot be opened by 1.2.9. Back up before updating if you may need to return to the older app. Disabling test versions does not delete data or restore an older backup.

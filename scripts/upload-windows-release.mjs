@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import {loadReleaseHighlights,renderStableDraftNotes} from './release-notes-format.mjs';
 const require = createRequire(import.meta.url), run = promisify(execFile);
 const root = fileURLToPath(new URL('..', import.meta.url));
 export const REPOSITORY = 'season-framework/reviewops-local';
@@ -141,7 +142,8 @@ export function githubStore({ token, fetchImpl = fetch, env = process.env, platf
     async createDraft(plan) {
       assertEnvironment({ env, platform, version: plan.version, actualCommit: plan.commit });
       if (plan.tag !== `v${plan.version}`) throw new Error('초안 태그와 앱 버전이 다릅니다.');
-      const release=await request('/releases', { method: 'POST', json: { tag_name: plan.tag, target_commitish: plan.commit, name: `ReviewOps ${plan.version}`, body: 'Native package verification completed. QA report and publication review are pending.', draft: true, prerelease: false, make_latest: 'false' } });
+      const highlights=await loadReleaseHighlights({version:plan.version,source:plan.commit});
+      const release=await request('/releases', { method: 'POST', json: { tag_name: plan.tag, target_commitish: plan.commit, name: `ReviewOps ${plan.version}`, body: renderStableDraftNotes(plan,highlights), draft: true, prerelease: false, make_latest: 'false' } });
       assertDraft(release,plan);
       // A new draft may not appear in the listing immediately. Retain only its
       // validated ID; getRelease still fetches its current state before use.
