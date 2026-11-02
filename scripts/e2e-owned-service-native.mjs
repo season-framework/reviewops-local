@@ -62,7 +62,7 @@ const record=(action,details={})=>{result.operations.push({at:new Date().toISOSt
 const pass=(id,name,actual)=>{result.requirements.find(row=>row.id===id).observations.push(name);result.checks.push({id,name,actual,status:'pass'});save();};
 // Diagnostic observations never replace the original assertion/stack or a
 // cleanup verdict. No product hooks, IPC payloads with tokens, or environment
-// dumps are collected. Only our exact created A/B fixture roots are read.
+// dumps are collected. Only our exact created A/B and explicitly rebound D-current fixture roots are read.
 const diagnosticDir=path.join(output,'failure-evidence'),fixtureRoots=new Map();
 const diagnostics=result.failureEvidence={schema:1,files:[],runtime:[],manifests:[],errors:[],captureComplete:true,confirmsCleanup:false};
 const diagnosticError=error=>({name:error?.name||'Error',code:typeof error?.code==='string'?error.code:null,message:String(error?.message??error),stack:typeof error?.stack==='string'?error.stack:null});
@@ -75,9 +75,10 @@ function diagnosticJSON(phase,value){
 const statIdentity=stat=>({dev:String(stat.dev),ino:String(stat.ino),size:Number(stat.size),mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs)});
 const sameIdentity=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
 const sameFileState=(a,b)=>sameIdentity(a,b)&&a.size===b.size&&a.mtimeNs===b.mtimeNs&&a.ctimeNs===b.ctimeNs;
-function registerFixtureRoot(project){
- if(!['A','B'].includes(project.label))return;
- try{assert.equal(project.work,path.join(temporary,'project-'+project.label));const canonical=fs.realpathSync.native(project.work),expected=path.join(fs.realpathSync.native(temporary),'project-'+project.label),stat=fs.lstatSync(project.work,{bigint:true});assert.equal(canonical,expected);assert.ok(stat.isDirectory()&&!stat.isSymbolicLink());fixtureRoots.set(project,{canonical,identity:statIdentity(stat),registeredAt:new Date().toISOString()});}
+function registerFixtureRoot(project,requestedRoot){
+ const leaf=['A','B'].includes(project.label)?'project-'+project.label:project.label==='D'&&requestedRoot===path.join(temporary,'project-D-current')?'project-D-current':null;
+ if(!leaf)return;
+ try{assert.ok(projects.includes(project),'Only the original created project object may be registered');const expectedRoot=path.join(temporary,leaf);assert.equal(project.work,expectedRoot);const canonical=fs.realpathSync.native(project.work),expected=path.join(fs.realpathSync.native(temporary),leaf),stat=fs.lstatSync(project.work,{bigint:true});assert.equal(canonical,expected);assert.ok(stat.isDirectory()&&!stat.isSymbolicLink());fixtureRoots.set(project,{expectedRoot,projectId:project.id,canonical,identity:statIdentity(stat),registeredAt:new Date().toISOString()});}
  catch(error){diagnosticFailure('register-fixture-'+project.label,error);}
 }
 function captureFixtureFiles(phase){
@@ -85,13 +86,12 @@ function captureFixtureFiles(phase){
 }
 function captureFixtureFilesRead(phase){
  const allowed=['service-current.json','service-log.jsonl','cleanup-marker.json','stored-state.json'],limit=4*1024**2,totalLimit=32*1024**2;
- for(const project of projects.filter(value=>['A','B'].includes(value.label))){
-  const guard=fixtureRoots.get(project);
+ for(const [project,guard] of fixtureRoots){
   for(const name of allowed){
    const row={phase,projectId:project.id,connectionId:project.connection.id,label:project.label,name,startedAt:new Date().toISOString(),status:'unread',noFollowFlagAvailable:Boolean(fs.constants.O_NOFOLLOW)},source=path.join(project.work,name);let fd;
    diagnostics.files.push(row);
    try{
-    assert.ok(guard,'Only a registered created fixture root may be read');assert.equal(project.work,path.join(temporary,'project-'+project.label));assert.equal(fs.realpathSync.native(project.work),guard.canonical);
+    assert.ok(projects.includes(project)&&guard.projectId===project.id,'Only the registered original project object may be read');assert.equal(project.work,guard.expectedRoot);assert.equal(fs.realpathSync.native(project.work),guard.canonical);
     const rootBefore=fs.lstatSync(project.work,{bigint:true});assert.ok(rootBefore.isDirectory()&&!rootBefore.isSymbolicLink());assert.ok(sameIdentity(statIdentity(rootBefore),guard.identity));
     const canonical=fs.realpathSync.native(source);assert.equal(canonical,path.join(guard.canonical,name));assert.equal(path.relative(guard.canonical,canonical),name);
     const before=fs.lstatSync(source,{bigint:true});assert.ok(before.isFile()&&!before.isSymbolicLink());assert.ok(before.size<=BigInt(limit),'Fixture evidence exceeds per-file4MiB cap');assert.ok(diagnosticBytes+Number(before.size)<=totalLimit,'Fixture evidence exceeds aggregate32MiB cap');
@@ -111,7 +111,7 @@ function captureFixtureFilesRead(phase){
  diagnosticJSON(phase+'-files',{phase,at:new Date().toISOString(),files:diagnostics.files.filter(row=>row.phase===phase),copiedBytesTotal:diagnosticBytes});
 }
 async function capturePostStopRuntime(project,page,phase){
- if(!['A','B'].includes(project.label)||!fixtureRoots.has(project))return;
+ if(!fixtureRoots.has(project))return;
  const row={phase,projectId:project.id,connectionId:project.connection.id,requestedAt:new Date().toISOString(),action:'serviceRuntime.state',payload:{projectId:project.id,connectionId:project.connection.id}};diagnostics.runtime.push(row);
  try{row.response=await boundedCleanup(request(page,row.action,row.payload),'readonly post-stop fixture state',3000);row.receivedAt=new Date().toISOString();}
  catch(error){row.error=diagnosticError(error);row.receivedAt=new Date().toISOString();diagnosticFailure(phase,error);}
@@ -402,7 +402,7 @@ async function bindingDraftScenario(group){
  await main.locator('.main-nav').getByRole('button',{name:'홈',exact:true}).click();
  await main.locator('.workspace-refresh').click();await main.getByRole('button',{name:pd.name+' 프로젝트 열기',exact:true}).click();await show(main);
  const newRoot=path.join(temporary,'project-D-current');write(path.join(newRoot,'server.cjs'),SERVICE_SOURCE);write(path.join(newRoot,'sentinel.txt'),'PRESERVE_D_CURRENT');
- const moved=await ipc(main,'project.save',{id:pd.id,connection:{...pd.connection,rootPath:newRoot,agentWorkPath:newRoot}});pd.connection=moved.connection;pd.work=newRoot;
+ const moved=await ipc(main,'project.save',{id:pd.id,connection:{...pd.connection,rootPath:newRoot,agentWorkPath:newRoot}});pd.connection=moved.connection;pd.work=newRoot;registerFixtureRoot(pd,newRoot);
  await expect(draftEntry).toHaveValue('alternate.cjs');await expect(owned(dedicated)).toContainText(oldRoot);
  await expect(owned(dedicated)).toContainText(labels.previousBindingText);
  await expect(owned(dedicated).getByRole('button',{name:'저장한 서비스 시작',exact:true})).toBeDisabled();
@@ -720,13 +720,13 @@ finally{
    for(const p of projects){const channel=matchingChannel(channels,p.id);if(!channel){cleanupIssues.push({kind:'service-consumer-lost',projectId:p.id});continue;}
     let cleanupPhase='state';const cleanupStartedAt=new Date().toISOString();
     try{let state=await boundedCleanup(ipc(channel.page,'serviceRuntime.state',{projectId:p.id,connectionId:p.connection.id}),'owned runtime state');
-     if(['A','B'].includes(p.label))diagnosticJSON('cleanup-before-'+p.label,{at:new Date().toISOString(),projectId:p.id,connectionId:p.connection.id,state});
+     if(fixtureRoots.has(p))diagnosticJSON('cleanup-before-'+p.label,{at:new Date().toISOString(),projectId:p.id,connectionId:p.connection.id,state});
      cleanupPhase='stop';
      if(state.instance&&['starting','running','stopping','stop-unconfirmed'].includes(state.instance.status))state=await boundedCleanup(ipc(channel.page,'serviceRuntime.stop',{projectId:p.id,connectionId:p.connection.id,instanceId:state.instance.instanceId}),'exact owned runtime stop');
      cleanupPhase='terminal-state';
      if(state.instance&&state.instance.status!=='exited')throw new Error('Owned runtime terminal state unconfirmed');
      record('cleanup-owned-runtime-confirmed',{projectId:p.id,instance:state.instance});
-    }catch(error){cleanupIssues.push({kind:'service-stop-unconfirmed',projectId:p.id,message:error.message});if(['A','B'].includes(p.label)){diagnosticJSON('cleanup-catch-'+p.label,{projectId:p.id,connectionId:p.connection.id,cleanupPhase,startedAt:cleanupStartedAt,caughtAt:new Date().toISOString(),error:diagnosticError(error),originalFailure:result.failure||null});await capturePostStopRuntime(p,channel.page,'cleanup-catch-'+p.label);captureFixtureFiles('cleanup-catch-'+p.label);}}}
+    }catch(error){cleanupIssues.push({kind:'service-stop-unconfirmed',projectId:p.id,message:error.message});if(fixtureRoots.has(p)){diagnosticJSON('cleanup-catch-'+p.label,{projectId:p.id,connectionId:p.connection.id,cleanupPhase,startedAt:cleanupStartedAt,caughtAt:new Date().toISOString(),error:diagnosticError(error),originalFailure:result.failure||null});await capturePostStopRuntime(p,channel.page,'cleanup-catch-'+p.label);captureFixtureFiles('cleanup-catch-'+p.label);}}}
    if(!cleanupIssues.length){
     if(owner)journalOwnedApp(owner,'cleanup-quit-request');
     try{await boundedCleanup(app.evaluate(({app})=>{if(global.__ownedDialogs)global.__ownedDialogs.answer=1;setImmediate(()=>app.quit())}),'owned app quit request',3000);
