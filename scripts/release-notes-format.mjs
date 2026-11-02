@@ -72,9 +72,13 @@ export function changeSections(changes,highlights=[]){
  }
  for(const item of commits){
   if(covered.has(item.commit)||/^Merge\b/i.test(item.subject))continue;
+  const category=categoryFor(item.subject);
+  // Raw documentation/build subjects describe implementation work. Keep them
+  // in source details; top-level documentation needs a reviewed highlight.
+  if(category==='documentation'||category==='maintenance')continue;
   const title=subjectTitle(item.subject),key=title.toLowerCase();if(seen.has(key))continue;seen.add(key);
   const refs=references([item]),link=`[${item.commit.slice(0,12)}](${repository}/commit/${item.commit})`;
-  sections.get(categoryFor(item.subject)).push(`- **${escapeReleaseText(title)}.** ${refs||link}`);
+  sections.get(category).push(`- **${escapeReleaseText(title)}.** ${refs||link}`);
  }
  return [...sections].filter(([,items])=>items.length).map(([key,items])=>`## ${headings[key]}\n\n${items.slice(0,8).join('\n')}\n`).join('\n');
 }
