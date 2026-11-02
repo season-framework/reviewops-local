@@ -2,6 +2,7 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {PassThrough}=require('node:stream');
+const {finished}=require('node:stream/promises');
 const {spawn,spawnSync}=require('node:child_process');
 const fs=require('node:fs/promises');
 const path=require('node:path');
@@ -54,7 +55,7 @@ test('packaged MCP resources include category definitions and load without the s
     const canonical=[['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']];
     for(const [file]of canonical)await fs.copyFile(path.resolve(__dirname,'../electron',file),path.join(source,'electron',file));
     await fs.copyFile(path.resolve(__dirname,'../electron/owned-node-bootstrap.cjs'),path.join(source,'electron/owned-node-bootstrap.cjs'));
-    await asar.createPackage(source,archive);
+    await finished(await asar.createPackage(source,archive));
     const build=require('../package.json').build;
     assert.equal(build.extraResources?.some(item=>canonical.some(([file])=>item.from==='electron/'+file))??false,false,'The canonical MCP files must remain in app.asar rather than extraResources');
     await require(path.resolve(__dirname,'..',build.afterPack))({appOutDir:directory,packager:{getResourcesDir:()=>directory}});
