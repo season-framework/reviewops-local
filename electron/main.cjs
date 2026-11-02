@@ -7,6 +7,7 @@ const { pathToFileURL } = require('node:url');
 const crypto = require('node:crypto');
 const { AsyncLocalStorage } = require('node:async_hooks');
 const { createStore } = require('./store.cjs');
+const { queryLocalSharedData } = require('./local-shared-data-query.cjs');
 const viewerSessions=require('./viewer-sessions.cjs').createViewerSessions();
 const { createVault, atomicWrite } = require('./vault.cjs');
 const { createSshService } = require('./ssh.cjs');
@@ -52,6 +53,11 @@ const stagedAttachments = new Map();
 const pendingTrust = new Map();
 const operations = new Set();
 const windowActions = new Set(['window.state','window.fullscreen','window.close']);
+const localSharedActions = Object.freeze({
+  'shared.projects.list': 'projects.list',
+  'shared.reviews.list': 'reviews.list',
+  'shared.reviews.get': 'reviews.get'
+});
 const windowFullScreenChanges = new WeakMap();
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const storagePattern = /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9]{1,12})?$/;
@@ -1263,9 +1269,23 @@ else {
     });
     ipcMain.handle('reviewops:invoke',async(event,action,payload)=>{
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
+      const admittedRecord=windowContexts.get(host);
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','serviceRuntime.state','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if (typeof action === 'string' && Object.hasOwn(localSharedActions, action)) {
+          // Read after earlier mutations, then resolve the live sender and scope.
+          // This path is local IPC only; integrationDispatch cannot grant access.
+          result=actionQueue.then(()=>{
+            const record=windowContexts.get(host);
+            if(senderWindow(event)!==host||!record||record!==admittedRecord||
+               typeof record.projectId!=='string'||
+               (record.qaActive!==undefined&&typeof record.qaActive!=='boolean')||
+               (record.qaActive===true&&record.projectId===''))
+              throw Object.assign(new Error('A current owned local window is required.'),{code:'ACCESS_DENIED'});
+            return queryLocalSharedData(store.snapshot(),record.projectId,localSharedActions[action],payload);
+          });
+          actionQueue=result.catch(()=>{});
+        } else if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','serviceRuntime.state','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
