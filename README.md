@@ -4,7 +4,7 @@
 
 <p align="center">From review to resolution.<br>A desktop workspace for project reviews, screenshots, files, and Codex tasks.</p>
 
-<p align="center"><a href="https://season-framework.github.io/reviewops-local/">Website</a> · <a href="https://github.com/season-framework/reviewops-local/releases/latest">Download</a> · <a href="docs/guide-ko.md">한국어 안내</a> · <a href="CONTRIBUTING.md">Contributing</a></p>
+<p align="center"><a href="https://season-framework.github.io/reviewops-local/">Website</a> · <a href="https://github.com/season-framework/reviewops-local/releases/latest">Download</a> · <a href="docs/guide.md">User guide</a> · <a href="CONTRIBUTING.md">Contributing</a></p>
 
 ![Illustrative ReviewOps workspace with sample content](website/assets/workspace.svg)
 

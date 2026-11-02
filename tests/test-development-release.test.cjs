@@ -168,7 +168,7 @@ test('publishing retains prior source-bound change history, replaces only packag
  await second.m.publishRelease(second.plan,store,{dryRun:false});
  assert.ok([...store.assets.values()].some(item=>item.name===first.plan.history.name));assert.ok([...store.assets.values()].some(item=>item.name===second.plan.history.name));
  assert.equal([...store.assets.values()].filter(item=>/ReviewOps-.*-test\.11001-/.test(item.name)).length,0);
- const publicRelease=await store.getRelease();assert.equal(publicRelease.name,'ReviewOps 테스트 1.2.11-dev-2');assert.match(publicRelease.body,/1\.2\.11-dev-1/);assert.match(publicRelease.body,/1\.2\.11-dev-2/);
+ const publicRelease=await store.getRelease();assert.equal(publicRelease.name,'ReviewOps 1.2.11-dev-2 (Test)');assert.match(publicRelease.body,/1\.2\.11-dev-1/);assert.match(publicRelease.body,/1\.2\.11-dev-2/);
  const before=store.writes.length;await second.m.publishRelease(second.plan,store,{dryRun:false});assert.equal(store.writes.length,before);
  await assert.rejects(first.m.publishRelease(first.plan,store,{dryRun:false}),/최신/);
  const changed={...second.plan,history:{...second.plan.history,sha256:'f'.repeat(64)}};await assert.rejects(second.m.publishRelease(changed,store,{dryRun:false}),/변경할 수/);assert.equal(store.writes.length,before);

@@ -110,6 +110,7 @@ test('stable renderer preserves reviewed notices when optional packages are abse
  await fs.writeFile(path.join(directory,'THIRD-PARTY-NOTICES.txt'),notices);await assertCleanSource(directory);
  await buildRenderer({directory,generateLicenses:false});await assertCleanSource(directory);
  assert.deepEqual(await fs.readFile(path.join(directory,'THIRD-PARTY-NOTICES.txt')),notices);assert.match(await fs.readFile(path.join(directory,'dist/index.html'),'utf8'),/Native renderer fixture/);
+ await fs.writeFile(path.join(directory,'release-notes.json'),JSON.stringify({schema:1,version:'1.0.0',entries:[]}));await assert.rejects(assertCleanSource(directory),/release-notes\.json/);await fs.rm(path.join(directory,'release-notes.json'));
  await fs.appendFile(path.join(directory,'scripts/copy-locales.mjs'),'// unreviewed change\n');await assert.rejects(assertCleanSource(directory),/scripts\/copy-locales\.mjs/);
  const stable=await fs.readFile(path.join(__dirname,'../scripts/stable-build.mjs'),'utf8');assert.ok(stable.includes('buildRenderer({generateLicenses:false})'));assert.ok(stable.includes('await validateSource({version,commit});await buildNativePackage'));
 });
@@ -124,7 +125,7 @@ test('workflow keeps native targets, reviewed SHA, read-only collection and expl
 test('real draft adapter fixes draft=true and rejects mismatched version input before transmission',async()=>{
  const {githubStore}=await import('../scripts/upload-windows-release.mjs'),{assertDraftEnvironment}=await load(),calls=[];
  const store=githubStore({token:'synthetic-only',env:env(),platform:'linux',assertEnvironment:assertDraftEnvironment,fetchImpl:async(url,options)=>{calls.push({url,options});return Response.json({id:3,tag_name:`v${version}`,target_commitish:commit,draft:true,prerelease:false,immutable:false})}});
- await store.createDraft({version,commit,tag:`v${version}`});const body=JSON.parse(calls[0].options.body);assert.equal(body.draft,true);assert.equal(body.prerelease,false);assert.equal(body.target_commitish,commit);assert.equal(calls[0].options.headers['Content-Type'],'application/json');
+ await store.createDraft({version,commit,tag:`v${version}`});const body=JSON.parse(calls[0].options.body);assert.equal(body.draft,true);assert.equal(body.prerelease,false);assert.equal(body.target_commitish,commit);assert.equal(calls[0].options.headers['Content-Type'],'application/json');assert.match(body.body,/\*\*Draft/);assert.ok(body.body.includes('## Install and update'));assert.ok(body.body.includes('## Build details'));assert.equal(/[가-힣]/.test(body.body),false);assert.equal(/^# /m.test(body.body),false);
  await assert.rejects(store.createDraft({version:'1.3.0',commit,tag:'v1.3.0'}));assert.equal(calls.length,1);
 });
 test('a created draft ID bypasses a stale listing and is still re-read before use',async()=>{

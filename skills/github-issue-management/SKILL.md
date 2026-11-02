@@ -1,41 +1,41 @@
 ---
 name: github-issue-management
-description: "GitHub 이슈를 만들거나 정리하고, 완료한 코드 수정과 검사 결과를 짧게 기록한다. 이슈·댓글 작성, 중복 정리, 기존 댓글 수정·삭제 요청에 사용한다."
+description: "Create and organize GitHub issues, and concisely record committed code changes and verification results. Use for issue/comment writing, duplicate cleanup, and editing or deleting existing comments."
 ---
 
-# GitHub 이슈 관리
+# GitHub issue management
 
-문제와 처리 결과를 짧고 정확하게 남긴다. 사용자가 요청한 저장소와 이슈 범위에서 작업한다.
+Record problems and results briefly and accurately. Work within the repository and issue scope requested by the user. Write GitHub issues and comments in Korean; repository documentation and release notes are maintained in English.
 
-## 작업 범위
+## Scope
 
-- 저장소, 이슈 내용, 관련 댓글과 코드를 읽고 요청한 작업을 파악한다. 새 이슈를 만들기 전에 열린 이슈와 닫힌 이슈에서 같은 문제를 검색한다. 같은 문제가 있으면 기존 이슈를 활용하고 중복 게시하지 않는다.
-- 쓰기 작업은 사용자 요청 범위에서 수행한다. 같은 세션에서 이슈 게시나 댓글 정리를 이미 요청했다면 다시 승인받지 않는다. 조사나 초안 작성만 요청했다면 게시하지 않는다. 스킬 사용 자체가 모든 GitHub 변경을 허용하는 것은 아니다.
-- 사용할 수 있는 GitHub 도구를 우선 사용하고, 필요한 기능이 없으면 CLI나 API를 사용한다. 자격증명은 도구가 처리하도록 하고 내용이나 로그에 출력하지 않는다.
+- Read the repository, issue content, related comments, and code to understand the requested work. Search open and closed issues before creating another. Reuse an existing issue for the same problem instead of posting a duplicate.
+- Perform writes only within the user's request. Do not ask again if the same session already authorizes posting issues or organizing comments. An investigation or draft-only request does not authorize publishing. Using this skill does not authorize every GitHub change.
+- Prefer available GitHub tools; use the CLI or API when required capabilities are missing. Let tools handle credentials, and do not print them in content or logs.
 
-## 이슈 작성
+## Write an issue
 
-문제, 원하는 동작, 관련 코드 위치만 필요한 만큼 쓴다. 제목은 어떤 상황에서 무엇이 잘못되는지 바로 알 수 있게 작성한다. 재현에 필요한 조건은 문제 설명에 포함한다. 직접 재현하지 않은 내용은 관찰이나 제안으로 표현한다.
+Include the problem, expected behavior, and relevant code locations with only the detail needed. The title should make the trigger and incorrect behavior immediately clear. Put reproduction conditions in the problem description. Describe an unverified report as an observation or proposal.
 
-코드 위치는 확인한 저장소 상대 경로나 GitHub 파일 링크로 표시한다. 확인하지 않은 파일이나 원인은 추측해 넣지 않는다. 긴 배경 설명, 작업 계획, 우선순위, 미작업 목록, 반복 소개는 넣지 않는다.
+Use repository-relative paths or GitHub file links that you have checked. Do not invent uninspected files or causes. Exclude lengthy background, work plans, priorities, unimplemented-task lists, and repeated introductions.
 
-## 완료 댓글
+## Completion comments
 
-- 실제 수정하고 커밋한 내용이 있을 때만 완료 댓글을 쓴다. 조사, 계획, 코드 위치 확인만으로 댓글을 남기지 않는다. 커밋이 없으면 완료했다고 선언하지 않는다.
-- 해당 이슈의 요구사항과 해결에 직접 관련된 수정·검사·코드 링크만 남긴다. 같은 PR에 포함되어도 다른 이슈의 수정, 릴리즈 전반의 소식, 스킬 관리나 댓글 정리 결과 등 해당 이슈와 무관한 내용은 제외한다.
-- 보통 3~6줄 안에서 바뀐 동작, 실제 수행한 검사와 결과, 검증한 커밋 또는 파일 링크를 쓴다. 채울 내용이 적으면 더 짧게 쓴다. 검사하지 않았다면 통과했다고 쓰지 않는다. 검사는 해당 이슈의 동작을 확인한 검사명과 결과만 적고, 전체 검사 합계로 대신하지 않는다.
-- 현재 작업의 diff, 커밋, 검사 출력으로 각 문장을 확인한다. 다른 작업의 검사 결과를 가져오거나 구현보다 넓게 해결했다고 표현하지 않는다. 부분 수정은 완료한 범위만 설명하며 이슈 전체를 해결했다고 쓰지 않는다.
-- 링크의 커밋이 해당 원격 저장소에 존재하는지 확인한다. 파일 링크는 전체 커밋 SHA를 넣은 `blob/<commit-sha>/<path>` 주소를 사용하고 파일과 줄 위치도 확인한다. 게시되지 않은 커밋이나 이동하는 브랜치 주소를 완료 증명으로 사용하지 않는다.
-- 작업 계획, 우선순위, 남은 작업 나열, 반복 소개, 자기평가, 체크리스트는 댓글에 넣지 않는다. 수정 사실 없이 진행 상황 댓글을 추가하지 않는다.
+- Write a completion comment only for work actually changed and committed. Investigation, planning, and finding code locations alone do not justify one. Do not declare completion without a commit.
+- Include only changes, checks, and code links directly relevant to the issue's requirements and resolution. Exclude other issues' changes, general release news, skill management, or comment-cleanup results, even when included in the same PR.
+- Usually use 3–6 lines for the changed behavior, checks actually performed and their results, and a verified commit or file link. Use fewer lines when appropriate. Do not claim an unperformed check passed. Name the check that verifies this issue's behavior rather than substituting the total test count.
+- Check each sentence against the current diff, commit, and test output. Do not borrow another task's results or claim a broader resolution than implemented. Describe only the completed part of a partial fix, without claiming the entire issue is resolved.
+- Verify that linked commits exist in the remote repository. Use full commit SHAs in `blob/<commit-sha>/<path>` file links and check the file and line. Do not use unpublished commits or moving branch links as completion evidence.
+- Exclude plans, priorities, remaining-task lists, repeated introductions, self-evaluation, and checklists. Do not add progress comments without an actual change.
 
-## 기존 댓글 정리
+## Organize existing comments
 
-사용자가 정리를 요청한 댓글만 다룬다. 변경 직전에 댓글 ID, 이슈 번호, 작성자, 기존 본문을 다시 읽고 현재 인증 계정의 글인지 확인한다. 타인의 글은 수정하거나 삭제하지 않는다.
+Handle only comments the user asked to organize. Immediately before changing one, reread its ID, issue number, author, and body; confirm that it belongs to the current authenticated account. Do not edit or delete another person's comments.
 
-실제 수정 내용과 어긋나거나 불필요한 내용을 요청에 맞게 줄인다. 삭제 요청은 지정한 범위에서 처리한다. 이미 요청대로 정리되어 있으면 추가 변경하지 않는다. 댓글 정리 결과를 설명하는 새 댓글은 만들지 않는다.
+Reduce inaccurate or unnecessary material as requested. Limit deletions to the specified scope. If the requested organization is already complete, leave it unchanged. Do not post another comment explaining comment cleanup.
 
-## 게시와 확인
+## Publish and verify
 
-- 게시 전에 코드 변경, 검사 결과, 링크와 문구를 확인한다. 기밀, 토큰, 개인 정보, 로컬 절대 경로, 내부 서버 주소는 넣지 않는다.
-- 생성·수정 뒤 API로 본문과 대상 URL을 다시 읽는다. 삭제 뒤에는 해당 댓글이 삭제되었는지 API로 확인한다. 응답이 불명확하면 상태부터 조회하고 같은 내용을 다시 게시하지 않는다.
-- 짧고 직접적인 문장을 사용한다. 구어체와 전문적으로 보이기 위한 불필요한 용어를 제거한다. 사용자의 용어 지침을 적용하고, 사용자가 요구한 문구 검토 체크리스트는 GitHub 본문이나 댓글이 아닌 최종 응답에만 둔다.
+- Before publishing, check code changes, verification results, links, and wording. Exclude confidential information, tokens, personal data, local absolute paths, and internal server addresses.
+- After creating or editing, reread the body and target URL through the API. After deletion, verify through the API that the comment is gone. If a response is unclear, inspect state first rather than reposting the same content.
+- Use short, direct sentences. Remove conversational phrasing and unnecessary jargon. Follow the user's terminology requirements. Put any requested wording-review checklist in the final response, outside the GitHub body or comment.

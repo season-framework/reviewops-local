@@ -65,7 +65,7 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
   if (!TARGETS.includes(target) || target !== `${process.platform}-${process.arch}`) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
   const actualCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
   if (commit !== actualCommit) throw new Error('작업 폴더의 커밋과 빌드할 커밋이 다릅니다.');
-  const packageInputs = ['src', 'electron', 'build', 'scripts', 'package.json', 'package-lock.json', 'vite.config.*', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt'];
+  const packageInputs = ['src', 'electron', 'build', 'scripts', 'package.json', 'package-lock.json', 'release-notes.json', 'vite.config.*', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt'];
   const changed = (await run('git', ['status', '--porcelain', '--untracked-files=all', '--', ...packageInputs], { cwd: root })).stdout.trim();
   if (changed) throw new Error('패키지 소스에 커밋하지 않은 변경이 있습니다. 통합 커밋 후 테스트 패키지를 생성하십시오.');
   const output = path.join(root, 'release', `test-${target}`);
