@@ -7,6 +7,7 @@ import { ActionButton } from './ActionButton';
 import { HostManager } from './HostManager';
 import { ResetCreditPicker, isResetCreditSelectable, resetCreditDate, resetCreditTitle } from './ResetCreditPicker';
 import './styles.css';
+import { runtimeKindLabels, runtimeDiagnostics } from './runtime-diagnostics.mjs';
 
 const bridge = window.accountManager;
 const hostBridge = window.hostManager;
@@ -85,6 +86,7 @@ function Usage({ account }) {
   </div>)}</div>;
 }
 
+
 export function AccountApp() {
   const [state, setState] = useState(emptyState);
   const [selected, setSelected] = useState(new Set());
@@ -94,6 +96,10 @@ export function AccountApp() {
   const [working, setWorking] = useState(false);
   const [notice, setNotice] = useState('');
   const [menu, setMenu] = useState(null);
+  const [runtimeAction, setRuntimeAction] = useState('');
+  const [runtimeDetailsOpen, setRuntimeDetailsOpen] = useState(false);
+  const [recheckReadyAt, setRecheckReadyAt] = useState(0);
+  const [runtimeClock, setRuntimeClock] = useState(() => Date.now());
   const apply = snapshot => {
     if (!snapshot?.accounts) return;
     setState({ ...emptyState, ...snapshot });
@@ -135,9 +141,50 @@ export function AccountApp() {
     document.addEventListener('click', close); document.addEventListener('keydown', close);
     return () => { document.removeEventListener('click', close); document.removeEventListener('keydown', close); };
   }, [menu]);
+  useEffect(() => {
+    if (runtimeClock >= recheckReadyAt) return;
+    const timer = setTimeout(() => setRuntimeClock(Date.now()), Math.min(1000, recheckReadyAt - runtimeClock));
+    return () => clearTimeout(timer);
+  }, [recheckReadyAt, runtimeClock]);
   if (!bridge) return <main className="launch-screen"><h1>{t("계정관리")}</h1><p>{t("계정 관리 기능은 데스크톱 앱에서 사용할 수 있습니다.")}</p><code>npm run dev</code></main>;
 
   const accounts = state.accounts;
+  const diagnostics = runtimeDiagnostics(state.runtime.diagnostics);
+  const runtimeBusy = Boolean(runtimeAction) || working || state.refresh.running || accounts.some(busy);
+  const recheckSeconds = Math.max(0, Math.ceil((recheckReadyAt - runtimeClock) / 1000));
+  const chooseRuntime = async () => {
+    if (runtimeBusy) return;
+    setRuntimeAction('choose');
+    try {
+      const snapshot = await bridge.chooseCodexBinary(); apply(snapshot);
+      if (snapshot?.runtimeSelection === 'cancelled') setNotice(t('실행 파일 선택을 취소했습니다. 기존 설정을 유지합니다.'));
+      else if (snapshot?.runtimeSelection === 'saved') setNotice(t('실행 파일 선택을 저장했습니다.'));
+    } catch (error) {
+      try { apply(await bridge.getState()); } catch { /* Preserve the current displayed state if the snapshot is unavailable. */ }
+      setRuntimeDetailsOpen(true);
+      const message = error.message || '작업을 완료하지 못했습니다.';
+      setNotice(message === 'Codex 실행 파일 선택을 저장하지 못했습니다. 기존 설정을 유지합니다.' ? t(message) : t(message) + ' ' + t('선택을 저장하지 않았습니다. 기존 실행 파일 설정을 유지합니다.'));
+    } finally { setRuntimeAction(''); }
+  };
+  const recheckRuntime = async () => {
+    if (runtimeBusy || recheckSeconds) return;
+    const now = Date.now(); setRuntimeClock(now); setRecheckReadyAt(now + 30000); setRuntimeAction('recheck');
+    try {
+      const snapshot = await bridge.recheckCodexRuntime(); apply(snapshot);
+      if (!snapshot?.runtime?.available) setRuntimeDetailsOpen(true);
+      setNotice(t(snapshot?.runtime?.available ? 'CLI 다시 검사를 완료했습니다.' : 'CLI를 실행하지 못했습니다. 진단 정보를 확인하십시오.'));
+    } catch (error) {
+      try { apply(await bridge.getState()); } catch { /* A state read never retries the executable. */ }
+      setRuntimeDetailsOpen(true);
+      setNotice(t(error.message || 'CLI를 다시 검사하지 못했습니다.'));
+    } finally { setRuntimeAction(''); }
+  };
+  const copyRuntimeDiagnostics = async () => {
+    try {
+      if (!window.reviewops?.copyText || !diagnostics.records.length) throw new Error('No diagnostic copy bridge');
+      await window.reviewops.copyText(JSON.stringify(diagnostics, null, 2)); setNotice(t('복사했습니다.'));
+    } catch { setNotice(t('복사하지 못했습니다. 다시 시도하십시오.')); }
+  };
   const selectedAccounts = accounts.filter(account => selected.has(account.id));
   const eligible = selectedAccounts.filter(canOpenResetList);
   const target = modal?.id ? accounts.find(account => account.id === modal.id) : null;
@@ -192,10 +239,28 @@ export function AccountApp() {
       <ActionButton label={t("새로고침")} icon={RefreshCw} busy={state.refresh.running} disabled={!accounts.length || accounts.every(account => account.requiresLogin) || state.refresh.running} onClick={() => run(() => bridge.refreshAccounts())}/>
       <ActionButton label={t("계정 추가")} icon={Plus} className="primary" onClick={openAdd}/>
     </div></header>
-    {state.runtime.available && <p className="runtime-summary" role="status"><strong>Codex CLI {state.runtime.version}</strong><code>{state.runtime.path}</code></p>}
+    <section className="runtime-panel" aria-label={t('Codex CLI 실행 환경')}>
+      {state.runtime.available ? <p className="runtime-summary" role="status"><strong>Codex CLI {state.runtime.version}</strong><code>{state.runtime.path}</code></p>
+        : <p className="runtime-notice" role="status">{t(state.runtime.error || 'Codex 실행 파일이 필요합니다.')}</p>}
+      <div className="runtime-actions">
+        <button type="button" className="button" disabled={runtimeBusy || recheckSeconds > 0} aria-busy={runtimeAction === 'recheck'} onClick={recheckRuntime}>{t(runtimeAction === 'recheck' ? '검사 중' : 'CLI 다시 검사')}</button>
+        <button type="button" className="button" disabled={runtimeBusy} aria-busy={runtimeAction === 'choose'} onClick={chooseRuntime}>{t('실행 파일 선택')}</button>
+        {recheckSeconds > 0 && <span className="muted">{t('{0}초 후 다시 검사할 수 있습니다.', [recheckSeconds])}</span>}
+      </div>
+      {state.runtime.errorKind && Object.hasOwn(runtimeKindLabels, state.runtime.errorKind) && <p className="runtime-error-kind">{t(runtimeKindLabels[state.runtime.errorKind])}</p>}
+      <details className="runtime-diagnostics" open={runtimeDetailsOpen} onToggle={event => setRuntimeDetailsOpen(event.currentTarget.open)}>
+        <summary>{t('CLI 진단 정보')}</summary>
+        <p className="muted">{t('검사 결과와 실행 파일 정보만 포함합니다. 로그인 정보와 원본 출력은 포함하지 않습니다.')}</p>
+        {diagnostics.records.length ? <ol>{diagnostics.records.map((record, index) => <li key={index}>
+          <strong>{t(runtimeKindLabels[record.kind])}</strong><code>{record.path || '—'}</code>
+          <div>{record.version && <span>{t('버전')}: {record.version}</span>}{record.architecture && <span>{t('아키텍처')}: {record.architecture}</span>}<span>{t('종료 코드')}: {record.code ?? '—'}</span><span>{t('신호')}: {record.signal || '—'}</span><span>{record.elapsedMs == null ? '—' : record.elapsedMs + ' ms'}</span></div>
+        </li>)}</ol> : <p className="muted">{t('표시할 검사 기록이 없습니다.')}</p>}
+        {diagnostics.omitted > 0 && <p className="muted">{t('검사 기록 {0}개를 생략했습니다.', [diagnostics.omitted])}</p>}
+        <button type="button" className="button" disabled={!diagnostics.records.length || !window.reviewops?.copyText} onClick={copyRuntimeDiagnostics}>{t('진단 정보 복사')}</button>
+      </details>
+    </section>
     {notice && <div className="notice" role="alert"><span>{notice}</span><button className="icon-button" aria-label={t("알림 닫기")} onClick={() => setNotice('')}><X size={16}/></button></div>}
     {accounts.some(account => account.requiresLogin) && <div className="runtime-notice" role="status"><span>{t("가져온 계정")+" "}{accounts.filter(account => account.requiresLogin).length}{t("개는 다시 로그인해야 합니다. 저장된 사용량과 통계는 유지됩니다.")}</span></div>}
-    {!state.runtime.available && <div className="runtime-notice"><span>{state.runtime.error || t("Codex 실행 파일이 필요합니다.")}</span><button className="button" onClick={() => run(() => bridge.chooseCodexBinary())}>{t("실행 파일 선택")}</button></div>}
     {selected.size > 0 && <div className="selection-bar"><span>{selected.size}{t("개 선택")}</span><ActionButton label={t("선택 새로고침")} icon={RefreshCw} busy={selectedAccounts.some(account => account.status === 'loading')} disabled={selectedAccounts.every(account => busy(account) || account.requiresLogin)} onClick={() => run(() => bridge.refreshAccounts([...selected]))}/><ActionButton label={t("선택 계정 초기화권 사용")} icon={Ticket} disabled={!eligible.length} onClick={() => openResetList(eligible.map(account => account.id))}/><ActionButton label={t("선택 해제")} icon={X} className="deselect" onClick={() => setSelected(new Set())}/></div>}
     <div className="table-scroll"><table aria-label={t("계정 목록")}><thead><tr>
       <th className="check-col"><input type="checkbox" aria-label={t("모든 계정 선택")} disabled={!accounts.length} checked={accounts.length > 0 && selected.size === accounts.length} onChange={() => setSelected(selected.size === accounts.length ? new Set() : new Set(accounts.map(account => account.id)))}/></th>
