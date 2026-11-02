@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.2.11",
-  "version": "1.3.0",
-  "bump": "minor",
-  "reason": "Add public MCP discovery, concurrent project QA, base-scoped development versions and same-session web capture with project-bound evidence while preserving existing stored data and interfaces.",
-  "baseCommit": "43b82df68145e57c46ab6279436f5fe3b3cb8abe"
+  "previousVersion": "1.3.0",
+  "version": "1.3.1",
+  "bump": "patch",
+  "reason": "Clarify Codex CLI selection error notices while preserving the existing executable setting and diagnostics.",
+  "baseCommit": "7635d746af728cc90c9ca44bfdc278020625f268"
 }
