@@ -13,13 +13,20 @@ const listeners=()=>{
  report({type:'listeners',listeners:values.slice(0,32)});
 };
 const listen=net.Server.prototype.listen;
-const close=net.Server.prototype.close;
+const close=net.Server.prototype.close,destroySoon=net.Socket.prototype.destroySoon;
 function endEmptyHttpConnection(state,socket){
  // A TCP connection is not an accepted HTTP request. End only an untouched
  // plain-HTTP preconnection; never end partial headers or an active response.
  if(!state.pending.has(socket)||socket.encrypted===true||socket.destroyed||socket.writableEnded||socket.bytesRead!==0||socket.bytesWritten!==0||socket.readableLength!==0)return;
  state.finSent.add(socket);
- try{socket.end();}catch(error){state.finSent.delete(socket);throw error;}
+ const release=()=>{
+  // FIN alone can leave a half-open peer holding the listener close pending.
+  // Recheck after write completion; observed input or any accepted request wins.
+  if(!state.pending.has(socket)||!state.finSent.has(socket)||socket.encrypted===true||socket.destroyed||!socket.writableFinished||socket.bytesRead!==0||socket.bytesWritten!==0||socket.readableLength!==0)return;
+  try{Reflect.apply(destroySoon,socket,[]);}catch(error){report({type:'drain-error',message:describeError(error)});}
+ };
+ socket.once('finish',release);
+ try{socket.end();if(socket.writableFinished){socket.removeListener('finish',release);release();}}catch(error){socket.removeListener('finish',release);state.finSent.delete(socket);throw error;}
 }
 function trackHttpPreconnections(server){
  if(httpPreconnections.has(server))return httpPreconnections.get(server);
@@ -55,7 +62,7 @@ net.Server.prototype.listen=function(...args){
      if(draining){
       // Its peer can send a first request after our FIN was queued. That new
       // request was never accepted by the entry and has no writable response.
-      // Read only that refused input so the peer can finish without a forced close.
+      // Read observed refused input; untouched sockets can already have closed.
       if(preconnections?.finSent.has(request.socket)){request.resume();return true;}
       response.statusCode=503;response.setHeader('Connection','close');response.end('Service is shutting down.');return true;
      }
@@ -71,7 +78,7 @@ function finishDrain(){
  clearInterval(keepAlive);process.removeListener('message',onMessage);process.removeListener('disconnect',onDisconnect);
  // No process.exit here: referenced requests, fs operations and timers must
  // finish naturally. Unref'ed work and deliberate entry process.exit are outside
- // this cooperative contract. Never signal a PID or force-close a connection.
+ // this cooperative contract. Never signal a PID or force-close an accepted connection.
  if(process.connected)process.disconnect();
 }
 function announceReady(){if(process.connected)report({type:'drain-ready'});else finishDrain();}

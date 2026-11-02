@@ -52,13 +52,13 @@ async function fixture(t,code,{stopTimeoutMs=250,readyFile}={}){
  return {root,manager,port,started,connect,state:()=>manager.state('p','c'),stop:()=>manager.stop('p','c',started.instanceId),close:()=>close,onCleanup:cleanup=>cleanups.push(cleanup)};
 }
 
-test('plain HTTP zero-byte preconnection drains with confirmed original child exit',async t=>{
- const f=await fixture(t,plainHTTP,{stopTimeoutMs:350}),client=await f.connect();
+test('plain HTTP zero-byte half-open peer drains without waiting for its FIN',async t=>{
+ const f=await fixture(t,plainHTTP,{stopTimeoutMs:350}),client=await f.connect({allowHalfOpen:true,release:null});
  assert.equal(client.socket.bytesWritten,0);
  const outcome=await f.stop().then(value=>({value}),error=>({error:error.code}));
  assert.equal(outcome.error,undefined,'An unused HTTP preconnection must not leave shutdown unconfirmed');
  assert.equal(outcome.value.instance.status,'exited');assert.equal(outcome.value.instance.exit.drainConfirmed,true);
- await bounded(client.closed,'graceful peer FIN');assert.equal(client.data,'');
+ await until(()=>client.ended,Boolean,'server FIN while peer stays half-open');assert.equal(client.socket.writableEnded,false,'The peer has sent no FIN when original child exit is confirmed');assert.equal(client.socket.bytesWritten,0);assert.equal(client.data,'');t.diagnostic(JSON.stringify({halfOpenPeer:true,peerFINSentBeforeChildExit:false,peerBytesWritten:client.socket.bytesWritten,serverFINObserved:client.ended}));
 });
 
 test('partial HTTP headers remain open until the original draining request policy can refuse them',async t=>{
@@ -86,8 +86,8 @@ test('accepted POST and later async writes drain while an unrelated empty HTTP c
  assert.equal(stopped.instance.exit.drainConfirmed,true);await bounded(client.closed,'unused HTTP client');assert.equal(client.data,'');
 });
 
-test('a peer sending its first request after the owned FIN cannot crash accepted-request drain',async t=>{
- const code=acceptedPost.replace("server.listen(0,'127.0.0.1');","server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});});server.listen(0,'127.0.0.1');");
+test('a peer attempting its first request after the owned FIN cannot crash accepted-request drain',async t=>{
+ const code=acceptedPost.replace("if(request.method!=='POST')","if(request.url==='/late')fs.writeFileSync('unexpected-late-entry','yes');if(request.method!=='POST')").replace("server.listen(0,'127.0.0.1');","server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});});server.listen(0,'127.0.0.1');");
  const f=await fixture(t,code,{stopTimeoutMs:1200}),pending=post(f.port);
  await until(()=>syncFs.existsSync(path.join(f.root,'accepted')),Boolean,'accepted POST');
  let sent=false;const body='x'.repeat(128*1024),lateRequest='POST /late HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: '+body.length+'\r\n\r\n'+body;
@@ -95,12 +95,12 @@ test('a peer sending its first request after the owned FIN cannot crash accepted
  const stopping=f.stop();assert.deepEqual(await pending,{status:200,body:'stored'});const stopped=await stopping;
  assert.equal(sent,true);assert.equal(client.data,'');await bounded(client.closed,'raced first request peer');
  assert.equal(stopped.instance.exit.code,0);assert.equal(stopped.instance.exit.drainConfirmed,true);
- assert.ok((await readJSON(path.join(f.root,'late-input.json')))?.bytesRead>0,'The first request actually reached the retained connection after FIN');
+ assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-late-entry')),false);t.diagnostic(JSON.stringify({lateInputReachedServer:(await readJSON(path.join(f.root,'late-input.json')))?.bytesRead>0,clientErrors:client.errors,unacceptedInputMayMeetClosedTransport:true}));assert.ok(client.errors.every(code=>['EPIPE','ECONNRESET'].includes(code)));
  assert.equal(await fs.readFile(path.join(f.root,'after-response'),'utf8'),'complete');
 });
 
 for(const protocol of ['upgrade','connect'])test('a first HTTP '+protocol+' after the owned FIN is refused while an accepted POST drains',async t=>{
- const code=acceptedPost.replace("server.listen(0,'127.0.0.1');","server.on('"+protocol+"',(request,socket)=>{fs.writeFileSync('unexpected-protocol-entry','"+protocol+"');socket.end('entry must not write after FIN');});server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-protocol-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});socket.on('error',error=>fs.writeFileSync('unexpected-socket-error',error.code));});server.listen(0,'127.0.0.1');");
+ const code=acceptedPost.replace("if(request.method!=='POST')","if(request.url==='/late')fs.writeFileSync('unexpected-late-entry','yes');if(request.method!=='POST')").replace("server.listen(0,'127.0.0.1');","server.on('"+protocol+"',(request,socket)=>{fs.writeFileSync('unexpected-protocol-entry','"+protocol+"');socket.end('entry must not write after FIN');});server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-protocol-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});socket.on('error',error=>fs.writeFileSync('unexpected-socket-error',error.code));});server.listen(0,'127.0.0.1');");
  const f=await fixture(t,code,{stopTimeoutMs:1200}),pending=post(f.port);
  await until(()=>syncFs.existsSync(path.join(f.root,'accepted')),Boolean,'accepted POST');
  const headers=protocol==='upgrade'?'GET /late HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: Upgrade\r\nUpgrade: owned-fixture\r\n\r\n':'CONNECT owned-fixture:80 HTTP/1.1\r\nHost: owned-fixture:80\r\n\r\n';
@@ -108,8 +108,8 @@ for(const protocol of ['upgrade','connect'])test('a first HTTP '+protocol+' afte
  const client=await f.connect({allowHalfOpen:true,release:lateInput,onEnd:socket=>{if(!socket.writableEnded){sent=true;socket.end(lateInput);}}});
  const stopping=f.stop();assert.deepEqual(await pending,{status:200,body:'stored'});const stopped=await stopping;
  assert.equal(sent,true);assert.equal(client.data,'');await bounded(client.closed,'raced '+protocol+' peer');
- assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-protocol-entry')),false);assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-socket-error')),false);
- assert.ok((await readJSON(path.join(f.root,'late-protocol-input.json')))?.bytesRead>0,'The protocol request actually reached the retained connection after FIN');
+ assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-protocol-entry')),false);assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-late-entry')),false);assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-socket-error')),false);
+ t.diagnostic(JSON.stringify({protocol,lateInputReachedServer:(await readJSON(path.join(f.root,'late-protocol-input.json')))?.bytesRead>0,clientErrors:client.errors,unacceptedInputMayMeetClosedTransport:true}));assert.ok(client.errors.every(code=>['EPIPE','ECONNRESET'].includes(code)));
  assert.equal(stopped.instance.exit.code,0);assert.equal(stopped.instance.exit.drainConfirmed,true);
  assert.equal(await fs.readFile(path.join(f.root,'after-response'),'utf8'),'complete');
 });
@@ -133,7 +133,7 @@ test('re-listening on the same HTTP server does not duplicate preconnection obse
 });
 
 for(const expectation of ['100-continue','owned-unknown-expectation'])test('a first HTTP Expect '+expectation+' after the owned FIN cannot write or reach the entry',async t=>{
- const code=acceptedPost.replace("server.listen(0,'127.0.0.1');","for(const method of ['writeContinue','writeHead']){const original=http.ServerResponse.prototype[method];http.ServerResponse.prototype[method]=function(...args){if(this.socket?.writableEnded){__reviewopsFixtureRefusedRequests.add(this.req);fs.appendFileSync('late-expect-write-attempts.jsonl',JSON.stringify({method,status:method==='writeHead'?args[0]:100,writableEnded:true})+'\\n');}return Reflect.apply(original,this,args);};}server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-expect-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});socket.on('error',error=>fs.writeFileSync('late-expect-error.json',JSON.stringify({code:error.code})));});server.listen(0,'127.0.0.1');");
+ const code=acceptedPost.replace("if(request.method!=='POST')","if(request.url==='/late')fs.writeFileSync('unexpected-late-entry','yes');if(request.method!=='POST')").replace("server.listen(0,'127.0.0.1');","for(const method of ['writeContinue','writeHead']){const original=http.ServerResponse.prototype[method];http.ServerResponse.prototype[method]=function(...args){if(this.socket?.writableEnded){__reviewopsFixtureRefusedRequests.add(this.req);fs.appendFileSync('late-expect-write-attempts.jsonl',JSON.stringify({method,status:method==='writeHead'?args[0]:100,writableEnded:true})+'\\n');}return Reflect.apply(original,this,args);};}server.on('connection',socket=>{const id=connected;socket.once('data',()=>{if(id===2)fs.writeFileSync('late-expect-input.json',JSON.stringify({id,bytesRead:socket.bytesRead}));});socket.on('error',error=>fs.writeFileSync('late-expect-error.json',JSON.stringify({code:error.code})));});server.listen(0,'127.0.0.1');");
  const f=await fixture(t,code,{stopTimeoutMs:1200}),pending=post(f.port);
  await until(()=>syncFs.existsSync(path.join(f.root,'accepted')),Boolean,'accepted POST');
  const body='x'.repeat(128*1024),lateInput='POST /late HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nExpect: '+expectation+'\r\nContent-Length: '+body.length+'\r\n\r\n'+body;let sent=false;
@@ -144,7 +144,7 @@ for(const expectation of ['100-continue','owned-unknown-expectation'])test('a fi
  t.diagnostic(JSON.stringify({expectation,observedWriteAttempts:attempts,observedSocketError:error,stopOutcome:outcome.error||outcome.value.instance.exit,lateInputReceived:(await readJSON(path.join(f.root,'late-expect-input.json')))?.bytesRead>0}));
  assert.equal(outcome.error,undefined,'A refused Expect request must not leave shutdown unconfirmed');await bounded(client.closed,'raced Expect peer');
  assert.equal(sent,true);assert.equal(client.data,'');assert.equal(error,null);assert.deepEqual(attempts,[],'Node must not automatically write 100/417 after the owned FIN');
- assert.ok((await readJSON(path.join(f.root,'late-expect-input.json')))?.bytesRead>0);
+ assert.equal(syncFs.existsSync(path.join(f.root,'unexpected-late-entry')),false);assert.ok(client.errors.every(code=>['EPIPE','ECONNRESET'].includes(code)));
  assert.equal(outcome.value.instance.exit.drainConfirmed,true);assert.equal(await fs.readFile(path.join(f.root,'after-response'),'utf8'),'complete');
 });
 
