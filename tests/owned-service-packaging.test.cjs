@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync}=require('node:child_process');
+const {finished}=require('node:stream/promises');
 const root=path.resolve(__dirname,'..'),asar=require('@electron/asar');
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 async function bundle(t){
@@ -12,7 +13,7 @@ async function bundle(t){
  await fs.mkdir(path.join(input,'electron'),{recursive:true});await fs.mkdir(resources,{recursive:true});
  const canonical=['mcp-server.cjs','automation-api.cjs','review-categories.json','owned-node-bootstrap.cjs'],bytes={};
  for(const name of canonical){bytes[name]=await fs.readFile(path.join(root,'electron',name));await fs.writeFile(path.join(input,'electron',name),bytes[name]);}
- await asar.createPackage(input,path.join(resources,'app.asar'));
+ await finished(await asar.createPackage(input,path.join(resources,'app.asar')));
  await require(path.join(root,'scripts/after-pack.cjs'))({appOutDir:path.dirname(resources),packager:{getResourcesDir:()=>resources}});
  return Object.assign(fixture,{resources,bytes});
 }
