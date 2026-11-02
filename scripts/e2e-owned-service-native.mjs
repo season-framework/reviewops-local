@@ -1,5 +1,6 @@
 // Prepared only. No app/service/UI execution occurred during harness preparation.
 import assert from 'node:assert/strict';
+import {createAgentReadDiagnostics,retainAgentReadSnapshot,retainAgentReadFailure} from './owned-agent-read-diagnostics.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -57,6 +58,7 @@ write(path.join(home,'ssh-config'),'# Private fixture only; no operational SSH h
 write(path.join(data,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:10}));
 const result={source:expectedHead,dirty:false,mode,target,temporary,platform:process.platform,arch:process.arch,startedAt:new Date().toISOString(),toolSocketPreflight,syntheticCLI:true,externalAI:0,SSH:0,installedPackage:mode!=='source',privateCopiedInstallation:mode==='private-bundle',bundleVerification:bundle,checks:[],photos:[],operations:[],errors:[],externalRendererRequests:[],agentRuns:[],runtimeSnapshots:[],requirements:plan.requirements.map(row=>({...row,status:'not-run',observations:[]})),limits:['Only this actual declared target/mode cohort; same16 repeats add no unique count; original NEXT10 incomplete',...plan.limits.filter(text=>!text.includes('Syntax-only')&&!text.includes('source UI')&&!text.includes('native checks on other'))],fullIssueComplete:false};
 result.reviewedUICompatibility=reviewedUICompatibility;
+result.agentReadDiagnostics=createAgentReadDiagnostics();
 const save=()=>fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(result,null,2));
 const record=(action,details={})=>{result.operations.push({at:new Date().toISOString(),action,...details});save();};
 const pass=(id,name,actual)=>{result.requirements.find(row=>row.id===id).observations.push(name);result.checks.push({id,name,actual,status:'pass'});save();};
@@ -362,7 +364,7 @@ async function agents(project,page,tag,ending){
  for(const binding of project.agentRoles){const review=snapshot.reviews.find(value=>value.id===binding.reviewId),service=snapshot.services.find(value=>value.id===binding.serviceId);assert.equal(review.projectId,project.id);assert.equal(review.serviceId,binding.serviceId);assert.equal(service.agentBinary,agentExecutable);assert.equal(service.agentWorkPath,binding.workPath);assert.equal(path.dirname(binding.workPath),temporary);}
  const before=(await runtime(project,page)).instance;write(path.join(temporary,'agent-target.json'),JSON.stringify({url:project.origin,instanceId:before.instanceId}));const group=[];
  for(const binding of project.agentRoles){const key=tag+'-'+binding.role,job=await ipc(page,'agent.start',{reviewId:binding.reviewId,prompt:'OWNED_AGENT:'+key+' Synthetic observer of related target '+project.origin+'; service is main-owned, do not spawn it.',newConversation:true,independentExecution:false});group.push({...binding,key,id:job.id});jobs.push({id:job.id,projectId:project.id});}
- await until(()=>Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),value=>value.every(row=>row.status==='running'),'three actual running jobs on distinct connections');await until(()=>group.every(value=>fs.existsSync(path.join(temporary,'agent-'+value.key+'.json'))),Boolean,'three real synthetic CLI records');
+ await until(async()=>{const rows=await Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id})));retainAgentReadSnapshot(result.agentReadDiagnostics,{tag,projectId:project.id,group,rows,at:new Date().toISOString()});save();return rows;},value=>value.every(row=>row.status==='running'),'three actual running jobs on distinct connections');await until(()=>group.every(value=>fs.existsSync(path.join(temporary,'agent-'+value.key+'.json'))),Boolean,'three real synthetic CLI records');
  for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],expectedNativePath(fixture.agentScript,'agent-script'));assert.equal(observed.cwd,expectedNativePath(item.workPath,'agent-cwd'));}
  // Opt-in driver-only regression. Never passed into a product/app environment.
  if(process.env.REVIEWOPS_OWNED_EARLY_FAILURE_PROBE==='1'&&tag==='normal'&&ending==='normal'){
@@ -730,7 +732,7 @@ try{
  result.finalBundleVerification=verifyBundle();if(bundle){result.packagedObservation={bundle:result.finalBundleVerification,target,sameProductAgentAndServicePaths:true};result.requirements.find(row=>row.id==='NEXT-015-010').status='partial-observed';}
  const expectedChecks=readJSON(path.join(here,'expected-owned-checks.json'));assert.deepEqual(result.checks.map(({id,name})=>({id,name})),expectedChecks);
  result.ok=true;save();
-}catch(error){result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();captureFixtureFiles('harness-catch');if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
+}catch(error){retainAgentReadFailure(result.agentReadDiagnostics,new Date().toISOString());result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();captureFixtureFiles('harness-catch');if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
 finally{
  // Release our own fixture work, cancel exact product job IDs and use retained
  // runtime IPC. Never signal, force-exit, adopt a PID, or destroy a foreign app.
