@@ -213,7 +213,7 @@ jobs:
         run: node --input-type=module -e "import assert from 'node:assert/strict'; import {buildRenderer} from './scripts/test-build.mjs'; import {recordNativeRenderer} from './scripts/native-packet.mjs'; assert.equal(process.platform,'win32'); assert.equal(process.arch,'x64'); await buildRenderer({generateLicenses:false}); recordNativeRenderer({repository:process.cwd(),source:process.env.GITHUB_SHA});"
       - name: Verify existing capture and owned-evidence contracts
         timeout-minutes: 4
-        run: node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs tests/native-owned-evidence.test.mjs tests/native-agent-identity.test.cjs tests/owned-http-preconnections.test.cjs
+        run: node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs tests/native-owned-evidence.test.mjs tests/native-agent-identity.test.cjs tests/owned-http-preconnections.test.cjs tests/codex-runtime-concurrency.test.cjs tests/owned-agent-read-diagnostics.test.mjs
       - name: Verify existing common shared-web fourteen checks
         timeout-minutes: 10
         run: node scripts/e2e-live-web-sessions.mjs
