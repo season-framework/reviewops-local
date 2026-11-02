@@ -890,7 +890,17 @@ async function dispatch(action, payload = {}) {
       try{const binding=viewerSessions.binding(record.id,acquired.intentId);captureDestination(record,binding);const result=await viewerSessions.capture(record.id,acquired.intentId);captureDestination(record,binding);return {...result,intentId:acquired.intentId};}
       catch(error){viewerSessions.end(record.id,acquired.intentId);throw error;}
     }
-    return record.browsers.dispatch(action,payload);
+    const browsers=record.browsers;
+    const result=await browsers.dispatch(action,payload);
+    // A navigation can replace the manager while native preparation is pending.
+    // Close only the captured old manager; never send its result to the new owner.
+    if(record.host.isDestroyed()||record.browsers!==browsers){
+      if(action==='browser.create'&&typeof result?.id==='string'){
+        try{await browsers.dispatch('browser.close',{id:result.id});}catch{}
+      }
+      throw Object.assign(new Error('열린 화면을 찾을 수 없습니다.'),{code:'STALE_BROWSER_OWNER'});
+    }
+    return result;
   }
   if (action === 'snapshot') return publicSnapshot();
   if (action === 'app.info') return {version:app.getVersion(),build:updater?.snapshot().installedBuild||getBuildInfo(app.getVersion()),dataPath,platform:process.platform,arch:process.arch};
@@ -1068,6 +1078,9 @@ function createWindow(projectId='',{background=false}={}) {
   host.webContents.on('will-navigate',(event,url)=>{if(url!==host.webContents.getURL())event.preventDefault();});
   host.webContents.on('render-process-gone',()=>{closeWindowResources(host,false);record.pendingDisplay?.reject(new Error('프로젝트 화면의 연결이 끊겼습니다.'));});
   host.webContents.on('did-start-navigation',(_event,_url,isInPlace,isMainFrame)=>{if(isMainFrame&&!isInPlace)closeWindowResources(host,false);});
+  // A previous document can deliver browser.create after navigation starts.
+  // Reclaim that provisional owner at commit, before the new document takes over.
+  host.webContents.on('did-navigate',()=>closeWindowResources(host,false));
   host.webContents.on('will-prevent-unload',event=>{
     if(quitApproved.has(host)){event.preventDefault();return;}
     const response=dialog.showMessageBoxSync(host,{type:'question',title:'저장하지 않은 내용',message:'저장하지 않은 내용을 버리고 닫으시겠습니까?',buttons:['계속 작성','내용 버리고 닫기'],defaultId:0,cancelId:0,noLink:true});

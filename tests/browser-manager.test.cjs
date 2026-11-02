@@ -9,7 +9,7 @@ const {EventEmitter}=require('node:events');
 const {createEvidenceRecorder}=require('../electron/browser-evidence.cjs');
 const {createNativeCaptureLease}=require('../electron/browser-capture.cjs');
 
-function harness(t) {
+function harness(t,options={}) {
   const sessions=new Map(),views=[],windows=[],managers=[];
   let contentsId=0,requestId=0;
   function sessionFor(partition) {
@@ -27,7 +27,7 @@ function harness(t) {
   class Contents extends EventEmitter {
     constructor(preferences={}) {
       super();this.id=++contentsId;this.preferences=preferences;this.url='';this.destroyed=false;this.backgroundThrottling=preferences.backgroundThrottling!==false;
-      this.debugger=Object.assign(new EventEmitter(),{attached:false,isAttached(){return this.attached;},attach(){this.attached=true;},async sendCommand(){}});
+      const contents=this;this.debugger=Object.assign(new EventEmitter(),{attached:false,isAttached(){return this.attached;},attach(){this.attached=true;},async sendCommand(...args){if(options.sendCommand)return options.sendCommand(contents,...args);}});
       this.navigationHistory={canGoBack:()=>false,canGoForward:()=>false};
     }
     isDestroyed(){return this.destroyed;}
@@ -42,7 +42,7 @@ function harness(t) {
     setUserAgent(value){this.userAgent=value;}
     setZoomMode(){}
     setWindowOpenHandler(callback){this.openHandler=callback;}
-    async loadURL(url){this.url=url;this.emit('did-navigate',{},url);}
+    async loadURL(url){this.url=url;this.emit('did-navigate',{},url);if(options.loadURL)await options.loadURL(this,url);}
     async executeJavaScriptInIsolatedWorld(){return {logs:[],fingerprint:{url:this.url}};}
     close(){this.destroyed=true;this.emit('destroyed');}
   }
@@ -205,6 +205,34 @@ test('only the latest navigate request starts after a pending emulation update',
  const h=harness(t);let item;const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
  let ready;item.emulationPromise=new Promise(resolve=>{ready=resolve;});const loaded=[];contents.loadURL=async url=>{loaded.push(url);contents.url=url;};
  const first=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/old'}),second=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/new'});ready();await Promise.all([first,second]);assert.deepEqual(loaded,['https://fixture.invalid/new']);
+});
+
+for(const phase of ['about:blank','CDP'])test(`disposing an owner during ${phase} preparation rejects its late create and preserves the fresh owner`,async t=>{
+  let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
+  let hold=true,heldContents;
+  const pause=contents=>{hold=false;heldContents=contents;entered();return gate;};
+  const h=harness(t,{
+    loadURL:(contents,url)=>phase==='about:blank'&&hold&&url==='about:blank'&&contents.preferences.partition==='persist:reload-a'?pause(contents):undefined,
+    sendCommand:(contents,method)=>phase==='CDP'&&hold&&method==='Emulation.setDeviceMetricsOverride'&&contents.preferences.partition==='persist:reload-a'?pause(contents):undefined
+  });
+  const a=new h.Window(),b=new h.Window(),registered=new Set();
+  const options={partition:'persist:reload-a',onCreated:item=>registered.add(item.id),onClosed:item=>registered.delete(item.id)};
+  const old=h.manager(a,options),other=h.manager(b,{partition:'persist:reload-b'});
+  const kept=await other.dispatch('browser.create',{url:'https://fixture.invalid/owner-b'});
+  const pending=old.dispatch('browser.create',{url:'https://fixture.invalid/late-owner-a'});
+  const rejected=assert.rejects(pending,/열린 화면/);
+  await started;assert.equal(registered.size,1);
+  old.closeAll();old.closeAll();
+  assert.equal(registered.size,0);assert.equal(heldContents.isDestroyed(),true);
+  const fresh=h.manager(a,options),created=await fresh.dispatch('browser.create',{url:'https://fixture.invalid/current-owner-a'});
+  assert.deepEqual([...registered],[created.id]);
+  release();await rejected;
+  assert.deepEqual([...registered],[created.id]);
+  assert.equal((await fresh.dispatch('browser.state',{id:created.id})).url,'https://fixture.invalid/current-owner-a');
+  assert.equal((await other.dispatch('browser.state',{id:kept.id})).url,'https://fixture.invalid/owner-b');
+  await assert.rejects(old.dispatch('browser.create',{url:'https://fixture.invalid/retired-owner'}),{code:'STALE_BROWSER_OWNER'});
+  assert.equal((await old.dispatch('browser.close',{id:created.id})).closed,true);
+  assert.deepEqual([...registered],[created.id]);
 });
 
 test('a delayed navigation failure cannot change a closed browser item',async t=>{
