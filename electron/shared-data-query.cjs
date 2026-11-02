@@ -1,0 +1,128 @@
+'use strict';
+
+const MAX_ROWS = 100000;
+const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
+const PRIORITIES = new Set(['low', 'normal', 'high', 'critical']);
+const ID = /^[A-Za-z0-9_-]{1,128}$/;
+const MESSAGES = Object.freeze({
+  INVALID_QUERY: 'Invalid shared-data query.',
+  ACCESS_DENIED: 'A valid server-owned read grant context is required.',
+  NOT_FOUND: 'Shared resource not found.',
+  INVALID_SNAPSHOT: 'Shared data is unavailable.'
+});
+
+function fail(code) {
+  throw Object.assign(new Error(MESSAGES[code]), { code });
+}
+function record(value, code) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) ||
+      ![Object.prototype, null].includes(Object.getPrototypeOf(value))) fail(code);
+  return value;
+}
+function field(value, key, code) {
+  record(value, code);
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  if (!descriptor || !Object.hasOwn(descriptor, 'value')) fail(code);
+  return descriptor.value;
+}
+function closed(value, keys, code) {
+  record(value, code);
+  const actual = Reflect.ownKeys(value);
+  if (actual.length !== keys.length || actual.some(key => !keys.includes(key))) fail(code);
+  for (const key of keys) field(value, key, code);
+  return value;
+}
+function identifier(value, code) {
+  if (typeof value !== 'string' || !ID.test(value)) fail(code);
+  return value;
+}
+function rows(value, code) {
+  if (!Array.isArray(value) || value.length > MAX_ROWS) fail(code);
+  return value;
+}
+function grants(callerContext) {
+  closed(callerContext, ['projectGrants'], 'ACCESS_DENIED');
+  const permitted = new Set();
+  for (const grant of rows(field(callerContext, 'projectGrants', 'ACCESS_DENIED'), 'ACCESS_DENIED')) {
+    closed(grant, ['projectId', 'read'], 'ACCESS_DENIED');
+    const projectId = identifier(field(grant, 'projectId', 'ACCESS_DENIED'), 'ACCESS_DENIED');
+    if (field(grant, 'read', 'ACCESS_DENIED') !== true || permitted.has(projectId)) fail('ACCESS_DENIED');
+    permitted.add(projectId);
+  }
+  return permitted;
+}
+function queryPayload(operation, payload) {
+  const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] :
+    operation === 'reviews.get' ? ['projectId', 'reviewId'] : null;
+  if (!keys) fail('INVALID_QUERY');
+  closed(payload, keys, 'INVALID_QUERY');
+  for (const key of keys) identifier(field(payload, key, 'INVALID_QUERY'), 'INVALID_QUERY');
+}
+function storedText(row, key, max, required = false) {
+  const value = field(row, key, 'INVALID_SNAPSHOT');
+  if (typeof value !== 'string' || value.length > max || value.includes('\0') ||
+      required && !value.trim()) fail('INVALID_SNAPSHOT');
+  return value;
+}
+function storedId(row, key) {
+  return identifier(field(row, key, 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+}
+function storedDate(row, key) {
+  const value = field(row, key, 'INVALID_SNAPSHOT');
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value) ||
+      !Number.isFinite(Date.parse(value))) fail('INVALID_SNAPSHOT');
+  return value;
+}
+function projectDto(row) {
+  return { id: storedId(row, 'id'), name: storedText(row, 'name', 120, true),
+    description: storedText(row, 'description', 10000),
+    createdAt: storedDate(row, 'createdAt'), updatedAt: storedDate(row, 'updatedAt') };
+}
+function reviewDto(row) {
+  const number = field(row, 'number', 'INVALID_SNAPSHOT');
+  const status = field(row, 'status', 'INVALID_SNAPSHOT');
+  const priority = field(row, 'priority', 'INVALID_SNAPSHOT');
+  if (!Number.isSafeInteger(number) || number < 1 || !STATUSES.has(status) || !PRIORITIES.has(priority)) fail('INVALID_SNAPSHOT');
+  return { id: storedId(row, 'id'), projectId: storedId(row, 'projectId'), number,
+    title: storedText(row, 'title', 300, true), body: storedText(row, 'body', 100000), status, priority,
+    category: storedId(row, 'category'), createdAt: storedDate(row, 'createdAt'), updatedAt: storedDate(row, 'updatedAt') };
+}
+function unique(rowsToProject, projector) {
+  const seen = new Set();
+  return rowsToProject.map(row => {
+    const dto = projector(row);
+    if (seen.has(dto.id)) fail('INVALID_SNAPSHOT');
+    seen.add(dto.id);
+    return dto;
+  });
+}
+
+// Caller context is application-owned. Future adapters must never take grants
+// from the operation payload or treat this pure function as device authentication.
+function querySharedData(snapshot, callerContext, operation, payload) {
+  const permitted = grants(callerContext);
+  queryPayload(operation, payload);
+  const projects = rows(field(snapshot, 'projects', 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+  const reviews = rows(field(snapshot, 'reviews', 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+  if (operation === 'projects.list') {
+    const visible = projects.filter(row => permitted.has(storedId(row, 'id')));
+    return { version: 1, projects: unique(visible, projectDto) };
+  }
+
+  const projectId = payload.projectId;
+  // Check the explicit project grant before looking up either resource. Missing,
+  // unshared, and wrong-project resource IDs use the same fixed public error.
+  if (!permitted.has(projectId)) fail('NOT_FOUND');
+  const matchingProjects = projects.filter(row => storedId(row, 'id') === projectId);
+  if (!matchingProjects.length) fail('NOT_FOUND');
+  if (matchingProjects.length !== 1) fail('INVALID_SNAPSHOT');
+  projectDto(matchingProjects[0]);
+  const ownReviews = reviews.filter(row => storedId(row, 'projectId') === projectId);
+  if (operation === 'reviews.list') return { version: 1, projectId, reviews: unique(ownReviews, reviewDto) };
+  const matches = ownReviews.filter(row => storedId(row, 'id') === payload.reviewId);
+  if (!matches.length) fail('NOT_FOUND');
+  if (matches.length !== 1) fail('INVALID_SNAPSHOT');
+  return { version: 1, projectId, review: reviewDto(matches[0]) };
+}
+
+module.exports = { querySharedData };

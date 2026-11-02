@@ -1,7 +1,16 @@
 {
   "schema": 1,
-  "version": "1.3.1",
+  "version": "1.4.0",
   "entries": [
+    {
+      "category": "improvements",
+      "title": "Keep local shared-data queries within their project window",
+      "description": "Add project and review read APIs for trusted local app windows. Recheck the current window and project after queued work, return only approved fields, and reject cross-project reads. Cross-PC connections and remote writes remain unavailable.",
+      "commits": [
+        "4afa3015265b76a027a935c874d1876a9b124607",
+        "ec2d29f50e9309d7628b123a92365f2b8822dafc"
+      ]
+    },
     {
       "category": "fixes",
       "title": "Show clear errors when selecting Codex CLI",

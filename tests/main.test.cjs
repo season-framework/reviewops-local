@@ -159,7 +159,7 @@ async function harness(t, options = {}) {
       return require('../electron/automation-api.cjs');
     }
     if(name==='./project-service-runtime.cjs'){const runtime=require('../electron/project-service-runtime.cjs');return {...runtime,createProjectServiceRuntime(options){state.managedServices=runtime.createProjectServiceRuntime(options);return state.managedServices;}};}
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -2314,4 +2314,117 @@ test('public follow-up ownership is rechecked at serialized dispatch after IDs a
    if(scenario==='cancel')assert.equal((await followupApi(h,'cancel',currentTarget)).request.state,'cancelled');
   }
  }
+});
+
+// These cases exercise the actual registered IPC handler with owned fake windows
+// and the production temporary Store. They launch no Electron, CLI or listener.
+test('local shared read scopes main, project and QA windows without widening after release', async t => {
+ const h=await harness(t),a=await seed(h),b=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ assert.deepEqual((await main.success('shared.projects.list')).projects.map(row=>row.id).sort(),[a.project.id,b.project.id].sort());
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ assert.deepEqual((await client.success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);
+ assert.equal((await client.success('shared.reviews.get',{projectId:a.project.id,reviewId:a.review.id})).review.id,a.review.id);
+ assert.deepEqual((await client.success('shared.reviews.list',{projectId:a.project.id})).reviews.map(row=>row.id),[a.review.id]);
+ const expected={code:'NOT_FOUND',message:'Shared resource not found.'};
+ for(const payload of [{projectId:b.project.id,reviewId:b.review.id},{projectId:a.project.id,reviewId:b.review.id},{projectId:a.project.id,reviewId:'absent'}]){
+  const result=await client.invoke('shared.reviews.get',payload);assert.equal(result.ok,false);assert.deepEqual({code:result.error.code,message:result.error.message},expected);
+ }
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'local-shared-scope'});
+ try{assert.deepEqual((await client.success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);}
+ finally{await h.state.toolIntegration.automationHandler('automation.qa.release',qa);}
+ assert.deepEqual((await client.success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);
+ assert.equal((await main.success('shared.projects.list')).projects.length,2);
+ assert.equal((await client.success('snapshot')).projects.length,2,'Existing full local snapshot keeps its previous contract');
+});
+
+test('local shared read takes one current snapshot and has no mutation or presentation effects', async t => {
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow),store=h.state.liveStore;
+ const before=store.exportData(),messages=h.state.windowMessages.length,windows=h.state.windows.length;
+ const snapshot=store.snapshot.bind(store);let calls=0;store.snapshot=()=>{calls++;return snapshot();};
+ let result;try{result=await main.success('shared.reviews.get',{projectId:a.project.id,reviewId:a.review.id});}finally{store.snapshot=snapshot;}
+ assert.equal(calls,1);assert.equal(result.version,1);assert.deepEqual(Object.keys(result.review).sort(),['body','category','createdAt','id','number','priority','projectId','status','title','updatedAt']);
+ assert.equal(JSON.stringify(result).includes('privateKeyPath'),false);assert.equal(JSON.stringify(result).includes('connection'),false);
+ assert.deepEqual(store.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.windows.length,windows);
+ assert.equal(h.state.agentStarts?.length||0,0);assert.equal(h.state.clipboardWrites?.length||0,0);
+ const invalid=await main.invoke('shared.projects.list',{projectGrants:[{projectId:a.project.id,read:true}]});assert.equal(invalid.ok,false);assert.equal(invalid.error.code,'INVALID_QUERY');
+ assert.equal((await main.success('shared.projects.list')).projects.length,1,'A rejected read must not poison the shared action queue');
+});
+
+test('local shared read rejects foreign frames and external integration dispatch', async t => {
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow),host=h.state.primaryWindow;
+ for(const event of [{},{sender:host.webContents,senderFrame:{url:host.webContents.mainFrame.url}}]){
+  const result=await h.invoke('shared.reviews.get',{projectId:a.project.id,reviewId:a.review.id},event);assert.equal(result.ok,false);
+ }
+ const url=host.webContents.mainFrame.url;host.webContents.mainFrame.url='https://foreign.invalid/';
+ try{assert.equal((await main.invoke('shared.projects.list')).ok,false);}finally{host.webContents.mainFrame.url=url;}
+ await assert.rejects(h.state.toolIntegration.dispatch('shared.projects.list',{}),/지원하지 않는 기능/);
+ await assert.rejects(h.state.toolIntegration.automationHandler('automation.shared.projects.list',{}),{code:'UNKNOWN_ACTION'});
+ assert.equal((await main.success('shared.projects.list')).projects.length,1);
+});
+
+test('local shared read never adopts a replacement or focused window after queued owner closure', async t => {
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const oldHost=await projectHost(h,a.project.id),client=h.forWindow(oldHost);
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Queue blocker did not start');
+ const pending=client.invoke('shared.projects.list');
+ try{
+  oldHost.destroy();await main.success('window.openProject',{projectId:a.project.id});const replacement=await projectHost(h,a.project.id);assert.notEqual(replacement,oldHost);
+  h.state.focusedWindow=replacement;unblock();await probe;
+  const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');
+  assert.deepEqual((await h.forWindow(replacement).success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);
+ }finally{unblock();await probe;}
+});
+
+test('local shared read rechecks the original trusted frame after a queued wait', async t => {
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host),url=host.webContents.mainFrame.url;
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Queue blocker did not start');
+ const pending=client.invoke('shared.projects.list');
+ try{host.webContents.mainFrame.url='https://foreign.invalid/';unblock();await probe;const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');}
+ finally{host.webContents.mainFrame.url=url;unblock();await probe;}
+});
+
+test('local shared read observes queued deletion and never returns a stale bound draft', async t => {
+ const h=await harness(t),a=await seed(h),b=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Queue blocker did not start');
+ const removeReview=main.invoke('review.delete',{id:a.review.id}),removeProject=main.invoke('project.delete',{id:a.project.id});
+ const pending=client.invoke('shared.projects.list');
+ try{
+  unblock();await probe;assert.equal((await removeReview).ok,true);assert.equal((await removeProject).ok,true);
+  const result=await pending;assert.equal(result.ok,true);assert.deepEqual(result.data.projects,[]);
+  assert.equal((await client.invoke('shared.reviews.get',{projectId:a.project.id,reviewId:a.review.id})).error.code,'NOT_FOUND');
+  assert.deepEqual((await main.success('shared.projects.list')).projects.map(row=>row.id),[b.project.id]);
+ }finally{unblock();await probe;}
+});
+
+test('local shared read observes the completed restore rather than its pre-queue snapshot', async t => {
+ const h=await harness(t),empty=h.state.liveStore.exportData(),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const backup=path.join(h.root,'empty-shared-read.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data:empty,files:{}}));h.state.openResult={canceled:false,filePaths:[backup]};
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Queue blocker did not start');
+ const restore=main.invoke('backup.import'),pending=client.invoke('shared.projects.list');
+ try{
+  unblock();await probe;assert.equal((await restore).ok,true);const result=await pending;assert.equal(result.ok,true);assert.deepEqual(result.data.projects,[]);
+  assert.equal((await client.invoke('shared.reviews.get',{projectId:a.project.id,reviewId:a.review.id})).error.code,'NOT_FOUND');
+  assert.deepEqual((await main.success('shared.projects.list')).projects,[]);
+ }finally{unblock();await probe;}
+});
+
+test('local shared read remains project-bound when QA is released before queued execution', async t => {
+ const h=await harness(t),a=await seed(h),b=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'local-shared-queued-release'});
+ let unblock;h.state.environmentGate=new Promise(resolve=>unblock=resolve);
+ const probe=main.invoke('agent.environment',{serviceId:a.service.id});await waitForValue(()=>h.state.environmentCheck,'Queue blocker did not start');
+ const pending=client.invoke('shared.reviews.get',{projectId:b.project.id,reviewId:b.review.id});let released=false;
+ try{
+  await h.state.toolIntegration.automationHandler('automation.qa.release',qa);released=true;unblock();await probe;
+  const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'NOT_FOUND');
+  assert.deepEqual((await client.success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);
+ }finally{unblock();await probe;if(!released)await h.state.toolIntegration.automationHandler('automation.qa.release',qa);}
 });
