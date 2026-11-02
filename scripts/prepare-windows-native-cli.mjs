@@ -66,8 +66,8 @@ fs.writeFileSync(path.join(build, 'NuGet.Config'), '<configuration><packageSourc
 for (const name of ['Program.cs', 'OwnedFixture.csproj']) fs.copyFileSync(path.join(here, 'native-cli', name), path.join(build, name));
 assert.equal((await run(['--version'])).trim(), sdk);
 const info = await run(['--info']);
-const restore = await run(['restore', 'OwnedFixture.csproj', '--configfile', path.join(build, 'NuGet.Config'), '--runtime', 'win-x64']);
-const publish = await run(['publish', 'OwnedFixture.csproj', '--no-restore', '--runtime', 'win-x64', '--self-contained', 'false', '-c', 'Release', '-o', output]);
+const restore = await run(['restore', 'OwnedFixture.csproj', '--configfile', path.join(build, 'NuGet.Config')]);
+const publish = await run(['publish', 'OwnedFixture.csproj', '--no-restore', '--self-contained', 'false', '-c', 'Release', '-o', output]);
 const executable = path.join(output, 'codex.exe'), pe = fs.readFileSync(executable);
 assert.equal(pe.toString('ascii', 0, 2), 'MZ'); const offset = pe.readUInt32LE(0x3c);
 assert.equal(pe.toString('binary', offset, offset + 4), 'PE\0\0'); assert.equal(pe.readUInt16LE(offset + 4), 0x8664);

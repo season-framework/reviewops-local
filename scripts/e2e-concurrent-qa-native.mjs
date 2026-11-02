@@ -1,5 +1,6 @@
 // Preparation only. Ten mandatory synthetic scenarios retained; native source/installed input packet required.
 import {setTestLocale} from './test-locale.mjs';
+import {selectControl,expectSelectValue} from './select-control.mjs';
 import {regressionContext,launchRegression,finishRegression,until,bounded,selectProjectHost} from './native-regression-contract.mjs';
 import {trustedHostURL} from './native-adapters.mjs';
 import {verifyNativePacket} from './native-packet.mjs';
@@ -87,6 +88,50 @@ const snapshot=async target=>{
 
 const focused=()=>bounded(app.evaluate(({BrowserWindow})=>BrowserWindow.getFocusedWindow()?.id??null),'own app focus observation');
 
+// Observe only this retained project's existing source. These are future run
+// receipts: the proposal does not supply runtime geometry or manager internals.
+const scrollSurfaceObservation=async(page,target,url)=>{
+ const windowContext=await ipc(page,'window.context');
+ assert.equal(windowContext.projectId,target.projectId);assert.equal(windowContext.windowId,target.windowId);
+ const host=await bounded(app.browserWindow(page),'scroll fixture exact host'),hostId=await bounded(host.evaluate(win=>win.id),'scroll fixture host ID');
+ const renderer=await bounded(pane(page).locator('.original-viewport').evaluate(element=>{
+  const transform=getComputedStyle(element).transform,matrix=new DOMMatrixReadOnly(transform==='none'?undefined:transform),viewer=element.closest('.original-viewer'),surface=element.querySelector('.native-browser-surface'),rect=surface.getBoundingClientRect();
+  return {transform,renderedScaleX:matrix.a,renderedScaleY:matrix.d,skewX:matrix.c,skewY:matrix.b,bounds:{x:rect.x,y:rect.y,width:rect.width,height:rect.height},browserId:surface.dataset.browserId,selectedScale:viewer.querySelector('[role="combobox"][aria-label="뷰포트 배율"]')?.dataset.value};
+ }),'scroll fixture rendered viewport');
+ assert.equal(renderer.browserId,target.browserId);
+ const native=await bounded(app.evaluate(async({BrowserWindow},{hostId,url})=>{
+  const host=BrowserWindow.fromId(hostId);if(!host||host.isDestroyed())throw new Error('Retained scroll fixture host missing');
+  const candidates=new Map(),owned=win=>{for(let cursor=win;cursor;cursor=cursor.getParentWindow())if(cursor.id===hostId)return true;return false;};
+  const visit=(view,win)=>{if(view.webContents&&!view.webContents.isDestroyed()&&view.webContents.getURL()===url)candidates.set(view.webContents.id,{contents:view.webContents,view,win});for(const child of view.children||[])visit(child,win);};
+  for(const win of BrowserWindow.getAllWindows())if(!win.isDestroyed()&&win.isVisible()&&owned(win))visit(win.contentView,win);
+  if(candidates.size!==1)throw new Error('Expected one exact own native scroll fixture');
+  const {contents,view,win}=[...candidates.values()][0],clip=win.getContentBounds(),viewBounds=view.getBounds();
+  const dom=await contents.executeJavaScript('({instance:window.instance,draft:document.querySelector("#draft").value,hits:window.hits,scrollY,innerWidth,innerHeight,scrollHeight:document.scrollingElement.scrollHeight,clientHeight:document.scrollingElement.clientHeight,activeElement:document.activeElement?.id,hasFocus:document.hasFocus()})');
+  return {webContentsId:contents.id,url:contents.getURL(),hostId,hostZoom:host.webContents.getZoomFactor(),clipWindowId:win.id,clipVisible:win.isVisible(),clip:{width:clip.width,height:clip.height},viewBounds,dom};
+ },{hostId,url}),'scroll fixture exact native metrics');
+ const derivedInputScale=renderer.renderedScaleX*native.hostZoom;
+ return {windowContext,binding:{...target},renderer,native,derivedInputScale,derivedInputScaleSource:'Observed renderer DOMMatrix scale X multiplied by exact host zoom; same emulationFor formula, not a read of private manager.inputScale',remainingScrollRange:native.dom.scrollHeight-native.dom.clientHeight-native.dom.scrollY};
+};
+const assertScrollIdentity=(before,after)=>{
+ assert.deepEqual(after.binding,before.binding);assert.equal(after.windowContext.projectId,before.windowContext.projectId);assert.equal(after.windowContext.windowId,before.windowContext.windowId);
+ for(const field of ['webContentsId','url','hostId','clipWindowId'])assert.equal(after.native[field],before.native[field],field);
+ for(const field of ['instance','draft','hits','innerWidth','innerHeight'])assert.equal(after.native.dom[field],before.native.dom[field],field);
+ assert.equal(after.renderer.browserId,before.renderer.browserId);
+};
+const nativeLayoutMatches=observation=>{
+ const {bounds}=observation.renderer,{viewBounds,hostZoom}=observation.native;
+ return [bounds.width,bounds.height,hostZoom,viewBounds.width,viewBounds.height].every(value=>Number.isFinite(value)&&value>0)&&viewBounds.width===Math.round(bounds.width*hostZoom)&&viewBounds.height===Math.round(bounds.height*hostZoom);
+};
+const assertScrollReady=(observation,deltaY)=>{
+ assert.ok(nativeLayoutMatches(observation),'Native bounds must match the new rendered scale before MCP awaits its emulation readiness');
+ assert.equal(observation.renderer.selectedScale,'100');assert.equal(observation.renderer.renderedScaleX,1);assert.equal(observation.renderer.renderedScaleY,1);assert.equal(observation.renderer.skewX,0);assert.equal(observation.renderer.skewY,0);assert.equal(observation.derivedInputScale,1);
+ assert.equal(observation.native.clipVisible,true);assert.ok(observation.remainingScrollRange>deltaY,'Fixture must have enough measured remaining native scroll range');
+ // qa_scroll converts CSS x/y using inputScale. Check the unchanged (100,200)
+ // point against the actual native view offset inside its visible OS clip.
+ const x=observation.native.viewBounds.x+100*observation.derivedInputScale,y=observation.native.viewBounds.y+200*observation.derivedInputScale;
+ assert.ok(x>0&&x<observation.native.clip.width&&y>0&&y<observation.native.clip.height,'Unchanged MCP wheel point must lie inside actual native clip');
+};
+
 try{
  session=await launchRegression(context);({app,owner,main}=session);app.on('window',page=>page.on('pageerror',error=>errors.push(error.message)));main.on('pageerror',error=>errors.push(error.message));
  await setTestLocale(main);await ipc(main,'update.configure',{automatic:false});
@@ -144,10 +189,36 @@ try{
  const overlapCalls=calls.filter(item=>Date.parse(item.startedAt)>=overlapStarted);assert.ok(overlapCalls.some(x=>overlapCalls.some(y=>x.client!==y.client&&Date.parse(x.startedAt)<Date.parse(y.finishedAt)&&Date.parse(y.startedAt)<Date.parse(x.finishedAt))));
  report.screenshots=await Promise.all([saveCapture(a,targetA,'01-project-A-input'),saveCapture(b,targetB,'02-project-B-input'),saveCapture(a,browserA,'03-browser-A-input'),saveCapture(b,browserB,'04-browser-B-input')]);
  passed('두 MCP 클라이언트의 동시 클릭·입력, 홈 입력 대상 유지, 다른 창 표시 없음');
+ // Keep the preceding four original input/capture checks at their original fit
+ // scale. Change only this fixture's visible UI before the unchanged wheel calls.
+ const scrollFixture=report.scrollFixture={method:'visible viewer scale UI 100%; original MCP wheel requests retained',phase:'before-ui-scale'};
+ const observeBoth=async()=>({A:await scrollSurfaceObservation(pageA,browserA,origin+'/A'),B:await scrollSurfaceObservation(pageB,browserB,origin+'/B')});
+ scrollFixture.before=await observeBoth();scrollFixture.uiFocusBefore=await focused();
+ const uiFocusStart=await app.evaluate(()=>globalThis.qaFocusEvents.length);
+ for(const page of [pageA,pageB]){const control=pane(page).getByRole('combobox',{name:'뷰포트 배율',exact:true});await selectControl(control,'100');await expectSelectValue(control,'100');}
+ await expect.poll(async()=>{scrollFixture.afterUI=await observeBoth();return ['A','B'].every(name=>{const value=scrollFixture.afterUI[name];return value.renderer.selectedScale==='100'&&value.renderer.renderedScaleX===1&&value.renderer.renderedScaleY===1&&value.derivedInputScale===1&&value.native.clipVisible&&nativeLayoutMatches(value);});}).toBe(true);
+ scrollFixture.uiFocusAfter=await focused();scrollFixture.uiFocusEvents=(await app.evaluate(()=>globalThis.qaFocusEvents)).slice(uiFocusStart);
+ for(const name of ['A','B']){assertScrollIdentity(scrollFixture.before[name],scrollFixture.afterUI[name]);assert.equal(scrollFixture.afterUI[name].native.dom.scrollY,scrollFixture.before[name].native.dom.scrollY);}
+ assert.deepEqual(await mainInput(),expectedMainInput);
+ scrollFixture.beforeScroll=await observeBoth();assertScrollReady(scrollFixture.beforeScroll.A,620);assertScrollReady(scrollFixture.beforeScroll.B,340);
+ for(const name of ['A','B'])assertScrollIdentity(scrollFixture.afterUI[name],scrollFixture.beforeScroll[name]);
+ const scrollFocusStart=await app.evaluate(()=>globalThis.qaFocusEvents.length);scrollFixture.scrollFocusBefore=await focused();scrollFixture.phase='single-mcp-wheel';
  await Promise.all([a.call('qa_scroll',{...browserA,x:100,y:200,deltaY:620}),b.call('qa_scroll',{...browserB,x:100,y:200,deltaY:340})]);
  await expect.poll(async()=>(await snapshot(origin+'/A')).scrollY).toBeGreaterThan(300);
  await expect.poll(async()=>(await snapshot(origin+'/B')).scrollY).toBeGreaterThan(100);
  assert.notEqual((await snapshot(origin+'/A')).scrollY,(await snapshot(origin+'/B')).scrollY);
+ scrollFixture.afterScroll=await observeBoth();scrollFixture.scrollFocusAfter=await focused();scrollFixture.scrollFocusEvents=(await app.evaluate(()=>globalThis.qaFocusEvents)).slice(scrollFocusStart);
+ for(const name of ['A','B'])assertScrollIdentity(scrollFixture.beforeScroll[name],scrollFixture.afterScroll[name]);
+ assert.ok(!scrollFixture.scrollFocusEvents.some(event=>event.event==='focus'),'MCP scrolling must not focus a native window');assert.deepEqual(await mainInput(),expectedMainInput);
+ // Restore the original UI scale before the remaining unchanged navigation,
+ // popup and input scenarios, whose targets were established at that scale.
+ scrollFixture.phase='restore-ui-scale';scrollFixture.restoreFocusBefore=await focused();
+ const restoreFocusStart=await app.evaluate(()=>globalThis.qaFocusEvents.length);
+ for(const [name,page] of [['A',pageA],['B',pageB]]){const control=pane(page).getByRole('combobox',{name:'뷰포트 배율',exact:true}),scale=scrollFixture.before[name].renderer.selectedScale;await selectControl(control,scale);await expectSelectValue(control,scale);}
+ await expect.poll(async()=>{scrollFixture.restored=await observeBoth();return ['A','B'].every(name=>{const value=scrollFixture.restored[name],before=scrollFixture.before[name];return value.renderer.selectedScale===before.renderer.selectedScale&&value.renderer.renderedScaleX===before.renderer.renderedScaleX&&value.renderer.renderedScaleY===before.renderer.renderedScaleY&&value.derivedInputScale===before.derivedInputScale&&value.native.clipVisible&&nativeLayoutMatches(value);});}).toBe(true);
+ scrollFixture.restoreFocusAfter=await focused();scrollFixture.restoreFocusEvents=(await app.evaluate(()=>globalThis.qaFocusEvents)).slice(restoreFocusStart);
+ for(const name of ['A','B']){assertScrollIdentity(scrollFixture.afterScroll[name],scrollFixture.restored[name]);assert.equal(scrollFixture.restored[name].native.dom.scrollY,scrollFixture.afterScroll[name].native.dom.scrollY);}
+ assert.deepEqual(await mainInput(),expectedMainInput);scrollFixture.phase='verified';
  passed('프로젝트별 스크롤 동시 적용');
  const focusForData=await focused();
  const [updated,run]=await Promise.all([
