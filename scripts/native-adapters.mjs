@@ -112,12 +112,12 @@ export async function selectProjectHost(application, target, until, ipc, bounded
     return { page: pages[0], context };
   }, Boolean, 'exact returned project/window host');
 }
-export async function sourceIdentity(application, page, sourceURL, browserId, ipc, bounded) {
+export async function sourceIdentity(application, page, sourceURL, browserId, ipc, bounded, {allowPending=false}={}) {
   const state = await bounded(ipc(page, 'browser.state', { id: browserId }), 'source browser state', 3000);
   assert.equal(new URL(state.url).href, new URL(sourceURL).href);
   const host = await bounded(application.browserWindow(page), 'source app host handle', 3000);
   const hostId = await bounded(host.evaluate(w => w.id), 'source app host identity', 3000);
-  return bounded(application.evaluate(({ BrowserWindow }, { hostId, sourceURL }) => {
+  return bounded(application.evaluate(({ BrowserWindow }, { hostId, sourceURL, allowPending }) => {
     const found = [];
     const visit = (view, clip) => {
       if (view.webContents && !view.webContents.isDestroyed() && view.webContents.getURL() === sourceURL)
@@ -127,9 +127,10 @@ export async function sourceIdentity(application, page, sourceURL, browserId, ip
     };
     for (const clip of BrowserWindow.getAllWindows())
       if (!clip.isDestroyed() && clip.getParentWindow()?.id === hostId) visit(clip.contentView, clip);
+    if (found.length === 0 && allowPending) return null;
     if (found.length !== 1) throw new Error('Expected one exact source view in this owned host');
     return found[0];
-  }, { hostId, sourceURL: new URL(sourceURL).href }), 'exact native source identity', 3000);
+  }, { hostId, sourceURL: new URL(sourceURL).href, allowPending }), 'exact native source identity', 3000);
 }
 export function rawPNG(dataURL) {
   assert.ok(dataURL.startsWith('data:image/png;base64,'));

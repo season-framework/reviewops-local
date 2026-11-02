@@ -124,7 +124,7 @@ jobs:
           REVIEWOPS_CAPTURE_POSTFAILURE_PROBE: '1'
         shell: bash
         run: |
-          node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs
+          node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs tests/native-owned-evidence.test.mjs
           node scripts/e2e-live-web-sessions.mjs
           node scripts/e2e-qa-viewer-sessions.mjs
       - name: Verify public MCP category requests on native macOS

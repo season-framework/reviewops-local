@@ -43,7 +43,7 @@ try{
  const review=await ipc('review.save',{projectId:project.id,serviceId:project.connection.id,title:'합성 관찰 에이전트',body:'실제 AI 요청 없는 합성 CLI'});
  await page.locator('.workspace-refresh').click();await page.getByRole('button',{name:`${project.name} 프로젝트 열기`,exact:true}).click();
  await expect(pane().locator('.native-browser-surface')).toHaveAttribute('data-browser-id',/.+/);browserId=await pane().locator('.native-browser-surface').getAttribute('data-browser-id');
- const source=await until(()=>sourceIdentity(app,page,origin+'/',browserId,ipcPage,bounded),Boolean,'exact panel native source');nativeId=source.webContentsId;
+ const source=await until(()=>sourceIdentity(app,page,origin+'/',browserId,ipcPage,bounded,{allowPending:true}),Boolean,'exact panel native source');nativeId=source.webContentsId;
  await panel().locator('summary').click();await expect(result('프로젝트 에이전트')).toContainText('실행 기록 없음');assert.equal(requests.filter(r=>r.agent==='ReviewOps-readiness').length,0);
  await capture('01-before-check');pass('QA-015-001','준비 상태 패널 펼치기','수동 검사 전 HTTP 요청 없음, 실행 파일 미확인','미검사·실행 기록 없음·HTTP/비교 파일만으로 실행 파일을 확인하지 않는다는 안내, 자동 HTTP 검사 0회');
  job=await ipc('agent.start',{reviewId:review.id,prompt:'synthetic observer',context:{instruction:false,attachmentIds:[],logIds:[]}});await expect(result('프로젝트 에이전트')).toContainText('진행 중 1개');

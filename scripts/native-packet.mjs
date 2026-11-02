@@ -52,6 +52,18 @@ export async function prepareNativePacket({repository=process.cwd(),target=proce
  return prepared;
 }
 function cryptoHash(bytes){return createRequire(import.meta.url)('node:crypto').createHash('sha256').update(bytes).digest('hex');}
+export function verifyReviewedGitFiles({repository,source,expectedFiles,files}){
+ const root=fs.realpathSync(repository);assert.match(source,/^[a-f0-9]{40}$/);clean(root,source);
+ return files.map(row=>{
+  assert.ok(!path.isAbsolute(row.path)&&!row.path.split(/[\\/]/).includes('..'));
+  const blob=execFileSync('git',['show',source+':'+row.path],{cwd:root,maxBuffer:8*1024*1024}),gitBlobSHA256=cryptoHash(blob);
+  assert.equal(gitBlobSHA256,row.sha256,row.path+' reviewed Git blob');
+  if(row.bytes!==undefined)assert.equal(blob.length,row.bytes,row.path+' reviewed Git blob size');
+  const checkoutSHA256=fileHash(path.join(root,row.path)),expected=expectedFiles.find(value=>value.path===row.path);
+  assert.ok(expected,row.path+' missing from complete checkout manifest');assert.equal(checkoutSHA256,expected.sha256,row.path+' actual checkout bytes');
+  return {path:row.path,gitBlobSHA256,gitBlobBytes:blob.length,checkoutSHA256,checkoutBytes:fs.statSync(path.join(root,row.path)).size};
+ });
+}
 export async function runObservedProcess(command,args,{cwd,env=process.env,input='',timeoutMs=180000,limit=8*1024*1024}={}){
  const child=spawn(command,args,{cwd,env,windowsHide:true,stdio:['pipe','pipe','pipe']});let bytes=0,overflow=false,timer;const stdout=[],stderr=[];
  const collect=rows=>chunk=>{bytes+=chunk.length;if(bytes<=limit)rows.push(chunk);else overflow=true;};child.stdout.on('data',collect(stdout));child.stderr.on('data',collect(stderr));child.stdin.on('error',()=>{});child.stdin.end(input);
@@ -110,8 +122,8 @@ export function snapshotNativeFixtureEvidence({packet}){
 export async function runNativeGate(options){
  const prepared=await prepareNativePacket(options);let observation;
  try{observation=await runObservedProcess(process.execPath,[path.join(here,'e2e-owned-service-native.mjs'),'--run','--target',prepared.packet.target,'--mode',prepared.packet.mode,'--source',prepared.packet.source,'--inputs',prepared.inputPath],{cwd:prepared.packet.repository,timeoutMs:12*60000});
-  writeJSON(path.join(prepared.packet.outputDir,'driver-observation.json'),observation);const result=readBoundedJSON(prepared.resultPath);const cleanupConfirmed=result.cleanup?.status==='confirmed';
-  assert.equal(observation.code,0,observation.stderr);assert.equal(result.ok,true);assert.equal(result.checks.length,16);assert.ok(cleanupConfirmed);verifyNativePacket(prepared.packet);
+  writeJSON(path.join(prepared.packet.outputDir,'driver-observation.json'),observation);assert.equal(observation.code,0,observation.stderr);
+  const result=readBoundedJSON(prepared.resultPath);const cleanupConfirmed=result.cleanup?.status==='confirmed';assert.equal(result.ok,true);assert.equal(result.checks.length,16);assert.ok(cleanupConfirmed);verifyNativePacket(prepared.packet);
   return {ok:true,resultPath:prepared.resultPath,cleanupConfirmed,preservePrivateRoot:false,result,...prepared};
  }catch(error){if(error.observation)writeJSON(path.join(prepared.packet.outputDir,'driver-observation-failure.json'),error.observation);try{snapshotNativeFixtureEvidence({packet:prepared.packet});}catch{}throw Object.assign(error,{preservePrivateRoot:true,ownedRoot:prepared.ownedRoot,resultPath:prepared.resultPath});}
 }

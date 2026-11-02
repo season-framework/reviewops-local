@@ -9,7 +9,7 @@ import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {verifyPackagedBundle,readBoundedJSON} from './packaged-bundle-guards.mjs';
-import {verifyNativePacket,prepareNativeAgentFixture,verifyWindowsAgentExit,verifyNativeFixtureCleanup,snapshotNativeFixtureEvidence} from './native-packet.mjs';
+import {verifyNativePacket,verifyReviewedGitFiles,prepareNativeAgentFixture,verifyWindowsAgentExit,verifyNativeFixtureCleanup,snapshotNativeFixtureEvidence} from './native-packet.mjs';
 import {selectMainHost,nativePhoto} from './native-adapters.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url));
 const args=process.argv.slice(2),cli=name=>{const i=args.indexOf(name);return i<0?null:args[i+1]};
@@ -36,7 +36,7 @@ const require=createRequire(path.join(root,'package.json')),{_electron:electron,
 const {invokeSocket}=require(path.join(root,'electron/mcp-server.cjs')),plan=JSON.parse(fs.readFileSync(path.join(here,'owned-service-driver-plan.json'),'utf8'));
 assert.equal(plan.sourceCompatibility?.status,'matched-frozen-D3-UI','Frozen D3 UI labels and file hashes must be reviewed before any app/profile launch');
 assert.equal(plan.sourceCompatibility.files.length,4,'The frozen D3 UI4 scope is separate from the final full-source and renderer-build inputs');
-for(const row of plan.sourceCompatibility.files){assert.equal(fileSha(path.join(root,row.path)),row.sha256,row.path);assert.ok(expectedFiles.some(value=>value.path===row.path&&value.sha256===row.sha256),row.path+' missing from reviewed source input');}
+const reviewedUICompatibility=verifyReviewedGitFiles({repository:root,source:expectedHead,expectedFiles,files:plan.sourceCompatibility.files});
 assert.equal(plan.bindingDraftUI?.status,'matched-frozen-D3');
 const appPath=option('--app'),privateInstallRoot=option('--private-install-root'),bundleManifestPath=option('--bundle-manifest');
 if(mode!=='source')assert.ok(appPath&&privateInstallRoot&&bundleManifestPath,'Private installed app and source-bound root bundle manifest are required');
@@ -56,6 +56,7 @@ const readJSON=file=>JSON.parse(fs.readFileSync(file,'utf8')),sleep=ms=>new Prom
 write(path.join(home,'ssh-config'),'# Private fixture only; no operational SSH hosts\n');
 write(path.join(data,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:10}));
 const result={source:expectedHead,dirty:false,mode,target,temporary,platform:process.platform,arch:process.arch,startedAt:new Date().toISOString(),toolSocketPreflight,syntheticCLI:true,externalAI:0,SSH:0,installedPackage:mode!=='source',privateCopiedInstallation:mode==='private-bundle',bundleVerification:bundle,checks:[],photos:[],operations:[],errors:[],externalRendererRequests:[],agentRuns:[],runtimeSnapshots:[],requirements:plan.requirements.map(row=>({...row,status:'not-run',observations:[]})),limits:['Only this actual declared target/mode cohort; same16 repeats add no unique count; original NEXT10 incomplete',...plan.limits.filter(text=>!text.includes('Syntax-only')&&!text.includes('source UI')&&!text.includes('native \ub2e4\ub978'))],fullIssueComplete:false};
+result.reviewedUICompatibility=reviewedUICompatibility;
 const save=()=>fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(result,null,2));
 const record=(action,details={})=>{result.operations.push({at:new Date().toISOString(),action,...details});save();};
 const pass=(id,name,actual)=>{result.requirements.find(row=>row.id===id).observations.push(name);result.checks.push({id,name,actual,status:'pass'});save();};
