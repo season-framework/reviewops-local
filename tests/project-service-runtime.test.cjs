@@ -152,12 +152,13 @@ test('aggregate settings budget rejects before publication and preserves memory/
 test('null and undefined cleanup rejections stay incomplete without throwing, exiting or releasing the keepalive',async()=>{
  const source=await fs.readFile(path.join(__dirname,'../electron/owned-node-bootstrap.cjs'),'utf8');
  for(const rejection of [null,undefined]){
-  const sent=[],handles=new Set();let exits=0,disconnects=0;
+  const sent=[],handles=new Set();let exits=0,disconnects=0,socketReleases=0;
   class Server extends EventEmitter{listen(){}address(){return null;}close(callback){callback();}}
+  class Socket{destroySoon(){socketReleases++;}}
   const child=Object.assign(new EventEmitter(),{argv:['node','bootstrap'],versions:{node:'24'},execPath:'/node',pid:42,connected:true,cwd:()=>'/private',send(message,callback){sent.push(message);callback?.();},exit(){exits++;},disconnect(){disconnects++;this.connected=false;}});
-  require('node:vm').runInNewContext(source,{process:child,require:name=>name==='node:net'?{Server}:{_load:()=>({reviewopsShutdown:()=>Promise.reject(rejection)})},setInterval(){const handle={};handles.add(handle);return handle;},clearInterval:handle=>handles.delete(handle)});
+  require('node:vm').runInNewContext(source,{process:child,require:name=>name==='node:net'?{Server,Socket}:{_load:()=>({reviewopsShutdown:()=>Promise.reject(rejection)})},setInterval(){const handle={};handles.add(handle);return handle;},clearInterval:handle=>handles.delete(handle)});
   const bound={protocol:'reviewops-owned-node-v1',token:'private-token',instanceId:'owned-instance'};child.emit('message',{...bound,type:'init',entry:'/private/server.cjs',args:[]});child.emit('message',{...bound,type:'stop'});await new Promise(resolve=>setImmediate(resolve));
-  assert.equal(sent.some(v=>v.type==='drain-error'&&v.message===String(rejection)),true);assert.equal(sent.some(v=>v.type==='drain-ready'),false);assert.equal(handles.size,1);assert.equal(exits,0);assert.equal(disconnects,0);handles.clear();
+  assert.equal(sent.some(v=>v.type==='drain-error'&&v.message===String(rejection)),true);assert.equal(sent.some(v=>v.type==='drain-ready'),false);assert.equal(handles.size,1);assert.equal(exits,0);assert.equal(disconnects,0);assert.equal(socketReleases,0);handles.clear();
  }
 });
 test('failed settings reset preserves memory, disk and revisions; successful reset publishes before invalidating',async t=>{
