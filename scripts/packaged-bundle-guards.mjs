@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import {canonicalPath} from './native-adapters.mjs';
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const within=(base,value)=>value===base||value.startsWith(base+path.sep);
 const relative=value=>typeof value==='string'&&value.length>0&&!path.isAbsolute(value)&&!value.split(/[\\/]/).some(part=>!part||part==='.'||part==='..');
@@ -13,7 +14,7 @@ export function inventory(directory,base=directory,rows=[]){
   const file=path.join(directory,entry.name),rel=path.relative(base,file).split(path.sep).join('/');
   assert.ok(rows.length<20000,'Bundle inventory budget exceeded');
   if(entry.isSymbolicLink()){
-   assert.ok(within(base,fs.realpathSync(file)),'Bundle symlink escapes the private app');
+   assert.ok(within(base,canonicalPath(file)),'Bundle symlink escapes the private app');
    rows.push({path:rel,kind:'symlink',target:fs.readlinkSync(file)});
   }else if(entry.isDirectory())inventory(file,base,rows);
   else{assert.ok(entry.isFile(),'Unsupported bundle file type');rows.push({path:rel,kind:'file',bytes:fs.statSync(file).size,sha256:hash(fs.readFileSync(file))});}
@@ -22,10 +23,10 @@ export function inventory(directory,base=directory,rows=[]){
 }
 export function verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPath,expectedHead,expectedVersion,buildFiles,sourceManifestSHA256,rendererBuildRecordSHA256,asar,expectedTarget,installReceiptPath}){
  assert.ok(path.isAbsolute(appPath)&&path.isAbsolute(privateInstallRoot)&&path.isAbsolute(manifestPath));
- const install=fs.realpathSync(privateInstallRoot),app=fs.realpathSync(appPath),temporary=fs.realpathSync(os.tmpdir());
- const permitted=[temporary,path.join(fs.realpathSync(root),'.local-data')];
- if(process.platform==='darwin')permitted.push(fs.realpathSync('/tmp'));
- if(process.env.RUNNER_TEMP)permitted.push(fs.realpathSync(process.env.RUNNER_TEMP));
+ const install=canonicalPath(privateInstallRoot),app=canonicalPath(appPath),temporary=canonicalPath(os.tmpdir());
+ const permitted=[temporary,path.join(canonicalPath(root),'.local-data')];
+ if(process.platform==='darwin')permitted.push(canonicalPath('/tmp'));
+ if(process.env.RUNNER_TEMP)permitted.push(canonicalPath(process.env.RUNNER_TEMP));
  assert.ok(permitted.some(base=>install!==base&&within(base,install)),'Dedicated private installed/extracted app only');
  assert.ok(install.split(path.sep).some(part=>/^(owned-service-|reviewops-|ro-owned-ui-|rv-on-)/.test(part)));
  assert.equal(expectedTarget,process.platform+'-'+process.arch);
@@ -42,8 +43,8 @@ export function verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPa
  if(!mac){
   assert.ok(installReceiptPath,'Real NSIS receipt required');const receipt=readBoundedJSON(installReceiptPath);
   assert.equal(receipt.schema,1);assert.equal(receipt.source,expectedHead);assert.equal(receipt.target,expectedTarget);assert.equal(receipt.installationCompleted,true);
-  assert.equal(fs.realpathSync(receipt.installationRoot),appRoot);assert.equal(fs.realpathSync(receipt.executablePath),app);assert.equal(receipt.pe.machine,'0x8664');assert.equal(receipt.version,expectedVersion);
-  assert.equal(fs.realpathSync(receipt.archivePath),archive);assert.equal(receipt.archiveSHA256,hash(fs.readFileSync(archive)));assert.equal(receipt.installerSHA256,hash(fs.readFileSync(receipt.installerPath)));
+  assert.equal(canonicalPath(receipt.installationRoot),appRoot);assert.equal(canonicalPath(receipt.executablePath),app);assert.equal(receipt.pe.machine,'0x8664');assert.equal(receipt.version,expectedVersion);
+  assert.equal(canonicalPath(receipt.archivePath),archive);assert.equal(receipt.archiveSHA256,hash(fs.readFileSync(archive)));assert.equal(receipt.installerSHA256,hash(fs.readFileSync(receipt.installerPath)));
  }
  fs.accessSync(executable,fs.constants.X_OK);
  for(const [key,file]of [['asar',archive],['bootstrap',bootstrap]]){const row=manifest.files.find(value=>value.path===path.relative(appRoot,file).split(path.sep).join('/'));assert.deepEqual(manifest[key],row,key+' summary must match its physical file row');}
