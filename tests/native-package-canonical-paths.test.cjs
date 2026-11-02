@@ -1,11 +1,8 @@
 // Actual exported guards evaluated with inert Windows filesystem/platform mocks.
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import vm from 'node:vm';
-import {fileURLToPath} from 'node:url';
-const directory=path.dirname(fileURLToPath(import.meta.url)),win=path.win32;
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
+const directory=__dirname,win=path.win32;
 const short=String.raw`C:\Users\RUNNER~1\AppData\Local\Temp`,long=String.raw`C:\Users\runneradmin\AppData\Local\Temp`;
 const privateRoot=win.join(long,'reviewops-windows-release-4JRnE2');
 const root=String.raw`D:\a\reviewops-local\reviewops-local`,manifest=String.raw`D:\evidence\bundle-manifest.json`;
