@@ -13,6 +13,14 @@
       ]
     },
     {
+      "category": "fixes",
+      "title": "Start concurrent local jobs without false CLI errors",
+      "description": "Overlapping checks wait for the current Codex version probe before validating their own result. A healthy check no longer makes another project report that the CLI is unavailable. Each check keeps its original time limit and cancellation scope.",
+      "commits": [
+        "710d5a0e224d91a3a7b2e6046752fd5f0e60ead9"
+      ]
+    },
+    {
       "category": "documentation",
       "title": "Read English guides and clearer release notes",
       "description": "Repository guides and release notes use English. Release notes group visible feature changes before installation, verification and source details. GitHub issue discussions remain in Korean.",
