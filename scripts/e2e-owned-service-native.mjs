@@ -470,18 +470,46 @@ const server=http.createServer((req,res)=>{log({event:'request',method:req.metho
 // Fixture-only opt-in: resolved by the driver while this source string is built.
 // Product runtime env/protocol/timeouts and close behavior remain unchanged.
 const shutdownDiagnosticsEnabled=${JSON.stringify(process.env.REVIEWOPS_OWNED_SHUTDOWN_DIAGNOSTICS==='1')};
-let shutdownObservationCount=0;
+let shutdownObservationCount=0,shutdownSocketSnapshot;
 const shutdownLog=value=>{if(!shutdownDiagnosticsEnabled||shutdownObservationCount>=24)return;shutdownObservationCount++;try{log({event:'shutdown-observation',...value})}catch{}};
 const observeShutdown=(phase,withConnections=false)=>{
  if(!shutdownDiagnosticsEnabled||shutdownObservationCount>=24)return;
  try{
   const available=typeof process.getActiveResourcesInfo==='function',types=available?process.getActiveResourcesInfo().slice(0,128):[],resources={};
   for(const type of types)resources[type]=(resources[type]||0)+1;
-  shutdownLog({phase,listening:server.listening,address:server.address(),pendingWrites:writes.size,ipcConnected:process.connected===true,resourceAPIAvailable:available,resources});
+  shutdownLog({phase,listening:server.listening,address:server.address(),pendingWrites:writes.size,ipcConnected:process.connected===true,resourceAPIAvailable:available,resources,...(shutdownSocketSnapshot?shutdownSocketSnapshot():{})});
   if(withConnections)server.getConnections((error,count)=>{try{shutdownLog({phase:phase+'-connection-count',count:Number.isInteger(count)?count:null,errorCode:error?String(error.code||'unknown').slice(0,80):null})}catch{}});
  }catch(error){try{shutdownLog({phase,observationErrorCode:String(error.code||error.name||'unknown').slice(0,80)})}catch{}}
 };
 if(shutdownDiagnosticsEnabled){
+ // Public-event metadata only. The map exists only in this opt-in fixture path;
+ // no payload reads, data/error/timeout listeners, socket actions, or new timers.
+ const liveSockets=new Map();let acceptedSockets=0,closedTrackedSockets=0,untrackedAcceptedSockets=0,untrackedRequestEvents=0,socketObserverErrors=0;
+ const publicSocket=(socket,row)=>({id:row.id,acceptedAt:row.acceptedAt,requestEvents:row.requestEvents,activeRequests:row.activeRequests,responseFinishes:row.responseFinishes,responseCloses:row.responseCloses,closedBeforeFinish:row.closedBeforeFinish,
+  bytesRead:Number.isSafeInteger(socket.bytesRead)?socket.bytesRead:null,bytesWritten:Number.isSafeInteger(socket.bytesWritten)?socket.bytesWritten:null,
+  readyState:typeof socket.readyState==='string'?socket.readyState.slice(0,32):null,readableEnded:typeof socket.readableEnded==='boolean'?socket.readableEnded:null,writableEnded:typeof socket.writableEnded==='boolean'?socket.writableEnded:null,destroyed:typeof socket.destroyed==='boolean'?socket.destroyed:null});
+ shutdownSocketSnapshot=()=>{
+  const sockets=[];let omittedTrackedSockets=0;
+  for(const [socket,row]of liveSockets){if(sockets.length>=8){omittedTrackedSockets++;continue;}try{sockets.push(publicSocket(socket,row));}catch{socketObserverErrors++;}}
+  return {socketObservation:{schema:1,trackingLimit:64,snapshotLimit:8,acceptedSockets,liveTrackedSockets:liveSockets.size,closedTrackedSockets,untrackedAcceptedSockets,untrackedRequestEvents,omittedTrackedSockets,socketObserverErrors,trackingComplete:untrackedAcceptedSockets===0&&untrackedRequestEvents===0&&socketObserverErrors===0,listedAllTrackedSockets:omittedTrackedSockets===0&&socketObserverErrors===0,sockets}};
+ };
+ server.on('connection',socket=>{
+  try{
+   const id=++acceptedSockets;if(liveSockets.size>=64){untrackedAcceptedSockets++;return;}
+   const row={id,acceptedAt:new Date().toISOString(),requestEvents:0,activeRequests:0,responseFinishes:0,responseCloses:0,closedBeforeFinish:0};liveSockets.set(socket,row);
+   socket.once('close',()=>{try{if(liveSockets.get(socket)===row){liveSockets.delete(socket);closedTrackedSockets++;}}catch{socketObserverErrors++;}});
+  }catch{socketObserverErrors++;}
+ });
+ // Observe actual response events before the entry handler can call res.end().
+ // Bootstrap-rejected draining requests may not emit the entry request event;
+ // requestEvents is not a claim about every HTTP message seen by the parser.
+ server.prependListener('request',(request,response)=>{
+  try{
+   const row=liveSockets.get(request.socket);if(!row){untrackedRequestEvents++;return;}row.requestEvents++;row.activeRequests++;let settled=false;
+   const settledOnce=kind=>{try{if(kind==='finish')row.responseFinishes++;else row.responseCloses++;if(!settled){settled=true;row.activeRequests--;if(kind==='close')row.closedBeforeFinish++;}}catch{socketObserverErrors++;}};
+   response.once('finish',()=>settledOnce('finish'));response.once('close',()=>settledOnce('close'));
+  }catch{socketObserverErrors++;}
+ });
  server.once('close',()=>observeShutdown('server-close-event'));
  server.on('error',error=>{try{shutdownLog({phase:'server-error-event',errorCode:String(error.code||'unknown').slice(0,80)})}catch{}});
  // Synchronous observation only: never start async work from beforeExit.
