@@ -60,14 +60,84 @@ result.reviewedUICompatibility=reviewedUICompatibility;
 const save=()=>fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(result,null,2));
 const record=(action,details={})=>{result.operations.push({at:new Date().toISOString(),action,...details});save();};
 const pass=(id,name,actual)=>{result.requirements.find(row=>row.id===id).observations.push(name);result.checks.push({id,name,actual,status:'pass'});save();};
+// Diagnostic observations never replace the original assertion/stack or a
+// cleanup verdict. No product hooks, IPC payloads with tokens, or environment
+// dumps are collected. Only our exact created A/B fixture roots are read.
+const diagnosticDir=path.join(output,'failure-evidence'),fixtureRoots=new Map();
+const diagnostics=result.failureEvidence={schema:1,files:[],runtime:[],manifests:[],errors:[],captureComplete:true,confirmsCleanup:false};
+const diagnosticError=error=>({name:error?.name||'Error',code:typeof error?.code==='string'?error.code:null,message:String(error?.message??error),stack:typeof error?.stack==='string'?error.stack:null});
+let diagnosticSequence=0,diagnosticBytes=0,appJournalFD,appJournalHash;
+const diagnosticFailure=(phase,error)=>{diagnostics.captureComplete=false;diagnostics.errors.push({at:new Date().toISOString(),phase,error:diagnosticError(error)});};
+function diagnosticJSON(phase,value){
+ try{fs.mkdirSync(diagnosticDir,{recursive:true});const file=path.join(diagnosticDir,String(++diagnosticSequence).padStart(4,'0')+'-'+phase+'.json'),bytes=Buffer.from(JSON.stringify(value,null,2)+'\n');fs.writeFileSync(file,bytes,{flag:'wx',mode:0o600});const receipt={file,size:bytes.length,sha256:sha(bytes),copiedAt:new Date().toISOString()};diagnostics.manifests.push(receipt);return receipt;}
+ catch(error){diagnosticFailure(phase,error);return null;}
+}
+const statIdentity=stat=>({dev:String(stat.dev),ino:String(stat.ino),size:Number(stat.size),mtimeNs:String(stat.mtimeNs),ctimeNs:String(stat.ctimeNs)});
+const sameIdentity=(a,b)=>a.dev===b.dev&&a.ino===b.ino;
+const sameFileState=(a,b)=>sameIdentity(a,b)&&a.size===b.size&&a.mtimeNs===b.mtimeNs&&a.ctimeNs===b.ctimeNs;
+function registerFixtureRoot(project){
+ if(!['A','B'].includes(project.label))return;
+ try{assert.equal(project.work,path.join(temporary,'project-'+project.label));const canonical=fs.realpathSync.native(project.work),expected=path.join(fs.realpathSync.native(temporary),'project-'+project.label),stat=fs.lstatSync(project.work,{bigint:true});assert.equal(canonical,expected);assert.ok(stat.isDirectory()&&!stat.isSymbolicLink());fixtureRoots.set(project,{canonical,identity:statIdentity(stat),registeredAt:new Date().toISOString()});}
+ catch(error){diagnosticFailure('register-fixture-'+project.label,error);}
+}
+function captureFixtureFiles(phase){
+ try{captureFixtureFilesRead(phase);}catch(error){diagnosticFailure(phase+'-collector',error);}
+}
+function captureFixtureFilesRead(phase){
+ const allowed=['service-current.json','service-log.jsonl','cleanup-marker.json','stored-state.json'],limit=4*1024**2,totalLimit=32*1024**2;
+ for(const project of projects.filter(value=>['A','B'].includes(value.label))){
+  const guard=fixtureRoots.get(project);
+  for(const name of allowed){
+   const row={phase,projectId:project.id,connectionId:project.connection.id,label:project.label,name,startedAt:new Date().toISOString(),status:'unread',noFollowFlagAvailable:Boolean(fs.constants.O_NOFOLLOW)},source=path.join(project.work,name);let fd;
+   diagnostics.files.push(row);
+   try{
+    assert.ok(guard,'Only a registered created fixture root may be read');assert.equal(project.work,path.join(temporary,'project-'+project.label));assert.equal(fs.realpathSync.native(project.work),guard.canonical);
+    const rootBefore=fs.lstatSync(project.work,{bigint:true});assert.ok(rootBefore.isDirectory()&&!rootBefore.isSymbolicLink());assert.ok(sameIdentity(statIdentity(rootBefore),guard.identity));
+    const canonical=fs.realpathSync.native(source);assert.equal(canonical,path.join(guard.canonical,name));assert.equal(path.relative(guard.canonical,canonical),name);
+    const before=fs.lstatSync(source,{bigint:true});assert.ok(before.isFile()&&!before.isSymbolicLink());assert.ok(before.size<=BigInt(limit),'Fixture evidence exceeds per-file4MiB cap');assert.ok(diagnosticBytes+Number(before.size)<=totalLimit,'Fixture evidence exceeds aggregate32MiB cap');
+    fd=fs.openSync(canonical,fs.constants.O_RDONLY|(fs.constants.O_NOFOLLOW||0)|(fs.constants.O_NONBLOCK||0));const opened=fs.fstatSync(fd,{bigint:true}),named=fs.lstatSync(source,{bigint:true});
+    assert.ok(opened.isFile()&&!named.isSymbolicLink());assert.ok(sameFileState(statIdentity(before),statIdentity(opened))&&sameFileState(statIdentity(named),statIdentity(opened)));assert.equal(fs.realpathSync.native(source),canonical);
+    const buffer=Buffer.alloc(Number(opened.size));let length=0;row.readStartedAt=new Date().toISOString();
+    while(length<buffer.length){const count=fs.readSync(fd,buffer,length,buffer.length-length,length);if(!count)break;length+=count;}
+    row.readFinishedAt=new Date().toISOString();const bytes=buffer.subarray(0,length),after=fs.fstatSync(fd,{bigint:true}),finalNamed=fs.lstatSync(source,{bigint:true}),rootAfter=fs.lstatSync(project.work,{bigint:true});
+    const stable=length===Number(opened.size)&&sameFileState(statIdentity(opened),statIdentity(after))&&sameFileState(statIdentity(after),statIdentity(finalNamed))&&!finalNamed.isSymbolicLink()&&rootAfter.isDirectory()&&!rootAfter.isSymbolicLink()&&sameIdentity(statIdentity(rootAfter),guard.identity)&&fs.realpathSync.native(project.work)===guard.canonical&&fs.realpathSync.native(source)===canonical;
+    fs.mkdirSync(diagnosticDir,{recursive:true});const copy=path.join(diagnosticDir,String(++diagnosticSequence).padStart(4,'0')+'-'+phase+'-'+project.label+'-'+name);fs.writeFileSync(copy,bytes,{flag:'wx',mode:0o600});diagnosticBytes+=bytes.length;
+    Object.assign(row,{source,canonicalSource:canonical,registeredRoot:guard,copy,size:bytes.length,sha256:sha(bytes),copiedAt:new Date().toISOString(),before:statIdentity(before),opened:statIdentity(opened),after:statIdentity(after),finalNamed:statIdentity(finalNamed),stable,status:stable?'copied-stable':'copied-unstable',atomicSnapshotClaimed:false});
+    if(!stable)diagnosticFailure(phase+'-'+project.label+'-'+name,new Error('Fixture changed during observation; copied bytes are retained as an unstable observation, not a complete stable file.'));
+   }catch(error){row.status=error.code==='ENOENT'?'absent':'capture-error';row.error=diagnosticError(error);row.finishedAt=new Date().toISOString();if(error.code!=='ENOENT')diagnosticFailure(phase+'-'+project.label+'-'+name,error);}
+   finally{if(fd!==undefined)try{fs.closeSync(fd);}catch(error){diagnosticFailure(phase+'-close-'+project.label+'-'+name,error);}}
+  }
+ }
+ diagnosticJSON(phase+'-files',{phase,at:new Date().toISOString(),files:diagnostics.files.filter(row=>row.phase===phase),copiedBytesTotal:diagnosticBytes});
+}
+async function capturePostStopRuntime(project,page,phase){
+ if(!['A','B'].includes(project.label)||!fixtureRoots.has(project))return;
+ const row={phase,projectId:project.id,connectionId:project.connection.id,requestedAt:new Date().toISOString(),action:'serviceRuntime.state',payload:{projectId:project.id,connectionId:project.connection.id}};diagnostics.runtime.push(row);
+ try{row.response=await boundedCleanup(request(page,row.action,row.payload),'readonly post-stop fixture state',3000);row.receivedAt=new Date().toISOString();}
+ catch(error){row.error=diagnosticError(error);row.receivedAt=new Date().toISOString();diagnosticFailure(phase,error);}
+ diagnosticJSON(phase+'-runtime',row);
+}
+function expectedNativePath(file,role){
+ const legacy=fs.realpathSync(file);if(process.platform!=='win32')return legacy;
+ const expected=fs.realpathSync.native(file);(result.expectedPathObservations??=[]).push({role,requestedPath:file,legacyRealpath:legacy,expectedNativePath:expected,checkedAt:new Date().toISOString(),actualValueRewritten:false});return expected;
+}
 let app,main,a,b,externalServer,qaHandle,fixture;
 const agentExecutable=process.platform==='win32'?path.join(temporary,'bin/codex.exe'):path.join(temporary,'fixture-codex');const projects=[],jobs=[],ownedApps=[];
 const appLaunchAttempts=result.appLaunchAttempts=[];
 const appEvidence=owner=>({pid:owner.pid,exitObserved:owner.exitObserved,closedObserved:owner.closedObserved,exit:owner.exit||null});
+function journalOwnedApp(owner,phase,details={}){
+ try{
+  assert.ok(ownedApps.includes(owner),'Only original retained application/process handles may be observed');
+  if(appJournalFD===undefined){const file=path.join(output,'retained-app-events.jsonl');appJournalFD=fs.openSync(file,'wx',0o600);appJournalHash=crypto.createHash('sha256');result.retainedAppJournal={file,size:0,source:'Original retained Electron application and ChildProcess handles only'};}
+  const bytes=Buffer.from(JSON.stringify({at:new Date().toISOString(),phase,launchAttemptId:owner.launchAttemptId,...appEvidence(owner),...details})+'\n');fs.appendFileSync(appJournalFD,bytes);appJournalHash.update(bytes);result.retainedAppJournal.size+=bytes.length;result.retainedAppJournal.sha256=appJournalHash.copy().digest('hex');
+ }catch(error){diagnosticFailure('retained-app-'+phase,error);}
+}
 function retainOwnedApp(application,launchAttemptId){
  const child=application.process(),owner={application,child,launchAttemptId,pid:child.pid,exitObserved:false,closedObserved:false};ownedApps.push(owner);
- child.once('exit',(code,signal)=>{owner.exitObserved=true;owner.exit={code,signal,at:new Date().toISOString()};record('owned-Electron-process-exit',appEvidence(owner));});
- application.once('close',()=>{owner.closedObserved=true;record('owned-Electron-application-closed',appEvidence(owner));});
+ journalOwnedApp(owner,'retained');
+ child.once('exit',(code,signal)=>{owner.exitObserved=true;owner.exit={code,signal,at:new Date().toISOString()};journalOwnedApp(owner,'process-exit');record('owned-Electron-process-exit',appEvidence(owner));});
+ child.once('close',(code,signal)=>{journalOwnedApp(owner,'process-stdio-closed',{code,signal});save();});
+ application.once('close',()=>{owner.closedObserved=true;journalOwnedApp(owner,'application-closed');record('owned-Electron-application-closed',appEvidence(owner));});
  return owner;
 }
 async function confirmedAppExit(application,timeout=15000){
@@ -239,7 +309,7 @@ async function start(project,page){
 async function restart(project,page){const old=(await runtime(project,page)).instance;await owned(page).getByRole('button',{name:'이 인스턴스 복구',exact:true}).click();const s=await until(()=>runtime(project,page),v=>v.instance?.status==='running'&&v.instance.instanceId!==old.instanceId&&v.instance.listeners.length>0,'fresh selected instance');assert.notEqual(s.instance.pid,old.pid);await readyPage(project,page);return s.instance;}
 async function actualJSON(url){assert.match(url,/^http:\/\/127\.0\.0\.1:\d+\//);const response=await fetch(url,{signal:AbortSignal.timeout(2000)});assert.equal(response.status,200);return response.json();}
 async function flow(project,page,label){
- const s=await runtime(project,page),meta=readJSON(path.join(project.work,'service-current.json'));assert.deepEqual(s.instance.actual.spawnArgv,[fs.realpathSync(process.execPath),bundle?path.join(bundle.resourcesPath,'owned-services/owned-node-bootstrap.cjs'):path.join(root,'electron/owned-node-bootstrap.cjs')]);assert.equal(s.instance.pid,meta.pid);assert.equal(s.instance.actual.executable,fs.realpathSync(process.execPath));assert.deepEqual(s.instance.actual.argv,[fs.realpathSync(process.execPath),fs.realpathSync(path.join(project.work,s.config.entry)),...s.config.args]);assert.equal(s.instance.entrySnapshot.loadedBytesVerified,false);assert.equal(s.instance.urlOwnership,'unverified');
+ const s=await runtime(project,page),meta=readJSON(path.join(project.work,'service-current.json'));assert.deepEqual(s.instance.actual.spawnArgv,[fs.realpathSync(process.execPath),bundle?path.join(bundle.resourcesPath,'owned-services/owned-node-bootstrap.cjs'):path.join(root,'electron/owned-node-bootstrap.cjs')]);assert.equal(s.instance.pid,meta.pid);assert.equal(s.instance.actual.executable,fs.realpathSync(process.execPath));assert.deepEqual(s.instance.actual.argv,[fs.realpathSync(process.execPath),expectedNativePath(path.join(project.work,s.config.entry),'owned-entry'),...s.config.args]);assert.equal(s.instance.entrySnapshot.loadedBytesVerified,false);assert.equal(s.instance.urlOwnership,'unverified');
  const before=(await actualJSON(project.origin+'/state')).count;await nativeClick(page,project.origin,'increment');
  const stored=await until(()=>{try{return readJSON(path.join(project.work,'stored-state.json'))}catch(error){if(error.code==='ENOENT'||error instanceof SyntaxError)return null;throw error}},v=>v?.count===before+1,'actual file write '+label),state=await actualJSON(project.origin+'/state');assert.deepEqual(state,stored);assert.equal(stored.pid,s.instance.pid);
  await expect.poll(()=>nativeRead(page,project.origin,'(()=>{try{return JSON.parse(document.getElementById("result").textContent)}catch{return null}})()')).toEqual(stored);record('real-core-flow',{label,projectId:project.id,instanceId:s.instance.instanceId,pid:s.instance.pid,stored,httpState:state});return s.instance;
@@ -256,7 +326,7 @@ async function create(group,label,number,mode='normal'){
  const project=await ipc(main,'project.save',{groupId:group.id,name:'Owned UI '+label,connection:{kind:'local',rootPath:work,agentWorkPath:work,agentBinary:agentExecutable,agentEnabled:true,agentModel:'fixture-model',viewerUrl:origin,viewerWidth:1000,viewerHeight:700,viewerScale:'fit'}});
  assert.equal(project.connection.kind,'local');assert.equal(project.connection.agentBinary,agentExecutable);assert.equal(project.connection.agentWorkPath,work);
  const review=await ipc(main,'review.save',{projectId:project.id,title:'Owned '+label+' synthetic run',body:'Synthetic CLI / external AI0 / SSH0'});
- Object.assign(project,{work,origin,label,review,config:{executable:fs.realpathSync(process.execPath),entry:'server.cjs',args:[work,label,String(number),mode],readinessUrl:origin+'/health'}});projects.push(project);return project;
+ Object.assign(project,{work,origin,label,review,config:{executable:fs.realpathSync(process.execPath),entry:'server.cjs',args:[work,label,String(number),mode],readinessUrl:origin+'/health'}});projects.push(project);registerFixtureRoot(project);return project;
 }
 async function log(project,event){const file=path.join(project.work,'service-log.jsonl');return fs.existsSync(file)?fs.readFileSync(file,'utf8').trim().split('\n').filter(Boolean).map(JSON.parse).filter(v=>!event||v.event===event):[];}
 async function prepareRelatedAgentConnections(project){
@@ -293,7 +363,7 @@ async function agents(project,page,tag,ending){
  const before=(await runtime(project,page)).instance;write(path.join(temporary,'agent-target.json'),JSON.stringify({url:project.origin,instanceId:before.instanceId}));const group=[];
  for(const binding of project.agentRoles){const key=tag+'-'+binding.role,job=await ipc(page,'agent.start',{reviewId:binding.reviewId,prompt:'OWNED_AGENT:'+key+' Synthetic observer of related target '+project.origin+'; service is main-owned, do not spawn it.',newConversation:true,independentExecution:false});group.push({...binding,key,id:job.id});jobs.push({id:job.id,projectId:project.id});}
  await until(()=>Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),value=>value.every(row=>row.status==='running'),'three actual running jobs on distinct connections');await until(()=>group.every(value=>fs.existsSync(path.join(temporary,'agent-'+value.key+'.json'))),Boolean,'three real synthetic CLI records');
- for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],fixture.agentScript);assert.equal(observed.cwd,fs.realpathSync(item.workPath));}
+ for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],fixture.agentScript);assert.equal(observed.cwd,expectedNativePath(item.workPath,'agent-cwd'));}
  const observe=async(phase,expectedRunning)=>{
   const runs=await Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),summary=await ipc(page,'viewer.agentState',{projectId:project.id,connectionId:project.connection.id});assert.equal(summary.running,expectedRunning);
   for(let index=0;index<runs.length;index++){assert.equal(runs[index].reviewId,group[index].reviewId);assert.equal(runs[index].serviceId,group[index].serviceId);assert.equal(runs[index].workPath,group[index].workPath);}
@@ -337,7 +407,7 @@ async function bindingDraftScenario(group){
  await owned(dedicated).getByRole('button',{name:'서비스 설정 저장',exact:true}).click();
  await expect(owned(dedicated).getByRole('button',{name:'저장한 서비스 시작',exact:true})).toBeEnabled();assert.deepEqual((await runtime(pd,dedicated)).config,config);
  await start(pd,dedicated);const instance=await flow(pd,dedicated,'explicitly reviewed current D root');
- assert.equal(instance.actual.cwd,fs.realpathSync(newRoot));assert.equal(instance.entrySnapshot.path,fs.realpathSync(path.join(newRoot,'alternate.cjs')));
+ assert.equal(instance.actual.cwd,expectedNativePath(newRoot,'rebound-owned-cwd'));assert.equal(instance.entrySnapshot.path,expectedNativePath(path.join(newRoot,'alternate.cjs'),'rebound-owned-entry'));
  assert.equal(instance.entrySnapshot.sha256,fileSha(path.join(newRoot,'alternate.cjs')));assert.notEqual(instance.entrySnapshot.sha256,oldEntryHash);assert.equal(fileSha(oldEntry),oldEntryHash);
  assert.equal(fs.readFileSync(path.join(oldRoot,'sentinel.txt'),'utf8'),'PRESERVE_D');assert.equal(fs.readFileSync(path.join(newRoot,'sentinel.txt'),'utf8'),'PRESERVE_D_CURRENT');
  await photo(dedicated,'06b-reviewed-current-root-executed',pd.origin);
@@ -593,7 +663,7 @@ try{
  result.finalBundleVerification=verifyBundle();if(bundle){result.packagedObservation={bundle:result.finalBundleVerification,target,sameProductAgentAndServicePaths:true};result.requirements.find(row=>row.id==='NEXT-015-010').status='partial-observed';}
  const expectedChecks=readJSON(path.join(here,'expected-owned-checks.json'));assert.deepEqual(result.checks.map(({id,name})=>({id,name})),expectedChecks);
  result.ok=true;save();
-}catch(error){result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
+}catch(error){result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();captureFixtureFiles('harness-catch');if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
 finally{
  // Release our own fixture work, cancel exact product job IDs and use retained
  // runtime IPC. Never signal, force-exit, adopt a PID, or destroy a foreign app.
@@ -609,17 +679,22 @@ finally{
     catch(error){cleanupIssues.push({kind:'job-cancel-unconfirmed',id:job.id,message:error.message});}}
    if(qaHandle)try{await invokeSocket(path.join(data,'integrations/tools.json'),'automation.qa.release',qaHandle,{timeoutMs:5000});qaHandle=null;}catch(error){cleanupIssues.push({kind:'QA-release-unconfirmed',message:error.message});}
    for(const p of projects){const channel=matchingChannel(channels,p.id);if(!channel){cleanupIssues.push({kind:'service-consumer-lost',projectId:p.id});continue;}
+    let cleanupPhase='state';const cleanupStartedAt=new Date().toISOString();
     try{let state=await boundedCleanup(ipc(channel.page,'serviceRuntime.state',{projectId:p.id,connectionId:p.connection.id}),'owned runtime state');
+     if(['A','B'].includes(p.label))diagnosticJSON('cleanup-before-'+p.label,{at:new Date().toISOString(),projectId:p.id,connectionId:p.connection.id,state});
+     cleanupPhase='stop';
      if(state.instance&&['starting','running','stopping','stop-unconfirmed'].includes(state.instance.status))state=await boundedCleanup(ipc(channel.page,'serviceRuntime.stop',{projectId:p.id,connectionId:p.connection.id,instanceId:state.instance.instanceId}),'exact owned runtime stop');
+     cleanupPhase='terminal-state';
      if(state.instance&&state.instance.status!=='exited')throw new Error('Owned runtime terminal state unconfirmed');
      record('cleanup-owned-runtime-confirmed',{projectId:p.id,instance:state.instance});
-    }catch(error){cleanupIssues.push({kind:'service-stop-unconfirmed',projectId:p.id,message:error.message});}}
+    }catch(error){cleanupIssues.push({kind:'service-stop-unconfirmed',projectId:p.id,message:error.message});if(['A','B'].includes(p.label)){diagnosticJSON('cleanup-catch-'+p.label,{projectId:p.id,connectionId:p.connection.id,cleanupPhase,startedAt:cleanupStartedAt,caughtAt:new Date().toISOString(),error:diagnosticError(error),originalFailure:result.failure||null});await capturePostStopRuntime(p,channel.page,'cleanup-catch-'+p.label);captureFixtureFiles('cleanup-catch-'+p.label);}}}
    if(!cleanupIssues.length){
+    if(owner)journalOwnedApp(owner,'cleanup-quit-request');
     try{await boundedCleanup(app.evaluate(({app})=>{if(global.__ownedDialogs)global.__ownedDialogs.answer=1;setImmediate(()=>app.quit())}),'owned app quit request',3000);
      const exit=await confirmedAppExit(app);record('cleanup-owned-Electron-exit',exit);
      if(!exit.confirmed||exit.exit?.code!==0||exit.exit?.signal)cleanupIssues.push({kind:'app-exit-unconfirmed-or-abnormal',evidence:exit});
-    }catch(error){cleanupIssues.push({kind:'app-quit-failed',message:error.message});}
-   }
+    }catch(error){cleanupIssues.push({kind:'app-quit-failed',message:error.message});if(owner)journalOwnedApp(owner,'cleanup-quit-error',{error:diagnosticError(error)});}
+   }else if(owner)journalOwnedApp(owner,'cleanup-quit-not-requested',{reason:'Existing cleanupIssues guard retained the app',issueKinds:cleanupIssues.map(value=>value.kind)});
   }
  }
  if(externalServer)try{await boundedCleanup(new Promise((resolve,reject)=>externalServer.close(error=>error?reject(error):resolve())),'own external fixture server close',5000);}catch(error){cleanupIssues.push({kind:'fixture-server-close-unconfirmed',message:error.message});}
@@ -629,6 +704,7 @@ finally{
  for(const owner of result.appLifetimes){if(!owner.exitObserved||!owner.closedObserved)cleanupIssues.push({kind:'retained-app-still-unconfirmed',evidence:owner});else if(owner.exit?.code!==0||owner.exit?.signal)cleanupIssues.push({kind:'retained-app-abnormal-exit',evidence:owner});}
  result.cleanup={status:cleanupIssues.length?'cleanup-unconfirmed':'confirmed',issues:cleanupIssues,appLifetimes:result.appLifetimes};
  if(cleanupIssues.length){result.ok=false;process.exitCode=1;result.cleanupPending='Owned fixture resources retained for root inspection; no signals, force exit or PID adoption.';}
+ if(result.failure||cleanupIssues.length)captureFixtureFiles('cleanup-final');
  try{result.nativeFixtureEvidence=snapshotNativeFixtureEvidence({packet});}catch(error){result.ok=false;process.exitCode=1;result.nativeFixtureEvidenceFailure=error.message;}
  result.finishedAt=new Date().toISOString();save();console.log(JSON.stringify({ok:result.ok,output,source:expectedHead,fullIssueComplete:false,cleanupPending:result.cleanupPending||null}));
 }

@@ -3,6 +3,11 @@ name: Windows installer
 on:
   workflow_dispatch:
     inputs:
+      owned_service_diagnostics:
+        description: Run Windows owned-service diagnostics only, without packaging or publication
+        required: false
+        type: boolean
+        default: false
       release_tag:
         description: Expected release tag, such as v1.2.3 (optional)
         required: false
@@ -13,7 +18,7 @@ on:
         type: boolean
         default: false
       reviewed_commit:
-        description: Full reviewed commit SHA; required only for draft upload
+        description: Full reviewed commit SHA; required for draft upload or owned-service diagnostics
         required: false
         type: string
   push:
@@ -29,6 +34,7 @@ concurrency:
 
 jobs:
   regression:
+    if: inputs.owned_service_diagnostics != true
     name: Existing unit tests on macOS
     runs-on: macos-latest
     timeout-minutes: 20
@@ -45,6 +51,7 @@ jobs:
       - run: node --test --test-concurrency=4 --test-timeout=90000 tests/*.test.cjs
 
   windows:
+    if: inputs.owned_service_diagnostics != true
     name: Build, install, and verify Windows x64
     runs-on: windows-latest
     timeout-minutes: 30
@@ -119,4 +126,84 @@ jobs:
           name: Windows-verification-diagnostics
           path: test-results/windows-*
           if-no-files-found: warn
+          retention-days: 14
+
+  owned-service-diagnostics:
+    name: Diagnose reviewed Windows owned services without publication
+    if: github.event_name == 'workflow_dispatch' && inputs.owned_service_diagnostics == true
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      REVIEWOPS_REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+      REVIEWOPS_PUBLISH_TO_DRAFT: ${{ inputs.publish_to_draft }}
+      REVIEWOPS_CAPTURE_DIAGNOSTICS: '1'
+      REVIEWOPS_CAPTURE_POSTFAILURE_PROBE: '1'
+      REVIEWOPS_LIVE_CODEX: '0'
+      REVIEWOPS_LIVE_CLAUDE: ''
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Reject non-reviewed or publishing diagnostics before checkout
+        run: |
+          if ($env:GITHUB_EVENT_NAME -cne 'workflow_dispatch') {
+            throw 'Owned-service diagnostics require manual workflow_dispatch.'
+          }
+          if ($env:REVIEWOPS_PUBLISH_TO_DRAFT -ieq 'true') {
+            throw 'Owned-service diagnostics cannot publish to a draft.'
+          }
+          $reviewed = $env:REVIEWOPS_REVIEWED_COMMIT
+          if ($reviewed -cnotmatch '^[0-9a-f]{40}$' -or $reviewed -cne $env:GITHUB_SHA) {
+            throw 'A full reviewed commit equal to GITHUB_SHA is required.'
+          }
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          architecture: x64
+          cache: npm
+      - name: Verify reviewed checkout before dependency installation
+        run: |
+          $head = git rev-parse HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($head -cne $env:REVIEWOPS_REVIEWED_COMMIT -or $head -cne $env:GITHUB_SHA) {
+            throw 'The checkout differs from the reviewed diagnostic commit.'
+          }
+          $dirty = git status --porcelain
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($dirty) { throw 'The reviewed diagnostic checkout must be clean.' }
+      - run: npm ci
+      - name: Build and record the exact reviewed renderer without changing notices
+        timeout-minutes: 4
+        run: node --input-type=module -e "import assert from 'node:assert/strict'; import {buildRenderer} from './scripts/test-build.mjs'; import {recordNativeRenderer} from './scripts/native-packet.mjs'; assert.equal(process.platform,'win32'); assert.equal(process.arch,'x64'); await buildRenderer({generateLicenses:false}); recordNativeRenderer({repository:process.cwd(),source:process.env.GITHUB_SHA});"
+      - name: Verify existing capture and owned-evidence contracts
+        timeout-minutes: 4
+        run: node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs tests/native-owned-evidence.test.mjs
+      - name: Verify existing common shared-web fourteen checks
+        timeout-minutes: 10
+        run: node scripts/e2e-live-web-sessions.mjs
+      - name: Verify existing QA viewer eight checks
+        timeout-minutes: 10
+        run: node scripts/e2e-qa-viewer-sessions.mjs
+      - name: Verify unchanged native owned sixteen, panel eight and concurrent ten
+        timeout-minutes: 20
+        run: node scripts/owned-native-orchestration.mjs source --target win32-x64 --source "$env:GITHUB_SHA"
+      - name: Preserve raw shared and owned diagnostics even on failure
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: Windows-owned-service-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/live-web-sessions/
+            test-results/qa-viewer-sessions/
+            test-results/owned-service-native/
+          if-no-files-found: warn
+          compression-level: 0
           retention-days: 14
