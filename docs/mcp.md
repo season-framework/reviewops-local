@@ -155,6 +155,47 @@ Use the returned `reviewId` to start a task:
 
 A `run_start` response does not mean execution is complete. Use its `runId` with `run_get` to read `run.status`, `run.progress`, `run.output`, `run.response`, and `run.error`. Working-folder collision checks and duplicate-run restrictions within a project remain in force.
 
+## Saved follow-up requests
+
+Public MCP and the local automation bridge share four follow-up tools. They use the same saved waiting list shown in the review's agent panel. These operations do not open or focus a window, start an agent, or inject text into a running conversation.
+
+| Tool | Required input | Result |
+| --- | --- | --- |
+| `reviewops_followup_create` | `projectId`, `reviewId`, `requestId`, `prompt` | Saved request and whether this was an original-create retry |
+| `reviewops_followup_list` | `projectId`, `reviewId` | Saved requests for that exact review |
+| `reviewops_followup_get` | `projectId`, `reviewId`, `requestId` | Current saved content, waiting reason, delivery state and manual run link |
+| `reviewops_followup_cancel` | `projectId`, `reviewId`, `requestId` | Cancelled waiting request; an existing run is not stopped |
+
+The equivalent bridge actions are `automation.followups.create`, `automation.followups.list`, `automation.followups.get`, and `automation.followups.cancel`. The existing connection file and project-bound MCP configuration apply. Every request must name the exact project and review; a saved request from another review cannot be read or cancelled through that target.
+
+Creation also accepts `predecessorId`, `requiredResult`, `model`, `reasoningEffort`, and `newConversation`. `prompt` preserves its original whitespace and is limited to 100,000 characters. `requiredResult` is limited to 10,000 characters. A predecessor may belong to a different review of the **same project**, matching the existing UI dependency picker; it is a prerequisite, not a conversation-continuation target. A predecessor from another project is rejected even if both projects use the same connection. The connection, working folder and executable come from the review's saved settings; callers cannot supply a different execution target, attachment token, delivery state or start flag.
+
+Use a fresh `requestId` for each new saved request. Retrying with the same ID and the same original creation fields returns the current saved request, including later UI edits, cancellation, or a manually started run. It does not revert edits or resubmit work. Keep the original fields for a retry: changing the target or original content returns `REQUEST_ID_CONFLICT`. The creation identity persists through restart and backup restoration. Older saved requests without a recorded original-create signature remain readable and cancellable, but their IDs cannot be claimed by a create retry; use a fresh ID.
+
+```json
+{
+  "name": "reviewops_followup_create",
+  "arguments": {
+    "projectId": "PROJECT_A_ID",
+    "reviewId": "FOLLOWUP_REVIEW_ID",
+    "requestId": "followup-a-001",
+    "prompt": "After the current work finishes, inspect the additional data path.",
+    "predecessorId": "PREVIOUS_RUN_ID"
+  }
+}
+```
+
+The response includes `requestId`, `request`, `supportsLiveDelivery: false`, and `automaticStart: false`. List responses contain `requests`. Each request includes its prompt, current state and reason, predecessor identity/status when retained, required-result confirmation, model/reasoning settings, timestamps, and any linked `runId`/`runStatus`. Private executable/target details, credentials, attachment context, raw run output and the internal creation signature are omitted. A conflicting request or run in another target can still keep the request waiting, without exposing that target's private content or blocker ID.
+
+| State | Delivery | Meaning |
+| --- | --- | --- |
+| `waiting` | `not_sent` | A prerequisite, confirmation, target change or conflicting work blocks manual execution |
+| `ready` | `not_sent` | The user can explicitly start it; nothing has been sent |
+| `cancelled` | `not_sent` | Only the saved waiting request was cancelled |
+| `running` / `finished` | `submitted` | A separately started run is linked; this does not prove agent receipt or application |
+
+Completing a predecessor can make a request `ready`, but never starts it. Failed, interrupted, cancelled or missing predecessors keep it waiting. If `requiredResult` is supplied, confirm it separately in the app. Use the existing UI **Run** action on the saved request to start it explicitly; its resulting run ID remains linked and can be inspected with the existing run tools. The follow-up API does not expose start, edit, result-confirmation, or application-resolution operations. Cancelling a request that is already starting or linked to a run is rejected; the separate run controls remain responsible for that execution. A completed run does not automatically mark the request as applied.
+
 ## Concurrent QA in project windows
 
 1. Each agent calls `reviewops_qa_open` with its own `projectId` and a unique `clientId`, such as `codex-a`, `codex-b`, or `claude-b`.

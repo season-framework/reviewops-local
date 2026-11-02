@@ -18,9 +18,13 @@ const dataTools = [
   ['run_start', 'runs.start', 'Start work in the review project using its configured agent. Returns immediately with a run ID; use run_get for progress, logs and result. Reuse requestId only for an identical retry.', schema({ ...target, requestId: ID, prompt: { ...string(100000), minLength: 1 }, model: string(256), reasoningEffort: { type: 'string', enum: ['','none','minimal','low','medium','high','xhigh','max','ultra'] }, newConversation: { type: 'boolean' } }, ['projectId','reviewId','requestId','prompt'])],
   ['run_list', 'runs.list', 'List runs belonging to a review, including their status. Project and review must match.', schema(target, ['projectId','reviewId'])],
   ['run_get', 'runs.get', 'Read status, progress, output log, response and error for one run. All three target IDs must match.', schema({ ...target, runId: ID }, ['projectId','reviewId','runId'])],
-  ['run_cancel', 'runs.cancel', 'Cancel only the specified run after checking its project and review.', schema({ ...target, runId: ID }, ['projectId','reviewId','runId'])]
+  ['run_cancel', 'runs.cancel', 'Cancel only the specified run after checking its project and review.', schema({ ...target, runId: ID }, ['projectId','reviewId','runId'])],
+  ['followup_create', 'followups.create', 'Save a follow-up request in the existing review waiting list without starting or sending it. Reuse requestId only for an identical original retry. An optional predecessorId may refer to a run in another review of the same project. ready still means not_sent; start it separately in the app.', schema({ ...target, requestId: ID, prompt: { ...string(100000), minLength: 1 }, predecessorId: ID, requiredResult: string(10000), model: string(256), reasoningEffort: { type: 'string', enum: ['','none','minimal','low','medium','high','xhigh','max','ultra'] }, newConversation: { type: 'boolean' } }, ['projectId','reviewId','requestId','prompt'])],
+  ['followup_list', 'followups.list', 'List saved follow-up requests for this exact project and review, including waiting reasons, delivery state and any manually started run link. Listing never starts or sends a request.', schema(target, ['projectId','reviewId'])],
+  ['followup_get', 'followups.get', 'Read one saved follow-up request in this exact project and review. waiting, ready and cancelled are not_sent; submitted does not prove receipt or application.', schema({ ...target, requestId: ID }, ['projectId','reviewId','requestId'])],
+  ['followup_cancel', 'followups.cancel', 'Cancel only this saved waiting request after checking its project and review. It never cancels a running agent. Requests already starting or linked to a run must be managed through the separate run controls.', schema({ ...target, requestId: ID }, ['projectId','reviewId','requestId'])]
 ].map(([name, action, description, inputSchema]) => ({ name: 'reviewops_' + name, action: 'automation.' + action, description, inputSchema,
-  annotations: { readOnlyHint: ['projects.list','reviewCategories.list','reviews.list','reviews.get','runs.list','runs.get'].includes(action), destructiveHint: action === 'runs.cancel', openWorldHint: action === 'runs.start' } }));
+  annotations: { readOnlyHint: ['projects.list','reviewCategories.list','reviews.list','reviews.get','runs.list','runs.get','followups.list','followups.get'].includes(action), destructiveHint: ['runs.cancel','followups.cancel'].includes(action), openWorldHint: action === 'runs.start' } }));
 
 function reviewCategories(snapshot) {
   return [
@@ -52,6 +56,23 @@ function validate(schema, value, label = 'arguments') {
 }
 const id = value => { validate(ID, value, 'ID'); if (['__proto__','constructor','prototype'].includes(value)) fail('ID is invalid.'); return value; };
 const hash = payload => crypto.createHash('sha256').update(JSON.stringify(Object.fromEntries(Object.entries(payload).sort(([a],[b]) => a.localeCompare(b))))).digest('hex');
+
+function publicFollowup(row, queue, projectId, reviewId) {
+  const predecessor = queue.predecessors.find(run => run.id === row.predecessorId);
+  // Queue readiness remains global. Do not expose another target's materials or
+  // blocker IDs merely because its folder conflicts with the selected review.
+  return { id: row.id, requestId: row.id, projectId, reviewId, prompt: row.prompt,
+    state: row.state, reason: row.reason, delivery: row.delivery,
+    predecessorId: row.predecessorId || null, predecessorReviewId: predecessor?.reviewId || null,
+    predecessorStatus: predecessor?.status || null,
+    blockingRunId: queue.predecessors.some(run => run.id === row.blockingRunId && run.reviewId === reviewId) ? row.blockingRunId : null,
+    blockingRequestId: queue.requests.some(request => request.id === row.blockingRequestId) ? row.blockingRequestId : null,
+    requiredResult: row.requiredResult, resultConfirmed: row.resultConfirmed,
+    model: row.model, reasoningEffort: row.reasoningEffort, newConversation: row.newConversation,
+    runId: row.runId || null, runStatus: row.runStatus || null,
+    resolution: row.resolution, resultVersion: row.resultVersion, resultNote: row.resultNote,
+    createdAt: row.createdAt, updatedAt: row.updatedAt };
+}
 
 function createAutomationApi({ dispatch, qa } = {}) {
   if (typeof dispatch !== 'function') throw new TypeError('dispatch is required');
@@ -92,6 +113,29 @@ function createAutomationApi({ dispatch, qa } = {}) {
       validateCategory(fields, snapshot);
       return { projectId, reviewId, review: await dispatch('review.save', { id: reviewId, projectId, ...fields }) };
     }
+    if (action.startsWith('automation.followups.')) {
+      const requestId = action === 'automation.followups.list' ? null : id(payload.requestId);
+      const queue = await dispatch('agent.request.list', { projectId, reviewId });
+      const envelope = { projectId, reviewId, supportsLiveDelivery: false, automaticStart: false };
+      if (action === 'automation.followups.list') return { ...envelope, requests: queue.requests.map(row => publicFollowup(row, queue, projectId, reviewId)) };
+      const existing = queue.requests.find(row => row.id === requestId && row.reviewId === reviewId);
+      if (action === 'automation.followups.create') {
+        if (existing && !existing.requestSignature) fail('기존 요청의 최초 저장 내용을 확인할 수 없습니다. 새 요청 ID를 지정하십시오.', 'REQUEST_ID_CONFLICT');
+        // An unchanged original retry may outlive a deleted predecessor or UI
+        // edits. The signed main-process add path owns that immutable identity.
+        if (!existing && payload.predecessorId && !queue.predecessors.some(run => run.id === payload.predecessorId)) fail('선행 실행이 지정한 프로젝트에 속하지 않습니다.', 'TARGET_MISMATCH');
+        const row = await dispatch('agent.request.add', { projectId, reviewId, requestId, prompt: payload.prompt,
+          predecessorId: payload.predecessorId || '', requiredResult: payload.requiredResult || '',
+          ...(payload.model === undefined ? {} : { model: payload.model }),
+          ...(payload.reasoningEffort === undefined ? {} : { reasoningEffort: payload.reasoningEffort }),
+          newConversation: payload.newConversation || false });
+        if (row.reviewId !== reviewId) fail('후속 요청이 지정한 리뷰에 속하지 않습니다.', 'TARGET_MISMATCH');
+        return { ...envelope, requestId: row.id, request: publicFollowup(row, queue, projectId, reviewId), reused: Boolean(existing) };
+      }
+      if (!existing) fail('후속 요청이 지정한 리뷰에 속하지 않습니다.', 'TARGET_MISMATCH');
+      const row = action === 'automation.followups.cancel' ? await dispatch('agent.request.cancel', { projectId, reviewId, id: requestId }) : existing;
+      return { ...envelope, requestId, request: publicFollowup(row, queue, projectId, reviewId) };
+    }
     if (action === 'automation.runs.start') {
       const { projectId: unused, ...fields } = payload;
       const run = await dispatch('agent.start', fields);
@@ -118,7 +162,7 @@ function createAutomationApi({ dispatch, qa } = {}) {
     const tool = dataTools.find(item => item.action === action);
     if (!tool) fail('지원하지 않는 외부 요청입니다.', 'UNKNOWN_ACTION');
     validate(tool.inputSchema, payload);
-    return ['automation.reviews.create','automation.reviews.update','automation.runs.start','automation.runs.cancel'].includes(action) ? exclusive(() => perform(action, payload)) : perform(action, payload);
+    return ['automation.reviews.create','automation.reviews.update','automation.runs.start','automation.runs.cancel','automation.followups.create','automation.followups.cancel'].includes(action) ? exclusive(() => perform(action, payload)) : perform(action, payload);
   }
   return { handle };
 }
