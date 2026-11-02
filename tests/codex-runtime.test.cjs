@@ -103,6 +103,24 @@ test('a valid manual selection keeps priority over the detected desktop CLI', as
   assert.deepEqual(calls, [await fs.realpath(selected)]);
 });
 
+test('cached app launch errors do not count as missing selected files', async (t) => {
+  for (const code of ['ENOENT', 'ENOTDIR']) await t.test(code, async (t) => {
+    const { root, write } = await fixture(t);
+    const selected = await write('Applications/ChatGPT.app/Contents/Resources/codex');
+    const canonical = await fs.realpath(selected);
+    const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => {
+      calls.push(file);
+      if (file === canonical) throw Object.assign(new Error('Existing executable could not launch'), { code });
+      return { stdout: 'codex-cli 0.166.0-alpha.5.1' };
+    } });
+    assert.equal((await find(selected, { rediscoverMissingAppPath: true })).available, false);
+    assert.deepEqual(calls, [await fs.realpath(selected)]);
+    assert.equal((await fs.stat(selected)).isFile(), true);
+  });
+});
+
 test('cached desktop paths with existing invalid, timed-out, or inaccessible files do not silently switch CLIs', async (t) => {
   const { root, write } = await fixture(t);
   const selected = await write('Applications/ChatGPT.app/Contents/Resources/codex');

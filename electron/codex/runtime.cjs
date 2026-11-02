@@ -192,7 +192,12 @@ function createRuntimeFinder(options = {}) {
       if (rediscoverMissingAppPath && platform === 'darwin'
         && ['ENOENT', 'ENOTDIR'].includes(lastError?.code)
         && macAppCandidates({ home, target }).includes(path.normalize(expanded))) {
-        return findRuntime();
+        // A launcher or missing loader can report these codes for an existing
+        // executable. Confirm the selected path itself is gone before switching.
+        try { await fs.stat(expanded); }
+        catch (error) {
+          if (['ENOENT', 'ENOTDIR'].includes(error.code)) return findRuntime();
+        }
       }
       const message = lastError?.code === 'ENOENT' ? '선택한 Codex 실행 파일을 찾을 수 없습니다.'
         : lastError?.killed || lastError?.code === 'ETIMEDOUT' ? 'Codex 실행 파일이 응답하지 않습니다.'
