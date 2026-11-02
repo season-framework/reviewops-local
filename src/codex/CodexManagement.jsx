@@ -162,7 +162,9 @@ export function AccountApp() {
     } catch (error) {
       try { apply(await bridge.getState()); } catch { /* Preserve the current displayed state if the snapshot is unavailable. */ }
       setRuntimeDetailsOpen(true);
-      const message = error.message || '작업을 완료하지 못했습니다.';
+      const prefix = "Error invoking remote method 'accounts:chooseCodexBinary': Error: ";
+      const reason = error.message || '작업을 완료하지 못했습니다.';
+      const message = reason.startsWith(prefix) ? reason.slice(prefix.length) || '작업을 완료하지 못했습니다.' : reason;
       setNotice(message === 'Codex 실행 파일 선택을 저장하지 못했습니다. 기존 설정을 유지합니다.' ? t(message) : t(message) + ' ' + t('선택을 저장하지 않았습니다. 기존 실행 파일 설정을 유지합니다.'));
     } finally { setRuntimeAction(''); }
   };
