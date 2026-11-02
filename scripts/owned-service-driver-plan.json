@@ -10,75 +10,75 @@
   "requirements": [
     {
       "id": "NEXT-015-001",
-      "scope": "실제 시작·실행 연결",
-      "mustPass": "지원하는 로컬 entry를 실제 UI 또는 bound-project API/MCP에서 시작하고 실제 PID/시작 정체성/명령/파일 해시/instance 응답을 대조한다. HTTP200과 실제 UI 버튼→POST 저장값을 함께 확인한다.",
+      "scope": "Actual start and execution identity",
+      "mustPass": "Start a supported local entry through the actual UI or bound-project API/MCP, then compare the actual PID, start identity, command, file hash, and instance response. Verify both HTTP 200 and the value saved by an actual UI button POST.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-002",
-      "scope": "관련 에이전트 정상 종료",
-      "mustPass": "실제 제품 agent.start 경로의 격리 CLI로 시작1+검사2를 실행해 시작자종료→모두종료→정한추가관찰기간에 HTTP·실제 핵심 흐름과 같은 소유 instance가 유지됨을 확인한다. 합성 CLI/외부AI0를 명시한다.",
+      "scope": "Normal completion of related agents",
+      "mustPass": "Run one starter and two observers through the real product agent.start path using isolated CLIs. Verify that HTTP, the actual core flow, and the same owned instance remain available after the starter completes, after all agents complete, and throughout the specified additional observation period. State that the CLIs are synthetic and external AI usage is 0.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-003",
-      "scope": "취소·실패 분리",
-      "mustPass": "시작자의 명시 취소와 비정상 종료를 별도 조건으로 재현하고 소유 관리 서비스 유지 정책을 확인한다. 기존 same-group raw shell 자식과 섞지 않고 원래 agent.cancel 정책을 광범위하게 바꾸지 않는다.",
+      "scope": "Separate cancellation and failure",
+      "mustPass": "Reproduce explicit starter cancellation and abnormal exit as separate conditions, then verify the lifetime policy for the owned managed service. Keep these separate from existing same-group raw-shell children and do not broadly change the original agent.cancel policy.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-004",
-      "scope": "실제 서비스 고장·선택 복구",
-      "mustPass": "소유 서비스 A를 종료시켜 PID/종료로그/HTTP실패/남은DOM을 분리 표시한다. A만 재시작해 새instance·새PID·핵심저장을 확인하고 B 서비스/다른프로젝트·파일이 그대로임을 대조한다.",
+      "scope": "Actual service failure and selected recovery",
+      "mustPass": "Terminate owned service A and distinguish its PID, exit log, failed HTTP response, and remaining DOM. Restart only A, verify a new instance, new PID, and core save, and compare that service B, other projects, and their files remain unchanged.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-005",
-      "scope": "소유권·PID 재사용·외부 포트",
-      "mustPass": "다른 프로젝트의 instance/연결/MCP요청은 실행 전에 거절한다. 종료된 PID 재사용·외부 서비스가 같은 포트를 점유한 조건에서 신호를 보내지 않고 불일치로 처리한다.",
+      "scope": "Ownership, PID reuse, and external ports",
+      "mustPass": "Reject requests involving another project's instance, connection, or MCP scope before execution. If an exited PID is reused or an external service occupies the same port, report a mismatch without sending a signal.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-006",
-      "scope": "실행 파일·응답 불일치",
-      "mustPass": "배포 entry 변경·심볼릭 링크 전환·다른 서버/nonce 응답을 실제 실행 확인으로 표시하지 않는다. 비교 파일은 독립 비교로 유지하고 확인 불가 상태를 명시한다.",
+      "scope": "Entry-file and response mismatch",
+      "mustPass": "Do not present a changed deployment entry, switched symbolic link, or different server/nonce response as verified execution. Keep file comparison independent and explicitly report an unverified state.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-007",
-      "scope": "비동기·창·프로젝트 수명",
-      "mustPass": "중복 시작/복구, 검사 중 연결 A→B→A, 뷰 닫힘/복원, 프로젝트 삭제의 늦은 결과가 새 대상 상태를 덮거나 다른 인스턴스를 정리하지 않음을 확인한다.",
+      "scope": "Asynchronous results and window/project lifetime",
+      "mustPass": "Verify that late results from duplicate start/recovery, connection changes A→B→A during a check, view close/restore, or project deletion do not overwrite a new target's state or clean up another instance.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-008",
-      "scope": "앱 종료·재시작 정책",
-      "mustPass": "명시한 앱 종료 정책을 실제 격리 앱으로 확인한다. 재시작 지원이 없으면 살아 있는 과거 PID를 무조건 채택하거나 종료하지 않는다. 재부팅/SSH단절은 별도 실제 조건 전까지 미검사로 남긴다.",
+      "scope": "App shutdown and restart policy",
+      "mustPass": "Verify the stated app shutdown policy using an actual isolated app. If restart persistence is unsupported, do not automatically adopt or terminate a previously recorded live PID. Leave reboot and SSH-disconnection conditions untested until they are actually reproduced.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-009",
-      "scope": "현재 main 회귀·권한",
-      "mustPass": "새 exact-head에서 PR39 패널8/HTTP·파일경계/프로젝트 QA 허용·거절·공통웹14+QA8·동시QA 관련경계를 확인한다. 새 동작 허용이 전역관리나 외부 웹 브리지를 넓히지 않아야 한다.",
+      "scope": "Current main regressions and permissions",
+      "mustPass": "At the new exact source head, verify the original PR39 panel eight checks, HTTP/file boundaries, project QA allow/deny rules, common web fourteen checks, QA eight checks, and concurrent-QA boundaries. New behavior must not broaden global management or the external web bridge.",
       "status": "not-run"
     },
     {
       "id": "NEXT-015-010",
-      "scope": "지원 환경·설치 앱",
-      "mustPass": "지원한다고 표시할 각 OS/CPU의 실제 native 서비스 시작·종료·핵심 흐름을 검사한다. 패키지 build PASS를 그 UI/수명 검사로 바꾸지 않는다. 최소 Mac Intel source→설치 앱에서 같은 제품 경로를 확인하고 나머지는 실제 지원 상태대로 표시한다.",
+      "scope": "Supported environments and installed app",
+      "mustPass": "Verify actual native service start, stop, and core flows on every OS/CPU claimed as supported. Do not treat a package build PASS as UI or lifetime verification. At minimum, verify the same product path from Mac Intel source to the installed app, and describe other platforms according to their actual support status.",
       "status": "not-run"
     }
   ],
   "coverage": {
     "NEXT-015-001": {
       "prepared": [
-        "실제 UI 설정 저장/시작",
-        "actual child IPC PID/argv/cwd/entry snapshot + fixture self-report 대조",
-        "native mouse button→actual POST→실제 파일 저장/GET state 대조",
-        "전체 host+native 원본 사진 쌍"
+        "Actual UI configuration save and start",
+        "Compare actual child IPC PID/argv/cwd/entry snapshot with the fixture self-report",
+        "Compare native mouse button → actual POST → actual file save/GET state",
+        "Original whole-host and native-source screenshot pairs"
       ],
       "pending": [
-        "root 승인 final clean source와 renderer build record 공급 후 첫 실행"
+        "First execution after root supplies the reviewed final clean source and renderer build record"
       ]
     },
     "NEXT-015-002": {
@@ -89,119 +89,119 @@
         "synthetic starter observes already UI-started main-owned Node service; does not claim agent-started service"
       ],
       "pending": [
-        "제품 수명 시나리오 실제 실행; 장기 운영으로 확대하지 않음"
+        "Actual product lifetime scenario execution; do not extend the claim to long-term operation"
       ]
     },
     "NEXT-015-003": {
       "prepared": [
-        "별도 triplet에서 agent.cancel 정상API",
-        "별도 triplet에서 실제 CLI exit17 실패",
-        "두 조건의 실제 agent.read 상태와 managed service 유지 비교"
+        "Normal agent.cancel API in a separate triplet",
+        "Actual CLI exit17 failure in a separate triplet",
+        "Compare actual agent.read states and managed-service retention under both conditions"
       ],
       "pending": [
-        "실제 실행 전"
+        "Not yet executed"
       ]
     },
     "NEXT-015-004": {
       "prepared": [
-        "native source fault button으로 own child exit17",
-        "실제 exit/HTTP refusal/남은 DOM 관찰 구분",
-        "UI selected restart fresh instance/PID + 핵심 저장",
-        "B instance/PID/sentinel 보존"
+        "Own child exit17 through the native source fault button",
+        "Distinguish actual exit, HTTP refusal, and remaining DOM observations",
+        "Selected UI restart with a fresh instance/PID and core save",
+        "Preserve B instance/PID/sentinel"
       ],
       "pending": [
-        "실제 실행 전; global quit의 다른 owned service 종료는 별도로 기록"
+        "Not yet executed; record shutdown of other owned services during global quit separately"
       ]
     },
     "NEXT-015-005": {
       "prepared": [
         "actual QA scope open/release route",
-        "다른 project/connection/instance configure/start/stop/restart 거절",
+        "Reject configure/start/stop/restart for another project/connection/instance",
         "embedded fixture has no application bridge",
-        "실제 외부 loopback200 + own EADDRINUSE/empty listeners/url unverified",
-        "own C stop 뒤 external response/sentinel 보존"
+        "Actual external loopback 200 together with own EADDRINUSE, empty listeners, and unverified URL",
+        "Preserve the external response/sentinel after stopping owned C"
       ],
       "pending": [
-        "실제 OS PID 재사용 조건은 준비/실행하지 않음; 억지 PID 재사용·임의 프로세스 신호 금지",
-        "외부 MCP method 미노출 거절은 control API 지원을 증명하지 않음"
+        "Actual OS PID reuse is neither prepared nor executed; do not force PID reuse or signal arbitrary processes",
+        "Rejecting an unexposed external MCP method does not prove support for a control API"
       ]
     },
     "NEXT-015-006": {
       "prepared": [
-        "own synthetic entry 시작 후 파일 변경",
-        "현재 비교 SHA와 prelaunch SHA 분리",
-        "loadedBytesVerified=false/urlOwnership=unverified 유지"
+        "Change the file after starting the owned synthetic entry",
+        "Separate the current comparison SHA from the prelaunch SHA",
+        "Retain loadedBytesVerified=false and urlOwnership=unverified"
       ],
       "pending": [
-        "실제 symlink 전환 경계",
-        "다른 서버/nonce를 실행 attestation으로 표시하지 않는 추가 조건; external200은 별도 부분 근거"
+        "Actual symbolic-link switching boundary",
+        "Additional conditions showing that another server/nonce is not treated as execution attestation; external 200 is separate, partial evidence"
       ]
     },
     "NEXT-015-007": {
       "prepared": [
-        "late actual HTTP GET 중 URL A→B→A 결과 폐기",
+        "Discard results after URL A→B→A during a late actual HTTP GET",
         "real project window close/reopen same managed instance",
-        "active project connection mutation/delete 거절",
+        "Reject active project connection mutation/deletion",
         "two real trusted windows, one same-project unsaved managed-form draft; changed local binding retained/read-only until explicit D3 review; new-root missing-entry rejection then actual current-root save/start/core"
       ],
       "pending": [
-        "중복 start/restart의 실제 pending race",
-        "관찰 대상 URL이 아닌 connection 자체 A→B→A 및 삭제 late result 조건; 현재 active mutation 거절과 혼동하지 않음"
+        "Actual pending race for duplicate start/restart",
+        "Connection A→B→A and deletion with a late result, distinct from observation-URL changes; do not confuse these with current active-mutation rejection"
       ]
     },
     "NEXT-015-008": {
       "prepared": [
         "accepted midPOST+async fs write drain",
-        "응답 후 남은 async write + cleanup hook/natural exit",
-        "stop-unconfirmed 상태/start/config/restart/actual app quit 보류",
-        "private latch release 뒤 late marker+real exit",
-        "실제 UI dirty form+Electron beforeunload window-close veto",
-        "app quit 취소/승인+같은 synthetic profile reopen/no autostart",
+        "Async write remaining after the response, cleanup hook, and natural exit",
+        "Hold start/configure/restart and actual app quit in the stop-unconfirmed state",
+        "Late marker and actual exit after releasing the private latch",
+        "Actual UI dirty form and Electron beforeunload window-close veto",
+        "App quit cancellation/approval and reopening the same synthetic profile without autostart",
         "managed-service config form dirty participates in actual Electron unload cancellation",
         "real review input accepted during service close drain needs fresh final unload consent",
         "one controlled synchronous11s confirmation; actual own child exit0 + Electron process exit0/application close, product10s watchdog unchanged"
       ],
       "pending": [
-        "native confirmation/error dialog 선택·표시는 제어 fixture이며 OS-native 버튼 물리 조작 검사가 아님",
-        "prior managed children은 정상 종료 확인 후 재실행; 살아 있는 과거 PID 채택/정리 조건은 검증하지 않음",
-        "강제 app crash/호스트 재부팅/SSH 단절 미검사"
+        "Native confirmation/error dialog choices and presentation are controlled fixtures, not physical interaction with OS-native buttons",
+        "Restart only after prior managed children are confirmed to have exited normally; adoption/cleanup of a previously recorded live PID is unverified",
+        "Forced app crash, host reboot, and SSH disconnection are untested"
       ]
     },
     "NEXT-015-009": {
       "prepared": [
-        "새 exact consumer 경계 일부 거절 관찰",
-        "실제 renderer start/control 경로"
+        "Observe some rejection cases at the new exact consumer boundary",
+        "Actual renderer start/control path"
       ],
       "pending": [
-        "PR39 원래 panel8/HTTP·파일경계 전체",
-        "common live14+QA8+concurrent QA 관련 전체 회귀",
-        "root 최종 exact source에서 별도 기존하네스 실행 필요; 이 파일이 자동 실행하지 않음"
+        "All original PR39 panel eight checks and HTTP/file boundaries",
+        "All common live fourteen checks, QA eight checks, and related concurrent-QA regressions",
+        "Root must run the existing harnesses separately at the final exact source; this file does not run them automatically"
       ]
     },
     "NEXT-015-010": {
       "prepared": [
-        "첫 cohort는 macOS Intel source app만 허용하는 실행 gate"
+        "Execution gate allowing only the macOS Intel source app for the first cohort"
       ],
       "pending": [
-        "Mac Intel 설치형 앱의 동일 제품 UI/수명 경로",
-        "Mac ARM/Windows 실제 native 서비스 UI/수명",
-        "패키지 build PASS를 제품 사용 검사로 대신하지 않음"
+        "Same product UI/lifetime paths in the Mac Intel installed app",
+        "Actual native service UI/lifetime checks on Mac ARM and Windows",
+        "Do not substitute a package build PASS for product usage verification"
       ]
     }
   },
   "limits": [
-    "현재 준비만 완료: 앱/서비스/agent/UI 실행0, 모든 NEXT 요건 not-run. Syntax-only parsing은 실행 성공 QA가 아니다.",
-    "이 하네스는 원 #15 전체 완료가 아니라 첫 local owned .cjs source UI 실증용이다. requiredFutureEvidence 원문10개를 축소하지 않는다.",
-    "합성 Codex CLI+합성 model metadata만 사용하며 외부 AI·계정·SSH·실사용 프로젝트·사용자 프로필은 사용하지 않는다.",
-    "UI 설정 저장과 start/stop/restart는 실제 renderer 동작, agent는 실제 agent.start/read/cancel 및 실제 CLI 종료이다. DB agent 상태를 주입하지 않는다.",
-    "서비스 증거는 private loopback native 버튼→실제 HTTP POST→async fs 실제 저장→GET/DOM/PID/instance 대조이며 ready200만으로 성공 판정하지 않는다.",
-    "실행 SHA는 시작 전 파일 스냅샷이다. known synthetic server의 자기보고와 연결해도 일반 loaded-byte attestation·URL 소유권으로 승격하지 않는다.",
-    "사진은 app host와 native source 원본을 따로 보존한다. host의 흰 native 영역이나 서버 종료 후 남은 DOM을 서비스 오류 화면으로 설명하지 않는다.",
-    "실제 Electron beforeunload/close/closed/quit가 실행되지만 OS-native 확인/오류 대화상자의 선택·표시는 명시한 fixture이다.",
-    "실패한 global quit는 일부 다른 owned service를 이미 drain했을 수 있다. B 보존은 selected A restart 시점만 판정하고 blocked global quit 뒤 B 상태/수동 UI restart를 별도 기록한다.",
-    "PID 재사용·강제 crash·SSH·호스트 재부팅·native 다른 OS/설치 앱·기존 공통 QA 전체는 별도 미실행으로 남긴다.",
-    "실패 시 exact owned IPC stop/actual agent cancel 및 own fixture latch 해제만 시도한다. 신호/killall/force app.exit/외부 PID adoption이 없다. cleanup 미확인 앱은 root 관찰용으로 남을 수 있으며 성공 처리하지 않는다.",
-    "--run 전 root가 최종 clean fullSHA+완전한14+ source file SHA와 source에 연결된 renderer build record를 제공해야 한다. D3 UI4 일치는 final D/E backend 동결이나 실행 승인을 뜻하지 않는다. 추가 사용자 승인 질문을 요구하는 절차가 아니다."
+    "Preparation only: app/service/agent/UI executions 0; all NEXT requirements remain not-run. Syntax-only parsing is not successful execution QA.",
+    "This harness demonstrates the first local owned .cjs source UI flow, rather than completion of the entire original issue #15. It does not reduce the ten original requiredFutureEvidence requirements.",
+    "Use only synthetic Codex CLIs and synthetic model metadata; do not use external AI, accounts, SSH, real user projects, or user profiles.",
+    "UI configuration save and start/stop/restart use actual renderer behavior. Agents use actual agent.start/read/cancel and actual CLI exit. Do not inject DB agent states.",
+    "Service evidence compares a private loopback native button → actual HTTP POST → actual async file save → GET/DOM/PID/instance. A ready 200 response alone does not establish success.",
+    "The execution SHA is a prelaunch file snapshot. Linking it to a known synthetic server's self-report does not establish general loaded-byte attestation or URL ownership.",
+    "Preserve original app-host and native-source screenshots separately. Do not describe the host's white native area or DOM remaining after server exit as a service error screen.",
+    "Actual Electron beforeunload/close/closed/quit events run, while the OS-native confirmation/error dialog choices and presentation use the stated fixtures.",
+    "A failed global quit may already have drained some other owned services. Assess B preservation only at the selected A restart checkpoint, and separately record B's state and manual UI restart after a blocked global quit.",
+    "PID reuse, forced crash, SSH, host reboot, native checks on other OSes or installed apps, and the entire existing common QA suite remain separately unexecuted.",
+    "On failure, attempt only exact owned IPC stop, actual agent cancellation, and release of own fixture latches. Do not send signals, use killall or forced app.exit, or adopt external PIDs. Apps with unconfirmed cleanup may remain for root observation and must not be reported as successful.",
+    "Before --run, root must supply the final clean fullSHA, the complete 14+ source-file SHAs, and a renderer build record linked to that source. Matching D3 UI4 does not establish a final D/E backend freeze or execution approval. This procedure does not require another user approval question."
   ],
   "executionInputs": {
     "args": "--run --source FULL_CLEAN_SHA --expected-files /absolute/final-reviewed-source-files.json --renderer-build-record /absolute/final-renderer-build.json",
