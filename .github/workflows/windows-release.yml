@@ -192,8 +192,15 @@ jobs:
       - name: Verify existing QA viewer eight checks
         timeout-minutes: 10
         run: node scripts/e2e-qa-viewer-sessions.mjs
+      - name: Verify original cleanup after controlled early owned failure
+        env:
+          REVIEWOPS_OWNED_EARLY_FAILURE_PROBE: '1'
+          REVIEWOPS_OWNED_SHUTDOWN_DIAGNOSTICS: '1'
+        timeout-minutes: 16
+        run: node scripts/verify-owned-early-cleanup.mjs --run --target win32-x64 --source "$env:GITHUB_SHA"
       - name: Verify unchanged native owned sixteen, panel eight and concurrent ten
         env:
+          REVIEWOPS_OWNED_EARLY_FAILURE_PROBE: '0'
           REVIEWOPS_OWNED_SHUTDOWN_DIAGNOSTICS: '1'
         timeout-minutes: 20
         run: node scripts/owned-native-orchestration.mjs source --target win32-x64 --source "$env:GITHUB_SHA"

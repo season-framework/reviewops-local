@@ -364,6 +364,20 @@ async function agents(project,page,tag,ending){
  for(const binding of project.agentRoles){const key=tag+'-'+binding.role,job=await ipc(page,'agent.start',{reviewId:binding.reviewId,prompt:'OWNED_AGENT:'+key+' Synthetic observer of related target '+project.origin+'; service is main-owned, do not spawn it.',newConversation:true,independentExecution:false});group.push({...binding,key,id:job.id});jobs.push({id:job.id,projectId:project.id});}
  await until(()=>Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),value=>value.every(row=>row.status==='running'),'three actual running jobs on distinct connections');await until(()=>group.every(value=>fs.existsSync(path.join(temporary,'agent-'+value.key+'.json'))),Boolean,'three real synthetic CLI records');
  for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],expectedNativePath(fixture.agentScript,'agent-script'));assert.equal(observed.cwd,expectedNativePath(item.workPath,'agent-cwd'));}
+ // Opt-in driver-only regression. Never passed into a product/app environment.
+ if(process.env.REVIEWOPS_OWNED_EARLY_FAILURE_PROBE==='1'&&tag==='normal'&&ending==='normal'){
+  assert.equal(process.platform,'win32');assert.equal(mode,'source');assert.equal(process.env.CI,'true');
+  assert.equal(result.checks.length,1);assert.equal(result.agentRuns.length,0);assert.equal(jobs.length,3);
+  const running=await Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id})));
+  for(let index=0;index<group.length;index++){assert.equal(running[index].id,group[index].id);assert.equal(running[index].status,'running');assert.equal(running[index].reviewId,group[index].reviewId);assert.equal(running[index].serviceId,group[index].serviceId);}
+  result.earlyCleanupProbe={schema:1,condition:'three-running-before-first-observe-v1',source:expectedHead,target,mode,tag,ending,
+   phase:'after-three-CLI-argv-checks-before-first-observe',at:new Date().toISOString(),
+   service:{projectId:project.id,connectionId:project.connection.id,instanceId:before.instanceId,pid:before.pid},
+   projectBindings:projects.map(value=>({label:value.label,projectId:value.id,connectionId:value.connection.id})),
+   jobs:group.map((value,index)=>({id:value.id,role:value.role,key:value.key,reviewId:value.reviewId,serviceId:value.serviceId,workPath:value.workPath,status:running[index].status,cli:readJSON(path.join(temporary,'agent-'+value.key+'.json'))}))};
+  record('controlled-early-cleanup-failure',result.earlyCleanupProbe);
+  throw new Error('OWNED_EARLY_CLEANUP_PROBE: three running agents before first observe');
+ }
  const observe=async(phase,expectedRunning)=>{
   const runs=await Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),summary=await ipc(page,'viewer.agentState',{projectId:project.id,connectionId:project.connection.id});assert.equal(summary.running,expectedRunning);
   for(let index=0;index<runs.length;index++){assert.equal(runs[index].reviewId,group[index].reviewId);assert.equal(runs[index].serviceId,group[index].serviceId);assert.equal(runs[index].workPath,group[index].workPath);}
@@ -401,7 +415,7 @@ async function bindingDraftScenario(group){
  assert.equal(fs.existsSync(path.join(newRoot,'alternate.cjs')),false);
  await owned(dedicated).getByRole('button',{name:'서비스 설정 저장',exact:true}).click();
  await expect(owned(dedicated).getByRole('alert')).toContainText(labels.missingEntryText);
- await expect(owned(dedicated).getByRole('alert')).toContainText(path.join(newRoot,'alternate.cjs'));
+ await expect(owned(dedicated).getByRole('alert')).toContainText(path.join(expectedNativePath(newRoot,'missing-entry-parent'),'alternate.cjs'));
  assert.equal((await runtime(pd,main)).config,null);assert.equal((await runtime(pd,main)).instance,null);assert.equal(fs.existsSync(path.join(newRoot,'service-current.json')),false);
  write(path.join(newRoot,'alternate.cjs'),SERVICE_SOURCE+'\n// explicitly reviewed current binding fixture\n');pd.config=config;
  await owned(dedicated).getByRole('button',{name:'서비스 설정 저장',exact:true}).click();
