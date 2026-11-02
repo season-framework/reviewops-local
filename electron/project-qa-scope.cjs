@@ -44,6 +44,8 @@ function assertProjectAction({projectId,action,payload={},snapshot,run,request,s
   }
   const simple=new Set(['snapshot','app.info','window.context','window.qaReady','window.state','window.navigation','window.fullscreen','window.close','integration.pending','integration.displayed','update.state','update.rendererReady','clipboard.writeText','viewer.capture','screenshot.export','attachment.stage','attachment.stageFiles','attachment.stageData','attachment.staged','attachment.stagePreview','attachment.discard','dialog.directory','dialog.key','dialog.executable']);
   const viewerSessions=new Set(['viewerSession.list','viewerSession.context','viewerSession.begin','viewerSession.preview','viewerSession.capture','viewerSession.end','viewerSession.closeContext']);
+  const serviceRuntime=new Set(['serviceRuntime.state','serviceRuntime.start','serviceRuntime.stop','serviceRuntime.restart']);
+  if(['viewer.readiness','viewer.agentState'].includes(action)||serviceRuntime.has(action)){ownProject(payload.projectId);if(serviceRuntime.has(action))ownService(payload.connectionId);return;}
   // Session handlers additionally bind consumer, project/review and intent IDs.
   if(simple.has(action)||viewerSessions.has(action)||action.startsWith('browser.'))return;
   if(action==='window.openProject'){ownProject(payload.projectId);return;}

@@ -1,0 +1,66 @@
+[
+  {
+    "id": "NEXT-015-001",
+    "name": "UI-save-start-provenance-and-core"
+  },
+  {
+    "id": "NEXT-015-002",
+    "name": "actual-agent-normal"
+  },
+  {
+    "id": "NEXT-015-003",
+    "name": "actual-agent-cancel"
+  },
+  {
+    "id": "NEXT-015-003",
+    "name": "actual-agent-failed"
+  },
+  {
+    "id": "NEXT-015-004",
+    "name": "actual-fault-selected-recovery"
+  },
+  {
+    "id": "NEXT-015-005",
+    "name": "actual-consumer-and-foreign-control-denied"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "midPOST-and-post-response-write-drain"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "stop-unconfirmed-blocks-then-late-drain-confirms"
+  },
+  {
+    "id": "NEXT-015-006",
+    "name": "postlaunch-bytes-not-loaded-attestation"
+  },
+  {
+    "id": "NEXT-015-007",
+    "name": "view-reopen-and-A-B-A-readiness"
+  },
+  {
+    "id": "NEXT-015-005",
+    "name": "external200-never-own-URL-proof"
+  },
+  {
+    "id": "NEXT-015-007",
+    "name": "two-trusted-windows-binding-draft-review"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "actual-managed-form-unsaved-close-and-quit"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "actual-late-input-during-service-drain-protected"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "controlled11s-final-consent-real-app-and-child-exit"
+  },
+  {
+    "id": "NEXT-015-008",
+    "name": "actual-beforeunload-cancel-quit-reopen"
+  }
+]

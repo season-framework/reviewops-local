@@ -1,5 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs/promises'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {finished}=require('node:stream/promises');
 const load=()=>import('../scripts/stable-release.mjs');
 const commit='a'.repeat(40),version='1.2.11',policy={schema:1,version,previousVersion:'1.2.10',bump:'patch',reason:'SSH folder diagnostic fix',baseCommit:'b'.repeat(40)};
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
@@ -62,10 +63,10 @@ test('stable archives exclude test identity and verify packaged source bytes',as
  const {inspectStableArchive}=await import('../scripts/stable-build.mjs'),asar=require('@electron/asar'),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-stable-asar-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
  const source=path.join(directory,'source'),archive=path.join(directory,'app.asar');
  const content={'electron/main.cjs':'// fixture source','electron/codex/account-service.cjs':'// nested source from the failing Windows path','dist/index.html':'<html>fixture</html>','dist/assets/nested/한글 icon.svg':'<svg/>','LICENSE':'fixture license','NOTICE':'fixture notice','THIRD-PARTY-NOTICES.txt':'fixture third-party notices','package.json':JSON.stringify({version,main:'electron/main.cjs'})};
- for(const [name,bytes]of Object.entries(content)){const file=path.join(source,...name.split('/'));await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes)}await asar.createPackage(source,archive);
+ for(const [name,bytes]of Object.entries(content)){const file=path.join(source,...name.split('/'));await fs.mkdir(path.dirname(file),{recursive:true});await fs.writeFile(file,bytes)}await finished(await asar.createPackage(source,archive));
  const checked=await inspectStableArchive(archive,version,source);assert.equal(checked.testMetadataAbsent,true);assert.equal(checked.comparedFiles,Object.keys(content).length-1);
  await fs.appendFile(path.join(source,'electron','codex','account-service.cjs'),' changed');await assert.rejects(inspectStableArchive(archive,version,source),/소스와 다릅니다: electron\/codex\/account-service\.cjs/);
- await fs.writeFile(path.join(source,'electron/reviewops-build.json'),'{}');await asar.createPackage(source,archive);await assert.rejects(inspectStableArchive(archive,version,source),/허용하지 않은/);
+ await fs.writeFile(path.join(source,'electron/reviewops-build.json'),'{}');await finished(await asar.createPackage(source,archive));await assert.rejects(inspectStableArchive(archive,version,source),/허용하지 않은/);
 });
 test('the pinned ASAR reader requires native separators for nested Windows source paths',async()=>{
  const vm=require('node:vm'),{createRequire}=require('node:module'),entry=require.resolve('@electron/asar'),asarRequire=createRequire(entry),exports={};

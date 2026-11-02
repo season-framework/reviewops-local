@@ -12,4 +12,8 @@ module.exports=async function afterPack({appOutDir,packager}){
     const bytes=asar.extractFile(path.join(resources,'app.asar'),path.join('electron',source));
     await fs.writeFile(path.join(resources,'mcp',target),bytes);
   }
+  // Standalone Node cannot read Electron's virtual ASAR paths. Publish the
+  // canonical packaged bootstrap at the physical path injected by main.
+  await fs.mkdir(path.join(resources,'owned-services'),{recursive:true});
+  await fs.writeFile(path.join(resources,'owned-services','owned-node-bootstrap.cjs'),asar.extractFile(path.join(resources,'app.asar'),path.join('electron','owned-node-bootstrap.cjs')));
 };

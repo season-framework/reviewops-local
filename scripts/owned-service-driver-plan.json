@@ -1,0 +1,358 @@
+{
+  "schema": 1,
+  "status": "source-readiness-prepared-not-run-root-review",
+  "sourceRoot": "/Users/season/workspace/reviewops-worktrees/managed-service-runtime",
+  "requirementsSource": {
+    "path": "/Users/season/workspace/reviewops-local/.local-data/operations/issue15-next-20261101T230806932458Z/handoff.json",
+    "sha256": "c940e5b1587f468de334957464013b49ac150c188bf8448fe980a825a3d16f3e",
+    "key": "requiredFutureEvidence"
+  },
+  "requirements": [
+    {
+      "id": "NEXT-015-001",
+      "scope": "Actual start and execution identity",
+      "mustPass": "Start a supported local entry through the actual UI or bound-project API/MCP, then compare the actual PID, start identity, command, file hash, and instance response. Verify both HTTP 200 and the value saved by an actual UI button POST.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-002",
+      "scope": "Normal completion of related agents",
+      "mustPass": "Run one starter and two observers through the real product agent.start path using isolated CLIs. Verify that HTTP, the actual core flow, and the same owned instance remain available after the starter completes, after all agents complete, and throughout the specified additional observation period. State that the CLIs are synthetic and external AI usage is 0.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-003",
+      "scope": "Separate cancellation and failure",
+      "mustPass": "Reproduce explicit starter cancellation and abnormal exit as separate conditions, then verify the lifetime policy for the owned managed service. Keep these separate from existing same-group raw-shell children and do not broadly change the original agent.cancel policy.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-004",
+      "scope": "Actual service failure and selected recovery",
+      "mustPass": "Terminate owned service A and distinguish its PID, exit log, failed HTTP response, and remaining DOM. Restart only A, verify a new instance, new PID, and core save, and compare that service B, other projects, and their files remain unchanged.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-005",
+      "scope": "Ownership, PID reuse, and external ports",
+      "mustPass": "Reject requests involving another project's instance, connection, or MCP scope before execution. If an exited PID is reused or an external service occupies the same port, report a mismatch without sending a signal.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-006",
+      "scope": "Entry-file and response mismatch",
+      "mustPass": "Do not present a changed deployment entry, switched symbolic link, or different server/nonce response as verified execution. Keep file comparison independent and explicitly report an unverified state.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-007",
+      "scope": "Asynchronous results and window/project lifetime",
+      "mustPass": "Verify that late results from duplicate start/recovery, connection changes A→B→A during a check, view close/restore, or project deletion do not overwrite a new target's state or clean up another instance.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-008",
+      "scope": "App shutdown and restart policy",
+      "mustPass": "Verify the stated app shutdown policy using an actual isolated app. If restart persistence is unsupported, do not automatically adopt or terminate a previously recorded live PID. Leave reboot and SSH-disconnection conditions untested until they are actually reproduced.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-009",
+      "scope": "Current main regressions and permissions",
+      "mustPass": "At the new exact source head, verify the original PR39 panel eight checks, HTTP/file boundaries, project QA allow/deny rules, common web fourteen checks, QA eight checks, and concurrent-QA boundaries. New behavior must not broaden global management or the external web bridge.",
+      "status": "not-run"
+    },
+    {
+      "id": "NEXT-015-010",
+      "scope": "Supported environments and installed app",
+      "mustPass": "Verify actual native service start, stop, and core flows on every OS/CPU claimed as supported. Do not treat a package build PASS as UI or lifetime verification. At minimum, verify the same product path from Mac Intel source to the installed app, and describe other platforms according to their actual support status.",
+      "status": "not-run"
+    }
+  ],
+  "coverage": {
+    "NEXT-015-001": {
+      "prepared": [
+        "Actual UI configuration save and start",
+        "Compare actual child IPC PID/argv/cwd/entry snapshot with the fixture self-report",
+        "Compare native mouse button → actual POST → actual file save/GET state",
+        "Original whole-host and native-source screenshot pairs"
+      ],
+      "pending": [
+        "First execution after root supplies the reviewed final clean source and renderer build record"
+      ]
+    },
+    "NEXT-015-002": {
+      "prepared": [
+        "Only projectA: three allowed connections registered before any service configure/start or agent; actual returned project.connection becomes Node primary and starter review serviceId",
+        "same projectA real agent.start on three distinct review/service IDs and sibling private work roots; independentExecution=false",
+        "actual viewer.agentState.running3→2→0→0, matching actual job identities, actual native core/PID/instance at each checkpoint",
+        "synthetic starter observes already UI-started main-owned Node service; does not claim agent-started service"
+      ],
+      "pending": [
+        "Actual product lifetime scenario execution; do not extend the claim to long-term operation"
+      ]
+    },
+    "NEXT-015-003": {
+      "prepared": [
+        "Normal agent.cancel API in a separate triplet",
+        "Actual CLI exit17 failure in a separate triplet",
+        "Compare actual agent.read states and managed-service retention under both conditions"
+      ],
+      "pending": [
+        "Not yet executed"
+      ]
+    },
+    "NEXT-015-004": {
+      "prepared": [
+        "Own child exit17 through the native source fault button",
+        "Distinguish actual exit, HTTP refusal, and remaining DOM observations",
+        "Selected UI restart with a fresh instance/PID and core save",
+        "Preserve B instance/PID/sentinel"
+      ],
+      "pending": [
+        "Not yet executed; record shutdown of other owned services during global quit separately"
+      ]
+    },
+    "NEXT-015-005": {
+      "prepared": [
+        "actual QA scope open/release route",
+        "Reject configure/start/stop/restart for another project/connection/instance",
+        "embedded fixture has no application bridge",
+        "Actual external loopback 200 together with own EADDRINUSE, empty listeners, and unverified URL",
+        "Preserve the external response/sentinel after stopping owned C"
+      ],
+      "pending": [
+        "Actual OS PID reuse is neither prepared nor executed; do not force PID reuse or signal arbitrary processes",
+        "Rejecting an unexposed external MCP method does not prove support for a control API"
+      ]
+    },
+    "NEXT-015-006": {
+      "prepared": [
+        "Change the file after starting the owned synthetic entry",
+        "Separate the current comparison SHA from the prelaunch SHA",
+        "Retain loadedBytesVerified=false and urlOwnership=unverified"
+      ],
+      "pending": [
+        "Actual symbolic-link switching boundary",
+        "Additional conditions showing that another server/nonce is not treated as execution attestation; external 200 is separate, partial evidence"
+      ]
+    },
+    "NEXT-015-007": {
+      "prepared": [
+        "Discard results after URL A→B→A during a late actual HTTP GET",
+        "real project window close/reopen same managed instance",
+        "Reject active project connection mutation/deletion",
+        "two real trusted windows, one same-project unsaved managed-form draft; changed local binding retained/read-only until explicit D3 review; new-root missing-entry rejection then actual current-root save/start/core"
+      ],
+      "pending": [
+        "Actual pending race for duplicate start/restart",
+        "Connection A→B→A and deletion with a late result, distinct from observation-URL changes; do not confuse these with current active-mutation rejection"
+      ]
+    },
+    "NEXT-015-008": {
+      "prepared": [
+        "accepted midPOST+async fs write drain",
+        "Async write remaining after the response, cleanup hook, and natural exit",
+        "Hold start/configure/restart and actual app quit in the stop-unconfirmed state",
+        "Late marker and actual exit after releasing the private latch",
+        "Actual UI dirty form and Electron beforeunload window-close veto",
+        "App quit cancellation/approval and reopening the same synthetic profile without autostart",
+        "managed-service config form dirty participates in actual Electron unload cancellation",
+        "real review input accepted during service close drain needs fresh final unload consent",
+        "one controlled synchronous11s confirmation; actual own child exit0 + Electron process exit0/application close, product10s watchdog unchanged"
+      ],
+      "pending": [
+        "Native confirmation/error dialog choices and presentation are controlled fixtures, not physical interaction with OS-native buttons",
+        "Restart only after prior managed children are confirmed to have exited normally; adoption/cleanup of a previously recorded live PID is unverified",
+        "Forced app crash, host reboot, and SSH disconnection are untested"
+      ]
+    },
+    "NEXT-015-009": {
+      "prepared": [
+        "Observe some rejection cases at the new exact consumer boundary",
+        "Actual renderer start/control path"
+      ],
+      "pending": [
+        "All original PR39 panel eight checks and HTTP/file boundaries",
+        "All common live fourteen checks, QA eight checks, and related concurrent-QA regressions",
+        "Root must run the existing harnesses separately at the final exact source; this file does not run them automatically"
+      ]
+    },
+    "NEXT-015-010": {
+      "prepared": [
+        "Execution gate allowing only the macOS Intel source app for the first cohort"
+      ],
+      "pending": [
+        "Same product UI/lifetime paths in the Mac Intel installed app",
+        "Actual native service UI/lifetime checks on Mac ARM and Windows",
+        "Do not substitute a package build PASS for product usage verification"
+      ]
+    }
+  },
+  "limits": [
+    "Preparation only: app/service/agent/UI executions 0; all NEXT requirements remain not-run. Syntax-only parsing is not successful execution QA.",
+    "This harness demonstrates the first local owned .cjs source UI flow, rather than completion of the entire original issue #15. It does not reduce the ten original requiredFutureEvidence requirements.",
+    "Use only synthetic Codex CLIs and synthetic model metadata; do not use external AI, accounts, SSH, real user projects, or user profiles.",
+    "UI configuration save and start/stop/restart use actual renderer behavior. Agents use actual agent.start/read/cancel and actual CLI exit. Do not inject DB agent states.",
+    "Service evidence compares a private loopback native button → actual HTTP POST → actual async file save → GET/DOM/PID/instance. A ready 200 response alone does not establish success.",
+    "The execution SHA is a prelaunch file snapshot. Linking it to a known synthetic server's self-report does not establish general loaded-byte attestation or URL ownership.",
+    "Preserve original app-host and native-source screenshots separately. Do not describe the host's white native area or DOM remaining after server exit as a service error screen.",
+    "Actual Electron beforeunload/close/closed/quit events run, while the OS-native confirmation/error dialog choices and presentation use the stated fixtures.",
+    "A failed global quit may already have drained some other owned services. Assess B preservation only at the selected A restart checkpoint, and separately record B's state and manual UI restart after a blocked global quit.",
+    "PID reuse, forced crash, SSH, host reboot, native checks on other OSes or installed apps, and the entire existing common QA suite remain separately unexecuted.",
+    "On failure, attempt only exact owned IPC stop, actual agent cancellation, and release of own fixture latches. Do not send signals, use killall or forced app.exit, or adopt external PIDs. Apps with unconfirmed cleanup may remain for root observation and must not be reported as successful.",
+    "Before --run, root must supply the final clean fullSHA, the complete 14+ source-file SHAs, and a renderer build record linked to that source. Matching D3 UI4 does not establish a final D/E backend freeze or execution approval. This procedure does not require another user approval question."
+  ],
+  "executionInputs": {
+    "args": "--run --source FULL_CLEAN_SHA --expected-files /absolute/final-reviewed-source-files.json --renderer-build-record /absolute/final-renderer-build.json",
+    "expectedFilesSchema": {
+      "files": [
+        {
+          "path": "relative/repo/file",
+          "sha256": "64hex"
+        }
+      ]
+    },
+    "rendererBuildRecordSchema": {
+      "source": "FULL_CLEAN_SHA",
+      "ok": true,
+      "files": [
+        {
+          "path": "dist/actual-built-asset.js",
+          "sha256": "64hex"
+        }
+      ]
+    },
+    "preflight": [
+      "exact worktree CWD",
+      "darwin/x64 standalone Node",
+      "HEAD fullSHA exact and git status clean",
+      "complete20+ reviewed source manifest including frozen D3 UI4",
+      "renderer build source and dist hashes",
+      "frozen D3 UI4 exact file hashes and labels; final backend/build gates independently exact"
+    ],
+    "profile": "fresh os.tmpdir private HOME/data/projects; same private profile only for final reopen",
+    "firstExecutionOwner": "root after reading harness; preparer execution0"
+  },
+  "cleanupRevision": {
+    "retainedElectronChildProcessExit": true,
+    "electronApplicationCloseEvent": true,
+    "allMustConfirm": true,
+    "deadlineOrVetoOrConsumerLoss": "cleanup-unconfirmed; final ok=false; no forced exit",
+    "remainingOwnWindows": "read-only window.context then exact project/global renderer IPC only",
+    "historicalSnapshotIsNotCurrentCleanupProof": true
+  },
+  "sourceCompatibility": {
+    "status": "matched-frozen-D3-UI",
+    "handoff": ".local-data/operations/owned-service-binding-revision-d3/handoff.json",
+    "handoffSHA256": "92e9728ffcfa6981f1b791b5a7805477eccba8c92022bc8dbb0c4488356bf3d0",
+    "files": [
+      {
+        "path": "src/ServiceReadiness.jsx",
+        "sha256": "610950a88dcfbc977d4ee00c0b1e18ff43794b4822640f1975c97e46f590e503",
+        "bytes": 19953
+      },
+      {
+        "path": "src/ProjectWorkspace.jsx",
+        "sha256": "47b4301a3979d1dd14fd4806071f47bae94c05ed96152a696fe4579011d3df8b",
+        "bytes": 51645
+      },
+      {
+        "path": "src/service-runtime-draft.mjs",
+        "sha256": "d39df052f1ecf8aea702e173305c966a706b2f6d27504826c632f90d29e3bacd",
+        "bytes": 4790
+      },
+      {
+        "path": "tests/service-runtime-draft.test.cjs",
+        "sha256": "0a2c701de7e2ec28c7c8a5db7888d7200d47209978723fc31100096fe131ad03",
+        "bytes": 16531
+      }
+    ],
+    "backend": "D1 final-unload-only ordering read; final D/E clean full SHA, complete reviewed source manifest and renderer-build record still required before --run. UI4 hashes do not assert final backend freeze."
+  },
+  "additionalActualUIRegressions": [
+    {
+      "id": "NEXT-015-008",
+      "name": "owned-form-unsaved",
+      "status": "prepared-not-run",
+      "method": "Real managed-form edit; document dirty flag observed only; real window.close + app.quit cancellation; unsaved field and saved backend config compared; no dirty flag injection"
+    },
+    {
+      "id": "NEXT-015-008",
+      "name": "late-review-input-during-confirmed-drain",
+      "status": "prepared-not-run",
+      "method": "Real held loopback POST; clean UI quit preflight; wait actual runtime stopping; real review typing; release own latch; exact child marker/natural exit then fresh consent cancellation; existing stop error cannot satisfy this test"
+    }
+  ],
+  "pendingThirdBindingDraft": {
+    "id": "NEXT-015-007",
+    "status": "prepared-not-run; matched frozen D3 UI4 labels and hashes",
+    "required": "Own project D in two actual trusted windows: unsaved draft in one, connection moved to another local root by the other; old values+previous binding retained, execution/config blocked before explicit review, then new-root file validation/save/real execution; no source/UI execution before root review",
+    "method": "Own project D, dedicated project window plus full-app main window; actual unsaved entry; second trusted renderer changes only its connection to another private local root; original draft/root remains visible and save/start disabled before explicit review; new root missing entry rejects; create different new-root entry then UI save/start/PID/cwd/snapshot/core flow and old-root sentinel preservation."
+  },
+  "bindingDraftUI": {
+    "status": "matched-frozen-D3",
+    "reviewCurrentConnection": "이 연결에서 검토",
+    "previousBindingText": "이전 연결 초안",
+    "missingEntryText": "ENOENT",
+    "missingEntryScope": "Actual backend fs.realpath current-root ENOENT message plus exact current-root alternate.cjs path; no error response injection."
+  },
+  "controlledDialogDelay": {
+    "id": "NEXT-015-008",
+    "status": "prepared-not-run",
+    "onceMs": 11000,
+    "nativePhysicalDialogClicks": false,
+    "method": "After clean quit preflight and real held POST, actual new review input requests final consent; only next showMessageBoxSync fixture blocks synchronously for11s, journal records monotonic duration. Production functions/setTimeout/watchdog are not patched. Own child exit0 plus Electron process exit0/application close required."
+  },
+  "quitOrdering": {
+    "status": "matched-D1-read-not-run",
+    "servicesDrainBeforeFinalUnload": true,
+    "cancelMayLeaveServicesStopped": true,
+    "cancelMayLeavePreviouslyClosedWindowsClosed": true,
+    "testResponse": "Record stopped exact instances/config/draft, explicitly reopen own project through surviving trusted renderer when needed, explicitly UI/API start as labelled; never assert automatic running preservation."
+  },
+  "agentRevision": {
+    "baselineFailure": "Same-service second agent.start correctly rejected by existing product policy; no product defect or policy relaxation claimed",
+    "baselineSource": "2c5ca90f63a34564de902d10e9ff57d96694ee3e",
+    "baselineResultSHA256": "51f12a481ff9764af855ccf4ebe3d3f214a3e965158fda6e0dc26a355876a82a",
+    "status": "new revision prepared-not-run",
+    "sameProject": true,
+    "distinctConnections": 3,
+    "separateSiblingWorkRoots": 3,
+    "independentExecution": false,
+    "onlyAFactoryChanged": true,
+    "manualDBAgentStatusWrites": 0
+  },
+  "exactHostRevision": {
+    "status": "prepared-not-run",
+    "baselineResultSHA256": "c9a2d6eddcae2f633a2767f24b12656fd503eedaf0bbfe91a65d9c75384540e1",
+    "baselineResult": "Source2c5 second run locale first guard timed out; no original selected URL journal, actual cause unconfirmed",
+    "selection": "window.openProject actual returned projectId/windowId -> retained app.windows exact reviewops://app/index.html query pair -> real bridge+window.context -> unchanged locale protocol/bridge guard+context recheck",
+    "newWaitBudgetMs": 10000,
+    "localeGuardUnchangedMs": 30000,
+    "diagnostics": "On failure all retained own window URL descriptors with nonfixture path and query/auth/hash redacted; real context only for app hosts; no native child selected by generic window event"
+  },
+  "additionalPhoto": {
+    "id": "NEXT-015-001",
+    "name": "01b-execution-file-hash",
+    "method": "Actual entrySHA code row scrollIntoViewIfNeeded + inViewport assertion, original whole host/native screenshot pair. Original01 PID photo retained.",
+    "newScenarioCount": 0,
+    "status": "prepared-not-run"
+  },
+  "shortProfileRevision": {
+    "platform": "darwin/x64 gate remains",
+    "mkdtempPrefix": "/tmp/ro-owned-ui-",
+    "canonicalized": true,
+    "actualPreflight": "production toolSocketPath(data, darwin) before Electron launch; no modified limit or fake descriptor",
+    "proof": "Root confirmed prior socket path104 bytes exceeded production103; APP_UNAVAILABLE had no descriptor",
+    "changes": "Private fixture path and actual prelaunch path contract only; all host/agent/photo/requirements retained"
+  },
+  "sourceReadinessRevision": {
+    "status": "prepared-not-run",
+    "reopen": "Actual viewer refresh then exact source/content readiness before real core flow",
+    "sourceSelection": "0 exact own-host/URL matches waits within existing10s; 2+ immediate ambiguous failure; 1 exact match required",
+    "content": "Actual location.href exact synthetic loopback origin, document.title exact fixture label, application bridge absent, real core button present",
+    "diagnostics": "Actual WebContents ID/child BrowserWindow ID/parent host ID/redactedURL/count/loading, logged on change; actual content facts recorded",
+    "timeout": "Source zero-match waiting is bounded10s. Actual content keeps prior default5s maximum, additionally capped by the same overall10s source deadline. Product/UI timeouts are unchanged."
+  }
+}

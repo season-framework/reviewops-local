@@ -11,6 +11,16 @@
       ]
     },
     {
+      "category": "features",
+      "title": "Start and stop project-owned Node services",
+      "description": "Save and start a local Node .cjs service for a project connection. Follow live logs and HTTP readiness while working in other project views or running agent jobs. Stopping waits for active requests and cleanup, closes unused plain HTTP connections, and confirms that the service has exited. An unconfirmed stop stays visible.",
+      "commits": [
+        "2c5ca90f63a34564de902d10e9ff57d96694ee3e",
+        "986912aff6775e16ebbbf87f2e6e2a3cf20885f0",
+        "5ac559d5a909db21abbe434945f559e5d47ab438"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Start concurrent local jobs without false CLI errors",
       "description": "Overlapping checks wait for the current Codex version probe before validating their own result. A healthy check no longer makes another project report that the CLI is unavailable. Each check keeps its original time limit and cancellation scope.",

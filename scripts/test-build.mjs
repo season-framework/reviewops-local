@@ -8,6 +8,8 @@ import { createRequire } from 'node:module';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { withBuildInfo } from './build-info.mjs';
 import { fileHash, namesFor, jsonBytes } from './test-release.mjs';
+import {runRequiredOwnedGate, runWindowsInstalledSmoke, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
+import {recordNativeRenderer} from './native-packet.mjs';
 const require = createRequire(import.meta.url), run = promisify(execFile);
 const { validateBuildInfo } = require('../electron/build-info.cjs');
 const { validateArchive } = require('../electron/update-archive.cjs');
@@ -60,7 +62,7 @@ export async function buildNativePackage(target, packageRoot) {
   await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
 }
 export async function packageTestBuild({ target, number, developmentNumber, commit, builtAt }) {
-  if (!TARGETS.includes(target) || !target.startsWith(`${process.platform}-`)) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
+  if (!TARGETS.includes(target) || target !== `${process.platform}-${process.arch}`) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
   const actualCommit = (await run('git', ['rev-parse', 'HEAD'], { cwd: root })).stdout.trim();
   if (commit !== actualCommit) throw new Error('작업 폴더의 커밋과 빌드할 커밋이 다릅니다.');
   const packageInputs = ['src', 'electron', 'build', 'scripts', 'package.json', 'package-lock.json', 'release-notes.json', 'vite.config.*', 'LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt'];
@@ -75,7 +77,9 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
     return await withBuildInfo({ channel: 'test', number, developmentNumber, commit, builtAt }, async build => {
       await fs.rm(output, { recursive: true, force: true }); await fs.mkdir(output, { recursive: true });
       // Run the same build steps directly; npm's CLI is not a local dependency.
-      await buildRenderer();
+      await buildRenderer({generateLicenses:false});
+      const rendererBuildRecord = nativePackagedRendererRecord(root, target, 'test');
+      await recordNativeRenderer({repository:root,source:commit,recordPath:rendererBuildRecord});
       const arch = target.split('-')[1];
       await buildNativePackage(target, packageRoot);
       const files = [], checks = ['packaged-build-info', 'package-structure'];
@@ -91,24 +95,34 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
         await run('/usr/bin/ditto', ['-c', '-k', '--norsrc', '--keepParent', bundle, zip], { timeout: 180000 });
         await validateArchive(zip); files.push(zip);
         const temporary = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-test-package-'));
+        let preservePrivateInstall = false, ownedGateAttempted = false;
         try {
           await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 });
           const extracted=path.join(temporary,'ReviewOps.app');await inspectMac(extracted, build, arch);
           const smokeEnv={...process.env,REVIEWOPS_TEST_EXECUTABLE:path.join(extracted,'Contents/MacOS/ReviewOps')};delete smokeEnv.ELECTRON_RUN_AS_NODE;
           await run(process.execPath,[path.join(root,'scripts/e2e.mjs')],{cwd:root,env:smokeEnv,timeout:300000,maxBuffer:8*1024**2});
+          ownedGateAttempted = true;
+          await runRequiredOwnedGate({repository:root,target,mode:'private-bundle',
+            executablePath:path.join(extracted,'Contents/MacOS/ReviewOps'),privateInstallRoot:temporary,
+            rendererBuildRecord,build});
+        } catch(error) {
+          preservePrivateInstall = ownedGateAttempted && error.preservePrivateRoot !== false;
+          if(preservePrivateInstall) console.error('Retain unconfirmed private app:',temporary,error.ownedRoot||'',error.resultPath||'');
+          throw error;
         }
-        finally { await fs.rm(temporary, { recursive: true, force: true }); }
-        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke');
+        finally { if(!preservePrivateInstall) await fs.rm(temporary, { recursive: true, force: true }); }
+        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke','native-owned-service-16');
       } else {
         const installer = path.join(packageRoot, `ReviewOps-${build.version}-windows-x64.exe`);
         packagedBuildInfo(path.join(packageRoot, 'win-unpacked/resources/app.asar'), build);
         publisher = await windowsPublisher(installer);
         // Reuse the existing native install/startup/persistence/uninstall checks.
-        await run(process.execPath, [path.join(root, 'scripts/windows-release-smoke.mjs'), installer], { cwd: root, timeout: 600000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, REVIEWOPS_VERIFY_PACKAGE_ROOT: packageRoot } });
+        await runWindowsInstalledSmoke({repository:root,installer,env:{...process.env,
+          REVIEWOPS_VERIFY_PACKAGE_ROOT:packageRoot,REVIEWOPS_OWNED_RENDERER_RECORD:rendererBuildRecord}});
         const report = JSON.parse(await fs.readFile(path.join(root, 'test-results/windows-release.json'), 'utf8'));
-        if (report.ok !== true || report.sha256 !== await fileHash(installer)) throw new Error('Windows 설치 검사가 완료되지 않았습니다.');
+        if (report.ok !== true || report.sha256 !== await fileHash(installer) || report.ownedService?.ok !== true || report.ownedService?.cleanupConfirmed !== true) throw new Error('Windows 설치 검사가 완료되지 않았습니다.');
         await copy(installer, names.find(name => name.endsWith('.exe')));
-        checks.push('publisher-status', 'installed-application');
+        checks.push('publisher-status', 'installed-application', 'native-owned-service-16');
       }
       const record = { schema: 1, target, ok: true, build, checks, ...(publisher ? { publisher } : {}), files: [] };
       for (const file of files) record.files.push({ name: path.basename(file), size: (await fs.stat(file)).size, sha256: await fileHash(file) });

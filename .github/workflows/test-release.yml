@@ -89,6 +89,20 @@ jobs:
           node-version: '24'
           architecture: ${{ matrix.node_arch }}
           cache: npm
+      - name: Select the native fixture .NET installation directory
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { throw 'ProgramFiles is required for the native fixture SDK.' }
+          $fixtureDotnetDirectory = Join-Path $env:ProgramFiles 'dotnet'
+          "DOTNET_INSTALL_DIR=$fixtureDotnetDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Set up the pinned native fixture .NET SDK
+        if: matrix.target == 'win32-x64'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.426'
+          architecture: x64
+          cache: false
       - run: npm ci
       - name: Test publication and updater contracts
         run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs tests/test-release-references.test.cjs tests/test-build-context.test.cjs
@@ -116,7 +130,7 @@ jobs:
           exit "$result"
       - name: Build the reviewed renderer without regenerating platform notices
         timeout-minutes: 4
-        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; await buildRenderer({generateLicenses:false});"
+        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; import {recordNativeRenderer} from './scripts/native-packet.mjs'; await buildRenderer({generateLicenses:false}); await recordNativeRenderer({repository:process.cwd(),source:process.env.GITHUB_SHA});"
       - name: Verify shared web capture and QA recovery on each native target
         timeout-minutes: 10
         env:
@@ -124,12 +138,20 @@ jobs:
           REVIEWOPS_CAPTURE_POSTFAILURE_PROBE: '1'
         shell: bash
         run: |
-          node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs
+          node --test tests/session-capture-diagnostics.test.mjs tests/session-capture-failure-order.test.mjs tests/native-owned-evidence.test.mjs
           node scripts/e2e-live-web-sessions.mjs
           node scripts/e2e-qa-viewer-sessions.mjs
       - name: Verify public MCP category requests on native macOS
         if: matrix.target == 'darwin-arm64'
         run: node scripts/e2e-mcp-review-categories.mjs
+      - name: Verify native owned service and preserved panel/concurrent regressions
+        timeout-minutes: 20
+        env:
+          REVIEWOPS_OWNED_SERVICE_TARGET: ${{ matrix.target }}
+          REVIEWOPS_LIVE_CODEX: '0'
+          REVIEWOPS_LIVE_CLAUDE: ''
+        shell: bash
+        run: node scripts/owned-native-orchestration.mjs source --target "$REVIEWOPS_OWNED_SERVICE_TARGET" --source "$GITHUB_SHA"
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
@@ -162,6 +184,15 @@ jobs:
           path: |
             test-results/live-web-sessions/
             test-results/qa-viewer-sessions/
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Keep native owned-service and regression evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-owned-service-qa-${{ matrix.target }}
+          path: |
+            test-results/owned-service-native/
           if-no-files-found: warn
           retention-days: 1
 
