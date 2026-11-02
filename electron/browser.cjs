@@ -27,7 +27,7 @@ function intersection(...rects) {
 }
 
 function createBrowserManager(window, {partition = PARTITION, backgroundPopups = () => false,onCreated=()=>{},onChanged=()=>{},onClosed=()=>{}} = {}) {
-  const views = new Map(), popups = new Set();
+  const views = new Map(), popups = new Set();let disposed=false;
   const recorder = createEvidenceRecorder();
   function bindContext(item,value,projectId){
     const next=typeof value==='string'?value.slice(0,120):'';
@@ -191,6 +191,7 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
       })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
     },
     async dispatch(action, payload) {
+      if(disposed&&action!=='browser.close')throw Object.assign(new Error('열린 화면을 찾을 수 없습니다.'),{code:'STALE_BROWSER_OWNER'});
       if (action === 'browser.create') {
         const url = browserUrl(payload.url), initialEmulation = emulationFor(payload.viewport || {width:1920,height:1080,scale:1});
         if (views.size >= 32) throw new Error('열린 화면이 많습니다. 사용하지 않는 작업 탭을 닫으십시오.');
@@ -284,7 +285,7 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
       else throw new Error('지원하지 않는 화면 기능입니다.');
       return state(item);
     },
-    closeAll() { for (const id of [...views.keys()]) close(id); recorder.close();browserSession.flushStorageData(); },
+    closeAll() { if(disposed)return;disposed=true;for (const id of [...views.keys()]) close(id); recorder.close();browserSession.flushStorageData(); },
     async flush() { browserSession.flushStorageData(); await browserSession.cookies.flushStore(); }
   };
 }

@@ -132,9 +132,9 @@ async function harness(t, options = {}) {
     } };
     if (name === './ssh.cjs') return { createSshService: () => ({ close() {}, async openShell(_config,{onData,onClose}) { if(!state.allowShell)throw new Error('SSH must not run in these tests');onData(Buffer.from('session ready'));return {write:data=>onData(Buffer.from(data)),resize(){},close(){onClose()}}; }, test() { if(state.trustFingerprint)throw Object.assign(new Error('Synthetic SSH trust required'),{code:'SSH_TRUST_REQUIRED',fingerprint:state.trustFingerprint});throw new Error('SSH must not run in these tests'); } }) };
     if (name === './terminal.cjs') return require('../electron/terminal.cjs');
-    if (name === './browser.cjs') return {createBrowserManager(host,options={}){
-      const manager={host,options,closed:false,views:new Map(),async dispatch(action,payload){
-        if(action==='browser.create'){const view={id:crypto.randomUUID(),url:payload.url};this.views.set(view.id,view);return view;}
+    if (name === './browser.cjs') return {createBrowserManager(host,browserOptions={}){
+      const manager={host,options:browserOptions,closed:false,views:new Map(),async dispatch(action,payload){
+        if(action==='browser.create'){const view={id:options.browserId?.({host,payload})||crypto.randomUUID(),url:payload.url};this.views.set(view.id,view);await options.browserCreateGate?.({host,manager:this,view,payload});return view;}
         if(action==='browser.close'){this.views.delete(payload.id);return {closed:true};}
         const view=this.views.get(payload.id);if(!view)throw new Error('열린 화면을 찾을 수 없습니다.');return view;
       },closeAll(){this.closed=true;this.views.clear();},async flush(){}};
@@ -477,6 +477,64 @@ for(const ending of ['close','crash','reload'])test(`a project window ${ending} 
     assert.equal((await clientA.success('attachment.staged',{tokens:[stagedA.token]})).files.length,1);
   }
   assert.equal(managerA.views.has(browserA.id),false);
+});
+
+for(const completion of ['resolve','reject'])test(`main commit retires a late provisional browser create without changing another owner (${completion})`,async t=>{
+  let entered,release,reject;
+  const started=new Promise(resolve=>{entered=resolve;});
+  const pendingNative=new Promise((resolve,no)=>{release=resolve;reject=no;});
+  const nativeError=Object.assign(new Error('original pending native preparation failed'),{code:'ORIGINAL_NATIVE_FAILURE'});
+  const h=await harness(t,{
+    // Native IDs belong to each manager. Reuse deliberately so a stale cleanup
+    // sent to the replacement manager would close the valid new-document view.
+    browserId:({payload})=>payload.url.includes('owner-b')?'owner-b-view':'reused-owner-a-view',
+    browserCreateGate:({manager,payload})=>{
+      if(payload.url.includes('provisional')){entered(manager);return pendingNative;}
+    }
+  });
+  const first=await seed(h),second=await seed(h),primary=h.state.primaryWindow;
+  await h.forWindow(primary).success('window.openProject',{projectId:first.project.id});
+  const a=await projectHost(h,first.project.id),clientA=h.forWindow(a);
+  await h.forWindow(primary).success('window.openProject',{projectId:second.project.id});
+  const b=await projectHost(h,second.project.id),clientB=h.forWindow(b);
+  const kept=await clientB.success('browser.create',{url:'https://fixture.invalid/owner-b'});
+  const managerB=h.state.browserManagers.find(manager=>manager.host===b);
+  const before=await clientA.success('browser.create',{url:'https://fixture.invalid/before-reload'});
+  const beforeManager=h.state.browserManagers.find(manager=>manager.host===a);
+  a.webContents.emit('did-start-navigation',{},a.webContents.getURL(),false,true);
+  assert.equal(beforeManager.closed,true);assert.equal(beforeManager.views.has(before.id),false);
+
+  // This create arrives after start cleanup and remains pending at native await.
+  const old=clientA.invoke('browser.create',{url:'https://fixture.invalid/provisional'});
+  const provisional=await started;
+  assert.equal(provisional.closed,false);assert.equal(provisional.views.size,1);
+  a.webContents.emit('did-navigate',{},a.webContents.getURL(),200,'OK');
+  assert.equal(provisional.closed,true);assert.equal(provisional.views.size,0);
+  const fresh=await clientA.success('browser.create',{url:'https://fixture.invalid/new-document'});
+  const current=h.state.browserManagers.filter(manager=>manager.host===a).at(-1);
+  assert.notEqual(current,provisional);assert.equal(current.views.size,1);
+  if(completion==='resolve')release();else reject(nativeError);
+  const ended=await old;
+  assert.equal(ended.ok,false);
+  if(completion==='resolve')assert.equal(ended.error.code,'STALE_BROWSER_OWNER');
+  else {assert.equal(ended.error.code,nativeError.code);assert.equal(ended.error.message,nativeError.message);}
+  assert.equal(current.closed,false);assert.equal(current.views.size,1);
+  assert.equal((await clientA.success('browser.state',{id:fresh.id})).url,'https://fixture.invalid/new-document');
+  assert.equal(managerB.closed,false);assert.equal(b.isDestroyed(),false);
+  assert.equal((await clientB.success('browser.state',{id:kept.id})).url,'https://fixture.invalid/owner-b');
+});
+
+test('subframe and in-page navigation do not retire the current native browser owner',async t=>{
+  const h=await harness(t),{project}=await seed(h),primary=h.state.primaryWindow;
+  await h.forWindow(primary).success('window.openProject',{projectId:project.id});
+  const host=await projectHost(h,project.id),client=h.forWindow(host);
+  const view=await client.success('browser.create',{url:'https://fixture.invalid/preserved'});
+  const manager=h.state.browserManagers.find(value=>value.host===host);
+  host.webContents.emit('did-start-navigation',{},'https://fixture.invalid/subframe',false,false);
+  host.webContents.emit('did-frame-navigate',{},'https://fixture.invalid/subframe',200,'OK',false,1,2);
+  host.webContents.emit('did-start-navigation',{},host.webContents.getURL()+'#same-document',true,true);
+  host.webContents.emit('did-navigate-in-page',{},host.webContents.getURL()+'#same-document',true,1,2);
+  assert.equal(manager.closed,false);assert.equal((await client.success('browser.state',{id:view.id})).id,view.id);
 });
 
 for(const dirtyAt of ['before selection','during selection'])test(`backup restore preserves another window draft started ${dirtyAt}`,async t=>{
