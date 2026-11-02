@@ -116,7 +116,7 @@ jobs:
           exit "$result"
       - name: Build the reviewed renderer without regenerating platform notices
         timeout-minutes: 4
-        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; await buildRenderer({generateLicenses:false});"
+        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; import {recordNativeRenderer} from './scripts/native-packet.mjs'; await buildRenderer({generateLicenses:false}); await recordNativeRenderer({repository:process.cwd(),source:process.env.GITHUB_SHA});"
       - name: Verify shared web capture and QA recovery on each native target
         timeout-minutes: 10
         env:
@@ -130,6 +130,14 @@ jobs:
       - name: Verify public MCP category requests on native macOS
         if: matrix.target == 'darwin-arm64'
         run: node scripts/e2e-mcp-review-categories.mjs
+      - name: Verify native owned service and preserved panel/concurrent regressions
+        timeout-minutes: 20
+        env:
+          REVIEWOPS_OWNED_SERVICE_TARGET: ${{ matrix.target }}
+          REVIEWOPS_LIVE_CODEX: '0'
+          REVIEWOPS_LIVE_CLAUDE: ''
+        shell: bash
+        run: node scripts/owned-native-orchestration.mjs source --target "$REVIEWOPS_OWNED_SERVICE_TARGET" --source "$GITHUB_SHA"
       - name: Package and verify the native target
         env:
           TEST_BUILD_NUMBER: ${{ needs.metadata.outputs.number }}
@@ -162,6 +170,15 @@ jobs:
           path: |
             test-results/live-web-sessions/
             test-results/qa-viewer-sessions/
+          if-no-files-found: warn
+          retention-days: 1
+      - name: Keep native owned-service and regression evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-owned-service-qa-${{ matrix.target }}
+          path: |
+            test-results/owned-service-native/
           if-no-files-found: warn
           retention-days: 1
 

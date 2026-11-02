@@ -9,6 +9,8 @@ import { execFile, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import { _electron as electron, expect } from '@playwright/test';
 import { setTestLocale } from './test-locale.mjs';
+import {runRequiredOwnedGate, nativeOutput, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
+import {recordNativeRenderer} from './native-packet.mjs';
 
 const require = createRequire(import.meta.url);
 const asar = require('@electron/asar');
@@ -22,12 +24,12 @@ const outputRoot = path.join(root, 'test-results');
 const reportFile = path.join(outputRoot, 'windows-release.json');
 const report = {
   ok: false, version, platform: process.platform, arch: process.arch,
-  sourceCommit: process.env.GITHUB_SHA || null,
+  sourceCommit: process.env.GITHUB_SHA || (await run('git',['rev-parse','HEAD'],{cwd:root})).stdout.trim(),
   installer: path.basename(installer), checks: [], rendererErrors: [],
   actualAccountOperations: 0,
   unitTestScope: 'Windows-compatible suites; full existing suite runs separately on macOS.',
 };
-let app, page, fixtureRoot;
+let app, page, fixtureRoot, preserveFixtureRoot = false;
 const check = (name, details) => {
   report.checks.push({ name, ...(details === undefined ? {} : { details }) });
   console.log(`PASS: ${name}`);
@@ -202,6 +204,15 @@ try {
   report.installedPE = installedPE;
   report.installedVersion = installedVersion;
   check('Silent installation creates the x64 application with the expected version and unchanged app archive');
+  const ownedEvidence = path.join(nativeOutput(root,'win32-x64'),'installed');
+  await fs.mkdir(ownedEvidence,{recursive:true});
+  const installReceipt = path.join(ownedEvidence,'nsis-install-receipt.json');
+  await fs.writeFile(installReceipt,JSON.stringify({schema:1,source:report.sourceCommit,target:'win32-x64',
+    installationCompleted:true,installerPath:await fs.realpath(installer),installerSHA256:report.sha256,
+    installationRoot:await fs.realpath(installDir),executablePath:await fs.realpath(executable),
+    archivePath:await fs.realpath(path.join(installDir,'resources','app.asar')),archiveSHA256:archiveHash,
+    pe:{machine:installedPE.machine},version},null,2)+'\n');
+  report.ownedInstallReceipt = installReceipt;
   assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
 
   const invoke = (action, payload = {}) => page.evaluate(({ action, payload }) => window.reviewops.invoke(action, payload), { action, payload });
@@ -348,6 +359,24 @@ try {
   check('Closing both external project windows keeps the original application window open');
   await closeWindow();
   check('Close icon shuts down the installed application');
+  // The owned-service gate runs only on this actually NSIS-installed EXE,
+  // after closing the legacy profile and before reinstall/uninstall can mutate it.
+  const rendererBuildRecord = process.env.REVIEWOPS_OWNED_RENDERER_RECORD || nativePackagedRendererRecord(root,'win32-x64','standalone-windows');
+  if(!process.env.REVIEWOPS_OWNED_RENDERER_RECORD) {
+    await recordNativeRenderer({repository:root,source:report.sourceCommit,recordPath:rendererBuildRecord});
+  }
+  try {
+    const ownedGate = await runRequiredOwnedGate({repository:root,target:'win32-x64',mode:'nsis-installed',
+      executablePath:await fs.realpath(executable),privateInstallRoot:await fs.realpath(fixtureRoot),
+      installReceipt,rendererBuildRecord});
+    report.ownedService = {ok:true,cleanupConfirmed:true,resultPath:ownedGate.resultPath};
+    check('Installed application completes the same sixteen owned-service checks and confirmed cleanup');
+  } catch(error) {
+    preserveFixtureRoot = error.preservePrivateRoot !== false;
+    report.ownedService = {ok:false,cleanupConfirmed:false,preservePrivateRoot:preserveFixtureRoot,
+      ownedRoot:error.ownedRoot||null,resultPath:error.resultPath||null};
+    throw error;
+  }
   // Test builds share an application version. NSIS must allow installing that
   // version again without replacing the QA data directory.
   await nativeProcess(installer, ['/S', `/D=${installDir}`], env);
@@ -392,7 +421,9 @@ try {
     await app.close().catch(() => {});
   }
   report.finishedAt = new Date().toISOString();
+  report.privateInstallation = {root:fixtureRoot||null,preserved:preserveFixtureRoot,
+    reason:preserveFixtureRoot?'Owned native cleanup is unconfirmed; no reinstall, uninstall, or recursive deletion was attempted.':null};
   await fs.writeFile(reportFile, `${JSON.stringify(report, null, 2)}\n`);
   console.log(JSON.stringify(report, null, 2));
-  if (fixtureRoot) await fs.rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }).catch(() => {});
+  if (fixtureRoot && !preserveFixtureRoot) await fs.rm(fixtureRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }).catch(() => {});
 }
