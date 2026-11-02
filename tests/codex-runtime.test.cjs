@@ -428,3 +428,13 @@ test('an aborted owned child stays retained until close and cannot be launched t
   assert.equal((await find('', { bypassCooldown: true })).available, true);
   assert.equal(children.length, 2);
 });
+
+test('backend diagnostic snapshots also enforce the sixteen-KiB budget for long paths', async t => {
+  const { root, write } = await fixture(t), candidates = [];
+  const long = Array.from({ length: 5 }, (_, index) => String(index) + 'x'.repeat(150)).join('/');
+  for (let index = 0; index < 20; index++) candidates.push(await write(long + '/codex-' + index));
+  const find = createRuntimeFinder({ home: root, candidates, execute: async () => ({ stdout: '' }) });
+  const result = await find();
+  assert.ok(Buffer.byteLength(JSON.stringify(result.diagnostics), 'utf8') <= 16 * 1024);
+  assert.ok(result.diagnostics.records.length <= 16); assert.ok(result.diagnostics.omitted >= 4);
+});

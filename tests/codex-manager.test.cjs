@@ -39,7 +39,7 @@ test('startup can recover a saved app selection without changing settings or mak
   const h = await setup(t, { savedRuntime: original, findRuntime: async (...args) => { calls.push(args); return runtime; }, dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['/fixture/manual-codex'] }) } });
   assert.deepEqual(calls, [[original.path, { rediscoverMissingAppPath: true }]]);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(h.directory, 'reviewops/codex-manager/runtime.json'), 'utf8')), original);
-  assert.deepEqual(h.manager.accountState().runtime, { available: true, path: runtime.path, version: runtime.version, error: undefined });
+  assert.deepEqual(h.manager.accountState().runtime, { available: true, path: runtime.path, version: runtime.version, error: undefined, errorKind: null, diagnostics: { records: [], omitted: 0 } });
   const internal = h.manager.localRuntime();
   internal.args.push('must-not-change-runtime');
   assert.deepEqual(h.manager.localRuntime().args, runtime.args);
@@ -78,7 +78,7 @@ test('a detected bundled CLI stays available for signed-out accounts and login r
 
 test('account and host IPC reject untrusted renderer frames and are removed on close', async t => {
   const h = await setup(t);
-  const required = ['accounts:getState', 'accounts:getAccountDetails', 'accounts:refreshAccountDetails', 'accounts:addAccount', 'accounts:renameAccount', 'accounts:login', 'accounts:cancelLogin', 'accounts:refreshAccounts', 'accounts:resetAccounts', 'accounts:removeAccount', 'accounts:openLogin', 'accounts:openUsagePage', 'accounts:chooseCodexBinary', 'hosts:getState', 'hosts:reloadHosts', 'hosts:saveHost', 'hosts:deleteHost', 'hosts:deleteHosts', 'hosts:reorderHosts', 'hosts:saveGroup', 'hosts:deleteGroup', 'hosts:setGroupCollapsed', 'hosts:moveHostToGroup', 'hosts:refreshHosts', 'hosts:cancelRefresh', 'hosts:getHostDetails', 'hosts:generateKey', 'hosts:inspectKeys', 'hosts:registerKey', 'hosts:upgradeCodex', 'hosts:upgradeCodexBatch', 'hosts:startCodexLogin', 'hosts:cancelCodexLogin', 'hosts:openCodexLogin', 'hosts:copyCodexLoginCode', 'hosts:openSshTerminal', 'hosts:listFiles', 'hosts:readTextFile', 'hosts:openFileLink', 'hosts:createDirectory', 'hosts:renameFile', 'hosts:moveFiles', 'hosts:deleteFiles', 'hosts:uploadFiles', 'hosts:downloadFiles', 'hosts:getFileTransfers', 'hosts:cancelFileTransfer'];
+  const required = ['accounts:getState', 'accounts:getAccountDetails', 'accounts:refreshAccountDetails', 'accounts:addAccount', 'accounts:renameAccount', 'accounts:login', 'accounts:cancelLogin', 'accounts:refreshAccounts', 'accounts:resetAccounts', 'accounts:removeAccount', 'accounts:openLogin', 'accounts:openUsagePage', 'accounts:chooseCodexBinary', 'accounts:recheckCodexRuntime', 'hosts:getState', 'hosts:reloadHosts', 'hosts:saveHost', 'hosts:deleteHost', 'hosts:deleteHosts', 'hosts:reorderHosts', 'hosts:saveGroup', 'hosts:deleteGroup', 'hosts:setGroupCollapsed', 'hosts:moveHostToGroup', 'hosts:refreshHosts', 'hosts:cancelRefresh', 'hosts:getHostDetails', 'hosts:generateKey', 'hosts:inspectKeys', 'hosts:registerKey', 'hosts:upgradeCodex', 'hosts:upgradeCodexBatch', 'hosts:startCodexLogin', 'hosts:cancelCodexLogin', 'hosts:openCodexLogin', 'hosts:copyCodexLoginCode', 'hosts:openSshTerminal', 'hosts:listFiles', 'hosts:readTextFile', 'hosts:openFileLink', 'hosts:createDirectory', 'hosts:renameFile', 'hosts:moveFiles', 'hosts:deleteFiles', 'hosts:uploadFiles', 'hosts:downloadFiles', 'hosts:getFileTransfers', 'hosts:cancelFileTransfer'];
   assert.deepEqual([...h.handlers.keys()].sort(), required.sort());
   for (const handler of h.handlers.values()) await assert.rejects(handler({ allowed: false }), /허용되지 않은 요청/);
   await h.manager.close();
@@ -134,4 +134,81 @@ test('ProxyJump commands retain SSH config and prohibit prompts, forwarding and 
   assert.match(command, /\/fixture\/config/);
   for (const option of ['BatchMode=yes', 'StrictHostKeyChecking=yes', 'ForwardAgent=no']) assert.ok(command.includes(option));
   if (process.platform === 'darwin') assert.ok(command.includes('UseKeychain=no'));
+});
+
+test('canceled and invalid manual choices preserve the previous service, runtime, and settings bytes', async t => {
+  const original = { path: '/fixture/old-codex' };
+  let choice = { canceled: true, filePaths: [] };
+  const h = await setup(t, { savedRuntime: original, dialog: { showOpenDialog: async () => choice }, findRuntime: async file => file === '/fixture/invalid-codex'
+    ? { available: false, error: 'Codex 실행 파일의 버전 검사가 비정상 종료되었습니다.', errorKind: 'abnormal-exit', diagnostics: { records: [{ kind: 'abnormal-exit', path: '/fixture/invalid-codex', version: null, architecture: null, code: 7, signal: null, elapsedMs: 2 }], omitted: 0 } }
+    : { available: true, path: original.path, command: original.path, args: [], version: '0.166.0' } });
+  const file = path.join(h.directory, 'reviewops/codex-manager/runtime.json'), before = await fs.readFile(file), service = h.manager.accountService;
+  assert.equal((await h.invoke('accounts:chooseCodexBinary')).runtimeSelection, 'cancelled');
+  choice = { canceled: false, filePaths: ['/fixture/invalid-codex'] };
+  await assert.rejects(h.invoke('accounts:chooseCodexBinary'), /비정상 종료/);
+  assert.equal(h.manager.accountService, service);
+  assert.equal(h.manager.accountState().runtime.path, original.path);
+  assert.equal(h.manager.accountState().runtime.available, true);
+  assert.deepEqual(await fs.readFile(file), before);
+  assert.equal(h.manager.accountState().runtime.diagnostics.records[0].kind, 'abnormal-exit');
+});
+
+test('a validated manual source follows its retargeted symlink only after the canonical version disappears', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-runtime-source-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const first = path.join(directory, 'version-1'), second = path.join(directory, 'version-2'), source = path.join(directory, 'codex');
+  await fs.writeFile(first, 'private fixture'); await fs.writeFile(second, 'private fixture'); await fs.symlink(first, source);
+  const canonicalFirst = await fs.realpath(first);
+  const calls = [];
+  const find = async (file, flags) => {
+    calls.push({ file, flags });
+    try { const canonical = await fs.realpath(file || first); return { available: true, path: canonical, command: canonical, args: [], version: '0.166.0' }; }
+    catch { return { available: false, errorKind: 'missing', path: null, command: null, args: [] }; }
+  };
+  const h = await setup(t, { findRuntime: find, dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: [source] }) } });
+  assert.equal((await h.invoke('accounts:chooseCodexBinary')).runtimeSelection, 'saved');
+  const file = path.join(h.directory, 'reviewops/codex-manager/runtime.json'), bytes = await fs.readFile(file);
+  assert.deepEqual(JSON.parse(bytes), { path: await fs.realpath(first), sourcePath: source });
+  await h.manager.close(); await fs.unlink(source); await fs.symlink(second, source); await fs.unlink(first);
+  const restarted = await setup(t, { dataPath: path.join(h.directory, 'reviewops'), configPath: h.configPath, findRuntime: find });
+  assert.equal(restarted.manager.accountState().runtime.path, await fs.realpath(second));
+  assert.deepEqual(calls.slice(-2).map(row => row.file), [canonicalFirst, source]);
+  assert.deepEqual(await fs.readFile(file), bytes, 'Startup recovery must not rewrite the persisted source or cached selection');
+});
+
+test('an existing invalid cached selection never follows a different source and legacy settings do not invent an origin', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reviewops-strict-source-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const existing = path.join(directory, 'existing'); await fs.writeFile(existing, 'private fixture');
+  const calls = [];
+  const find = async file => { calls.push(file); return { available: false, errorKind: 'invalid-version', args: [] }; };
+  const h = await setup(t, { savedRuntime: { path: existing, sourcePath: path.join(directory, 'source') }, findRuntime: find });
+  assert.equal(h.manager.accountState().runtime.available, false); assert.deepEqual(calls, [existing]);
+  const missing = path.join(directory, 'old-version'); calls.length = 0;
+  await setup(t, { savedRuntime: { path: missing }, findRuntime: find }); assert.deepEqual(calls, [missing]);
+});
+
+test('an atomic selection write failure leaves the previous healthy service and settings intact', async t => {
+  const original = { path: '/fixture/old-codex' };
+  const h = await setup(t, { savedRuntime: original, writeRuntimeSettings: () => { throw new Error('private write error'); }, dialog: { showOpenDialog: async () => ({ canceled: false, filePaths: ['/fixture/new-codex'] }) }, findRuntime: async file => ({ available: true, path: file, command: file, args: [], version: '0.166.0' }) });
+  const file = path.join(h.directory, 'reviewops/codex-manager/runtime.json'), before = await fs.readFile(file), service = h.manager.accountService;
+  await assert.rejects(h.invoke('accounts:chooseCodexBinary'), /기존 설정을 유지/);
+  assert.equal(h.manager.accountService, service); assert.equal(h.manager.accountState().runtime.path, original.path);
+  assert.deepEqual(await fs.readFile(file), before);
+});
+
+test('explicit recheck has strict parameters, global trust, and a server-owned thirty-second force interval', async t => {
+  let time = 0; const calls = [];
+  const h = await setup(t, { now: () => time, findRuntime: async (...args) => { calls.push(args); return { available: true, path: '/fixture/codex', command: '/fixture/codex', args: [], version: '0.166.0' }; } });
+  await assert.rejects(h.handlers.get('accounts:recheckCodexRuntime')({ allowed: false }), /허용되지 않은 요청/);
+  await assert.rejects(h.invoke('accounts:recheckCodexRuntime', { force: true }), /인수를 받지/); assert.equal(calls.length, 1);
+  await h.invoke('accounts:recheckCodexRuntime'); assert.equal(calls.length, 2); assert.equal(calls[1][1].bypassCooldown, true);
+  await h.invoke('accounts:getState'); assert.equal(calls.length, 2);
+  await assert.rejects(h.invoke('accounts:recheckCodexRuntime'), /30초/);
+  time = 29999; await assert.rejects(h.invoke('accounts:recheckCodexRuntime'), /30초/); assert.equal(calls.length, 2);
+  time = 30000; await h.invoke('accounts:recheckCodexRuntime'); assert.equal(calls.length, 3);
+  time = 60000; h.manager.accountService.refresh.running = true;
+  await assert.rejects(h.invoke('accounts:recheckCodexRuntime'), /진행 중인 작업/); assert.equal(calls.length, 3);
+  h.manager.accountService.refresh.running = false;
+  await assert.rejects(fs.readFile(path.join(h.directory, 'reviewops/codex-manager/runtime.json')), { code: 'ENOENT' });
 });

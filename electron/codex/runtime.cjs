@@ -169,7 +169,13 @@ function createRuntimeFinder(options = {}) {
   const canonicalHome = fs.realpath(home).catch(() => home);
   let omitted = 0;
   const omit = () => { omitted = Math.min(Number.MAX_SAFE_INTEGER, omitted + 1); };
-  const diagnostics = () => ({ records: records.map(row => ({ ...row })), omitted });
+  const diagnostics = () => {
+    const snapshot = { records: records.map(row => ({ ...row })), omitted };
+    while (snapshot.records.length && Buffer.byteLength(JSON.stringify(snapshot), 'utf8') > 16 * 1024) {
+      snapshot.records.shift(); snapshot.omitted++;
+    }
+    return snapshot;
+  };
   const add = row => { if (records.length === MAX_DIAGNOSTICS) { records.shift(); omit(); } records.push(row); };
   const finish = (value, errorKind = null) => ({ ...value, errorKind, diagnostics: diagnostics() });
   const fail = (kind, message = probeError(kind)) => finish(unavailable(message), kind);
@@ -200,7 +206,7 @@ function createRuntimeFinder(options = {}) {
       architecture: ['arm64', 'x64', 'arm64,x64', 'x64,arm64'].includes(extra.architecture) ? extra.architecture : null,
       code: Number.isSafeInteger(extra.code) ? extra.code : null,
       signal: /^SIG[A-Z0-9]{1,16}$/.test(extra.signal || '') ? extra.signal : null,
-      elapsedMs: Math.min(600_000, Math.max(0, Math.round(now() - started))),
+      elapsedMs: Math.min(300_000, Math.max(0, Math.round(now() - started))),
     });
     hostArch ||= platform === 'darwin' && arch === 'x64'
       ? Promise.resolve().then(detectAppleSilicon).then((nativeArm64) => nativeArm64 ? 'arm64' : arch)
