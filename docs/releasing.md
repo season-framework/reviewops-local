@@ -2,6 +2,20 @@
 
 Release artifacts are published at `season-framework/reviewops-local`. The introduction site is published from the `gh-pages` branch. The application uses **GitHub Releases directly** for updates, not the website.
 
+## Release note language and structure
+
+Maintain repository documentation and release notes in English. Continue GitHub issue and comment discussions in Korean.
+
+Lead release notes with a concise description of the user-visible impact. Group changes under **New features**, **Improvements**, **Fixes**, and **Known limitations**, using only categories that have content. State what changed in each item and link the relevant issue or PR. Follow the feature changes with **Install and update** and relevant **Verification** details. Keep source commits, build identifiers, artifact references, and detailed validation records below the user-visible changes.
+
+Describe only features included in that release. Distinguish source, packaged-app, and installed-app checks, identify the platforms actually tested, and retain material limitations. Preserve updater pointers, allocation ledgers, and history markers when editing a release body.
+
+Maintain the reviewed English highlights in [`release-notes.json`](../release-notes.json). Each entry has a category, a short behavior-focused title, a description, and the full implementation commit SHA or SHAs. Update the catalog version when preparing a new base version. Avoid announcing a feature through a planning or merge commit alone.
+
+The shared formatter generates both test-release descriptions and stable-draft descriptions. Test releases include a reviewed highlight only when all of its commits appear in the actual change range since the previous public test build. Stable drafts check that every highlighted commit is an ancestor of the reviewed source. Other source changes are grouped by type, while the detailed commit list and verified issue/PR links appear below the feature changes. Commit subjects containing non-Latin text are linked as **Source update** rather than treated as translated English feature descriptions. The original change-note JSON and its issue titles are retained unchanged for the app and immutable history.
+
+GitHub already displays the release name, so the generated body does not repeat it as a top-level heading. Installer choices, known signing limitations, actual native verification, and source/build details follow the changes. A generated draft still identifies the pending issue-linked QA, report, and publication review; formatting does not publish it or certify additional UI scenarios.
+
 ## Prepare a release
 
 1. Update the version in `package.json` and `package-lock.json`.
@@ -111,31 +125,31 @@ Recheck the uploaded asset names, sizes, and checksums, then publish the stable 
 
 A maintainer can use GitHub's web interface, GitHub CLI, or API. Authentication belongs in the user's credential store or environment and must not be written to source, command logs, public Pages content, or the update manifest.
 
-## 테스트 버전 배포
+## Test releases
 
-개발 PC에서 만든 테스트 빌드를 QA PC에서 설치할 수 있도록 GitHub Releases의 `test-latest` 사전 출시 항목 하나를 계속 사용한다. 빌드마다 새 Release를 만들지 않는다. 최신 빌드의 설치파일은 5종이며, 각 파일을 개발 버전 이름(`-dev-N`)과 기존 앱 호환 이름(`-test.BUILD`)으로 함께 제공한다. 두 이름의 크기·SHA-256·내용은 같다. 게시 후 최신 설치파일 10개와 해시 파일 10개, 업데이트 안내 파일 1개를 유지하며 이전 빌드의 설치파일은 정리한다. 개발 버전별 변경 이력 JSON은 삭제하지 않으므로 총 첨부 수는 이력 수에 따라 증가한다. 기존 정식 Release와 다운로드 파일은 변경하거나 삭제하지 않는다.
+Reuse the single GitHub Releases prerelease `test-latest` so QA computers can install development builds. Do not create a new release for every build. The latest build has five installers, each published under both its development-version name (`-dev-N`) and its older-app-compatible name (`-test.BUILD`). Both names have identical size, SHA-256, and content. After publication, retain the ten latest installer names, ten checksum files, and one update-pointer file; remove older test installers. Development-version history JSON files are retained, so the total asset count grows with history. Existing stable releases and their downloads are never changed or deleted.
 
-설정의 `앱 업데이트`에서 `테스트 버전 받기`를 켠 PC만 테스트 업데이트를 조회한다. 체크를 해제하면 이후 정식 업데이트를 조회하며, 설치된 테스트 앱이나 데이터를 즉시 이전 상태로 바꾸지 않는다. Windows에서는 앱에서 검증된 EXE를 내려받고 `설치 파일 열기`로 실행한다. 앱은 자동 종료하지 않으며, 설치 화면의 안내에 따라 기존 앱을 닫고 진행한다.
+Only computers with **Get test versions** enabled under **App updates** check test updates. Disabling it selects stable updates for future checks without immediately downgrading the installed test app or data. On Windows, download the verified EXE in the app and select **Open installer**. The app does not exit automatically; close it according to the installer instructions.
 
-테스트 빌드에는 기본 앱 버전별 개발 번호, 전역 CI 빌드 번호, 전체 커밋 ID와 UTC 빌드 시각을 함께 기록한다. 예를 들어 `1.3.0-dev-1`의 개발 번호는 1이고 전역 빌드 번호는 별도 값이다. 기본 버전이 바뀌면 개발 번호는 새 순서를 시작하며, 같은 기본 버전에서는 숫자로 비교한다. 개발 번호가 없는 기존 빌드는 `1.2.10-test.8001`처럼 원래 식별자를 유지한다. 기본 버전·개발 번호와 함께 기존 전역 빌드 역행 방지도 검사한다. `test-latest` 태그의 소스 코드 링크 대신 앱에 포함된 커밋 ID로 설치된 코드를 찾는다. 테스트 패키지 생성이 끝나거나 실패하면 생성한 `electron/reviewops-build.json`을 삭제한다. 정식 패키지 생성도 이 파일을 먼저 지워 테스트 빌드 정보가 섞이지 않게 한다.
+Each test build records the per-base-version development number, global CI build number, full commit ID, and UTC build time. For example, `1.3.0-dev-1` has development number 1 and a separate global build number. A new base version starts a new development sequence; numbers within the same base version are compared numerically. Legacy builds without a development number retain identifiers such as `1.2.10-test.8001`. Validation checks the base/development sequence and the existing global-build rollback guard. Find installed source by the commit embedded in the app, rather than the `test-latest` tag's source-code link. Delete generated `electron/reviewops-build.json` after successful or failed test packaging. Stable packaging also deletes it first so test metadata cannot leak into stable packages.
 
-### Actions에서 실행
+### Run from Actions
 
-`codex/test-updates` 브랜치에 push하면 `.github/workflows/test-release.yml`이 패키지 생성과 게시 준비 검사만 수행한다. 실제 게시는 수동 실행에서 `publish`를 `true`로 선택할 때만 수행한다.
+Pushing to `codex/test-updates` runs package creation and publication-preflight checks in `.github/workflows/test-release.yml`. Publication occurs only when a manual run explicitly selects `publish: true`.
 
-1. GitHub Actions에서 테스트 배포 워크플로와 사용할 브랜치 또는 태그를 선택한다.
-2. `publish`를 기본값인 `false`로 두고 실행하여 세 패키지의 생성과 게시 준비 검사를 수행한다. 공개된 테스트 배포는 바뀌지 않는다.
-3. 검사가 끝나면 같은 브랜치 또는 태그를 선택하고 `publish`를 `true`로 바꾸어 새 실행을 시작한다. 게시 실행의 커밋 ID가 의도한 코드와 같은지 확인한다. 이 실행은 새 빌드 번호로 패키지를 다시 만들고, 검사가 끝난 파일만 게시한다.
+1. Select the test-release workflow and intended branch or tag in GitHub Actions.
+2. Run with the default `publish: false` to build and preflight all three targets. The public test release stays unchanged.
+3. After verification, select the same branch or tag and start a new run with `publish: true`. Confirm that the publication run's commit matches the intended source. It rebuilds packages under a new build number and publishes only files that pass verification.
 
-실제 게시 실행은 전역 workflow 잠금 아래에서 기본 버전별 개발 번호를 예약한다. 검증 전용(`publish: false`) 실행은 다음 번호를 예측할 뿐 Release 본문·번호 이력·첨부를 바꾸지 않는다. 예약한 번호는 실패해도 재사용하지 않으므로 공개 번호에 빈 구간이 생길 수 있다. 자세한 계약은 [개발 버전 식별자와 변경 이력](test-development-versions.md)에 설명한다.
+A publication run reserves a per-base-version development number under the global workflow lock. A validation-only (`publish: false`) run predicts the next number but changes no release body, allocation history, or asset. Reserved numbers are never reused after failure, so public numbers can contain gaps. See [Development version identity and change history](test-development-versions.md) for the full contract.
 
-CI 빌드 번호는 `GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT`로 만든다. 실행 시도 번호는 1~999만 허용한다. 빌드 시각은 첫 작업에서 한 번 생성하고 모든 패키지에 같은 값을 전달한다. 메타데이터 작업부터 다시 실행하면 같은 커밋에도 새 빌드 번호를 부여한다. 실패한 작업만 재실행하여 이전에 성공한 패키지를 사용하는 경우에는 같은 실행의 기존 개발 번호·빌드 번호·커밋·원래 시각을 유지한다. metadata 작업은 실제 이전 공개 커밋부터의 변경 내용과 커밋별로 확인한 PR·이슈 참조를 해시가 연결된 context 파일에 한 번 고정한다. 실패한 게시 작업만 재실행할 때 이 원본을 사용하며 변경된 PR 제목·본문을 다시 조회하지 않는다. 전체 metadata 재실행은 새 빌드가 될 수 있다. 다른 실행의 빌드나 이후 시도의 번호는 허용하지 않는다.
+CI build numbers are `GITHUB_RUN_NUMBER * 1000 + GITHUB_RUN_ATTEMPT`, with attempt values limited to 1–999. The first job creates the build time once and passes the same value to every package. Rerunning from metadata gives even the same commit a new build number. Rerunning only failed jobs while reusing successful packages retains that run's original development number, global build number, commit, and build time. Metadata freezes the real changes since the previous public commit and independently verified per-commit PR/issue references in one hash-linked context file. Rerunning only a failed publish job uses that original context rather than querying changed PR titles or bodies. A full metadata rerun may create another build. Builds from other runs or later attempt numbers are rejected.
 
-최신 실행의 임시 다운로드 파일과 고정된 context 파일은 최대 1일 보관하고 이전 실행의 파일은 삭제한다. 세 native 대상에서 수행한 공통 웹 세션·QA 복구 검사의 결과와 전체 창 사진은 별도 진단 artifact로 최대 1일 보관하며, 게시 후 설치파일 artifact 정리와 구분한다. 일부 운영체제의 빌드나 게시 준비 검사가 실패해도 같은 실행에서 이미 성공한 파일은 남겨 실패한 작업만 재실행할 수 있게 한다. 보관 기간이 지나 파일을 받을 수 없으면 전체 작업을 다시 실행한다. 실제 게시가 끝나면 현재 실행의 임시 파일도 삭제한다. 실행을 강제로 종료하여 정리하지 못한 파일도 최대 1일 보관한다. Actions 실행 로그는 남는다.
+Temporary package downloads and the frozen context for the latest run are retained for at most one day; earlier runs' copies are deleted. Shared-web-session and QA-recovery results and full-window photos from all three native targets are separate diagnostic artifacts retained for at most one day, independently of post-publication installer-artifact cleanup. Successful files remain available when another target or publication preflight fails so only failed jobs can be rerun. If retention expires, rerun the complete workflow. Successful publication also deletes that run's temporary files. Files left by a forcibly cancelled run still expire within one day. Actions logs remain available.
 
-### 로컬에서 패키지 검사
+### Verify local packages
 
-패키지에 들어가는 소스나 빌드 스크립트에 커밋하지 않은 변경이 있으면 테스트 패키지 생성을 중단한다. 변경 내용을 통합 커밋한 뒤 다음 명령의 `FULL_COMMIT_SHA`를 해당 전체 커밋 ID로 바꾼다. 빌드 번호와 시각은 세 패키지에 같은 값을 사용하며, 예시의 시각도 해당 빌드를 시작한 UTC 시각으로 바꾼다. 각 명령은 해당 운영체제와 CPU를 사용하는 PC에서 실행한다.
+Test packaging stops if package source or build scripts have uncommitted changes. Commit the integrated source first, then replace `FULL_COMMIT_SHA` below with that full commit. Use the same build number and time for all three targets, replacing the example time with the build's actual UTC start time. Run each command on its matching operating system and CPU.
 
 ```sh
 npm run package:test -- --target darwin-arm64 --number 1001 --commit FULL_COMMIT_SHA --built-at 2026-10-31T00:00:00.000Z
@@ -143,34 +157,34 @@ npm run package:test -- --target darwin-x64 --number 1001 --commit FULL_COMMIT_S
 npm run package:test -- --target win32-x64 --number 1001 --commit FULL_COMMIT_SHA --built-at 2026-10-31T00:00:00.000Z
 ```
 
-결과는 각각 `release/test-darwin-arm64/`, `release/test-darwin-x64/`, `release/test-win32-x64/`에 생성된다. 빌드 중인 앱은 각 폴더의 `packaged/` 아래에 두므로 기존 `release/mac/`와 `release/mac-arm64/`의 앱을 덮어쓰지 않는다. 세 결과 폴더의 첫 단계에 있는 ZIP·DMG·EXE·JSON 파일만 `release/test/`에 모으고 `build-info.json`의 내용이 모두 같은지 검사한다. 다음 명령은 파일과 게시 준비 상태를 검사하며, 공개 GitHub 자료를 조회할 뿐 파일을 올리거나 삭제하지 않는다.
+Outputs go to `release/test-darwin-arm64/`, `release/test-darwin-x64/`, and `release/test-win32-x64/`. Apps under construction stay in each folder's `packaged/` directory, leaving existing apps in `release/mac/` and `release/mac-arm64/` unchanged. Collect only top-level ZIP/DMG/EXE/JSON files from the three output folders into `release/test/` and verify that every `build-info.json` agrees. This command checks files and publication readiness; it queries public GitHub data without uploading or deleting files:
 
 ```sh
 npm run release:test -- --directory release/test
 ```
 
-네트워크 조회 없이 로컬 파일만 검사하려면 `--offline`을 추가한다.
+Add `--offline` to check local files without network queries:
 
 ```sh
 npm run release:test -- --directory release/test --offline
 ```
 
-실제 게시 옵션인 `--publish`는 위 Actions 워크플로의 게시 작업에서만 허용한다. 기본 실행은 항상 검사만 수행한다.
+The actual `--publish` option is permitted only in the Actions workflow's publish job. Default invocation always verifies only.
 
-### 게시 순서
+### Publication sequence
 
-1. macOS arm64·x64와 Windows x64 패키지를 같은 빌드 정보로 만든다.
-2. 패키지에 포함된 빌드 정보, 파일 구성, macOS 서명과 DMG, Windows 설치파일의 서명 상태를 검사한다. Windows에서는 설치·시작·같은 앱 버전 재설치 후 프로젝트와 리뷰 분류가 보존되는지도 검사한다. 설치파일의 크기와 SHA-256을 검사 결과에 연결한다.
-3. 모든 브랜치의 테스트 게시 작업을 같은 대기열에서 한 번에 하나씩 실행한다. 더 높은 빌드 번호가 이미 공개되어 있으면 늦게 끝난 이전 빌드는 게시하지 않는다.
-4. 새 파일을 모두 올리고 다시 내려받아 크기와 해시를 검사한다. 이 작업이 끝날 때까지 기존 최신 빌드를 안내한다.
-5. Release 본문의 최신 빌드 표시를 한 번 바꿔 새 업데이트 안내 파일을 가리키게 한다. 표시와 파일이 같은 빌드인지 다시 검사한다.
-6. 새 파일을 사용할 수 있는 상태에서 이전 테스트 빌드의 설치파일, 업데이트 안내 파일과 해시 파일을 삭제한다. 최신 개발 버전·호환 이름의 파일 한 벌과 모든 기존 개발 변경 이력 JSON이 남았는지 검사한다. 기존 이력의 크기·해시가 바뀌었거나 누락되면 게시를 중단한다.
+1. Build macOS arm64/x64 and Windows x64 packages with identical build identity.
+2. Verify embedded build identity, file contents, macOS signatures and DMGs, and the Windows installer's signature status. On Windows, check installation, startup, and preservation of projects and review categories after reinstalling the same app version. Bind installer size and SHA-256 to the verification result.
+3. Serialize test publication from every branch through one queue. If a higher global build number is already public, do not publish an older build that finishes later.
+4. Upload every new file, then download it again and verify size and hash. Continue pointing users to the previous latest build until this finishes.
+5. Switch the release body's latest-build pointer once to the new update file. Verify that the pointer and file identify the same build.
+6. Once new files are usable, delete previous test installers, update-pointer files, and checksums. Verify that the latest development/compatibility names and every existing development-history JSON remain. Stop publication if an existing history file is missing or its size/hash changed.
 
-호환 파일 이름에는 전역 빌드 번호를, 개발 버전 파일 이름에는 기본 버전과 개발 번호를 넣는다. 두 이름 모두 이미 공개한 파일 이름에 다른 내용을 덮어쓰지 않는다. 일부 파일만 올라간 상태와 손상된 파일은 최신 빌드로 안내하지 않는다. 게시 도구는 같은 빌드의 자료를 다시 받아도 중단된 업로드와 이전 파일 정리를 복구한다. 사용 중인 최신 빌드가 아닌 빈 실패 업로드만 지우고 다시 올린다. 아직 사용 중인 최신 파일은 삭제하지 않는다.
+Compatibility filenames include the global build number; development filenames include the base version and development number. Neither name may overwrite different bytes under an already-published name. Partial or damaged uploads are never advertised as the latest build. Retrying the same build can recover interrupted uploads and previous-file cleanup. Only unused incomplete uploads may be deleted and reuploaded; files used by the current pointer are retained.
 
-삭제된 이전 테스트 파일을 요청하여 404를 받으면 설치를 중단하고 이전 다운로드 대상을 지운다. 사용자가 `업데이트 확인`을 다시 눌러 최신 빌드를 조회한다. 해시 검사가 실패하면 선택한 빌드는 유지하고 같은 파일을 다시 내려받을 수 있게 한다. 두 경우 모두 자동으로 다시 조회하거나 설치하지 않으며 설치된 앱을 유지한다.
+A 404 for a removed older test file stops installation and clears the old download target. The user must select **Check for updates** again to discover the current build. A hash failure preserves the selected build so the same file can be downloaded again. Neither condition automatically rechecks or installs, and the installed app is retained.
 
-이번 테스트 업데이트 기능은 DB 저장 형식을 바꾸지 않는다. 다만 이 개발 브랜치가 이미 사용하는 DB 형식 10은 정식 1.2.9에서 열 수 없으며, 기존 보호 처리가 열기를 거절한다. QA는 별도 데이터 폴더에서 진행하고, 정식 앱으로 돌아갈 때 QA 데이터를 삭제하거나 이전 백업으로 자동 교체하지 않는다. `테스트 버전 받기` 체크 해제는 이후 정식 업데이트 조회만 선택하며 앱이나 DB를 자동으로 이전 버전으로 바꾸지 않는다.
+The test-update feature does not change the database storage format. However, database format 10 already used by this development branch cannot be opened by stable 1.2.9; existing protection rejects it. Use a separate data folder for QA. Returning to a stable app does not delete QA data or restore an older backup automatically. Disabling **Get test versions** changes only future update checks; it does not downgrade the app or database.
 
 ## Publish the website
 

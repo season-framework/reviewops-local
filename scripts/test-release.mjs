@@ -5,6 +5,7 @@ import { createReadStream } from 'node:fs';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 import {ledgerFromBody,historyName,historyAsset,requireAllocation,publishDevelopment,replaceLedger} from './test-development-ledger.mjs';
+import {loadReleaseHighlights,renderTestReleaseNotes} from './release-notes-format.mjs';
 const require = createRequire(import.meta.url);
 const { validateBuildInfo, validateChangeNotes, displayBuildVersion } = require('../electron/build-info.cjs');
 
@@ -115,7 +116,8 @@ export async function prepareRelease(directory, build) {
     history={name:historyName(build),size:bytes.length,sha256:hash(bytes)};
     assets.push({...history,bytes});
   }
-  return { build, manifest, pointer, assets, history, verification };
+  const highlights=changes?await loadReleaseHighlights({version:build.version,changes}):[];
+  return { build, manifest, pointer, assets, history, verification, highlights };
 }
 function describe(plan) { return { tag: TAG, releaseUrl: `https://github.com/${REPOSITORY}/releases/tag/${TAG}`, pointer: plan.pointer, files: plan.assets.map(({ name, size, sha256 }) => ({ name, size, sha256 })), build: plan.build }; }
 export async function publishRelease(plan, store, { dryRun = true } = {}) {
@@ -174,15 +176,14 @@ async function publishLocked(plan, store, dryRun) {
   if(JSON.stringify(ledgerFromBody(release.body))!==JSON.stringify(originalLedger))throw new Error('게시 준비 중 개발 번호 할당 이력이 변경되었습니다.');
   if (currentPointer?.buildNumber === plan.build.buildNumber && currentPointer.sha256 !== plan.pointer.sha256) throw new Error('같은 빌드의 안내 파일 내용이 변경되었습니다.');
   if (JSON.stringify(currentPointer) !== JSON.stringify(plan.pointer)) {
-    const notes = plan.manifest.changes;
-    const escapeSubject = value => value.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replace(/[\\`*_[\]]/g, '\\$&');
-    const changeText = !notes ? '' : notes.baseCommit ? `\n## 이전 테스트 배포 이후 변경\n\n[전체 변경 ${notes.totalCommits}개](https://github.com/${REPOSITORY}/compare/${notes.baseCommit}...${notes.commit})\n\n${notes.commits.slice(0,30).map(item => `- ${escapeSubject(item.subject)} ([${item.commit.slice(0,12)}](https://github.com/${REPOSITORY}/commit/${item.commit}))${item.references?.length?' · '+item.references.map(ref=>`[${ref.kind==='issue'?'이슈':'PR'} #${ref.number}](${ref.url})`).join(', '):''}`).join('\n')}\n` : '\n이전 공개 테스트 버전 정보가 없어 변경 범위를 표시하지 않습니다.\n';
-    const historyText=nextLedger.allocations.filter(record=>record.history).map(record=>`- [${displayBuildVersion(record.build)}](https://github.com/${REPOSITORY}/releases/download/${TAG}/${record.history.name}) · 빌드 ${record.build.buildNumber} · [${record.build.commit.slice(0,12)}](https://github.com/${REPOSITORY}/commit/${record.build.commit})`).join('\n');
-    let body = `# ReviewOps 테스트 버전 ${displayBuildVersion(plan.build)}\n\n정식 출시 전 기능을 확인할 수 있는 버전입니다. 최신 설치파일 한 벌만 유지합니다. 개발 버전 파일과 기존 앱 호환 파일은 같은 내용입니다.\n\n앱 버전: ${displayBuildVersion(plan.build)} · 빌드: ${plan.build.buildNumber}\n\n커밋: ${plan.build.commit}\n\n빌드 시각: ${plan.build.builtAt} (UTC)\n${changeText}${historyText?'\n## 개발 버전별 변경 이력\n\n'+historyText+'\n':''}\n${marker}${JSON.stringify(plan.pointer)} -->\n`;
+    const history=nextLedger.allocations.filter(record=>record.history).map(record=>({version:displayBuildVersion(record.build),buildNumber:record.build.buildNumber,commit:record.build.commit,url:`https://github.com/${REPOSITORY}/releases/download/${TAG}/${record.history.name}`}));
+    let body=renderTestReleaseNotes({build:plan.build,versionLabel:displayBuildVersion(plan.build),pointer:plan.pointer,changes:plan.manifest.changes,
+      installers:plan.manifest.developmentInstallers||plan.manifest.installers,archives:plan.manifest.developmentArtifacts||plan.manifest.artifacts,
+      verification:plan.verification,highlights:plan.highlights,history});
     if(plan.build.developmentNumber||originalLedger.allocations.length)body=replaceLedger(body,nextLedger);
     // One body PATCH switches the complete set. The workflow's global lock is
     // held through upload, this switch and cleanup. Git tags never move.
-    await store.setPointer(release.id, body, `ReviewOps 테스트 ${displayBuildVersion(plan.build)}`);
+    await store.setPointer(release.id, body, `ReviewOps ${displayBuildVersion(plan.build)} (Test)`);
   }
   async function assertOwned() {
     const latest = await store.getRelease(); assertRelease(latest);
@@ -224,7 +225,7 @@ export function githubStore(token, fetchImpl = fetch, env = process.env) {
   return {
     assertBuildAllowed(build) { assertPublicationCI(build, env); },
     async getRelease() { const r = await request(`${api}/releases/tags/${TAG}?cache=${Date.now()}`, { allow404: true }); return r ? r.json() : null; },
-    async createRelease(commit) { return (await request(`${api}/releases`, { method: 'POST', body: { tag_name: TAG, target_commitish: commit, name: 'ReviewOps 테스트 버전', body: '', prerelease: true, draft: false, make_latest: 'false' } })).json(); },
+    async createRelease(commit) { return (await request(`${api}/releases`, { method: 'POST', body: { tag_name: TAG, target_commitish: commit, name: 'ReviewOps Test builds', body: '', prerelease: true, draft: false, make_latest: 'false' } })).json(); },
     async listAssets(id) { const all = []; for (let page = 1; ; page++) { const result = await (await request(`${api}/releases/${id}/assets?per_page=100&page=${page}&cache=${Date.now()}`)).json(); all.push(...result); if (result.length < 100) return all; } },
     async upload(release, file) { const bytes = file.bytes || await fs.readFile(file.filename); if (bytes.length !== file.size || hash(bytes) !== file.sha256) throw new Error('업로드 직전에 설치파일이 변경되었습니다.'); await request(`https://uploads.github.com/repos/${REPOSITORY}/releases/${release.id}/assets?name=${encodeURIComponent(file.name)}`, { method: 'POST', body: bytes, binary: true }); },
     async hashAsset(asset) {

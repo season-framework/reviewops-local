@@ -40,6 +40,10 @@ Keep dependency changes necessary and small. Run the build to regenerate `THIRD-
 
 ## Documentation
 
+Write repository documentation and release notes in English. Write GitHub issues and comments in Korean. Preserve actual localized interface labels and payload examples when they are needed to explain a contract.
+
+Release notes should lead with user-visible changes grouped under **New features**, **Improvements**, **Fixes**, and **Known limitations**, omitting empty categories. Follow with **Install and update** and relevant **Verification** details. Keep source commits, build identifiers, and technical delivery references below the feature changes.
+
 Use clear, direct language and describe behavior that is implemented. Do not imply that every platform, site login, language, or remote host has been tested. Use synthetic data for public screenshots and examples. The GitHub Pages source lives in `website/` and has no build dependency.
 
 Release maintainers should follow [docs/releasing.md](docs/releasing.md).
