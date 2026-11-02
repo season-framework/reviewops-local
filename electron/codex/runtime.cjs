@@ -161,6 +161,7 @@ function createRuntimeFinder(options = {}) {
   const home = options.home || os.homedir();
   const env = options.env || process.env;
   const execute = options.execute || createVersionExecutor(options.execFile);
+  const inspectArchitectures = options.inspectArchitectures || macExecutableArchitectures;
   const now = options.clock?.now || (() => performance.now());
   const schedule = options.clock?.setTimeout || setTimeout;
   const unschedule = options.clock?.clearTimeout || clearTimeout;
@@ -219,7 +220,7 @@ function createRuntimeFinder(options = {}) {
     let lastError, lastKind = 'missing';
     for (const candidate of candidates) {
       const started = now();
-      let command, fingerprint, architecture = null, phase = 'resolve', ownedTimeout = false;
+      let command, fingerprint, architecture = null, exitCode = null, phase = 'resolve', ownedTimeout = false;
       try {
         command = await resolveNative(candidate, target);
         if (visited.has(command)) continue;
@@ -233,8 +234,14 @@ function createRuntimeFinder(options = {}) {
           continue;
         }
         if (platform === 'darwin') {
-          const architectures = await macExecutableArchitectures(command);
-          architecture = architectures.join(',');
+          let architectures = [];
+          try { architectures = await inspectArchitectures(command); }
+          catch (error) {
+            // Intel metadata is best effort. Apple Silicon keeps its existing
+            // native-only validation and filesystem error distinctions.
+            if (nativeArch === 'arm64') throw error;
+          }
+          architecture = architectures.length ? architectures.join(',') : null;
           if (nativeArch === 'arm64' && !architectures.includes('arm64')) {
             throw Object.assign(new Error('Incompatible architecture'), { code: 'CODEX_ARCHITECTURE' });
           }
@@ -263,6 +270,7 @@ function createRuntimeFinder(options = {}) {
             timeout: timeoutMs, maxBuffer: 64 * 1024, windowsHide: true, shell: false, env, signal: controller.signal,
           })), deadline]));
         } finally { unschedule(timer); }
+        exitCode = 0;
         const version = /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\s*$/m.exec(String(stdout).trim())?.[1];
         if (!version) throw Object.assign(new Error('Invalid version response'), { code: 'CODEX_INVALID_VERSION' });
         failures.delete(command);
@@ -280,7 +288,7 @@ function createRuntimeFinder(options = {}) {
         // the recent executable-probe history or exposing a full path inventory.
         if (kind === 'missing' && !custom) { omit(); continue; }
         lastKind = kind;
-        const row = record(kind, command || candidate, started, { architecture, code: error.code, signal: error.signal });
+        const row = record(kind, command || candidate, started, { architecture, code: exitCode ?? error.code, signal: error.signal });
         add(row);
         if (command && fingerprint) {
           failures.delete(command);

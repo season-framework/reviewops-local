@@ -309,7 +309,22 @@ test('Intel Macs continue to accept an Intel Codex executable', async (t) => {
   const { root, write } = await fixture(t);
   const intel = await write('intel-codex', macBinary('x64'));
   const find = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, execute: async () => ({ stdout: 'codex-cli 0.161.0' }) });
-  assert.equal((await find(intel)).available, true);
+  const result = await find(intel);
+  assert.equal(result.available, true);
+  assert.equal(result.diagnostics.records.at(-1).architecture, 'x64');
+});
+
+test('Intel Macs preserve valid selected POSIX launchers while Apple Silicon keeps its native-only guard', async t => {
+  const { root, write } = await fixture(t);
+  const selected = await write('manual/codex', '#!/bin/sh\nprintf "codex-cli 0.166.0\\n"\n');
+  const canonical = await fs.realpath(selected), calls = [];
+  const intel = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, execute: async (...args) => { calls.push(args); return { stdout: 'codex-cli 0.166.0' }; } });
+  const result = await intel(selected);
+  assert.equal(result.available, true); assert.equal(result.path, canonical); assert.equal(result.command, canonical); assert.deepEqual(result.args, []);
+  assert.deepEqual(calls[0].slice(0, 2), [canonical, ['--version']]); assert.equal(calls[0][2].shell, false);
+  assert.equal(result.diagnostics.records.at(-1).architecture, null);
+  const arm = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, execute: async () => assert.fail('Unknown launcher architecture must not execute on Apple Silicon') });
+  assert.equal((await arm(selected)).errorKind, 'architecture');
 });
 
 test('Apple Silicon refuses an unknown launcher instead of running it to inspect its version', async (t) => {
@@ -365,7 +380,9 @@ test('version failures retain distinct safe reasons without publishing raw comma
     assert.doesNotMatch(JSON.stringify(result), /private raw failure|Signature|서명/);
   }
   const empty = createRuntimeFinder({ home: root, candidates: [file], execute: async () => ({ stdout: '' }) });
-  assert.equal((await empty()).errorKind, 'invalid-version');
+  const emptyResult = await empty();
+  assert.equal(emptyResult.errorKind, 'invalid-version');
+  assert.equal(emptyResult.diagnostics.records.at(-1).code, 0);
   const missing = createRuntimeFinder({ home: root, candidates: [path.join(root, 'missing')], execute: async () => { assert.fail('Missing files must not execute'); } });
   assert.equal((await missing()).errorKind, 'missing');
 });
@@ -437,4 +454,15 @@ test('backend diagnostic snapshots also enforce the sixteen-KiB budget for long 
   const result = await find();
   assert.ok(Buffer.byteLength(JSON.stringify(result.diagnostics), 'utf8') <= 16 * 1024);
   assert.ok(result.diagnostics.records.length <= 16); assert.ok(result.diagnostics.omitted >= 4);
+});
+
+test('Intel architecture metadata failure is best effort while Apple Silicon retains the failure', async t => {
+  const { root, write } = await fixture(t), selected = await write('manual-codex', macBinary('x64'));
+  const inspectArchitectures = async () => { throw Object.assign(new Error('Synthetic metadata read denied'), { code: 'EACCES' }); };
+  let executions = 0;
+  const intel = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, inspectArchitectures, execute: async () => { executions++; return { stdout: 'codex-cli 0.166.0' }; } });
+  const result = await intel(selected);
+  assert.equal(result.available, true); assert.equal(result.diagnostics.records.at(-1).architecture, null); assert.equal(executions, 1);
+  const arm = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, inspectArchitectures, execute: async () => assert.fail('ARM metadata failure must not execute') });
+  assert.equal((await arm(selected)).errorKind, 'permissions');
 });
