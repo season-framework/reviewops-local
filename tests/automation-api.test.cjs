@@ -5,7 +5,7 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const { createStore } = require('../electron/store.cjs');
-const { createAutomationApi } = require('../electron/automation-api.cjs');
+const { createAutomationApi, dataTools } = require('../electron/automation-api.cjs');
 
 async function fixture() {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-automation-'));
@@ -129,5 +129,29 @@ test('unknown fields, empty updates and malformed targets cannot bypass ownershi
     ])await assert.rejects(f.handle(action,payload),{code:'INVALID_REQUEST'});
     await assert.rejects(f.handle('delete.everything',{}),{code:'UNKNOWN_ACTION'});
     assert.equal(f.store.get('reviews',r.reviewId).title,'QA review');
+  }finally{await f.close();}
+});
+
+test('follow-up contracts expose only four bounded stored-request operations',async()=>{
+  const f=await fixture();try{
+    const r=await f.create(),target={projectId:f.a.id,reviewId:r.reviewId};
+    const tools=dataTools.filter(tool=>tool.action.startsWith('automation.followups.'));
+    assert.deepEqual(tools.map(tool=>tool.name),['reviewops_followup_create','reviewops_followup_list','reviewops_followup_get','reviewops_followup_cancel']);
+    assert.ok(tools.every(tool=>tool.inputSchema.additionalProperties===false&&!tool.annotations.openWorldHint));
+    assert.deepEqual(tools.filter(tool=>tool.annotations.readOnlyHint).map(tool=>tool.name),['reviewops_followup_list','reviewops_followup_get']);
+    for(const [action,payload] of [
+      ['followups.create',{...target,requestId:'q',prompt:' ',automaticStart:true}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',runId:'existing'}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',attachmentTokens:['window-token']}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',sourceRunId:'foreign'}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',requiredResult:'x'.repeat(10001)}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',model:'x'.repeat(257)}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',newConversation:'true'}],
+      ['followups.create',{...target,requestId:'q',prompt:'Saved',reasoningEffort:'invented'}],
+      ['followups.get',target],['followups.cancel',{...target,requestId:'__proto__'}]
+    ])await assert.rejects(f.handle(action,payload),{code:'INVALID_REQUEST'});
+    for(const action of ['followups.create','followups.list','followups.get','followups.cancel'])
+      await assert.rejects(f.handle(action,{projectId:f.b.id,reviewId:r.reviewId,...(action==='followups.create'?{requestId:'q',prompt:'Saved'}:action==='followups.list'?{}:{requestId:'q'})}),{code:'TARGET_MISMATCH'});
+    assert.equal(f.store.listAgentRuns().length,0);assert.ok(!f.calls.some(call=>call.action.startsWith('agent.')));
   }finally{await f.close();}
 });

@@ -2024,3 +2024,119 @@ test('a QA window can render an empty snapshot and close after deleting its own 
  const blocked=await client.invoke('project.save',{id:a.project.id,name:'Restore through scope'});assert.equal(blocked.error.code,'TARGET_MISMATCH');
  await client.success('window.close');await waitForValue(()=>host.isDestroyed(),'Deleted QA window did not close');assert.equal(host.isDestroyed(),true);assert.equal(h.state.primaryWindow.isDestroyed(),false);
 });
+
+const followupApi=async(h,action,payload)=>JSON.parse(JSON.stringify(await h.state.toolIntegration.automationHandler('automation.followups.'+action,payload)));
+
+test('public follow-up retries preserve original identity through edits, backup and restart',async t=>{
+ const h=await harness(t),{project,review}=await seed(h),input={projectId:project.id,reviewId:review.id,requestId:'public-original',prompt:'  Original request\n',requiredResult:'Original prerequisite',model:'saved-model',reasoningEffort:'high'};
+ h.state.failures.get='before';
+ const [first,again]=await Promise.all([followupApi(h,'create',input),followupApi(h,'create',input)]);
+ assert.equal(first.requestId,again.requestId);assert.deepEqual([first.reused,again.reused],[false,true]);
+ assert.equal((await h.success('agent.request.list',{reviewId:review.id})).requests.length,1);
+ await h.success('agent.request.update',{id:first.requestId,prompt:'Edited in the UI',requiredResult:'Edited prerequisite',model:'edited-model',reasoningEffort:'low',context:{instruction:false,attachmentIds:[],logIds:[]}});
+ const before=h.state.liveStore.exportData(),signature=before.agentRequests[0].requestSignature;assert.match(signature,/^[a-f0-9]{64}$/);
+ const retry=await followupApi(h,'create',input);assert.equal(retry.request.prompt,'Edited in the UI');assert.equal(retry.request.model,'edited-model');assert.equal(retry.request.requiredResult,'Edited prerequisite');assert.equal(retry.reused,true);
+ await assert.rejects(followupApi(h,'create',{...input,prompt:'Altered original retry'}),{code:'REQUEST_ID_CONFLICT'});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.agentStarts.length,0);assert.equal(h.state.agentPreflights.length,0);
+ const reopened=await harness(t,{prepare({dataPath}){fs.mkdirSync(dataPath,{recursive:true});const store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});try{store.importData(before);}finally{store.close();}}});
+ reopened.state.failures.get='before';const persisted=await followupApi(reopened,'create',input);
+ assert.equal(persisted.requestId,first.requestId);assert.equal(persisted.request.prompt,'Edited in the UI');assert.equal(persisted.reused,true);
+ assert.equal(reopened.state.liveStore.exportData().agentRequests[0].requestSignature,signature);assert.equal(reopened.state.agentStarts.length,0);
+});
+
+test('public follow-up scope permits sibling-review predecessors and rejects foreign IDs before mutation',async t=>{
+ const h=await harness(t),{group,service,project,review}=await seed(h);
+ const sibling=await h.success('review.save',{projectId:project.id,serviceId:service.id,title:'Sibling review'}),otherProject=await h.success('project.save',{groupId:group.id,name:'Other project',serviceIds:[service.id]}),foreign=await h.success('review.save',{projectId:otherProject.id,serviceId:service.id,title:'Foreign review'});
+ const previous=h.state.liveStore.saveAgentRun({reviewId:review.id,serviceId:service.id,prompt:'Previous',status:'running',workPath:'/tmp/test'}),foreignRun=h.state.liveStore.saveAgentRun({reviewId:foreign.id,serviceId:service.id,prompt:'Private foreign work',status:'running',workPath:'/tmp/test'});
+ const input={projectId:project.id,reviewId:sibling.id,requestId:'scoped-public',prompt:'Saved only',predecessorId:previous.id};
+ const made=await followupApi(h,'create',input);assert.equal(made.request.predecessorReviewId,review.id);assert.equal(made.request.predecessorStatus,'running');assert.equal(made.request.state,'waiting');
+ const baseline=h.state.liveStore.exportData();
+ for(const action of ['create','list','get','cancel'])await assert.rejects(followupApi(h,action,{projectId:otherProject.id,reviewId:sibling.id,...(action==='list'?{}:{requestId:input.requestId}),...(action==='create'?{prompt:input.prompt}:{})}),{code:'TARGET_MISMATCH'});
+ for(const action of ['get','cancel'])await assert.rejects(followupApi(h,action,{projectId:project.id,reviewId:review.id,requestId:input.requestId}),{code:'TARGET_MISMATCH'});
+ await assert.rejects(followupApi(h,'create',{...input,requestId:'foreign-dependency',predecessorId:foreignRun.id}),{code:'TARGET_MISMATCH'});
+ await assert.rejects(followupApi(h,'create',{...input,reviewId:review.id}),{code:'REQUEST_ID_CONFLICT'});
+ await assert.rejects(followupApi(h,'create',{projectId:otherProject.id,reviewId:foreign.id,requestId:input.requestId,prompt:input.prompt}),{code:'REQUEST_ID_CONFLICT'});
+ await assert.rejects(followupApi(h,'create',{...input,requestId:previous.id}),{code:'REQUEST_ID_CONFLICT'});
+ assert.deepEqual(h.state.liveStore.exportData(),baseline);assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.agentCancelled,[]);
+});
+
+test('public follow-up readiness and cancellation never start or stop a run',async t=>{
+ const h=await harness(t),{service,project,review}=await seed(h),previous=h.state.liveStore.saveAgentRun({reviewId:review.id,serviceId:service.id,prompt:'Previous',status:'running',workPath:'/tmp/test'});
+ const target={projectId:project.id,reviewId:review.id},input={...target,requestId:'cancel-waiting',prompt:'Wait without delivery',predecessorId:previous.id};
+ const waiting=await followupApi(h,'create',input);assert.equal(waiting.request.state,'waiting');assert.equal(waiting.request.delivery,'not_sent');assert.equal(waiting.automaticStart,false);assert.equal(waiting.supportsLiveDelivery,false);
+ assert.equal((await followupApi(h,'cancel',{...target,requestId:input.requestId})).request.state,'cancelled');
+ assert.equal(h.state.liveStore.get('agent_runs',previous.id).status,'running');assert.deepEqual(h.state.agentCancelled,[]);
+ const retried=await followupApi(h,'create',input);assert.equal(retried.request.state,'cancelled');assert.equal(retried.request.delivery,'not_sent');assert.equal(retried.reused,true);
+ const next=await followupApi(h,'create',{...input,requestId:'become-ready',prompt:'Review after completion'});
+ h.state.liveStore.saveAgentRun({id:previous.id,status:'completed'});
+ const ready=await followupApi(h,'get',{...target,requestId:next.requestId});assert.equal(ready.request.state,'ready');assert.equal(ready.request.delivery,'not_sent');assert.equal(ready.request.runId,null);
+ const listed=await followupApi(h,'list',target);assert.equal(listed.requests.length,2);assert.equal(h.state.agentStarts.length,0);assert.equal(h.state.agentPreflights.length,0);assert.deepEqual(h.state.agentCancelled,[]);
+});
+
+test('public follow-up manual-run links and cancellation races retain separate run ownership',async t=>{
+ const h=await harness(t),{service,project,review}=await seed(h);await h.success('service.save',{id:service.id,agentEnabled:1});
+ const input={projectId:project.id,reviewId:review.id,requestId:'manual-public',prompt:'Explicit unit-fixture start only',model:'fixture-model'};
+ const saved=await followupApi(h,'create',input);assert.equal(h.state.agentStarts.length,0);
+ let release;h.state.preflightGate=new Promise(resolve=>{release=resolve;});
+ const manual=h.success('agent.request.start',{id:saved.requestId});
+ let cancellation;
+ try{await waitForValue(()=>h.state.agentPreflights.length===1,'The explicit synthetic start did not reach preflight');cancellation=followupApi(h,'cancel',{projectId:project.id,reviewId:review.id,requestId:saved.requestId});}
+ finally{release();}
+ const run=await manual;await assert.rejects(cancellation,/시작된 요청/);
+ const running=await followupApi(h,'get',{projectId:project.id,reviewId:review.id,requestId:saved.requestId});assert.equal(running.request.runId,run.id);assert.equal(running.request.state,'running');assert.equal(running.request.delivery,'submitted');assert.deepEqual(h.state.agentCancelled,[]);
+ assert.equal((await followupApi(h,'create',input)).request.runId,run.id);assert.equal(h.state.agentStarts.length,1);
+ h.state.agentUpdate({id:run.id,kind:'agent',status:'completed',response:'Synthetic result',finishedAt:new Date().toISOString()});
+ const finished=await followupApi(h,'get',{projectId:project.id,reviewId:review.id,requestId:saved.requestId});assert.equal(finished.request.state,'finished');assert.equal(finished.request.delivery,'submitted');assert.equal(finished.request.resolution,'pending');assert.equal(h.state.agentStarts.length,1);
+});
+
+test('public follow-up original retries survive missing predecessors and changed targets without rebinding',async t=>{
+ const h=await harness(t),{service,project,review}=await seed(h),next=await h.success('review.save',{projectId:project.id,serviceId:service.id,title:'Retained follow-up'});
+ const previous=h.state.liveStore.saveAgentRun({reviewId:review.id,serviceId:service.id,prompt:'Previous',status:'completed',workPath:'/tmp/test'}),input={projectId:project.id,reviewId:next.id,requestId:'missing-predecessor-public',prompt:'Retain original request',predecessorId:previous.id};
+ await followupApi(h,'create',input);const original=h.state.liveStore.exportData().agentRequests[0];
+ await h.success('review.delete',{id:review.id});
+ const missing=await followupApi(h,'create',input);assert.equal(missing.request.state,'waiting');assert.equal(missing.request.predecessorId,previous.id);assert.equal(missing.request.predecessorReviewId,null);assert.match(missing.request.reason,/찾을 수 없습니다/);
+ await h.success('service.save',{id:service.id,agentBinary:'changed-fixture-binary'});
+ const changed=await followupApi(h,'create',input);assert.equal(changed.request.state,'waiting');assert.match(changed.request.reason,/변경/);
+ assert.equal(h.state.liveStore.exportData().agentRequests[0].targetKey,original.targetKey);assert.equal(h.state.liveStore.exportData().agentRequests[0].binary,original.binary);assert.equal(h.state.agentStarts.length,0);
+});
+
+test('public follow-ups retain global blockers without exposing foreign request content or private execution fields',async t=>{
+ const h=await harness(t),{group,service,project,review}=await seed(h),other=await h.success('project.save',{groupId:group.id,name:'Conflicting project',serviceIds:[service.id]}),foreign=await h.success('review.save',{projectId:other.id,serviceId:service.id,title:'Other target'});
+ await followupApi(h,'create',{projectId:other.id,reviewId:foreign.id,requestId:'foreign-public-blocker',prompt:'FOREIGN_PRIVATE_PROMPT'});
+ h.state.failures.get='before';
+ const local=await followupApi(h,'create',{projectId:project.id,reviewId:review.id,requestId:'blocked-public',prompt:'Local request'}),listed=await followupApi(h,'list',{projectId:project.id,reviewId:review.id});
+ assert.equal(local.request.state,'waiting');assert.equal(local.request.blockingRequestId,null);assert.equal(listed.requests.length,1);
+ for(const forbidden of ['FOREIGN_PRIVATE_PROMPT','foreign-public-blocker','targetKey','requestSignature','executionSettings','privateKeyPath','synthetic-old-password','example.test','tester','binary','context'])assert.ok(!JSON.stringify(listed).includes(forbidden),forbidden);
+ assert.equal(h.state.agentStarts.length,0);
+});
+
+test('legacy unsigned follow-ups remain readable and cancellable but cannot claim an unknown original create identity',async t=>{
+ const h=await harness(t),{project,review}=await seed(h),input={projectId:project.id,reviewId:review.id,requestId:'legacy-public',prompt:'Existing legacy request'};
+ await followupApi(h,'create',input);h.state.liveStore.db.prepare('UPDATE agent_requests SET requestSignature=\'\' WHERE id=?').run(input.requestId);
+ const baseline=h.state.liveStore.exportData();assert.equal((await followupApi(h,'get',{projectId:project.id,reviewId:review.id,requestId:input.requestId})).request.prompt,input.prompt);
+ await assert.rejects(followupApi(h,'create',input),{code:'REQUEST_ID_CONFLICT'});assert.deepEqual(h.state.liveStore.exportData(),baseline);
+ assert.equal((await followupApi(h,'cancel',{projectId:project.id,reviewId:review.id,requestId:input.requestId})).request.state,'cancelled');assert.equal(h.state.agentStarts.length,0);
+});
+
+test('public follow-up ownership is rechecked at serialized dispatch after IDs are restored',async t=>{
+ for(const scenario of ['list','get','create-new','create-retry','cancel']){
+  const h=await harness(t),{group,service,project,review}=await seed(h),other=await h.success('project.save',{groupId:group.id,name:'Restored destination',serviceIds:[service.id]}),input={projectId:project.id,reviewId:review.id,requestId:'restore-scope',prompt:'Original saved request'};
+  if(scenario!=='create-new')await followupApi(h,'create',input);
+  const restored=h.state.liveStore.exportData();restored.reviews.find(row=>row.id===review.id).projectId=other.id;
+  const action=scenario.startsWith('create')?'create':scenario,barrier=scenario==='cancel'?'agent.request.cancel':scenario.startsWith('create')?'agent.request.add':'agent.request.list';
+  let injected=false,afterRestore;
+  const api=require('../electron/automation-api.cjs').createAutomationApi({dispatch:async(method,payload)=>{
+   if(method===barrier&&!injected){injected=true;h.state.liveStore.importData(restored);afterRestore=h.state.liveStore.exportData();}
+   return h.state.toolIntegration.dispatch(method,payload);
+  }});
+  await assert.rejects(api.handle('automation.followups.'+action,action==='list'?{projectId:project.id,reviewId:review.id}:action==='create'?input:{projectId:project.id,reviewId:review.id,requestId:input.requestId}),{code:'TARGET_MISMATCH'});
+  assert.equal(injected,true,scenario);assert.deepEqual(h.state.liveStore.exportData(),afterRestore,scenario);assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.agentCancelled,[]);
+  const currentTarget={projectId:other.id,reviewId:review.id,requestId:input.requestId};
+  if(scenario==='create-new')assert.equal((await followupApi(h,'create',{...input,projectId:other.id})).requestId,input.requestId);
+  else{
+   assert.equal((await followupApi(h,'get',currentTarget)).request.prompt,input.prompt);
+   if(scenario==='create-retry')await assert.rejects(followupApi(h,'create',{...input,projectId:other.id}),{code:'REQUEST_ID_CONFLICT'});
+   if(scenario==='cancel')assert.equal((await followupApi(h,'cancel',currentTarget)).request.state,'cancelled');
+  }
+ }
+});

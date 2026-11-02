@@ -2,6 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const { finished } = require('node:stream/promises');
 const load = () => import('../scripts/upload-windows-release.mjs');
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const commit = 'a'.repeat(40);
@@ -185,7 +186,7 @@ test('local preparation binds the verified installer to its report and a stable 
     if (testBuild) await fs.writeFile(metadata, JSON.stringify({ channel: 'test' }));
     else await fs.rm(metadata, { force: true });
     await fs.rm(archive, { force: true });
-    await asar.createPackage(source, archive); asar.uncache(archive);
+    await finished(await asar.createPackage(source, archive)); asar.uncache(archive);
   }
   const options = { directory, reportFile, env: validEnv(), platform: 'win32', version, actualCommit: commit };
   await writeReport(report); await writeArchive();
