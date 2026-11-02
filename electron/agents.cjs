@@ -284,6 +284,14 @@ function createAgentManager(options = {}) {
   }
   async function prepareLocal(settings) {
     const root = await requireDirectory(settings.workPath);
+    if (platform === 'darwin' && settings.binary === 'codex') {
+      // Account management and default local projects share the same validated
+      // CLI, including its native architecture prefix. Explicit paths stay strict.
+      const runtime = options.getLocalRuntime ? options.getLocalRuntime() : await findRuntime();
+      assertMetadataCurrent(settings);
+      if (!runtime?.available) throw new SshError('AGENT_NOT_INSTALLED', runtime?.error || 'Codex CLI를 설치하거나 실행 파일을 선택하십시오.');
+      return {...settings, workPath:root, binary:runtime.command || runtime.path, launchArgs:runtime.args || []};
+    }
     if (platform === 'win32') {
       // npm installs a .cmd wrapper. Resolve its native Codex executable instead
       // of sending user paths or prompts through cmd.exe.

@@ -3,40 +3,66 @@
   "version": "1.3.0",
   "entries": [
     {
+      "category": "fixes",
+      "title": "Find Codex CLI automatically on macOS",
+      "description": "Detect the CLI bundled with Codex or ChatGPT and show its version and path in Accounts. Use the same selected executable for default local projects, keep valid manual choices, and retry failed checks. Copy troubleshooting details with personal paths hidden.",
+      "commits": [
+        "c7c9892c0473e267fc1c3ce37a4b51ed354e8ac0",
+        "20740acf8a0b2068e283bcc2b409825a94f6ead4",
+        "c2e4dab8bc1d212831cc7c320784ff584b08786c",
+        "c25f84b33cf56746576432b9b045ac3f5aade0e8",
+        "fd50760235d1f598b6640d84ad10b85df82a5a72",
+        "3b185207f71ee56693daf98f18e9fa92d1ec0fa3",
+        "64f7029b9e3ac90a630c51924b00aa17b84a11fa"
+      ]
+    },
+    {
       "category": "features",
       "title": "Run project QA in separate windows",
       "description": "Use project-scoped QA sessions to work on multiple projects while keeping their windows and review context separate.",
-      "commits": ["9f86c034b435e15056d6150d927d8770cf3bead0"]
+      "commits": [
+        "9f86c034b435e15056d6150d927d8770cf3bead0"
+      ]
     },
     {
       "category": "features",
       "title": "Discover review categories through MCP",
       "description": "Find category IDs through the public MCP API before creating or updating reviews.",
-      "commits": ["c9c118c485e6c5f3d4fb679d0bbe97a77eac3c77"]
+      "commits": [
+        "c9c118c485e6c5f3d4fb679d0bbe97a77eac3c77"
+      ]
     },
     {
       "category": "features",
       "title": "Capture existing web sessions in Home reviews",
       "description": "Attach captures from an already open project web source while preserving its current page and unsaved form state.",
-      "commits": ["e434ac41459c74da8f91b0bd5af09aace163790a"]
+      "commits": [
+        "e434ac41459c74da8f91b0bd5af09aace163790a"
+      ]
     },
     {
       "category": "improvements",
       "title": "Track development versions and their history",
       "description": "Show development numbers within each base version and retain source-bound update history alongside compatible installer names.",
-      "commits": ["8c39fe459885e784ab532e509978600b1500ebaf"]
+      "commits": [
+        "8c39fe459885e784ab532e509978600b1500ebaf"
+      ]
     },
     {
       "category": "fixes",
       "title": "Recover capture sessions after a renderer failure",
       "description": "Restore the owned capture session after a renderer crash or UI reload while retaining project scope.",
-      "commits": ["897c596efac1deddd7dfd86732307cdce4670dce"]
+      "commits": [
+        "897c596efac1deddd7dfd86732307cdce4670dce"
+      ]
     },
     {
       "category": "fixes",
       "title": "Keep web previews reliable after reload",
       "description": "Reload a project without leaving stale web views behind or interrupting newer previews and other projects.",
-      "commits": ["a4329da66eaa1c945699ffe43a4a97bdf3ef680b"]
+      "commits": [
+        "a4329da66eaa1c945699ffe43a4a97bdf3ef680b"
+      ]
     }
   ]
 }

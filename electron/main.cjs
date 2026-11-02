@@ -182,7 +182,7 @@ function sameAgentLocation(run,service,settings) {
   return savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
 }
 function agentManager() {
-  if(!agents) agents=require('./agents.cjs').createAgentManager({onUpdate:job=>{
+  if(!agents) agents=require('./agents.cjs').createAgentManager({getLocalRuntime:()=>codexManager?.localRuntime(),onUpdate:job=>{
     const previous=agentJobs.get(job.id);
     const merged={...previous,...job,...(previous?.prompt?{prompt:previous.prompt}:{}),...(previous?.sessionScope?{sessionScope:previous.sessionScope,workPath:previous.workPath}:{})};
     agentJobs.set(job.id,merged);
@@ -817,7 +817,7 @@ async function dispatch(action, payload = {}) {
   }
   if (action === 'clipboard.writeText') {
     if(typeof payload.text!=='string'||!payload.text.length||Buffer.byteLength(payload.text)>2*1024*1024)throw new Error('복사할 내용을 다시 선택하십시오.');
-    clipboard.writeText(payload.text);
+    await clipboard.writeText(payload.text);
     return {copied:true};
   }
   if (action === 'app.language') {const result=appLanguage.setLanguage(payload.language);updateNativeMenu();return result;}
@@ -827,7 +827,7 @@ async function dispatch(action, payload = {}) {
       const state = updater.snapshot();
       const tr = appLanguage.t;
       const describe = (label, build) => !build ? [] : [`${tr(label)}: ${displayBuildVersion(build)} (${tr(build.channel === 'test' ? '테스트' : '정식')})`, ...(build.channel === 'test' ? [`${tr('빌드 번호')}: ${build.buildNumber}`, `${tr('커밋')}: ${build.commit}`, `${tr('생성 시간')}: ${build.builtAt} (UTC)`] : [])];
-      clipboard.writeText([...describe('설치된 버전', state.installedBuild), ...describe('받을 버전', state.availableBuild || (state.availableVersion ? {channel:'stable',version:state.availableVersion} : null)), `CPU: ${state.arch}`].join('\n'));
+      await clipboard.writeText([...describe('설치된 버전', state.installedBuild), ...describe('받을 버전', state.availableBuild || (state.availableVersion ? {channel:'stable',version:state.availableVersion} : null)), `CPU: ${state.arch}`].join('\n'));
       return { copied: true };
     }
     const method = { 'update.state':'snapshot', 'update.check':'check', 'update.download':'download', 'update.install':'install', 'update.apply':'apply', 'update.configure':'configure', 'update.openRelease':'openRelease', 'update.rendererReady':'markHealthy' }[action];

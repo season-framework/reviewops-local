@@ -9,6 +9,7 @@ const { HostService } = require('./host-service.cjs');
 const { HostFileService } = require('./host-files.cjs');
 const { createHostFileHandlers } = require('./host-file-handlers.cjs');
 const { openSshTerminal } = require('./host-terminal.cjs');
+const { atomicWrite } = require('../vault.cjs');
 
 async function createCodexManager(options = {}) {
   const dataPath = options.dataPath;
@@ -18,18 +19,21 @@ async function createCodexManager(options = {}) {
   const { shell, dialog, clipboard } = options;
   const getWindow = options.getWindow || (() => options.window || null);
   const findRuntimeImpl = options.findRuntime || findRuntime;
+  const writeRuntimeSettings = options.writeRuntimeSettings || atomicWrite;
+  const now = options.now || Date.now;
   const assertTrusted = event => {
     if (typeof options.trusted !== 'function') throw new Error('허용되지 않은 요청입니다.');
     if (options.trusted(event) === false) throw new Error('허용되지 않은 요청입니다.');
   };
   let service, hostService, fileService, runtime;
+  let selection = {}, runtimeDiagnostics = { records: [], omitted: 0 }, lastRecheckAt = -Infinity;
   let changingRuntime = false, registered = false, closed = false;
   const channels = [];
   const send = (channel, snapshot) => {
     for(const window of options.getWindows?.()||[getWindow()])if(window&&!window.isDestroyed()&&!window.webContents.isDestroyed())window.webContents.send(channel,snapshot);
   };
   function state() {
-    return { ...service.snapshot(), runtime: { available: runtime.available, path: runtime.path, version: runtime.version, error: runtime.error } };
+    return { ...service.snapshot(), runtime: { available: runtime.available, path: runtime.path, version: runtime.version, error: runtime.error, errorKind: runtime.errorKind || null, diagnostics: structuredClone(runtimeDiagnostics) } };
   }
   function publish() { if (service) send('accounts:state', state()); }
   function publishHosts() {
@@ -79,6 +83,26 @@ async function setupService(command) {
   service = new AccountService({ ...(options.accountOptions || {}), dataDir, command: command.command || '', args: [...(command.args || []), 'app-server'], onChange: publish });
   await service.init();
 }
+function requireRuntimeIdle() {
+  const active = service.snapshot();
+  if (changingRuntime || active.refresh?.running || active.accounts.some(a => a.status === 'loading' || a.status === 'loggingIn' || a.resetAttempt?.status === 'pending')) throw new Error('진행 중인 작업이 끝난 뒤 변경하십시오.');
+}
+async function selectedRuntime(bypassCooldown = false) {
+  const source = typeof selection.sourcePath === 'string' && path.isAbsolute(selection.sourcePath)
+    && selection.sourcePath.length <= 4096 && !/[\0\r\n]/.test(selection.sourcePath) ? selection.sourcePath : '';
+  const differentSource = source && source !== selection.path;
+  const flags = { rediscoverMissingAppPath: !differentSource, ...(bypassCooldown ? { bypassCooldown: true } : {}) };
+  const found = await findRuntimeImpl(selection.path, flags);
+  if (!found.available && differentSource) {
+    // A new source is tried only after the cached canonical file is actually
+    // gone. Existing launch/version/permission failures keep their selection.
+    try { await fs.stat(selection.path); }
+    catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes(error.code)) return findRuntimeImpl(source, { rediscoverMissingAppPath: true, ...(bypassCooldown ? { bypassCooldown: true } : {}) });
+    }
+  }
+  return found;
+}
 function registerHandlers(ipcMain = options.ipcMain) {
     if (!ipcMain || typeof ipcMain.handle !== 'function') throw new Error('IPC 연결을 지정하십시오.');
     if (registered) throw new Error('계정 및 호스트 관리가 이미 연결되어 있습니다.');
@@ -108,22 +132,39 @@ function registerHandlers(ipcMain = options.ipcMain) {
     removeAccount: async id => { await service.removeAccount(accountId(id)); return state(); },
     openLogin,
     openUsagePage: async () => shell.openExternal('https://chatgpt.com/codex/settings/usage'),
+    recheckCodexRuntime: async (...args) => {
+      if (args.length) throw new Error('실행 파일 재검사는 인수를 받지 않습니다.');
+      requireRuntimeIdle();
+      if (now() - lastRecheckAt < 30_000) throw new Error('30초 후 다시 검사하십시오.');
+      lastRecheckAt = now(); changingRuntime = true;
+      try {
+        const found = await selectedRuntime(true);
+        runtimeDiagnostics = found.diagnostics || { records: [], omitted: 0 };
+        await service.close(); runtime = found; await setupService(found);
+        publish(); options.onRuntimeChange?.(); return state();
+      } finally { changingRuntime = false; }
+    },
     chooseCodexBinary: async () => {
-      const active = service.snapshot();
-      if (changingRuntime || active.refresh?.running || active.accounts.some(a => a.status === 'loading' || a.status === 'loggingIn' || a.resetAttempt?.status === 'pending')) throw new Error('진행 중인 작업이 끝난 뒤 변경하십시오.');
+      requireRuntimeIdle();
       changingRuntime = true;
       try {
-        const selection = await dialog.showOpenDialog(getWindow(), { title: 'Codex 실행 파일 선택', properties: ['openFile', 'showHiddenFiles'] });
-        if (selection.canceled) return state();
-        const found = await findRuntimeImpl(selection.filePaths[0]);
-        if (!found.available) throw new Error(found.error || 'Codex 실행 파일을 찾을 수 없습니다.');
+        const choice = await dialog.showOpenDialog(getWindow(), { title: 'Codex 실행 파일 선택', properties: ['openFile', 'showHiddenFiles'] });
+        if (choice.canceled) return { ...state(), runtimeSelection: 'cancelled' };
+        const sourcePath = choice.filePaths?.[0];
+        if (typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath) || sourcePath.length > 4096 || /[\0\r\n]/.test(sourcePath)) throw new Error('Codex 실행 파일의 전체 경로를 선택하십시오.');
+        const found = await findRuntimeImpl(sourcePath);
+        runtimeDiagnostics = found.diagnostics || { records: [], omitted: 0 };
+        if (!found.available) { publish(); throw new Error(found.error || 'Codex 실행 파일을 찾을 수 없습니다.'); }
+        const settings = { path: found.path, sourcePath };
+        try { await writeRuntimeSettings(settingsPath, JSON.stringify(settings)); }
+        catch { publish(); throw new Error('Codex 실행 파일 선택을 저장하지 못했습니다. 기존 설정을 유지합니다.'); }
         await service.close();
         runtime = found;
-        await fs.writeFile(settingsPath, JSON.stringify({ path: found.path }), { mode: 0o600 });
+        selection = settings;
         await setupService(found);
         publish();
         options.onRuntimeChange?.();
-        return state();
+        return { ...state(), runtimeSelection: 'saved' };
       } finally { changingRuntime = false; }
     },
   };
@@ -176,9 +217,12 @@ function registerHandlers(ipcMain = options.ipcMain) {
   await fs.mkdir(dataDir, { recursive: true, mode: 0o700 });
   await fs.chmod(dataDir, 0o700);
   if (options.accountImport) await require('./import-accounts.cjs').importAccounts({ ...options.accountImport, targetDir: dataDir });
-  let customPath;
-  try { customPath = JSON.parse(await fs.readFile(settingsPath, 'utf8')).path; } catch (error) { if (error.code !== 'ENOENT') throw new Error('Codex 실행 설정을 읽지 못했습니다.'); }
-  runtime = await findRuntimeImpl(customPath);
+  try {
+    selection = JSON.parse(await fs.readFile(settingsPath, 'utf8'));
+    if (!selection || typeof selection !== 'object' || Array.isArray(selection)) throw new Error('Invalid runtime settings');
+  } catch (error) { if (error.code !== 'ENOENT') throw new Error('Codex 실행 설정을 읽지 못했습니다.'); }
+  runtime = await selectedRuntime();
+  runtimeDiagnostics = runtime.diagnostics || { records: [], omitted: 0 };
   await setupService(runtime);
   const configPath = options.configPath || process.env.REVIEWOPS_CODEX_SSH_CONFIG || process.env.CODEX_MANAGER_SSH_CONFIG || undefined;
   hostService = new HostService({ ...(options.hostOptions || {}), configPath, sshDir: options.sshDir || (configPath ? path.dirname(configPath) : undefined), onChange: publishHosts });
@@ -190,6 +234,7 @@ function registerHandlers(ipcMain = options.ipcMain) {
   return {
     registerHandlers,
     accountState: state,
+    localRuntime: () => ({ ...runtime, args: [...(runtime.args || [])] }),
     hostState: () => hostService.snapshot(),
     // Resolve OpenSSH Includes, Host defaults and identity substitutions without connecting.
     async resolveHost(idOrAlias) {

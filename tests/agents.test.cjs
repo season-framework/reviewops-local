@@ -139,6 +139,49 @@ test('Windows local agents resolve npm wrappers and cancel the whole process tre
  const kill=calls.find(call=>call.command==='taskkill.exe');assert.deepEqual(kill.args.slice(2),['/T','/F']);assert.equal(kill.options.shell,false);
 });
 
+test('macOS default projects reuse the selected CLI and architecture prefix for login, probes, and requests', async t => {
+ const calls=[],prefix=['-arm64','/fixture/bundled-codex'];let authenticated=false;
+ let runtime={available:true,path:prefix[1],command:'/usr/bin/arch',args:prefix};
+ const spawnImpl=(command,args,options)=>{
+  calls.push({command,args,options});
+  assert.equal(command,runtime.command);assert.deepEqual(args.slice(0,2),prefix);
+  const child=Object.assign(new EventEmitter(),{stdout:new PassThrough(),stderr:new PassThrough(),stdin:new PassThrough()});
+  const actual=args.slice(2);
+  setImmediate(()=>{
+   if(actual[0]==='--version'){child.stdout.write('codex-cli 0.166.0-alpha.5.1\n');child.emit('close',0);}
+   else if(actual[0]==='login'&&actual[1]==='status')child.emit('close',authenticated?0:1);
+   else if(actual[0]==='login'){authenticated=true;child.emit('close',0);}
+   else {assert.equal(actual[0],'exec');child.stdout.write(JSON.stringify({type:'thread.started',thread_id:'bundled-test'})+'\n'+JSON.stringify({type:'turn.completed'})+'\n');child.emit('close',0);}
+  });
+  return child;
+ };
+ const f=await fixture(t,{platform:'darwin',getLocalRuntime:()=>runtime,spawn:spawnImpl});
+ const settings={...f.settings,binary:'codex'};
+ await assert.rejects(f.manager.preflight(f.config,settings),{code:'AGENT_AUTH_REQUIRED'});
+ const login=f.manager.login({config:f.config,settings});assert.equal((await completed(f.manager,login.id)).status,'completed');
+ const request=f.manager.start({config:f.config,settings,prompt:'Synthetic request; no external AI'});assert.equal((await completed(f.manager,request.id)).status,'completed');
+ assert.ok(calls.some(row=>row.args.includes('--device-auth')));assert.ok(calls.some(row=>row.args.includes('exec')));
+ assert.ok(calls.every(row=>row.options.shell===false&&row.options.env.CODEX_HOME===path.join(f.home,'.codex')));
+ const count=calls.length;runtime={available:false,error:'Codex CLI를 찾을 수 없습니다.'};
+ await assert.rejects(f.manager.preflight(f.config,settings),{code:'AGENT_NOT_INSTALLED'});assert.equal(calls.length,count);
+});
+
+test('macOS explicit project executables bypass account discovery, including Node fixtures and missing app paths', async t => {
+ let runtimeReads=0;
+ const f=await fixture(t,{platform:'darwin',getLocalRuntime:()=>{runtimeReads++;throw new Error('Explicit executables must remain separate');}});
+ assert.equal((await f.manager.preflight(f.config,f.settings)).installed,true);
+ const missing=path.join(f.home,'Applications/ChatGPT.app/Contents/Resources/codex');
+ await assert.rejects(f.manager.preflight(f.config,{...f.settings,binary:missing}),{code:'AGENT_NOT_INSTALLED'});
+ assert.equal(runtimeReads,0);
+});
+
+test('macOS default discovery cannot start a late probe after metadata shutdown', async t => {
+ const entered=deferred(),gate=deferred();let spawns=0;
+ const f=await fixture(t,{platform:'darwin',findRuntime:async()=>{entered.resolve();await gate.promise;return{available:true,command:'/fixture/bundled-codex',args:[]};},spawn(){spawns++;throw new Error('Late probe must not start');}});
+ const pending=f.manager.environment(f.config,{...f.settings,binary:'codex'});await entered.promise;
+ await f.manager.closeAll();gate.resolve();await assert.rejects(pending,{code:'AGENT_CLOSING'});assert.equal(spawns,0);
+});
+
 test('agent preflight shares start validation without creating a job, process or SSH connection',async()=>{
  let spawnCalls=0,connections=0,updates=0;
  const manager=createAgentManager({spawn(){spawnCalls++;throw new Error('No process expected');},ssh2:{Client:class{constructor(){connections++;throw new Error('No SSH expected');}}},onUpdate(){updates++;}});

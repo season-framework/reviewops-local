@@ -45,3 +45,13 @@ test('native clipboard bridge is exposed only in the main frame and preserves te
   error=true;await assert.rejects(exposed.reviewops.copyText(text),error=>error.message==='clipboard denied'&&error.code==='COPY_FAILED');
  }
 });
+
+test('runtime recheck is a main-frame-only no-argument account method', async () => {
+ for (const isMainFrame of [false,true]) {
+  const exposed={},calls=[],ipcRenderer=new EventEmitter();ipcRenderer.invoke=async(...args)=>{calls.push(args);return {runtime:{available:false}};};
+  vm.runInNewContext(fs.readFileSync(require.resolve('../electron/preload.cjs'),'utf8'),{require:()=>({ipcRenderer,contextBridge:{exposeInMainWorld:(name,value)=>{exposed[name]=value}},webUtils:{getPathForFile:()=>''}}),process:{isMainFrame}});
+  if (!isMainFrame) {assert.equal(exposed.accountManager,undefined);continue;}
+  await exposed.accountManager.recheckCodexRuntime({force:true});
+  assert.deepEqual(calls,[['accounts:recheckCodexRuntime']]);
+ }
+});
