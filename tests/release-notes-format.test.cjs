@@ -43,3 +43,28 @@ test('stable draft notes share categories and preserve pending QA and unsigned-i
  assert.match(body,/^\*\*Draft/);assert.ok(body.includes('QA report'));assert.ok(body.includes('## Fixes'));assert.ok(body.includes('**NotSigned**'));assert.equal(/^# /m.test(body),false);assert.equal(/[가-힣]/.test(body),false);assert.ok(body.includes(`/compare/v1.2.11...${commit}`));
  const fallback=renderStableDraftNotes({version:'1.2.11',tag:'v1.2.11',commit,policy:{reason:'한국어 정책 설명'}});assert.equal(/[가-힣]/.test(fallback),false);assert.ok(fallback.includes('## Changes'));
 });
+
+test('raw documentation and maintenance stay in source details while unrepresented behavior remains visible',async()=>{
+ const {renderTestReleaseNotes}=await load();
+ const subjects=['docs: bind the clipboard fix to the Codex release highlight','ci: verify release metadata','feat: add review filters','improve: show selected CLI paths','fix: retain manual CLI selection'];
+ const raw={...changes,totalCommits:subjects.length,commits:subjects.map((subject,index)=>({commit:String(index+1).repeat(40),subject,references:[ref]}))};
+ const body=renderTestReleaseNotes({build:{buildNumber:27001,commit,builtAt:'2026-11-02T10:48:25.689Z'},versionLabel:'1.3.0-dev-3',pointer:{},changes:raw});
+ const [summary,details]=body.split('<details>');
+ assert.equal(summary.includes('Bind the clipboard fix'),false);assert.equal(summary.includes('Verify release metadata'),false);
+ assert.equal(summary.includes('## Documentation'),false);assert.equal(summary.includes('## Maintenance'),false);
+ for(const title of ['Add review filters','Show selected CLI paths','Retain manual CLI selection'])assert.ok(summary.includes(title));
+ for(const item of raw.commits){assert.ok(details.includes(item.commit));assert.ok(details.includes(item.subject.replace(/^[a-z]+:\s*/,'').replace(/^./,letter=>letter.toUpperCase())));}
+});
+
+test('reviewed documentation and maintenance highlights remain source-bound in test and stable summaries',async()=>{
+ const {changeSections,renderStableDraftNotes}=await load();
+ const docs={category:'documentation',title:'Read English guides',description:'Use the English setup and troubleshooting guides.',commits:[commit]};
+ const maintenance={category:'maintenance',title:'Use verified installers',description:'Download packages with matching source and verification records.',commits:[other]};
+ const raw={...changes,commits:[{commit,subject:'docs: translate setup guides',references:[ref]},{commit:other,subject:'build: verify installers'}]};
+ const summary=changeSections(raw,[docs,maintenance]);
+ assert.ok(summary.includes('## Documentation'));assert.ok(summary.includes('## Maintenance'));assert.ok(summary.includes('Read English guides'));assert.ok(summary.includes('Use verified installers'));
+ assert.equal(summary.includes('Translate setup guides'),false);assert.equal(summary.includes('Verify installers'),false);
+ assert.equal(changeSections({...raw,commits:[]},[docs,maintenance]),'');
+ const stable=renderStableDraftNotes({version:'1.3.0',tag:'v1.3.0',commit},[docs,maintenance]);
+ assert.ok(stable.includes('Read English guides'));assert.ok(stable.includes('Use verified installers'));assert.ok(stable.includes(`/commit/${commit}`));assert.ok(stable.includes(`/commit/${other}`));
+});
