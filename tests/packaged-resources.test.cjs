@@ -8,7 +8,7 @@ async function fixture(t,{missingCategory=false}={}){
  const source=path.join(directory,'source'),resources=path.join(directory,'resources'),archive=path.join(resources,'app.asar');
  await fs.mkdir(path.join(source,'electron'),{recursive:true});await fs.mkdir(resources);
  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:build.version}));await fs.writeFile(path.join(source,'electron/reviewops-build.json'),JSON.stringify(build));
- for(const name of ['mcp-server.cjs','automation-api.cjs','review-categories.json'])if(!missingCategory||name!=='review-categories.json')await fs.copyFile(path.join(__dirname,'../electron',name),path.join(source,'electron',name));
+ for(const name of ['mcp-server.cjs','automation-api.cjs','review-categories.json','owned-node-bootstrap.cjs'])if(!missingCategory||name!=='review-categories.json')await fs.copyFile(path.join(__dirname,'../electron',name),path.join(source,'electron',name));
  await asar.createPackage(source,archive);return {directory,resources,archive,context:{appOutDir:directory,packager:{getResourcesDir:()=>resources}}};
 }
 test('afterPack preserves the canonical ASAR category data and makes identical standalone MCP copies',async t=>{

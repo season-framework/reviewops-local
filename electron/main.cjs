@@ -22,6 +22,7 @@ const {createAppLanguage} = require('./app-language.cjs');
 const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
 const {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions}=require('./review-versions.cjs');
 const {qaProjectId,scopedSnapshot,assertProjectAction}=require('./project-qa-scope.cjs');
+const {createProjectServiceRuntime}=require('./project-service-runtime.cjs');
 
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
@@ -35,9 +36,11 @@ const devUrl = !app.isPackaged ? process.env.REVIEWOPS_DEV_URL : null;
 const attachmentPath = path.join(dataPath, 'attachments');
 let window, store, vault, agents, codexManager, updater, modelCache;
 let seasonIntegration, toolIntegration, qaAutomation;
+let managedServices;
 const windowContexts = new Map(), projectWindows = new Map(), terminalOwners = new Map();
 const requestWindowContext = new AsyncLocalStorage();
-const quitApproved = new WeakSet();
+let quitAttempt = null;
+const QUIT_CLOSE_TIMEOUT_MS = 10000;
 let integrationSequence = 0, dataRevision = 0;
 const agentJobs = new Map();
 let quitting = false;
@@ -533,6 +536,7 @@ async function deleteEntity(kind, itemId) {
   const snapshot=store.snapshot();
   const projects=new Set(snapshot.projects.filter(item=>kind==='group'?item.groupId===itemId:kind==='project'&&item.id===itemId).map(item=>item.id));
   const services=new Set(snapshot.services.filter(item=>kind==='group'?item.groupId===itemId:kind==='service'&&item.id===itemId).map(item=>item.id));
+  managedServices?.assertMutationAllowed({projectIds:[...projects],connectionIds:[...services]});
   const reviews=new Set(snapshot.reviews.filter(item=>projects.has(item.projectId)||(kind==='review'&&item.id===itemId)).map(item=>item.id));
   if(kind==='project')for(const config of snapshot.services)if(config.managedProjectId===itemId&&!snapshot.projects.some(project=>project.id!==itemId&&project.serviceIds.includes(config.id))&&!store.listAgentRuns().some(run=>run.serviceId===config.id&&!reviews.has(run.reviewId)))services.add(config.id);
   if(kind==='service'&&snapshot.projects.some(item=>item.serviceIds.includes(itemId)))throw Object.assign(new Error('연결된 프로젝트를 모두 해제한 뒤 서비스를 삭제하십시오.'),{code:'IN_USE'});
@@ -554,6 +558,7 @@ async function deleteEntity(kind, itemId) {
     };
     const result=services.size?changeWithCredentials(remove):remove();
     committed=true;
+    for(const projectId of projects)managedServices?.invalidate(projectId);
     for(const serviceId of services){pendingTrust.delete(serviceId);terminals.closeService(serviceId);}
     for(const [jobId,job] of agentJobs)if(affected(job)){agentJobs.delete(jobId);operations.delete(`agent:${jobId}`);}
     for(const record of windowContexts.values())if(reviews.has(record.pendingReview?.reviewId)){record.pendingDisplay?.reject(new Error('표시할 리뷰가 삭제되었습니다.'));record.pendingReview=null;}
@@ -633,6 +638,7 @@ async function assertOtherWindowsSaved(caller) {
   for(const host of liveWindows())if(host!==caller&&host.webContents.executeJavaScript&&await host.webContents.executeJavaScript('document.documentElement.dataset.reviewopsDirty === "true"'))throw new Error('다른 창에서 작성 중인 내용을 저장하거나 닫은 뒤 백업을 복원하십시오.');
 }
 async function importBackup() {
+  managedServices?.assertMutationAllowed({all:true});
   const caller=getRequestWindow();await assertOtherWindowsSaved(caller);
   const selection = await dialog.showOpenDialog(getRequestWindow(), {title:'백업 복원', properties:['openFile'], filters:[{name:'ReviewOps 백업', extensions:['json']}]});
   if (selection.canceled) return {cancelled:true};
@@ -657,6 +663,7 @@ async function importBackup() {
   const tempDir = await fsp.mkdtemp(path.join(app.getPath('temp'),'reviewops-restore-'));
   let validation;
   try {
+    managedServices?.assertMutationAllowed({all:true});
     validation = createStore({dbPath:path.join(tempDir,'validate.sqlite')});
     validation.importData(bundle.data);
   } finally { validation?.close(); await fsp.rm(tempDir,{recursive:true,force:true}); }
@@ -672,10 +679,10 @@ async function importBackup() {
   await assertOtherWindowsSaved(caller);
   try {
     for (const item of validatedFiles) atomicWrite(path.join(attachmentPath,item.storageName),item.bytes);
-    changeWithCredentials(() => {
+    managedServices.withConfigurationReset(() => changeWithCredentials(() => {
       vault.clear();
       store.importData(bundle.data);
-    });
+    }));
   } catch(error) {
     for (const item of validatedFiles) await fsp.rm(path.join(attachmentPath,item.storageName),{force:true});
     throw error;
@@ -782,6 +789,32 @@ async function dispatch(action, payload = {}) {
     stagedAttachment:id=>[...stagedAttachments.values()].some(item=>item.ownerWindow===getRequestWindow()&&item.metadata.id===id)});
   if(payload.projectId&&!payload.serviceId&&['ssh.test','ssh.run','terminal.open','files.list','files.read','agent.environment','agent.login','agent.logout','agent.loginState','agent.session'].includes(action))payload={...payload,serviceId:store.project(payload.projectId).connection?.id};
   if (typeof action !== 'string' || !payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error('요청이 올바르지 않습니다.');
+  if(action==='viewer.readiness'||action==='viewer.agentState'||action.startsWith('serviceRuntime.')){
+    // Native app renderer only. Embedded pages and external integration dispatch
+    // cannot configure, execute or control a shell/Node process through this API.
+    if(!requestWindowContext.getStore())throw new Error('프로젝트 화면에서만 검사할 수 있습니다.');
+    const record=currentWindowRecord();
+    if(record.projectId&&record.projectId!==payload.projectId)throw Object.assign(new Error('이 창의 프로젝트만 검사할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+    const project=store.project(payload.projectId),connection=project.connection;
+    if(payload.connectionId!==undefined&&payload.connectionId!==connection?.id)throw Object.assign(new Error('현재 프로젝트의 연결만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+    if(action.startsWith('serviceRuntime.')){
+      const methods={'serviceRuntime.state':'state','serviceRuntime.configure':'configure','serviceRuntime.start':'start','serviceRuntime.stop':'stop','serviceRuntime.restart':'restart'},method=methods[action];
+      const allowed=new Set(['projectId','connectionId',...(method==='configure'?['config']:['stop','restart'].includes(method)?['instanceId']:[])]);
+      if(!method||Object.keys(payload).some(k=>!allowed.has(k))||!connection||connection.id!==payload.connectionId)throw Object.assign(new Error('현재 연결의 저장된 서비스 설정만 사용할 수 있습니다.'),{code:'TARGET_MISMATCH'});
+      if(method==='configure'&&requestQaProjectId())throw Object.assign(new Error('Node 실행 설정은 기본 프로젝트 화면에서 저장하십시오.'),{code:'TARGET_MISMATCH'});
+      return managedServices[method](project.id,connection.id,method==='configure'?payload.config:payload.instanceId);
+    }
+    const {checkHttp,compareFile,summarizeAgents}=require('./service-readiness.cjs');
+    const agentState=()=>summarizeAgents(store.listAgentRuns(),new Set(store.snapshot().reviews.filter(r=>r.projectId===project.id).map(r=>r.id)));
+    if(action==='viewer.agentState')return agentState();
+    if(payload.path!==undefined&&(typeof payload.path!=='string'||payload.path.length>4096))throw new Error('프로젝트 안의 상대 파일 경로를 입력하십시오.');
+    const service=serviceById(connection?.id),identity=JSON.stringify(connection),revision=managedServices.revision(project.id),token=crypto.randomUUID();operations.add(token);
+    try{
+      const [http,comparisonFile]=await Promise.all([checkHttp(payload.url),compareFile(service,payload.path)]);
+      if(JSON.stringify(store.project(project.id).connection)!==identity||managedServices.revision(project.id)!==revision)throw new Error('검사 중 프로젝트 연결이 변경되었습니다. 다시 검사하십시오.');
+      return {http,comparisonFile,agents:agentState(),execution:{verified:false,pid:null,command:'',file:null},managed:connection.kind==='local'?managedServices.state(project.id,connection.id).instance:null};
+    }finally{operations.delete(token);}
+  }
   if (action === 'clipboard.writeText') {
     if(typeof payload.text!=='string'||!payload.text.length||Buffer.byteLength(payload.text)>2*1024*1024)throw new Error('복사할 내용을 다시 선택하십시오.');
     clipboard.writeText(payload.text);
@@ -902,7 +935,8 @@ async function dispatch(action, payload = {}) {
   }
   if (action === 'group.save') return store.saveGroup(payload);
   if (action === 'project.save') {
-    if(payload.connection===undefined)return store.saveProject(payload);
+    if(payload.connection!==undefined||payload.serviceIds!==undefined)managedServices?.assertMutationAllowed({projectIds:[payload.id]});
+    if(payload.connection===undefined){const result=store.saveProject(payload);if(payload.serviceIds!==undefined)managedServices?.invalidate(result.id);return result;}
     const previous=payload.id?store.project(payload.id):null;
     if(previous)assertNoAgent(job=>job.reviewId?store.snapshot().reviews.some(review=>review.id===job.reviewId&&review.projectId===previous.id):job.serviceId===previous.connection?.id);
     let connection=payload.connection;
@@ -930,6 +964,7 @@ async function dispatch(action, payload = {}) {
     });
     if(previous?.connection&&(previous.connection.id!==result.connection?.id||['kind','host','port','username','authType','privateKeyPath','rootPath','hostAlias','sshConfigPath'].some(field=>previous.connection[field]!==result.connection?.[field])||Object.keys(prepared).length)){pendingTrust.delete(previous.connection.id);terminals.closeService(previous.connection.id);}
     const {connectionClonedFrom,...project}=result;
+    managedServices?.invalidate(project.id);
     return {...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null};
   }
   if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
@@ -951,6 +986,7 @@ async function dispatch(action, payload = {}) {
   if (action === 'review.version.target') return changeReviewTarget(store,payload);
   if (action === 'review.save') {payload=withCaptureEvidence(payload);const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {
+    managedServices?.assertMutationAllowed({connectionIds:[payload.id]});
     if(payload.id)assertNoAgent(job=>job.serviceId===payload.id);
     const previous = payload.id ? store.get('services',payload.id) : null;
     const prepared = vault.prepare(payload);
@@ -961,6 +997,7 @@ async function dispatch(action, payload = {}) {
       vault.commit(saved.id,prepared);
       return saved;
     });
+    for(const project of store.snapshot().projects)if(project.serviceIds.includes(service.id))managedServices?.invalidate(project.id);
     const connectionChanged = previous && (['kind','host','port','username','authType','privateKeyPath','rootPath'].some(field=>previous[field]!==service[field]) || Object.keys(prepared).length>0);
     if (connectionChanged) {
       pendingTrust.delete(service.id);
@@ -1062,6 +1099,7 @@ function createWindow(projectId='',{background=false}={}) {
     webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,webviewTag:false,backgroundThrottling:false}});
   const record={id:crypto.randomUUID(),host,projectId,browsers:null,pendingReview:null,pendingDisplay:null,pendingNavigation:null,presentationQueue:Promise.resolve()};
   windowContexts.set(host,record);if(projectId)projectWindows.set(projectId,record);else window=host;
+  if(quitAttempt&&!quitAttempt.hosts.has(host))cancelQuitAttempt(quitAttempt);
   const notify=()=>{if(!host.isDestroyed())host.webContents.send('reviewops:window-state',nativeWindowState(host));};
   for(const event of ['maximize','unmaximize','enter-full-screen','leave-full-screen'])host.on(event,notify);
   host.webContents.setWindowOpenHandler(()=>({action:'deny'}));
@@ -1069,9 +1107,14 @@ function createWindow(projectId='',{background=false}={}) {
   host.webContents.on('render-process-gone',()=>{closeWindowResources(host,false);record.pendingDisplay?.reject(new Error('프로젝트 화면의 연결이 끊겼습니다.'));});
   host.webContents.on('did-start-navigation',(_event,_url,isInPlace,isMainFrame)=>{if(isMainFrame&&!isInPlace)closeWindowResources(host,false);});
   host.webContents.on('will-prevent-unload',event=>{
-    if(quitApproved.has(host)){event.preventDefault();return;}
-    const response=dialog.showMessageBoxSync(host,{type:'question',title:'저장하지 않은 내용',message:'저장하지 않은 내용을 버리고 닫으시겠습니까?',buttons:['계속 작성','내용 버리고 닫기'],defaultId:0,cancelId:0,noLink:true});
-    if(response===1)event.preventDefault();else{quitting=false;updater?.cancelInstall();}
+    // Ask only at this renderer's final unload veto. A prior dirty check or a
+    // different window's consent must never approve edits made while draining.
+    const attempt=quitAttempt;
+    attempt?.pauseCloseWatchdog?.();
+    try{
+      const response=dialog.showMessageBoxSync(host,{type:'question',title:'저장하지 않은 내용',message:'저장하지 않은 내용을 버리고 닫으시겠습니까?',buttons:['계속 작성','내용 버리고 닫기'],defaultId:0,cancelId:0,noLink:true});
+      if(response===1)event.preventDefault();else if(attempt&&quitAttempt===attempt)cancelQuitAttempt(attempt);else if(!quitAttempt){quitting=false;updater?.cancelInstall();}
+    }finally{if(quitAttempt===attempt)attempt?.resumeCloseWatchdog?.();}
   });
   const allowFullscreen=(contents,permission,requestingUrl)=>{
     if(permission!=='fullscreen'||!liveWindows().some(item=>item.webContents===contents))return false;
@@ -1085,7 +1128,6 @@ function createWindow(projectId='',{background=false}={}) {
   host.on('closed',()=>{
     closeWindowResources(host);record.pendingDisplay?.reject(new Error('프로젝트 화면을 표시하기 전에 창이 닫혔습니다.'));record.pendingQaScope?.reject(new Error('프로젝트 QA 창이 닫혔습니다.'));
     windowContexts.delete(host);if(projectWindows.get(projectId)===record)projectWindows.delete(projectId);if(window===host)window=null;
-    if(quitting&&!liveWindows().length){quitting=false;app.quit();}
   });
   return record;
 }
@@ -1119,17 +1161,58 @@ async function showProjectReview({reviewId,projectId,view='project',fullscreen,d
   const record=projectWindow(project.id),show=()=>presentReview(record,{reviewId,projectId:project.id,fullscreen,displayBounds});
   const result=record.presentationQueue.then(show);record.presentationQueue=result.catch(()=>{});return result;
 }
+function cancelQuitAttempt(attempt,error) {
+  if(quitAttempt!==attempt)return;
+  quitAttempt=null;quitting=false;
+  attempt.cleanup?.();
+  managedServices?.resume();updater?.cancelInstall();
+  attempt.resolve?.(false);
+  if(error)dialog.showErrorBox('ReviewOps 종료 오류',error.message);
+}
 async function beginQuit() {
-  const hosts=liveWindows();
+  const attempt={hosts:new Set(liveWindows()),phase:'draining'},hosts=[...attempt.hosts];
+  quitAttempt=attempt;
   try {
-    for(const host of hosts){
-      const dirty=host.webContents.executeJavaScript?await host.webContents.executeJavaScript('document.documentElement.dataset.reviewopsDirty === "true"'):false;
-      if(dirty){const answer=dialog.showMessageBoxSync(host,{type:'question',title:'저장하지 않은 내용',message:'저장하지 않은 내용을 버리고 닫으시겠습니까?',buttons:['계속 작성','내용 버리고 닫기'],defaultId:0,cancelId:0,noLink:true});if(answer!==1){quitting=false;updater?.cancelInstall();return;}}
-    }
-    for(const host of hosts)quitApproved.add(host);
-    for(const host of hosts)if(!host.isDestroyed())host.close();
-    if(!liveWindows().length){quitting=false;app.quit();}
-  }catch(error){quitting=false;updater?.cancelInstall();dialog.showErrorBox('ReviewOps 종료 오류',error.message);}
+    await managedServices?.close(); // Exit must be observed before windows close.
+    if(quitAttempt!==attempt)return;
+    attempt.phase='closing';
+    const pending=new Set(hosts.filter(host=>!host.isDestroyed())),cleanups=[];
+    const closed=await new Promise(resolve=>{
+      attempt.resolve=resolve;
+      const finish=()=>{if(quitAttempt===attempt&&!pending.size)resolve(true);};
+      let timer,remaining=QUIT_CLOSE_TIMEOUT_MS,armedAt=0,timerGeneration=0,pauses=0;
+      const arm=()=>{
+        if(quitAttempt!==attempt||!pending.size||pauses)return;
+        const generation=++timerGeneration;armedAt=Date.now();
+        timer=setTimeout(function quitCloseExpired(){if(quitAttempt===attempt&&generation===timerGeneration&&!pauses)cancelQuitAttempt(attempt,new Error('창 닫힘을 확인하지 못해 앱 종료를 취소했습니다. 작성 중인 내용을 확인한 뒤 다시 종료하십시오.'));},remaining);timer.unref?.();
+      };
+      attempt.pauseCloseWatchdog=()=>{if(quitAttempt!==attempt)return;if(pauses++===0){remaining=Math.max(0,remaining-Math.max(0,Date.now()-armedAt));clearTimeout(timer);timerGeneration++;}};
+      attempt.resumeCloseWatchdog=()=>{if(quitAttempt!==attempt||!pauses)return;if(--pauses===0)arm();};
+      attempt.cleanup=()=>{clearTimeout(timer);timerGeneration++;for(const cleanup of cleanups)cleanup();};
+      for(const host of pending){
+        const onClosed=()=>{if(quitAttempt!==attempt)return;pending.delete(host);finish();};
+        const onClose=event=>{
+          attempt.closeEvents.set(host,event);
+          // All synchronous close listeners must have had a chance to veto.
+          setImmediate(()=>{if(quitAttempt===attempt&&event.defaultPrevented&&!host.isDestroyed())cancelQuitAttempt(attempt);});
+        };
+        host.once('closed',onClosed);host.on('close',onClose);
+        cleanups.push(()=>{host.removeListener('closed',onClosed);host.removeListener('close',onClose);});
+      }
+      attempt.closeEvents=new Map();
+      arm();
+      for(const host of [...pending]){
+        if(quitAttempt!==attempt)break;
+        if(host.isDestroyed()){pending.delete(host);continue;}
+        host.close();
+        if(quitAttempt===attempt&&attempt.closeEvents.get(host)?.defaultPrevented&&!host.isDestroyed())cancelQuitAttempt(attempt);
+      }
+      finish();
+    });
+    if(!closed||quitAttempt!==attempt)return;
+    if(liveWindows().length){cancelQuitAttempt(attempt);return;}
+    attempt.cleanup?.();quitAttempt=null;quitting=false;app.quit();
+  }catch(error){cancelQuitAttempt(attempt,error);}
 }
 
 if (!app.requestSingleInstanceLock()) app.quit();
@@ -1141,6 +1224,11 @@ else {
     app.setAboutPanelOptions({applicationName:'ReviewOps',applicationVersion:displayBuildVersion(identity),...(identity.channel==='test'?{version:String(identity.buildNumber)}:{})});
     await fsp.mkdir(attachmentPath,{recursive:true,mode:0o700});
     store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
+    managedServices=createProjectServiceRuntime({bootstrapPath:app.isPackaged?path.join(process.resourcesPath,'owned-services','owned-node-bootstrap.cjs'):path.join(__dirname,'owned-node-bootstrap.cjs'),configPath:path.join(dataPath,'owned-node-services.json'),resolveBinding:(projectId,connectionId)=>{
+      const project=store.project(projectId),connection=project.connection;
+      if(!connection||connection.id!==connectionId)return null;
+      return {projectId,connectionId,kind:connection.kind,rootPath:connection.rootPath,signature:JSON.stringify(connection)};
+    }});
     await cleanDeletedAttachments();
     store.interruptAgentRuns({preserveRemote:true});
     vault=createVault(path.join(dataPath,'credentials.json'));
@@ -1158,7 +1246,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
-        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','serviceRuntime.state','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
         else {
           result=actionQueue.then(()=>dispatch(action,payload));
           actionQueue=result.catch(()=>{});
@@ -1170,7 +1258,7 @@ else {
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }});
     });
     updateNativeMenu();
-    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
+    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||managedServices?.hasActive()||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
     updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
     codexManager.registerHandlers(ipcMain);
@@ -1205,19 +1293,20 @@ else {
     catch(error){console.warn('Season AI 연결을 시작하지 못했습니다:',error.message);}
     app.on('activate',()=>{if(!liveWindows().length)createWindow();});
   }).catch(error=> { dialog.showErrorBox('ReviewOps 실행 오류',error.message); app.quit(); });
-  app.on('window-all-closed',()=>{if(process.platform!=='darwin')app.quit();});
-  // Ask every window before closing any, so cancelling quit preserves the others.
-  app.on('before-quit',event=>{if(!liveWindows().length)return;event.preventDefault();if(!quitting){quitting=true;beginQuit();}});
+  app.on('window-all-closed',()=>{if(!quitAttempt&&process.platform!=='darwin')app.quit();});
+  // Drain owned services first, then ask once at each actual renderer unload
+  // veto. Cancelling retains surviving windows; already discarded ones stay closed.
+  app.on('before-quit',event=>{if(quitAttempt){event.preventDefault();return;}if(!liveWindows().length)return;event.preventDefault();if(!quitting){quitting=true;beginQuit();}});
   let stoppingAgents=false,agentsStopped=false;
   app.on('before-quit',event=>{
-    if(liveWindows().length)return;
-    if((!agents&&!codexManager)||agentsStopped)return;
+    if(quitAttempt||liveWindows().length)return;
+    if((!agents&&!codexManager&&!managedServices?.hasActive())||agentsStopped)return;
     event.preventDefault();
     if(stoppingAgents)return;
     stoppingAgents=true;
     modelCache?.close();
     terminals.closeAll();
-    Promise.all([agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{stoppingAgents=false;startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
+    Promise.all([managedServices?.close(),agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{managedServices?.resume();quitting=false;updater?.cancelInstall();stoppingAgents=false;if(!liveWindows().length)createWindow();startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
-  app.on('will-quit',()=>{qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
+  app.on('will-quit',()=>{quitAttempt?.cleanup?.();quitAttempt=null;qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
 }

@@ -61,3 +61,12 @@ test('new-review session contexts permit only an explicit empty review in the bo
  }
  for(const action of ['agent.list','activity.add','attachment.add','viewerSession.preview'])assert.throws(()=>check(action,{projectId:'a',reviewId:''}),{code:'TARGET_MISMATCH'});
 });
+test('owned service runtime allows only exact bound-project verbs and excludes configuration from QA',()=>{
+ const {check}=fixture();
+ for(const action of ['viewer.readiness','viewer.agentState']){assert.doesNotThrow(()=>check(action,{projectId:'a'}));assert.throws(()=>check(action,{projectId:'b'}),{code:'TARGET_MISMATCH'});}
+ for(const action of ['serviceRuntime.state','serviceRuntime.start','serviceRuntime.stop','serviceRuntime.restart']){
+  assert.doesNotThrow(()=>check(action,{projectId:'a',connectionId:'sa'}));
+  for(const payload of [{projectId:'b',connectionId:'sb'},{projectId:'a',connectionId:'sb'},{connectionId:'sa'},{projectId:'a'}])assert.throws(()=>check(action,payload),{code:'TARGET_MISMATCH'});
+ }
+ for(const action of ['serviceRuntime.configure','serviceRuntime.future','viewer.future'])assert.throws(()=>check(action,{projectId:'a',connectionId:'sa'}),{code:'TARGET_MISMATCH'});
+});

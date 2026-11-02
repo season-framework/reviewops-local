@@ -20,14 +20,16 @@ async function harness(t, options = {}) {
   const root = fs.mkdtempSync('/tmp/reviewops-main-test-');
   const dataPath = path.join(root, 'data');
   const resourcesPath = path.join(root, 'resources');
+  fs.mkdirSync(path.join(resourcesPath,'owned-services'),{recursive:true});
+  fs.copyFileSync(path.join(__dirname,'../electron/owned-node-bootstrap.cjs'),path.join(resourcesPath,'owned-services','owned-node-bootstrap.cjs'));
   const handlers = new Map();
   const appEvents = new EventEmitter();
-  const state = { switches: [], window: null, primaryWindow:null, windows:[], browserManagers:[], startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [], dialogCalls:[] };
+  const state = { appQuitCalls:0, quitCloseTimers:[], switches: [], window: null, primaryWindow:null, windows:[], browserManagers:[], startup: null, liveStore: null, realVault: null, failures: {}, openResult: null, saveResult: null, messageResponse: 1, messageCalls: 0, unloadResponse: 0, unloadCalls: 0, windowMessages: [], startupErrors: [], dialogCalls:[] };
   const stores = [];
   const app = Object.assign(appEvents, {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
     isPackaged: options.isPackaged !== false,
-    setName() {}, setPath() {}, quit() {},setAboutPanelOptions(value){state.aboutPanelOptions=value;},
+    setName() {}, setPath() {}, quit() {state.appQuitCalls++;},setAboutPanelOptions(value){state.aboutPanelOptions=value;},
     getPath(name) { if (name === 'temp' || name === 'appData') return root; throw new Error(`Unexpected getPath: ${name}`); },
     getVersion() { return options.version||'0.0.0-test'; },
     requestSingleInstanceLock() { return true; },
@@ -83,14 +85,20 @@ async function harness(t, options = {}) {
       const closeEvent = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
       this.emit('close', closeEvent);
       if (closeEvent.defaultPrevented) return;
-      if (this.preventUnload ?? state.preventUnload) {
-        const unloadEvent = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
-        this.webContents.emit('will-prevent-unload', unloadEvent);
-        if (!unloadEvent.defaultPrevented) return;
-      }
-      this.destroyed = true;
-      this.emit('closed');
+      const complete=()=>{
+        if(this.destroyed)return;
+        if (this.preventUnload ?? state.preventUnload) {
+          const unloadEvent = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+          this.webContents.emit('will-prevent-unload', unloadEvent);
+          if (!unloadEvent.defaultPrevented) return;
+        }
+        this.destroyed = true;
+        this.emit('closed');
+      };
+      if(this.delayClose ?? state.delayClose){(this.pendingCloses||=[]).push(complete);return;}
+      complete();
     }
+    flushClose(){this.pendingCloses?.shift()?.();}
     destroy(){if(this.destroyed)return;this.destroyed=true;this.emit('closed');}
   }
   const safeStorage = new Proxy({}, {get(){throw new Error('Keychain must not be accessed');}});
@@ -102,7 +110,7 @@ async function harness(t, options = {}) {
       async showOpenDialog(host,options) { state.dialogCalls.push({kind:'open',host,options});if(state.openHandler)return state.openHandler(host,options);return state.openResult || { canceled: true, filePaths: [] }; },
       async showSaveDialog(host,options) { state.dialogCalls.push({kind:'save',host,options});return state.saveResult || { canceled: true }; },
       async showMessageBox() { state.messageCalls++; return { response: state.messageResponse }; },
-      showMessageBoxSync(host) { state.unloadCalls++; return host.unloadResponse ?? state.unloadResponse; },
+      showMessageBoxSync(host,options) { state.unloadCalls++;(state.unloadPrompts||=[]).push({windowId:host.id,draft:host.draftText||'',options});return state.syncDialogHandler?state.syncDialogHandler(host,options):host.unloadResponse ?? state.unloadResponse; },
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
     },
     shell: { async openPath() { return ''; }, async openExternal() {} },
@@ -149,7 +157,8 @@ async function harness(t, options = {}) {
       state.automationModulePath=name;
       return require('../electron/automation-api.cjs');
     }
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if(name==='./project-service-runtime.cjs'){const runtime=require('../electron/project-service-runtime.cjs');return {...runtime,createProjectServiceRuntime(options){state.managedServices=runtime.createProjectServiceRuntime(options);return state.managedServices;}};}
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -160,7 +169,7 @@ async function harness(t, options = {}) {
     if (name === './html-preview.cjs') return require('../electron/html-preview.cjs');
     if (name === './files.cjs') return files;
     if (name === './agent-files.cjs') return require('../electron/agent-files.cjs');
-    if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
+    if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;if(state.codexCloseError)throw new Error('synthetic close failure');},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
       if (state.seasonError) throw new Error(state.seasonError);
@@ -181,7 +190,12 @@ async function harness(t, options = {}) {
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
     process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
-    URL, Response, Buffer, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate, setTimeout, clearTimeout
+    URL, Response, Buffer, Date:options.quitClock?class extends Date{static now(){return options.quitClock.now;}}:Date, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate,
+    setTimeout(callback,delay,...args){
+      if((delay===10000||callback.name==='quitCloseExpired')&&options.captureQuitCloseTimers)state.quitCloseTimers.push(callback);
+      if((delay===10000||callback.name==='quitCloseExpired')&&options.controlQuitCloseTimers){const handle={callback,delay,active:true,unref(){}};(state.controlledQuitTimers||=[]).push(handle);return handle;}
+      return setTimeout(callback,delay===10000&&options.quitCloseTimeoutMs?options.quitCloseTimeoutMs:delay,...args);
+    },clearTimeout(handle){if(options.controlQuitCloseTimers&&state.controlledQuitTimers?.includes(handle))handle.active=false;else clearTimeout(handle);}
   }, { filename: MAIN_PATH, timeout: 5000 });
   await state.startup;
   assert.deepEqual(state.startupErrors, []);
@@ -496,19 +510,19 @@ for(const dirtyAt of ['before selection','during selection'])test(`backup restor
   assert.equal(h.state.dialogCalls.filter(call=>call.kind==='open').length,dirtyAt==='before selection'?0:1);
 });
 
-test('cancelling application quit in the second dirty window keeps every window and browser open',async t=>{
+test('cancelling final unload keeps remaining dirty windows and browsers but does not restore discarded ones',async t=>{
   const h=await harness(t),first=await seed(h),second=await seed(h);
   await h.state.seasonIntegration.showReview({reviewId:first.review.id,fullscreen:false});const a=await projectHost(h,first.project.id);
   await h.state.seasonIntegration.showReview({reviewId:second.review.id,fullscreen:false});const b=await projectHost(h,second.project.id);
   await h.forWindow(a).success('browser.create',{url:'https://fixture.invalid/a'});await h.forWindow(b).success('browser.create',{url:'https://fixture.invalid/b'});
   a.preventUnload=true;a.unloadResponse=1;b.preventUnload=true;b.unloadResponse=0;
   h.appEvents.emit('before-quit',{preventDefault(){}});
-  await waitForValue(()=>h.state.unloadCalls===2,'Both dirty windows must be asked before any window closes');
-  for(const host of h.state.windows){assert.equal(host.isDestroyed(),false);assert.equal(host.closeCalls,0);}
-  assert.ok(h.state.browserManagers.every(manager=>!manager.closed));
+  await waitForValue(()=>h.state.unloadCalls===2,'Each dirty window must be asked at its own final unload');
+  assert.equal(a.isDestroyed(),true);assert.equal(b.isDestroyed(),false);assert.equal(h.state.appQuitCalls,0);
+  assert.equal(h.state.browserManagers.find(manager=>manager.host===a).closed,true);assert.equal(h.state.browserManagers.find(manager=>manager.host===b).closed,false);
   b.unloadResponse=1;h.appEvents.emit('before-quit',{preventDefault(){}});
   await waitForValue(()=>h.state.windows.every(host=>host.isDestroyed()),'Approved quit must close all application windows');
-  assert.equal(h.state.unloadCalls,4,'Approved windows must not show the same discard prompt again');
+  assert.equal(h.state.unloadCalls,3,'Only the still-open window asks once on retry');
   assert.ok(h.state.browserManagers.every(manager=>manager.closed));
 });
 
@@ -1931,4 +1945,165 @@ test('a QA window can render an empty snapshot and close after deleting its own 
  assert.equal((await client.success('window.context')).projectId,a.project.id);await client.success('window.state');
  const blocked=await client.invoke('project.save',{id:a.project.id,name:'Restore through scope'});assert.equal(blocked.error.code,'TARGET_MISMATCH');
  await client.success('window.close');await waitForValue(()=>host.isDestroyed(),'Deleted QA window did not close');assert.equal(host.isDestroyed(),true);assert.equal(h.state.primaryWindow.isDestroyed(),false);
+});
+
+test('owned Node controls use saved configuration only, remain private and isolate project/consumer/connection',async t=>{
+ const h=await harness(t),group=await h.success('group.save',{name:'Owned fixture'}),root=path.join(h.root,'owned');fs.mkdirSync(root);fs.writeFileSync(path.join(root,'server.cjs'),`require('node:http').createServer((q,r)=>r.end('owned')).listen(0,'127.0.0.1');`);
+ const project=await h.success('project.save',{groupId:group.id,name:'Owned project',connection:{kind:'local',rootPath:root}}),payload={projectId:project.id,connectionId:project.connection.id},config={executable:process.execPath,entry:'server.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/health'};
+ const other=await h.success('project.save',{groupId:group.id,name:'Other owned project',connection:{kind:'local',rootPath:root}});
+ for(const action of ['serviceRuntime.configure','serviceRuntime.start','serviceRuntime.stop','serviceRuntime.restart','serviceRuntime.state'])await assert.rejects(h.state.toolIntegration.dispatch(action,payload),/프로젝트 화면/);
+ assert.equal((await h.invoke('serviceRuntime.configure',{...payload,config},{sender:h.state.primaryWindow.webContents,senderFrame:{url:'https://external.example'}})).ok,false);
+ await h.success('serviceRuntime.configure',{...payload,config});assert.equal((await h.invoke('serviceRuntime.start',{...payload,executable:'/bin/sh'})).ok,false);
+ assert.equal((await h.invoke('serviceRuntime.start',{...payload,connectionId:other.connection.id})).ok,false);
+ await h.success('window.openProject',{projectId:project.id});const client=h.forWindow(await projectHost(h,project.id));
+ assert.equal((await client.invoke('serviceRuntime.state',{projectId:other.id,connectionId:other.connection.id})).ok,false);
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:project.id,clientId:'owned-service-scope'});
+ assert.equal((await client.invoke('serviceRuntime.configure',{...payload,config})).error.code,'TARGET_MISMATCH');await client.success('serviceRuntime.state',payload);
+ let instance;
+ try{
+  instance=(await client.success('serviceRuntime.start',payload)).instance;assert.equal(instance.status,'running');
+  const read=await client.success('serviceRuntime.state',payload);assert.equal(read.instance.instanceId,instance.instanceId);
+  for(const [action,body]of [['project.save',{id:project.id,connection:{...project.connection,rootPath:h.root}}],['project.save',{id:project.id,serviceIds:[]}],['service.save',{id:project.connection.id,description:'blocked'}],['project.delete',{id:project.id}],['group.delete',{id:group.id}],['backup.import',{}]]){
+   const denied=await h.forWindow(h.state.primaryWindow).invoke(action,body);assert.equal(denied.ok,false,action);assert.equal(denied.error.code,'SERVICE_BUSY',action);
+  }
+  // Agent cancellation/renderer disposal do not appear in the manager ownership key.
+  assert.equal((await client.success('serviceRuntime.state',payload)).instance.instanceId,instance.instanceId);
+ }finally{if(instance)await client.success('serviceRuntime.stop',{...payload,instanceId:instance.instanceId});await h.state.toolIntegration.automationHandler('automation.qa.release',qa);}
+});
+
+test('readiness observation is separate from execution proof and rejects late A→B→A connection results',async t=>{
+ const h=await harness(t),http=require('node:http');let respond,requested;const called=new Promise(resolve=>requested=resolve);
+ const server=http.createServer((_req,res)=>{respond=()=>res.end('external');requested();});await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(()=>new Promise(resolve=>{server.closeAllConnections();server.close(resolve);}));
+ const root=path.join(h.root,'readiness'),other=path.join(h.root,'other');fs.mkdirSync(root);fs.mkdirSync(other);fs.writeFileSync(path.join(root,'comparison.bin'),'not deployment proof');
+ const group=await h.success('group.save',{name:'Readiness'}),project=await h.success('project.save',{groupId:group.id,name:'Readiness',connection:{kind:'local',rootPath:root}}),url=`http://127.0.0.1:${server.address().port}/`;
+ const pending=h.invoke('viewer.readiness',{projectId:project.id,connectionId:project.connection.id,url,path:'comparison.bin'});await called;
+ await h.success('service.save',{id:project.connection.id,rootPath:other});await h.success('service.save',{id:project.connection.id,rootPath:root});respond();
+ const late=await pending;assert.equal(late.ok,false);assert.match(late.error.message,/연결이 변경/);
+ await assert.rejects(h.state.toolIntegration.dispatch('viewer.readiness',{projectId:project.id,url}),/프로젝트 화면/);
+ assert.equal((await h.invoke('viewer.agentState',{projectId:project.id,connectionId:'foreign'})).ok,false);
+});
+
+test('cancelled quit with a surviving window can quit again and configure services afterward',async t=>{
+ const h=await harness(t),host=h.state.primaryWindow;host.on('close',event=>event.preventDefault());
+ const close=()=>h.appEvents.emit('before-quit',{preventDefault(){}});
+ close();for(let n=0;n<100&&host.closeCalls<1;n++)await new Promise(r=>setTimeout(r,5));assert.equal(host.closeCalls,1);assert.equal(host.destroyed,false);
+ close();for(let n=0;n<100&&host.closeCalls<2;n++)await new Promise(r=>setTimeout(r,5));assert.equal(host.closeCalls,2);
+ const group=await h.success('group.save',{name:'survived quit'}),project=await h.success('project.save',{groupId:group.id,name:'survived quit',connection:{kind:'local',rootPath:h.root}});fs.writeFileSync(path.join(h.root,'service.cjs'),'');
+ await h.success('serviceRuntime.configure',{projectId:project.id,connectionId:project.connection.id,config:{executable:process.execPath,entry:'service.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/'}});
+});
+
+test('a failure in another quit subsystem resumes the surviving runtime without adopting any PID',async t=>{
+ const h=await harness(t);h.state.primaryWindow.destroyed=true;h.state.codexCloseError=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});
+ for(let n=0;n<100&&h.state.windows.length<2;n++)await new Promise(r=>setTimeout(r,5));assert.equal(h.state.windows.length,2);assert.equal(h.state.window.destroyed,false);
+ const group=await h.success('group.save',{name:'subsystem failure'}),project=await h.success('project.save',{groupId:group.id,name:'subsystem failure',connection:{kind:'local',rootPath:h.root}});fs.writeFileSync(path.join(h.root,'service.cjs'),'');
+ const configured=await h.success('serviceRuntime.configure',{projectId:project.id,connectionId:project.connection.id,config:{executable:process.execPath,entry:'service.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/'}});assert.equal(configured.instance,null);
+});
+
+
+test('quit waits for delayed Electron beforeunload close and asks app to quit only after closed',async t=>{
+ const h=await harness(t),host=h.state.primaryWindow;host.delayClose=true;host.preventUnload=true;host.unloadResponse=1;
+ h.appEvents.emit('before-quit',{preventDefault(){}});
+ await waitForValue(()=>host.pendingCloses?.length,'No delayed close was requested');
+ assert.equal(host.destroyed,false);assert.equal(h.state.appQuitCalls,0);assert.equal(h.state.unloadCalls,0,'No early discard consent before actual unload');
+ h.appEvents.emit('before-quit',{preventDefault(){}});assert.equal(host.closeCalls,1,'Repeated quit must share the pending attempt');
+ host.flushClose();await waitForValue(()=>h.state.appQuitCalls,'Async closed did not finish quit');
+ assert.equal(h.state.appQuitCalls,1);assert.equal(host.destroyed,true);assert.equal(h.state.unloadCalls,1,'The final unload asks exactly once');
+});
+
+test('a real close veto revokes approval so fresh unsaved work still prompts and runtime can resume',async t=>{
+ const h=await harness(t),host=h.state.primaryWindow,veto=event=>event.preventDefault();host.on('close',veto);
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.closeCalls,'Quit did not try to close');
+ host.removeListener('close',veto);host.preventUnload=true;host.unloadResponse=0;host.close();
+ assert.equal(host.destroyed,false);assert.equal(h.state.unloadCalls,1,'Cancelled quit approval must not bypass a later dirty prompt');assert.equal(h.state.appQuitCalls,0);
+ host.preventUnload=false;
+ const group=await h.success('group.save',{name:'approval revoked'}),project=await h.success('project.save',{groupId:group.id,name:'approval revoked',connection:{kind:'local',rootPath:h.root}});fs.writeFileSync(path.join(h.root,'service.cjs'),'');
+ await h.success('serviceRuntime.configure',{projectId:project.id,connectionId:project.connection.id,config:{executable:process.execPath,entry:'service.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/'}});
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>h.state.appQuitCalls,'Fresh quit was blocked after veto');assert.equal(h.state.appQuitCalls,1);
+});
+
+test('a bounded incomplete close cancels without destroying the delayed window or retaining approval',async t=>{
+ const h=await harness(t,{quitCloseTimeoutMs:25}),host=h.state.primaryWindow;host.delayClose=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>h.state.startupErrors.length,'Incomplete close did not time out');
+ assert.match(h.state.startupErrors[0].message,/창 닫힘/);assert.equal(host.destroyed,false);assert.equal(h.state.appQuitCalls,0);
+ host.preventUnload=true;host.unloadResponse=0;host.flushClose();assert.equal(host.destroyed,false);assert.equal(h.state.unloadCalls,1);
+ const group=await h.success('group.save',{name:'timeout resumed'}),project=await h.success('project.save',{groupId:group.id,name:'timeout resumed',connection:{kind:'local',rootPath:h.root}});fs.writeFileSync(path.join(h.root,'service.cjs'),'');
+ await h.success('serviceRuntime.configure',{projectId:project.id,connectionId:project.connection.id,config:{executable:process.execPath,entry:'service.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/'}});
+});
+
+test('a new window invalidates pending quit and its stale timeout cannot cancel the next attempt',async t=>{
+ const h=await harness(t,{captureQuitCloseTimers:true}),host=h.state.primaryWindow;
+ const group=await h.success('group.save',{name:'new quit window'}),project=await h.success('project.save',{groupId:group.id,name:'new quit window',connection:{kind:'local',rootPath:h.root}});fs.writeFileSync(path.join(h.root,'service.cjs'),'');
+ const payload={projectId:project.id,connectionId:project.connection.id,config:{executable:process.execPath,entry:'service.cjs',args:[],readinessUrl:'http://127.0.0.1:9999/'}};
+ host.delayClose=true;h.state.delayClose=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.pendingCloses?.length,'First quit did not wait');const staleTimeout=h.state.quitCloseTimers[0];
+ await h.success('window.openProject',{projectId:project.id});const newer=await projectHost(h,project.id);await h.success('serviceRuntime.configure',payload);
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>newer.pendingCloses?.length,'Second quit did not wait');
+ staleTimeout();assert.equal(h.state.appQuitCalls,0);assert.deepEqual(h.state.startupErrors,[]);
+ const denied=await h.forWindow(host).invoke('serviceRuntime.configure',payload);assert.equal(denied.ok,false,'Old timeout must not resume the new attempt');
+ host.flushClose();assert.equal(h.state.appQuitCalls,0);newer.flushClose();await waitForValue(()=>h.state.appQuitCalls,'Current exact window closes did not finish');assert.equal(h.state.appQuitCalls,1);
+});
+
+test('input made while service drain waits is presented only at final unload and cancel keeps the draft',async t=>{
+ const h=await harness(t),host=h.state.primaryWindow;let release,started=false,resumed=0;
+ const resume=h.state.managedServices.resume;h.state.managedServices.resume=()=>{resumed++;resume();};h.state.managedServices.close=()=>{started=true;return new Promise(resolve=>release=resolve);};
+ host.draftText='before drain';host.preventUnload=false;host.unloadResponse=0;h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>started,'Service drain did not begin');assert.equal(host.closeCalls,0);assert.equal(h.state.unloadCalls,0);
+ host.draftText='new input while draining';host.preventUnload=true;release();await waitForValue(()=>h.state.unloadCalls,'Final renderer unload did not ask');assert.equal(h.state.unloadPrompts[0].draft,'new input while draining');assert.equal(host.destroyed,false);assert.equal(host.draftText,'new input while draining');assert.equal(h.state.appQuitCalls,0);assert.equal(resumed,1);
+});
+
+test('input just before delayed native beforeunload still asks and never uses an early clean check',async t=>{
+ const h=await harness(t),host=h.state.primaryWindow;host.delayClose=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.pendingCloses?.length,'Delayed close not requested');assert.equal(h.state.unloadCalls,0);
+ host.draftText='last close input';host.preventUnload=true;host.unloadResponse=0;host.flushClose();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.state.unloadCalls,1);assert.equal(h.state.unloadPrompts[0].draft,'last close input');assert.equal(host.destroyed,false);assert.equal(host.draftText,'last close input');assert.equal(h.state.appQuitCalls,0);
+});
+
+test('discard consent for one window never authorizes edits in another window',async t=>{
+ const h=await harness(t),first=h.state.primaryWindow;const group=await h.success('group.save',{name:'quit consent fixture'}),project=await h.success('project.save',{groupId:group.id,name:'another dirty window'});await h.success('window.openProject',{projectId:project.id});const second=await projectHost(h,project.id);
+ first.preventUnload=true;first.unloadResponse=1;first.draftText='explicitly discarded A';second.delayClose=true;second.draftText='B before A consent';
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>second.pendingCloses?.length,'Second window did not wait');assert.equal(first.destroyed,true);assert.equal(h.state.unloadCalls,1);
+ second.preventUnload=true;second.unloadResponse=0;second.draftText='B edited after A consent';second.flushClose();await new Promise(resolve=>setImmediate(resolve));assert.equal(h.state.unloadCalls,2);assert.equal(h.state.unloadPrompts[1].draft,'B edited after A consent');assert.equal(second.destroyed,false);assert.equal(first.destroyed,true);assert.equal(h.state.appQuitCalls,0);
+ second.draftText='B edited again after cancel';second.unloadResponse=1;h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>second.pendingCloses?.length,'Retry did not reach final close');second.flushClose();await waitForValue(()=>h.state.appQuitCalls,'Retry did not finish');assert.equal(h.state.unloadCalls,3);assert.equal(h.state.unloadPrompts[2].draft,'B edited again after cancel');assert.equal(h.state.appQuitCalls,1);
+});
+
+test('the close watchdog excludes time in the final synchronous discard dialog and invalidates queued expiry',async t=>{
+ const clock={now:0},h=await harness(t,{quitClock:clock,controlQuitCloseTimers:true}),host=h.state.primaryWindow;host.delayClose=true;host.preventUnload=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.pendingCloses?.length,'Delayed close did not begin');const old=h.state.controlledQuitTimers[0];assert.equal(old.delay,10000);clock.now=1000;
+ h.state.syncDialogHandler=()=>{assert.equal(old.active,false,'Watchdog must pause before the modal');clock.now=61000;old.callback();assert.deepEqual(h.state.startupErrors,[]);return 1;};
+ host.flushClose();const resumed=h.state.controlledQuitTimers[1];assert.equal(resumed.delay,9000,'Only time before the user question consumes the close budget');old.callback();await waitForValue(()=>h.state.appQuitCalls,'Approved close did not finish');assert.equal(h.state.appQuitCalls,1);assert.equal(resumed.active,false);assert.deepEqual(h.state.startupErrors,[]);
+});
+
+test('cancelled modal cannot rearm its old watchdog or cancel a later quit attempt',async t=>{
+ const clock={now:0},h=await harness(t,{quitClock:clock,controlQuitCloseTimers:true}),host=h.state.primaryWindow;host.delayClose=true;host.preventUnload=true;
+ h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.pendingCloses?.length,'First close did not begin');const old=h.state.controlledQuitTimers[0];
+ h.state.syncDialogHandler=()=>{clock.now=120000;old.callback();return 0;};host.flushClose();await new Promise(resolve=>setImmediate(resolve));assert.equal(host.destroyed,false);assert.equal(h.state.controlledQuitTimers.length,1,'Cancel must not resume the expired attempt');assert.equal(old.active,false);
+ h.state.syncDialogHandler=()=>1;h.appEvents.emit('before-quit',{preventDefault(){}});await waitForValue(()=>host.pendingCloses?.length,'Retry did not begin');const current=h.state.controlledQuitTimers[1];old.callback();assert.equal(current.active,true);assert.deepEqual(h.state.startupErrors,[]);host.flushClose();await waitForValue(()=>h.state.appQuitCalls,'Retry close did not finish');assert.equal(h.state.appQuitCalls,1);
+});
+
+
+test('backup import outer COMMIT failure restores owned runtime configuration with store, vault and attachment bytes',async t=>{
+ const h=await harness(t),{group,service,review}=await seed(h);await addFile(h,review.id,'Original bytes survive outer COMMIT failure');
+ const ownedRoot=path.join(h.root,'owned-reset');fs.mkdirSync(ownedRoot);fs.writeFileSync(path.join(ownedRoot,'entry.cjs'),'');
+ const project=await h.success('project.save',{groupId:group.id,name:'Owned rollback fixture',connection:{kind:'local',rootPath:ownedRoot}}),target={projectId:project.id,connectionId:project.connection.id};
+ await h.success('serviceRuntime.configure',{...target,config:{executable:process.execPath,entry:'entry.cjs',args:['preserved'],readinessUrl:'http://127.0.0.1:9999/'}});
+ const configPath=path.join(h.dataPath,'owned-node-services.json'),vaultPath=path.join(h.dataPath,'credentials.json'),attachmentRoot=path.join(h.dataPath,'attachments');
+ const before=await h.success('snapshot'),configBytes=fs.readFileSync(configPath),vaultBytes=fs.readFileSync(vaultPath),runtimeState=await h.success('serviceRuntime.state',target),revision=h.state.managedServices.revision(project.id);
+ const oldAttachments=Object.fromEntries(fs.readdirSync(attachmentRoot).map(name=>[name,fs.readFileSync(path.join(attachmentRoot,name))]));
+ // Keep the owned IDs resolvable in both transaction states, while changing
+ // actual rows and staging replacement attachment files to prove rollback.
+ const data=h.state.liveStore.exportData();data.groups.find(row=>row.id===group.id).name='Must roll back imported group';data.reviews.find(row=>row.id===review.id).title='Must roll back imported review';
+ const bundle={format:'reviewops-local-backup',version:1,data,files:Object.fromEntries(data.attachments.map(row=>[row.storageName,fs.readFileSync(path.join(attachmentRoot,row.storageName)).toString('base64')]))},file=path.join(h.root,'outer-commit.reviewops.json');fs.writeFileSync(file,JSON.stringify(bundle));h.state.openResult={canceled:false,filePaths:[file]};
+ const database=h.state.liveStore.db,exec=database.exec;let injected=0;
+ database.exec=function(sql){
+  if(sql==='COMMIT'&&!injected&&JSON.parse(fs.readFileSync(configPath,'utf8')).configurations.length===0){
+   injected++;assert.equal(h.state.managedServices.state(project.id,project.connection.id).config,null);assert.ok(h.state.managedServices.revision(project.id)>revision);assert.equal(h.state.liveStore.get('groups',group.id).name,'Must roll back imported group');assert.deepEqual(JSON.parse(fs.readFileSync(vaultPath,'utf8')),{});
+   throw Object.assign(new Error('injected real outer SQLite COMMIT failure'),{code:'SQLITE_IOERR'});
+  }
+  return exec.call(this,sql);
+ };
+ let result;try{result=await h.invoke('backup.import');}finally{database.exec=exec;}
+ assert.equal(injected,1);assert.equal(result.ok,false);assert.match(result.error.message,/real outer SQLite COMMIT failure/);
+ assert.deepEqual(await h.success('snapshot'),before);assert.deepEqual(fs.readFileSync(vaultPath),vaultBytes);assert.deepEqual(h.state.realVault.get(service.id),{password:'synthetic-old-password'});
+ assert.deepEqual(await h.success('serviceRuntime.state',target),runtimeState);assert.deepEqual(fs.readFileSync(configPath),configBytes);assert.equal(h.state.managedServices.revision(project.id),revision);
+ assert.deepEqual(fs.readdirSync(attachmentRoot).sort(),Object.keys(oldAttachments).sort());for(const [name,bytes]of Object.entries(oldAttachments))assert.deepEqual(fs.readFileSync(path.join(attachmentRoot,name)),bytes);
+ const {createProjectServiceRuntime}=require('../electron/project-service-runtime.cjs'),reopened=createProjectServiceRuntime({configPath,resolveBinding:(projectId,connectionId)=>({projectId,connectionId,kind:'local',rootPath:ownedRoot,signature:JSON.stringify(h.state.liveStore.project(projectId).connection)})});assert.deepEqual(reopened.state(project.id,project.connection.id).config,runtimeState.config);assert.equal(reopened.hasActive(),false);await reopened.close();
 });
