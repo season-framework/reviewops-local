@@ -70,7 +70,10 @@ export function changeSections(changes,highlights=[]){
   sections.get(entry.category).push(`- **${escapeReleaseText(entry.title)}:** ${escapeReleaseText(entry.description)} ${refs}`);
   for(const commit of entry.commits)covered.add(commit);
  }
- for(const item of commits){
+ // Reviewed highlights own the user-facing summary. Raw history can contain
+ // duplicate merge subjects, fixture work or changes already in the public base.
+ // Keep those subjects in sourceDetails; retain fallback only without a match.
+ if(!covered.size)for(const item of commits){
   if(covered.has(item.commit)||/^Merge\b/i.test(item.subject))continue;
   const category=categoryFor(item.subject);
   // Raw documentation/build subjects describe implementation work. Keep them

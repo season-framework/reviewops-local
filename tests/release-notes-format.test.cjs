@@ -68,3 +68,42 @@ test('reviewed documentation and maintenance highlights remain source-bound in t
  const stable=renderStableDraftNotes({version:'1.3.0',tag:'v1.3.0',commit},[docs,maintenance]);
  assert.ok(stable.includes('Read English guides'));assert.ok(stable.includes('Use verified installers'));assert.ok(stable.includes(`/commit/${commit}`));assert.ok(stable.includes(`/commit/${other}`));
 });
+
+test('editorial highlights avoid a second feature from a merge subject',async()=>{
+ const {renderTestReleaseNotes}=await load();
+ const queue='d'.repeat(40),service='e'.repeat(40),merge='f'.repeat(40);
+ const highlights=[{category:'features',title:'Save follow-up work through MCP',description:'Save scoped requests and start them explicitly.',commits:[queue]},{category:'features',title:'Start and stop project-owned Node services',description:'Control one owned local service and observe its state.',commits:[service]}];
+ const raw={...changes,totalCommits:3,commits:[{commit:merge,subject:'Add public saved follow-up queue tools (#57)',references:[ref]},{commit:queue,subject:'Add scoped public saved follow-up queue tools'},{commit:service,subject:'feat: manage project-owned local Node services'}]};
+ const body=renderTestReleaseNotes({build:{buildNumber:1,commit:merge,builtAt:'2026-11-02T00:00:00Z'},versionLabel:'preview',pointer:{},changes:raw,highlights});
+ const [summary,details]=body.split('<details>');
+ assert.ok(summary.includes('**Save follow-up work through MCP:**'));
+ assert.ok(summary.includes('**Start and stop project-owned Node services:**'));
+ assert.equal(summary.includes('**Add public saved follow-up queue tools.'),false);
+ assert.equal((summary.match(/^- \*\*/gm)||[]).length,2);
+ assert.ok(details.includes('Add public saved follow-up queue tools'));
+ assert.ok(details.includes(`/commit/${merge}`));assert.ok(details.includes('[PR #50]'));
+});
+
+test('editorial highlights keep fixture and overlapping fix subjects in source details',async()=>{
+ const {renderTestReleaseNotes}=await load();const feature='d'.repeat(40);
+ const subjects=['fix: trace Windows fixture cleanup and canonical agent paths','fix: preserve Windows owned-service evidence and add guarded diagnostics','fix: retire native web views across host document reloads'];
+ const fallback=subjects.map((subject,index)=>({commit:String(index+1).repeat(40),subject}));
+ const raw={...changes,commit:feature,totalCommits:4,commits:[{commit:feature,subject:'feat: manage project-owned local Node services'},...fallback]};
+ const highlight={category:'features',title:'Control project-owned services',description:'Start the saved service and confirm cooperative shutdown.',commits:[feature]};
+ const body=renderTestReleaseNotes({build:{buildNumber:1,commit:feature,builtAt:'2026-11-02T00:00:00Z'},versionLabel:'preview',pointer:{},changes:raw,highlights:[highlight]});
+ const [summary,details]=body.split('<details>');assert.ok(summary.includes('Control project-owned services'));
+ assert.equal(summary.includes('## Fixes'),false);
+ for(const item of fallback){const title=item.subject.slice(5).replace(/^./,letter=>letter.toUpperCase());assert.equal(summary.includes(title),false);assert.ok(details.includes(title));assert.ok(details.includes(`/commit/${item.commit}`));}
+ assert.ok(details.includes(`/compare/${base}...${feature}`));assert.ok(details.includes('Full comparison: 4 commits'));
+});
+
+test('editorial highlights outside or incomplete in the range retain behavior fallback',async()=>{
+ const {changeSections}=await load();const missing='d'.repeat(40);
+ const raw={...changes,commits:[{commit,subject:'feat: add review filters',references:[ref]},{commit:other,subject:'fix: retain manual selection'}]};
+ const historical={category:'features',title:'Future feature',description:'Not part of this change range.',commits:[missing]};
+ const incomplete={category:'fixes',title:'Incomplete reviewed fix',description:'Requires another source change.',commits:[other,missing]};
+ const body=changeSections(raw,[historical,incomplete]);
+ assert.ok(body.includes('## New features'));assert.ok(body.includes('Add review filters'));
+ assert.ok(body.includes('## Fixes'));assert.ok(body.includes('Retain manual selection'));
+ assert.ok(body.includes('[PR #50]'));assert.equal(body.includes('Future feature'),false);assert.equal(body.includes('Incomplete reviewed fix'),false);
+});
