@@ -74,6 +74,20 @@ jobs:
           cache: npm
       - name: Check optional draft upload inputs before building
         run: node scripts/upload-windows-release.mjs --check-inputs
+      - name: Select the native fixture .NET installation directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { throw 'ProgramFiles is required for the native fixture SDK.' }
+          $fixtureDotnetDirectory = Join-Path $env:ProgramFiles 'dotnet'
+          "DOTNET_INSTALL_DIR=$fixtureDotnetDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Set up the pinned native fixture .NET SDK
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.426'
+          architecture: x64
+          cache: false
       - run: npm ci
       - run: npm run build
       - name: Run Windows-compatible unit tests
@@ -179,6 +193,20 @@ jobs:
           $dirty = git status --porcelain
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($dirty) { throw 'The reviewed diagnostic checkout must be clean.' }
+      - name: Select the native fixture .NET installation directory
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { throw 'ProgramFiles is required for the native fixture SDK.' }
+          $fixtureDotnetDirectory = Join-Path $env:ProgramFiles 'dotnet'
+          "DOTNET_INSTALL_DIR=$fixtureDotnetDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Set up the pinned native fixture .NET SDK
+        if: runner.os == 'Windows'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.426'
+          architecture: x64
+          cache: false
       - run: npm ci
       - name: Build and record the exact reviewed renderer without changing notices
         timeout-minutes: 4

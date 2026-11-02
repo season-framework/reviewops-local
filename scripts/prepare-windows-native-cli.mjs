@@ -30,15 +30,15 @@ const build = path.join(root, 'native-cli-build'), output = path.join(root, 'bin
 assert.ok(!fs.existsSync(build), 'Never reuse a prior build directory');
 for (const dir of [build, output, journal]) fs.mkdirSync(dir, {recursive: true});
 const logs = [];
-const run = async (values, cwd = build) => {
+const run = async (values, cwd = build, recordName) => {
   logs.push({executable: dotnet, args: values});
   const child = spawn(dotnet, values, {cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     env: {...process.env, DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER: '1', DOTNET_CLI_TELEMETRY_OPTOUT: '1',
       DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1', DOTNET_NOLOGO: '1',
       DOTNET_CLI_HOME: path.join(root, 'dotnet-home'), NUGET_PACKAGES: path.join(root, 'nuget-cache')}});
-  const chunks = []; let bytes = 0, overflow = false, timer;
-  const read = chunk => { bytes += chunk.length; if (bytes <= 4 * 1024 * 1024) chunks.push(chunk); else overflow = true; };
-  child.stdout.on('data', read); child.stderr.on('data', read);
+  const chunks = [], captured = recordName ? {stdout: [], stderr: []} : null; let bytes = 0, overflow = false, timer;
+  const read = (stream, chunk) => { bytes += chunk.length; if (bytes <= 4 * 1024 * 1024) { chunks.push(chunk); captured?.[stream].push(chunk); } else overflow = true; };
+  child.stdout.on('data', chunk => read('stdout', chunk)); child.stderr.on('data', chunk => read('stderr', chunk));
   const completed = new Promise(resolve => {
     child.once('error', error => resolve({error: error.message, completed: false}));
     child.once('close', (code, signal) => resolve({code, signal, completed: true}));
@@ -47,6 +47,21 @@ const run = async (values, cwd = build) => {
   try { outcome = await Promise.race([completed, new Promise(resolve => { timer = setTimeout(() => resolve({completed: false, reason: 'compiler-observation-timeout'}), 180000); })]); }
   finally { clearTimeout(timer); }
   const text = Buffer.concat(chunks).toString('utf8');
+  if (captured) {
+    // Preserve the original command bytes before any SDK presence/version assertion.
+    const streams = {};
+    for (const [name, values] of Object.entries(captured)) {
+      const raw = Buffer.concat(values), file = path.join(root, recordName + '.' + name + '.log');
+      fs.writeFileSync(file, raw);
+      streams[name] = {file: path.basename(file), bytes: raw.length, sha256: crypto.createHash('sha256').update(raw).digest('hex')};
+    }
+    const globalJson = path.join(build, 'global.json');
+    fs.writeFileSync(path.join(root, recordName + '.json'), JSON.stringify({
+      source, requiredSdk: sdk, executable: {path: dotnet, sha256: hash(dotnet)}, args: values, cwd,
+      retainedCompilerPid: child.pid, outcome, overflow, observedOutputBytes: bytes, streams,
+      globalJson: fs.existsSync(globalJson) ? {path: globalJson, sha256: hash(globalJson)} : null,
+      observedAt: new Date().toISOString(), signalSentByPreparer: false, productQaPassed: false}, null, 2));
+  }
   if (!outcome.completed || outcome.code !== 0 || outcome.signal || overflow) {
     fs.writeFileSync(path.join(root, 'native-cli-compile-failure.log'), text);
     fs.writeFileSync(path.join(root, 'native-cli-compile-incomplete.json'), JSON.stringify({
@@ -59,12 +74,12 @@ const run = async (values, cwd = build) => {
   }
   return text;
 };
-const sdks = await run(['--list-sdks']); assert.ok(sdks.split(/\r?\n/).some(line => line.startsWith(sdk + ' [')));
+const sdks = await run(['--list-sdks'], build, 'native-cli-sdk-inventory'); assert.ok(sdks.split(/\r?\n/).some(line => line.startsWith(sdk + ' [')));
 const runtimes = await run(['--list-runtimes']); assert.match(runtimes, /Microsoft\.NETCore\.App 8\.0\./);
 fs.writeFileSync(path.join(build, 'global.json'), JSON.stringify({sdk: {version: sdk, rollForward: 'disable', allowPrerelease: false}}));
 fs.writeFileSync(path.join(build, 'NuGet.Config'), '<configuration><packageSources><clear /></packageSources></configuration>');
 for (const name of ['Program.cs', 'OwnedFixture.csproj']) fs.copyFileSync(path.join(here, 'native-cli', name), path.join(build, name));
-assert.equal((await run(['--version'])).trim(), sdk);
+assert.equal((await run(['--version'], build, 'native-cli-sdk-version')).trim(), sdk);
 const info = await run(['--info']);
 const restore = await run(['restore', 'OwnedFixture.csproj', '--configfile', path.join(build, 'NuGet.Config')]);
 const publish = await run(['publish', 'OwnedFixture.csproj', '--no-restore', '--self-contained', 'false', '-c', 'Release', '-o', output]);

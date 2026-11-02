@@ -89,6 +89,20 @@ jobs:
           node-version: '24'
           architecture: ${{ matrix.node_arch }}
           cache: npm
+      - name: Select the native fixture .NET installation directory
+        if: matrix.target == 'win32-x64'
+        shell: pwsh
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) { throw 'ProgramFiles is required for the native fixture SDK.' }
+          $fixtureDotnetDirectory = Join-Path $env:ProgramFiles 'dotnet'
+          "DOTNET_INSTALL_DIR=$fixtureDotnetDirectory" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Set up the pinned native fixture .NET SDK
+        if: matrix.target == 'win32-x64'
+        uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: '8.0.426'
+          architecture: x64
+          cache: false
       - run: npm ci
       - name: Test publication and updater contracts
         run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs tests/test-release-references.test.cjs tests/test-build-context.test.cjs
