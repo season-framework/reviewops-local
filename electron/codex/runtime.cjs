@@ -1,7 +1,7 @@
 'use strict';
 
 const fs = require('node:fs/promises');
-const { constants } = require('node:fs');
+const { constants, statSync } = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createRequire } = require('node:module');
@@ -15,21 +15,49 @@ const FAILURE_COOLDOWN_MS = 30_000;
 const MAX_FAILURES = 64;
 const MAX_DIAGNOSTICS = 16;
 
-// AbortController targets only the execFile child retained here. Keep ownership
-// until close, even if abort rejects the callback before the process exits.
+// Each caller owns its own deadline and child. Waiting for a healthy earlier
+// probe consumes that deadline, without sharing its result or cancellation.
+// Retain ownership until close, including after an abort rejects the callback.
 function createVersionExecutor(launch = execFile) {
   const children = new Map();
   const key = (command, args) => JSON.stringify([command, args]);
-  const execute = (command, args, options) => new Promise((resolve, reject) => {
-    const id = key(command, args);
-    const child = launch(command, args, { ...options, timeout: 0 }, (error, stdout) => {
-      if (error) reject(error); else resolve({ stdout });
+  const pendingTimeout = () => Object.assign(new Error('Earlier owned probe has not closed'), { code: 'CODEX_PENDING_PROBE_TIMEOUT' });
+  return async (command, args, options, validateIdentity) => {
+    const id = key(command, args), signal = options.signal;
+    let previous;
+    while ((previous = children.get(id))) {
+      if (previous.signal.aborted) throw pendingTimeout();
+      signal.throwIfAborted();
+      await new Promise((resolve, reject) => {
+        const cleanup = () => {
+          previous.child.removeListener('close', closed);
+          previous.signal.removeEventListener('abort', ownerAborted);
+          signal.removeEventListener('abort', waitingAborted);
+        };
+        const closed = () => { cleanup(); resolve(); };
+        const ownerAborted = () => { cleanup(); reject(pendingTimeout()); };
+        const waitingAborted = () => { cleanup(); reject(signal.reason); };
+        previous.child.once('close', closed);
+        previous.signal.addEventListener('abort', ownerAborted, { once: true });
+        signal.addEventListener('abort', waitingAborted, { once: true });
+      });
+    }
+    signal.throwIfAborted();
+    validateIdentity?.();
+    // No await separates the final ownership check, launch, and reservation.
+    return new Promise((resolve, reject) => {
+      const child = launch(command, args, { ...options, timeout: 0 }, (error, stdout) => {
+        if (error) reject(error); else resolve({ stdout });
+      });
+      const owned = { child, signal };
+      children.set(id, owned);
+      child.once('close', () => { if (children.get(id) === owned) children.delete(id); });
     });
-    children.set(id, child);
-    child.once('close', () => { if (children.get(id) === child) children.delete(id); });
-  });
-  execute.isPending = (command, args) => children.has(key(command, args));
-  return execute;
+  };
+}
+
+function fileFingerprint(stat) {
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode].join(':');
 }
 
 function probeError(kind) {
@@ -226,7 +254,7 @@ function createRuntimeFinder(options = {}) {
         if (visited.has(command)) continue;
         visited.add(command);
         const stat = await fs.stat(command);
-        fingerprint = [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.mode].join(':');
+        fingerprint = fileFingerprint(stat);
         const cached = failures.get(command);
         if (cached && cached.fingerprint !== fingerprint) failures.delete(command);
         if (!custom && !bypassCooldown && cached?.fingerprint === fingerprint && cached.until > now()) {
@@ -251,10 +279,6 @@ function createRuntimeFinder(options = {}) {
         const launchArgs = forceArm64 ? ['-arm64', command] : [];
         const args = [...launchArgs, '--version'];
         phase = 'execute';
-        if (execute.isPending?.(launchCommand, args)) {
-          lastKind = 'owned-timeout';
-          continue;
-        }
         const controller = new AbortController();
         let timer;
         const deadline = new Promise((_, reject) => {
@@ -268,6 +292,10 @@ function createRuntimeFinder(options = {}) {
         try {
           ({ stdout } = await Promise.race([Promise.resolve().then(() => execute(launchCommand, args, {
             timeout: timeoutMs, maxBuffer: 64 * 1024, windowsHide: true, shell: false, env, signal: controller.signal,
+          }, () => {
+            if (fileFingerprint(statSync(command)) !== fingerprint) {
+              throw Object.assign(new Error('Executable changed while waiting for its probe'), { code: 'CODEX_PROBE_CHANGED' });
+            }
           })), deadline]));
         } finally { unschedule(timer); }
         exitCode = 0;
@@ -278,6 +306,7 @@ function createRuntimeFinder(options = {}) {
         return finish({ available: true, path: command, version, command: launchCommand, args: launchArgs });
       } catch (error) {
         lastError = error;
+        if (error.code === 'CODEX_PENDING_PROBE_TIMEOUT') { lastKind = 'owned-timeout'; continue; }
         const kind = ownedTimeout ? 'owned-timeout'
           : ['EACCES', 'EPERM'].includes(error.code) ? 'permissions'
             : error.code === 'CODEX_ARCHITECTURE' ? 'architecture'
