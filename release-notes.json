@@ -4,8 +4,8 @@
   "entries": [
     {
       "category": "fixes",
-      "title": "Find and recover Codex CLI on macOS",
-      "description": "Detect the CLI bundled with Codex or ChatGPT, keep valid manual selections, and recover recorded selection sources after updates. See distinct execution and sign-in states, retry safely, and copy bounded diagnostics without raw output or credentials.",
+      "title": "Find Codex CLI automatically on macOS",
+      "description": "Detect the CLI bundled with Codex or ChatGPT and show its version and path in Accounts. Use the same selected executable for default local projects, keep valid manual choices, and retry failed checks. Copy troubleshooting details with personal paths hidden.",
       "commits": [
         "c7c9892c0473e267fc1c3ce37a4b51ed354e8ac0",
         "20740acf8a0b2068e283bcc2b409825a94f6ead4",
