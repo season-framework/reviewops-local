@@ -6,6 +6,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 
+export const canonicalPath = file => fs.realpathSync.native(file);
 export const targets = new Set(['darwin-x64', 'darwin-arm64', 'win32-x64']);
 export const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 export const fileHash = file => sha256(fs.readFileSync(file));
@@ -59,10 +60,10 @@ export function appPaths(target, input) {
   requireNativeHost(target);
   if (input.mode === 'source') return { args: [fs.realpathSync(input.repository)], mode: 'source' };
   assert.ok(['private-bundle', 'nsis-installed'].includes(input.mode));
-  const root = fs.realpathSync(input.privateInstallRoot), app = fs.realpathSync(input.app);
-  const temporaryBases = [fs.realpathSync(os.tmpdir())];
-  if (process.platform === 'darwin') temporaryBases.push(fs.realpathSync('/tmp'));
-  if (process.env.RUNNER_TEMP) temporaryBases.push(fs.realpathSync(process.env.RUNNER_TEMP));
+  const root = canonicalPath(input.privateInstallRoot), app = canonicalPath(input.app);
+  const temporaryBases = [canonicalPath(os.tmpdir())];
+  if (process.platform === 'darwin') temporaryBases.push(canonicalPath('/tmp'));
+  if (process.env.RUNNER_TEMP) temporaryBases.push(canonicalPath(process.env.RUNNER_TEMP));
   assert.ok(temporaryBases.some(base => root !== base && inside(base, root)));
   assert.match(path.basename(root), /^(?:owned-service-|rv-on-|ro-owned-ui-|reviewops-)/);
   assert.ok(inside(root, app) && app !== root, 'App must belong to the reviewed private installation');
