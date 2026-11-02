@@ -106,7 +106,7 @@ async function harness(t, options = {}) {
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
     },
     shell: { async openPath() { return ''; }, async openExternal() {} },
-    clipboard: {writeText(text){if(state.clipboardError)throw state.clipboardError;state.clipboardText=text;(state.clipboardWrites||=[]).push(text);}},
+    clipboard: {writeText(text){if(options.clipboardWrite)return options.clipboardWrite(text,state);if(state.clipboardError)throw state.clipboardError;state.clipboardText=text;(state.clipboardWrites||=[]).push(text);}},
     protocol: { registerSchemesAsPrivileged() {}, handle(_scheme,callback) { state.protocol=callback; } },
     net: { async fetch() { throw new Error('Network access must not occur in main tests'); } },
     Menu: { buildFromTemplate: value => value, setApplicationMenu() {} }
@@ -1906,6 +1906,25 @@ test('issue 28 native clipboard writes exact original text only for a trusted ap
  h.state.clipboardError=new Error('synthetic clipboard failure');const failed=await h.invoke('clipboard.writeText',{text:'retry text'});assert.equal(failed.ok,false);assert.match(failed.error.message,/synthetic clipboard failure/);assert.equal(h.state.clipboardText,text);
  h.state.clipboardError=null;assert.deepEqual(await h.success('clipboard.writeText',{text:'retry text'}),{copied:true});assert.equal(h.state.clipboardText,'retry text');
  assert.equal(h.state.permissionCheck(host.webContents,'clipboard-read','reviewops://app/index.html'),false);assert.equal(h.state.permissionCheck(host.webContents,'clipboard-sanitized-write','https://external.example'),false);
+});
+
+test('native clipboard results wait for asynchronous writes and preserve rejections',async t=>{
+ const writes=[];
+ const h=await harness(t,{clipboardWrite(text){return new Promise((resolve,reject)=>writes.push({text,resolve,reject}));}});
+ for(const action of ['clipboard.writeText','update.copyInfo']){
+  let settled=false;
+  const pending=h.invoke(action,{text:'Owned diagnostic text'}).then(result=>{settled=true;return result;});
+  await new Promise(resolve=>setImmediate(resolve));
+  const write=writes.shift();assert.ok(write);assert.equal(typeof write.text,'string');
+  try{assert.equal(settled,false,'Copy success must wait for the native clipboard write');}
+  finally{write.resolve();}
+  assert.equal((await pending).ok,true);
+  const rejected=h.invoke(action,{text:'Owned rejected diagnostic text'});
+  await new Promise(resolve=>setImmediate(resolve));
+  const failure=writes.shift();assert.ok(failure);failure.reject(new Error('Synthetic asynchronous clipboard denial'));
+  const result=await rejected;assert.equal(result.ok,false);assert.match(result.error.message,/Synthetic asynchronous clipboard denial/);
+ }
+ assert.equal(writes.length,0);
 });
 
 test('update build information copies through the trusted native clipboard route',async t=>{
