@@ -3,6 +3,14 @@
   "version": "1.3.0",
   "entries": [
     {
+      "category": "features",
+      "title": "Save follow-up work through MCP",
+      "description": "Create, inspect and cancel saved follow-up requests for a specific project and review. Requests appear in the existing waiting list, keep their identity across retries and restarts, and wait for an explicit Run action before starting. Cancelling a queued request leaves ongoing work running.",
+      "commits": [
+        "df98c72ca299f34c3afd6c680b8131b9390fbca8"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Start concurrent local jobs without false CLI errors",
       "description": "Overlapping checks wait for the current Codex version probe before validating their own result. A healthy check no longer makes another project report that the CLI is unavailable. Each check keeps its original time limit and cancellation scope.",
