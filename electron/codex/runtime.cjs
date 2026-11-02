@@ -44,6 +44,19 @@ function vendorCandidates(packageRoot, target, paths = path) {
   return candidates;
 }
 
+function macAppCandidates({ home, target }) {
+  const candidates = [];
+  for (const directory of ['/Applications', path.join(home, 'Applications')]) {
+    for (const app of ['Codex.app', 'ChatGPT.app']) {
+      const resources = path.join(directory, app, 'Contents', 'Resources');
+      candidates.push(path.join(resources, 'codex'), path.join(resources, 'bin', 'codex'));
+      candidates.push(path.join(resources, 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'));
+      candidates.push(...vendorCandidates(path.join(resources, 'app.asar.unpacked', 'node_modules', '@openai', 'codex'), target));
+    }
+  }
+  return candidates;
+}
+
 function defaultCandidates({ home, env, platform, target, resourcesPath }) {
   const candidates = [];
   const paths = platform === 'win32' ? path.win32 : path.posix;
@@ -64,15 +77,7 @@ function defaultCandidates({ home, env, platform, target, resourcesPath }) {
     '/usr/local/lib/node_modules/@openai/codex',
   ];
   if (platform !== 'win32') for (const root of npmRoots) candidates.push(...vendorCandidates(root, target, paths));
-  if (platform === 'darwin') {
-    for (const directory of ['/Applications', path.join(home, 'Applications')]) {
-      for (const app of ['Codex.app', 'ChatGPT.app']) {
-        const resources = path.join(directory, app, 'Contents', 'Resources');
-        candidates.push(path.join(resources, 'codex'), path.join(resources, 'bin', 'codex'));
-        candidates.push(...vendorCandidates(path.join(resources, 'app.asar.unpacked', 'node_modules', '@openai', 'codex'), target));
-      }
-    }
-  }
+  if (platform === 'darwin') candidates.push(...macAppCandidates({ home, target }));
   if (platform !== 'win32') candidates.push(path.join(home, '.local', 'bin', 'codex'), '/opt/homebrew/bin/codex', '/usr/local/bin/codex');
   for (const directory of (env.PATH || env.Path || '').split(platform === 'win32' ? ';' : ':')) {
     // Ignore empty and relative PATH entries so the working directory cannot shadow Codex.
@@ -131,7 +136,7 @@ function createRuntimeFinder(options = {}) {
     } catch { return false; }
   });
   let hostArch;
-  return async function findRuntime(customPath = '') {
+  return async function findRuntime(customPath = '', { rediscoverMissingAppPath = false } = {}) {
     const custom = typeof customPath === 'string' ? customPath.trim() : '';
     if (customPath && !custom) return unavailable('Codex 실행 파일 경로가 올바르지 않습니다.');
     const expanded = custom.startsWith('~/') ? path.join(home, custom.slice(2)) : custom;
@@ -181,6 +186,14 @@ function createRuntimeFinder(options = {}) {
       }
     }
     if (custom) {
+      // Only a cached account-manager selection may recover after an app update.
+      // Explicit file choices and project executables remain strict, as do
+      // existing files with invalid versions, permissions, or architectures.
+      if (rediscoverMissingAppPath && platform === 'darwin'
+        && ['ENOENT', 'ENOTDIR'].includes(lastError?.code)
+        && macAppCandidates({ home, target }).includes(path.normalize(expanded))) {
+        return findRuntime();
+      }
       const message = lastError?.code === 'ENOENT' ? '선택한 Codex 실행 파일을 찾을 수 없습니다.'
         : lastError?.killed || lastError?.code === 'ETIMEDOUT' ? 'Codex 실행 파일이 응답하지 않습니다.'
           : lastError?.code === 'EACCES' ? 'Codex 실행 파일에 실행 권한이 없습니다.'

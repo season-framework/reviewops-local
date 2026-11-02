@@ -43,6 +43,83 @@ test('returns a validated direct executable without a shell', async (t) => {
   assert.equal(calls[0][2].timeout, 5000);
 });
 
+test('macOS discovery includes the nested desktop CLI in system and user applications', () => {
+  const home = path.join(os.tmpdir(), 'codex-candidate-home');
+  const candidates = defaultCandidates({ home, env: { PATH: '' }, platform: 'darwin', target: platformTarget('darwin', 'arm64') });
+  for (const directory of ['/Applications', path.join(home, 'Applications')]) {
+    for (const app of ['Codex.app', 'ChatGPT.app']) {
+      assert.ok(candidates.includes(path.join(directory, app, 'Contents', 'Resources', 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex')));
+    }
+  }
+  assert.equal(candidates.length, new Set(candidates).size);
+});
+
+test('a fresh app-only profile discovers the bundled CLI and prerelease version without a manual selection', async (t) => {
+  for (const app of ['Codex.app', 'ChatGPT.app']) await t.test(app, async (t) => {
+    const { root, write } = await fixture(t);
+    const binary = await write(path.join('Applications', app, 'Contents', 'Resources', 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'));
+    // Every executable candidate is inside this test's private filesystem.
+    const candidates = defaultCandidates({ home: root, env: { PATH: '' }, platform: 'darwin', target: platformTarget('darwin', 'arm64') })
+      .filter(candidate => candidate.startsWith(root + path.sep));
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, env: { PATH: '' }, candidates, execute: async (...args) => {
+      calls.push(args); return { stdout: 'codex-cli 0.166.0-alpha.5.1\n' };
+    } });
+    const result = await find();
+    assert.equal(result.path, await fs.realpath(binary));
+    assert.equal(result.version, '0.166.0-alpha.5.1');
+    assert.equal(result.available, true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(0, 2), [result.path, ['--version']]);
+    assert.equal(calls[0][2].shell, false);
+  });
+});
+
+test('only cached missing desktop-app paths opt into rediscovery; explicit project paths remain strict', async (t) => {
+  const { root, write } = await fixture(t);
+  const old = path.join(root, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex');
+  const binary = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const calls = [];
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [binary], execute: async file => {
+    calls.push(file); return { stdout: 'codex-cli 0.166.0-alpha.5.1' };
+  } });
+  assert.equal((await find(old)).available, false);
+  assert.deepEqual(calls, []);
+  assert.equal((await find(old, { rediscoverMissingAppPath: true })).path, await fs.realpath(binary));
+  assert.deepEqual(calls, [await fs.realpath(binary)]);
+  assert.equal((await find(path.join(root, 'manually-selected-but-missing'), { rediscoverMissingAppPath: true })).available, false);
+  assert.equal(calls.length, 1);
+});
+
+test('a valid manual selection keeps priority over the detected desktop CLI', async (t) => {
+  const { root, write } = await fixture(t);
+  const selected = await write('manual/codex');
+  const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const calls = [];
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => {
+    calls.push(file); return { stdout: 'codex-cli 0.165.0' };
+  } });
+  assert.equal((await find(selected, { rediscoverMissingAppPath: true })).path, await fs.realpath(selected));
+  assert.deepEqual(calls, [await fs.realpath(selected)]);
+});
+
+test('cached desktop paths with existing invalid, timed-out, or inaccessible files do not silently switch CLIs', async (t) => {
+  const { root, write } = await fixture(t);
+  const selected = await write('Applications/ChatGPT.app/Contents/Resources/codex');
+  const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  for (const execute of [async () => ({ stdout: 'another-program 1.0.0' }), async () => { throw Object.assign(new Error('timeout'), { killed: true }); }, async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); }]) {
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => { calls.push(file); return execute(); } });
+    assert.equal((await find(selected, { rediscoverMissingAppPath: true })).available, false);
+    assert.deepEqual(calls, [await fs.realpath(selected)]);
+  }
+  await fs.writeFile(selected, macBinary('x64'));
+  let executions = 0;
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async () => { executions++; return { stdout: 'codex-cli 0.166.0' }; } });
+  assert.match((await find(selected, { rediscoverMissingAppPath: true })).error, /Apple Silicon/);
+  assert.equal(executions, 0);
+});
+
 test('resolves an npm symlink and JavaScript wrapper to the native optional dependency', async (t) => {
   const { root, write } = await fixture(t);
   const wrapper = await write('lib/node_modules/@openai/codex/bin/codex.js', '#!/usr/bin/env node\nthrow new Error("must not execute");');

@@ -48,6 +48,9 @@
 .codex-management .selection-bar { display: flex; align-items: center; gap: 8px; background: var(--accent-soft); padding: 9px 12px; margin-bottom: 12px; border-radius: 5px; font-size: 12px; } .codex-management .selection-bar > span { margin-right: 8px; } .codex-management .deselect { margin-left: auto; color: var(--muted); }
 .codex-management .notice { position: fixed; top: 12px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; align-items: center; gap: 12px; padding: 10px 14px; max-width: 85vw; border: 1px solid #e8c6bd; border-radius: 7px; background: #fff6f1; box-shadow: 0 3px 15px #452b1620; color: #934f3f; font-size: 12px; }
 .codex-management .runtime-notice { display: flex; justify-content: space-between; align-items: center; gap: 15px; padding: 12px; margin-bottom: 15px; background: #fff9ed; border-radius: 6px; font-size: 12px; }
+.codex-management .runtime-summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; margin: -8px 0 16px; color: var(--muted); font-size: 12px; }
+.codex-management .runtime-summary strong { font-weight: 550; }
+.codex-management .runtime-summary code { flex: 1 1 24rem; min-width: 0; overflow-wrap: anywhere; font-size: 11px; }
 .codex-management .row-error, .codex-management .row-result { font-size: 11px; line-height: 1.6; margin-top: 4px; overflow-wrap: anywhere; } .codex-management .row-error { color: #ad5547; } .codex-management .row-result { color: #507562; }
 .codex-management .muted { font-size: 12px; color: var(--muted); } .codex-management .demo-badge { font-size: 11px; color: #94743e; padding: 4px 7px; background: #fff3d9; border-radius: 4px; }
 .codex-management .modal-backdrop { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; background: #182d284a; z-index: 100; }

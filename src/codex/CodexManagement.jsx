@@ -192,6 +192,7 @@ export function AccountApp() {
       <ActionButton label={t("새로고침")} icon={RefreshCw} busy={state.refresh.running} disabled={!accounts.length || accounts.every(account => account.requiresLogin) || state.refresh.running} onClick={() => run(() => bridge.refreshAccounts())}/>
       <ActionButton label={t("계정 추가")} icon={Plus} className="primary" onClick={openAdd}/>
     </div></header>
+    {state.runtime.available && <p className="runtime-summary" role="status"><strong>Codex CLI {state.runtime.version}</strong><code>{state.runtime.path}</code></p>}
     {notice && <div className="notice" role="alert"><span>{notice}</span><button className="icon-button" aria-label={t("알림 닫기")} onClick={() => setNotice('')}><X size={16}/></button></div>}
     {accounts.some(account => account.requiresLogin) && <div className="runtime-notice" role="status"><span>{t("가져온 계정")+" "}{accounts.filter(account => account.requiresLogin).length}{t("개는 다시 로그인해야 합니다. 저장된 사용량과 통계는 유지됩니다.")}</span></div>}
     {!state.runtime.available && <div className="runtime-notice"><span>{state.runtime.error || t("Codex 실행 파일이 필요합니다.")}</span><button className="button" onClick={() => run(() => bridge.chooseCodexBinary())}>{t("실행 파일 선택")}</button></div>}

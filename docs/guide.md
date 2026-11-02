@@ -63,6 +63,8 @@ The execution command is `codex exec --dangerously-bypass-approvals-and-sandbox`
 
 Use **Accounts** to manage each Codex account's login, usage, and statistics. Each account has its own storage folder, leaving the default Codex login file unchanged. Authentication is stored in files rather than the keychain. Importing an existing account does not copy credentials held only in the keychain; sign in again in that case.
 
+On macOS, ReviewOps can find the CLI bundled in Codex or ChatGPT apps installed in `/Applications` or `~/Applications`, including the nested `codex-cli/CodexCLI.app` layout. **Accounts** shows the detected CLI version and resolved executable path. A valid manually selected executable takes priority. If a saved, known app-bundle path disappears after an app update, the next ReviewOps startup searches again. Other invalid explicit paths retain their error. Default local project execution and login use the same selected CLI; an explicit project executable remains separate. Finding a CLI does not sign in or copy credentials: use the appropriate account or project login flow. If no executable is available, install Codex CLI or select its executable.
+
 **Hosts** uses `~/.ssh/config` and included SSH configuration files. Connect a saved host to multiple projects. Host management supports file browsing, upload, download, rename, move, deletion, and remote Codex management.
 
 ## Settings and updates

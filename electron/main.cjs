@@ -179,7 +179,7 @@ function sameAgentLocation(run,service,settings) {
   return savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
 }
 function agentManager() {
-  if(!agents) agents=require('./agents.cjs').createAgentManager({onUpdate:job=>{
+  if(!agents) agents=require('./agents.cjs').createAgentManager({getLocalRuntime:()=>codexManager?.localRuntime(),onUpdate:job=>{
     const previous=agentJobs.get(job.id);
     const merged={...previous,...job,...(previous?.prompt?{prompt:previous.prompt}:{}),...(previous?.sessionScope?{sessionScope:previous.sessionScope,workPath:previous.workPath}:{})};
     agentJobs.set(job.id,merged);

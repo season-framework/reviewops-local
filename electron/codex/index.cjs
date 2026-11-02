@@ -178,7 +178,7 @@ function registerHandlers(ipcMain = options.ipcMain) {
   if (options.accountImport) await require('./import-accounts.cjs').importAccounts({ ...options.accountImport, targetDir: dataDir });
   let customPath;
   try { customPath = JSON.parse(await fs.readFile(settingsPath, 'utf8')).path; } catch (error) { if (error.code !== 'ENOENT') throw new Error('Codex 실행 설정을 읽지 못했습니다.'); }
-  runtime = await findRuntimeImpl(customPath);
+  runtime = await findRuntimeImpl(customPath, { rediscoverMissingAppPath: true });
   await setupService(runtime);
   const configPath = options.configPath || process.env.REVIEWOPS_CODEX_SSH_CONFIG || process.env.CODEX_MANAGER_SSH_CONFIG || undefined;
   hostService = new HostService({ ...(options.hostOptions || {}), configPath, sshDir: options.sshDir || (configPath ? path.dirname(configPath) : undefined), onChange: publishHosts });
@@ -190,6 +190,7 @@ function registerHandlers(ipcMain = options.ipcMain) {
   return {
     registerHandlers,
     accountState: state,
+    localRuntime: () => ({ ...runtime, args: [...(runtime.args || [])] }),
     hostState: () => hostService.snapshot(),
     // Resolve OpenSSH Includes, Host defaults and identity substitutions without connecting.
     async resolveHost(idOrAlias) {
