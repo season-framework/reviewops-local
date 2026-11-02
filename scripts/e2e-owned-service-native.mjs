@@ -363,7 +363,7 @@ async function agents(project,page,tag,ending){
  const before=(await runtime(project,page)).instance;write(path.join(temporary,'agent-target.json'),JSON.stringify({url:project.origin,instanceId:before.instanceId}));const group=[];
  for(const binding of project.agentRoles){const key=tag+'-'+binding.role,job=await ipc(page,'agent.start',{reviewId:binding.reviewId,prompt:'OWNED_AGENT:'+key+' Synthetic observer of related target '+project.origin+'; service is main-owned, do not spawn it.',newConversation:true,independentExecution:false});group.push({...binding,key,id:job.id});jobs.push({id:job.id,projectId:project.id});}
  await until(()=>Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),value=>value.every(row=>row.status==='running'),'three actual running jobs on distinct connections');await until(()=>group.every(value=>fs.existsSync(path.join(temporary,'agent-'+value.key+'.json'))),Boolean,'three real synthetic CLI records');
- for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],fixture.agentScript);assert.equal(observed.cwd,expectedNativePath(item.workPath,'agent-cwd'));}
+ for(const item of group){const observed=readJSON(path.join(temporary,'agent-'+item.key+'.json'));assert.equal(observed.argv[0],fs.realpathSync(process.execPath));assert.equal(observed.argv[1],expectedNativePath(fixture.agentScript,'agent-script'));assert.equal(observed.cwd,expectedNativePath(item.workPath,'agent-cwd'));}
  const observe=async(phase,expectedRunning)=>{
   const runs=await Promise.all(group.map(value=>ipc(page,'agent.read',{id:value.id}))),summary=await ipc(page,'viewer.agentState',{projectId:project.id,connectionId:project.connection.id});assert.equal(summary.running,expectedRunning);
   for(let index=0;index<runs.length;index++){assert.equal(runs[index].reviewId,group[index].reviewId);assert.equal(runs[index].serviceId,group[index].serviceId);assert.equal(runs[index].workPath,group[index].workPath);}
@@ -453,9 +453,34 @@ const server=http.createServer((req,res)=>{log({event:'request',method:req.metho
  if(req.method==='POST'&&req.url==='/fault'){log({event:'intentional-service-failure'});res.end(JSON.stringify({fault:true,pid:process.pid}));setTimeout(()=>process.exit(17),50);return}
  res.writeHead(200,{'Content-Type':'text/html;charset=utf-8'});res.end(html);
 });
+// Fixture-only opt-in: resolved by the driver while this source string is built.
+// Product runtime env/protocol/timeouts and close behavior remain unchanged.
+const shutdownDiagnosticsEnabled=${JSON.stringify(process.env.REVIEWOPS_OWNED_SHUTDOWN_DIAGNOSTICS==='1')};
+let shutdownObservationCount=0;
+const shutdownLog=value=>{if(!shutdownDiagnosticsEnabled||shutdownObservationCount>=24)return;shutdownObservationCount++;try{log({event:'shutdown-observation',...value})}catch{}};
+const observeShutdown=(phase,withConnections=false)=>{
+ if(!shutdownDiagnosticsEnabled||shutdownObservationCount>=24)return;
+ try{
+  const available=typeof process.getActiveResourcesInfo==='function',types=available?process.getActiveResourcesInfo().slice(0,128):[],resources={};
+  for(const type of types)resources[type]=(resources[type]||0)+1;
+  shutdownLog({phase,listening:server.listening,address:server.address(),pendingWrites:writes.size,ipcConnected:process.connected===true,resourceAPIAvailable:available,resources});
+  if(withConnections)server.getConnections((error,count)=>{try{shutdownLog({phase:phase+'-connection-count',count:Number.isInteger(count)?count:null,errorCode:error?String(error.code||'unknown').slice(0,80):null})}catch{}});
+ }catch(error){try{shutdownLog({phase,observationErrorCode:String(error.code||error.name||'unknown').slice(0,80)})}catch{}}
+};
+if(shutdownDiagnosticsEnabled){
+ server.once('close',()=>observeShutdown('server-close-event'));
+ server.on('error',error=>{try{shutdownLog({phase:'server-error-event',errorCode:String(error.code||'unknown').slice(0,80)})}catch{}});
+ // Synchronous observation only: never start async work from beforeExit.
+ process.once('beforeExit',code=>{shutdownLog({phase:'before-exit',code});observeShutdown('before-exit-resources')});
+}
 server.on('error',error=>{console.error('SYNTHETIC_LISTEN_ERROR '+error.code);log({event:'listen-error',code:error.code});if(mode==='external-port'&&error.code==='EADDRINUSE')maintenance=setInterval(()=>{},1000);else throw error});
 server.listen(port,'127.0.0.1',()=>{const s={pid:process.pid,argv:process.argv,executable:process.execPath,cwd:process.cwd(),entry:fs.realpathSync(__filename),entrySHA256:crypto.createHash('sha256').update(fs.readFileSync(__filename)).digest('hex'),startedAt:new Date().toISOString(),url:'http://127.0.0.1:'+server.address().port,label,nonce};fs.writeFileSync(path.join(root,'service-current.json'),JSON.stringify(s));log({event:'listening',...s})});
-module.exports.reviewopsShutdown=async({reason})=>{log({event:'cleanup-start',reason,pendingWrites:writes.size});clearInterval(maintenance);await Promise.all([...writes]);await fsp.writeFile(path.join(root,'cleanup-marker.json'),JSON.stringify({pid:process.pid,label,count,pendingWrites:writes.size,reason}));log({event:'cleanup-completed',count})};`;
+module.exports.reviewopsShutdown=async({reason})=>{log({event:'cleanup-start',reason,pendingWrites:writes.size});clearInterval(maintenance);await Promise.all([...writes]);await fsp.writeFile(path.join(root,'cleanup-marker.json'),JSON.stringify({pid:process.pid,label,count,pendingWrites:writes.size,reason}));log({event:'cleanup-completed',count});
+ if(shutdownDiagnosticsEnabled){
+  observeShutdown('entry-hook-completed',true);
+  for(const delay of [100,1500]){const timer=setTimeout(()=>observeShutdown('entry-hook-plus-'+delay+'ms',true),delay);timer.unref();}
+ }
+};`;
 
 // These checks run only after the explicit preflight above. No fixture process
 // is spawned by importing this prepared file without --run.

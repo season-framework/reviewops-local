@@ -193,6 +193,8 @@ jobs:
         timeout-minutes: 10
         run: node scripts/e2e-qa-viewer-sessions.mjs
       - name: Verify unchanged native owned sixteen, panel eight and concurrent ten
+        env:
+          REVIEWOPS_OWNED_SHUTDOWN_DIAGNOSTICS: '1'
         timeout-minutes: 20
         run: node scripts/owned-native-orchestration.mjs source --target win32-x64 --source "$env:GITHUB_SHA"
       - name: Preserve raw shared and owned diagnostics even on failure
