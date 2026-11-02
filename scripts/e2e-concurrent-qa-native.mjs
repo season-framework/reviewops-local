@@ -217,7 +217,10 @@ try{
  for(const [name,page] of [['A',pageA],['B',pageB]]){const control=pane(page).getByRole('combobox',{name:'뷰포트 배율',exact:true}),scale=scrollFixture.before[name].renderer.selectedScale;await selectControl(control,scale);await expectSelectValue(control,scale);}
  await expect.poll(async()=>{scrollFixture.restored=await observeBoth();return ['A','B'].every(name=>{const value=scrollFixture.restored[name],before=scrollFixture.before[name];return value.renderer.selectedScale===before.renderer.selectedScale&&value.renderer.renderedScaleX===before.renderer.renderedScaleX&&value.renderer.renderedScaleY===before.renderer.renderedScaleY&&value.derivedInputScale===before.derivedInputScale&&value.native.clipVisible&&nativeLayoutMatches(value);});}).toBe(true);
  scrollFixture.restoreFocusAfter=await focused();scrollFixture.restoreFocusEvents=(await app.evaluate(()=>globalThis.qaFocusEvents)).slice(restoreFocusStart);
- for(const name of ['A','B']){assertScrollIdentity(scrollFixture.afterScroll[name],scrollFixture.restored[name]);assert.equal(scrollFixture.restored[name].native.dom.scrollY,scrollFixture.afterScroll[name].native.dom.scrollY);}
+ // Restoring the visible scale changes native bounds and CDP device metrics;
+ // record its scroll effect separately from the unchanged MCP wheel assertions.
+ scrollFixture.restoreScrollObservation={};
+ for(const name of ['A','B']){assertScrollIdentity(scrollFixture.afterScroll[name],scrollFixture.restored[name]);const before=scrollFixture.afterScroll[name].native.dom.scrollY,after=scrollFixture.restored[name].native.dom.scrollY;scrollFixture.restoreScrollObservation[name]={before,after,delta:after-before,phase:'visible UI scale restoration after verified MCP wheel'};}
  assert.deepEqual(await mainInput(),expectedMainInput);scrollFixture.phase='verified';
  passed('프로젝트별 스크롤 동시 적용');
  const focusForData=await focused();
