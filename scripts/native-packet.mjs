@@ -96,13 +96,70 @@ export async function prepareNativeAgentFixture({packet,agentSource,rpcSource}){
  const files=[agentScript,rpcScript,...(process.platform==='win32'?fs.readdirSync(bin).map(x=>path.join(bin,x)):[path.join(bin,'codex')])].map(file=>({path:file,sha256:fileHash(file)}));
  return {agentExecutable,agentScript,rpcScript,environment:privateEnvironment(p,fs.realpathSync(process.execPath)),files,launcherJournal:path.join(root,'launcher-journal')};
 }
+// Pure fixture correlation. Never select a PID by order, timing, or reuse history.
+export function selectWindowsAgentIdentity(journals,observed,expected){
+ const positive=value=>Number.isSafeInteger(value)&&value>0,ticks=value=>typeof value==='string'&&/^[1-9]\d*$/.test(value);
+ const nonce=value=>typeof value==='string'&&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+ assert.ok(Array.isArray(journals));assert.ok(positive(observed.pid)&&positive(observed.ppid)&&observed.pid!==observed.ppid);assert.ok(nonce(observed.launchNonce));
+ assert.ok(Array.isArray(observed.argv)&&observed.argv.length>=2&&observed.argv.every(value=>typeof value==='string'));
+ assert.ok(typeof observed.cwd==='string'&&observed.cwd.length>0);
+ for(const key of ['nodeSHA256','agentSHA256','configSHA256'])assert.match(expected[key]||'',/^[0-9a-f]{64}$/);
+ const matches=journals.flatMap(journal=>journal.records.filter(row=>row.phase==='node-child-start'&&row.launchNonce===observed.launchNonce&&row.nodeChildPid===observed.pid&&row.launcherPid===observed.ppid).map(row=>({journal,row})));
+ assert.equal(matches.length,1,'Exact nonce/PID/parent mapping must be unambiguous');
+ const {journal,row}=matches[0];assert.ok(ticks(row.launcherStartTicks)&&ticks(row.nodeStartTicks));
+ assert.equal(journal.name,`launcher-${row.launcherPid}-${row.launcherStartTicks}.jsonl`);
+ assert.equal(journal.records.filter(value=>value.phase==='node-child-start').length,1);
+ const starts=journal.records.filter(value=>value.phase==='native-start');assert.equal(starts.length,1,'Native start must be unique in the same journal');const start=starts[0];
+ assert.equal(start.launchNonce,observed.launchNonce);assert.equal(start.launcherPid,observed.ppid);assert.equal(start.launcherStartTicks,row.launcherStartTicks);
+ assert.equal(start.launcherPath,expected.launcherPath);assert.equal(start.configSHA256,expected.configSHA256);
+ assert.equal(row.nodeExecutable,expected.nodeExecutable);assert.equal(row.agentScript,expected.agentScript);
+ assert.equal(row.nodeSHA256,expected.nodeSHA256);assert.equal(row.agentSHA256,expected.agentSHA256);
+ assert.deepEqual(observed.argv.slice(0,2),[expected.nodeExecutable,expected.agentScript]);
+ assert.deepEqual(row.args,observed.argv.slice(2));assert.deepEqual(start.args,row.args);assert.equal(row.cwd,observed.cwd);assert.equal(start.cwd,row.cwd);
+ const exits=journal.records.filter(value=>value.phase==='node-child-exit');assert.ok(exits.length<=1);
+ for(const exit of exits){assert.equal(exit.launchNonce,observed.launchNonce);assert.equal(exit.launcherPid,row.launcherPid);assert.equal(exit.launcherStartTicks,row.launcherStartTicks);assert.equal(exit.nodeChildPid,row.nodeChildPid);assert.equal(exit.nodeStartTicks,row.nodeStartTicks);assert.ok(Number.isInteger(exit.exitCode));}
+ return {journal:journal.name,launcher:row,nativeStart:start,identities:[{pid:row.launcherPid,startTicks:row.launcherStartTicks},{pid:row.nodeChildPid,startTicks:row.nodeStartTicks}]};
+}
+export function assertWindowsIdentityStates(states,identities){
+ assert.ok(Array.isArray(states));assert.equal(states.length,identities.length);
+ assert.deepEqual(states.map(row=>({pid:row.pid,startTicks:row.requestedStartTicks})),identities);
+ assert.ok(states.every(row=>row.originalRunning===false));
+}
+// Complete regular-file snapshots with a strict 16 MiB/file and 32 MiB/read budget.
+// Dependency injection is only for inert I/O boundary tests; production uses fs.
+export function readWindowsLauncherJournals(directory,io=fs){
+ const names=io.readdirSync(directory);assert.ok(names.length<=512);let total=0;
+ const same=(left,right)=>right.isFile()&&!right.isSymbolicLink()&&['dev','ino','size','mtimeMs','ctimeMs'].every(key=>right[key]===left[key]);
+ return names.map(name=>{
+  assert.match(name,/^launcher-\d+-\d+\.jsonl$/);const file=path.join(directory,name),before=io.lstatSync(file);
+  assert.ok(before.isFile()&&!before.isSymbolicLink()&&Number.isSafeInteger(before.size)&&before.size>=0&&before.size<=16*1024**2);
+  assert.ok(before.size<=32*1024**2-total,'Reject aggregate overflow before opening or reading the file');
+  const fd=io.openSync(file,io.constants.O_RDONLY|(io.constants.O_NOFOLLOW||0));let raw;
+  try{
+   assert.ok(same(before,io.fstatSync(fd)),'Opened journal differs from the path snapshot');
+   raw=Buffer.alloc(before.size);
+   for(let offset=0;offset<raw.length;){const length=Math.min(64*1024,raw.length-offset),read=io.readSync(fd,raw,offset,length,offset);assert.equal(read,length,'Incomplete journal read; do not retry or omit bytes');offset+=read;}
+   assert.ok(same(before,io.fstatSync(fd)),'Journal changed while reading');
+   assert.ok(same(before,io.lstatSync(file)),'Journal path changed while reading');
+  }finally{io.closeSync(fd);}
+  total+=raw.length;
+  // At exact budget boundaries, post-read FD/path stats prove the expected size;
+  // an extra EOF probe would itself exceed the permitted byte-read budget.
+  const text=raw.toString('utf8');assert.ok(text.endsWith('\n'),'Read the complete journal without omitting a partial row');
+  return {name,records:text.slice(0,-1).split('\n').map(JSON.parse)};
+ });
+}
 export async function verifyWindowsAgentExit(fixture,observed){
  if(process.platform!=='win32')return;
- const entries=fs.readdirSync(fixture.launcherJournal).flatMap(name=>fs.readFileSync(path.join(fixture.launcherJournal,name),'utf8').trim().split('\n').filter(Boolean).map(JSON.parse));
- const rows=entries.filter(x=>x.phase==='node-child-start'&&x.nodeChildPid===observed.pid);assert.equal(rows.length,1,'Exact native launcher/Node mapping must be unambiguous');
- const row=rows[0],start=entries.find(x=>x.phase==='native-start'&&x.launcherPid===row.launcherPid);assert.ok(start);
- const input=writeJSON(path.join(path.dirname(fixture.agentScript),'owned-cli-identities-'+observed.pid+'.json'),[{pid:row.launcherPid,startTicks:start.launcherStartTicks},{pid:row.nodeChildPid,startTicks:row.nodeStartTicks}]);
- const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');const result=await runObservedProcess(ps,['-NoProfile','-NonInteractive','-File',path.join(here,'inspect-owned-identities.ps1'),'-InputManifest',input],{timeoutMs:10000});assert.equal(result.code,0,result.stderr);const states=JSON.parse(result.stdout);assert.equal(states.length,2);assert.ok(states.every(x=>x.originalRunning===false));return {launcher:row,states};
+ const journals=readWindowsLauncherJournals(fixture.launcherJournal);
+ const configFile=path.join(path.dirname(fixture.agentExecutable),'fixture-config.json'),config=readBoundedJSON(configFile);
+ const snapshot=file=>{const rows=fixture.files.filter(row=>row.path===file);assert.equal(rows.length,1);assert.equal(fileHash(file),rows[0].sha256);return rows[0].sha256;};
+ const expected={nodeExecutable:fs.realpathSync.native(process.execPath),agentScript:fs.realpathSync.native(fixture.agentScript),launcherPath:fs.realpathSync.native(fixture.agentExecutable),
+  nodeSHA256:fileHash(process.execPath),agentSHA256:snapshot(fixture.agentScript),configSHA256:snapshot(configFile)};snapshot(fixture.agentExecutable);
+ assert.equal(fs.realpathSync.native(config.nodeExecutable),expected.nodeExecutable);assert.equal(fs.realpathSync.native(config.agentScript),expected.agentScript);assert.equal(config.nodeSHA256,expected.nodeSHA256);assert.equal(config.agentSHA256,expected.agentSHA256);
+ const selected=selectWindowsAgentIdentity(journals,observed,expected);
+ const input=writeJSON(path.join(path.dirname(fixture.agentScript),'native-cli-identities-'+observed.launchNonce+'.json'),selected.identities);
+ const ps=path.join(process.env.SystemRoot,'System32/WindowsPowerShell/v1.0/powershell.exe');const result=await runObservedProcess(ps,['-NoProfile','-NonInteractive','-File',path.join(here,'inspect-owned-identities.ps1'),'-InputManifest',input],{timeoutMs:10000});assert.equal(result.code,0,result.stderr);const states=JSON.parse(result.stdout);assertWindowsIdentityStates(states,selected.identities);return {...selected,states};
 }
 export async function verifyNativeFixtureCleanup({packet,fixture}){
  if(process.platform!=='win32')return {status:'not-applicable-platform-mechanism',nativePlatformCleanupStillRequired:true};

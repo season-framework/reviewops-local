@@ -27,20 +27,24 @@ internal static class Program
             if (Hash(script) != cfg.agentSHA256 || Hash(node) != cfg.nodeSHA256) throw new InvalidDataException("Fixture input changed");
             Directory.CreateDirectory(cfg.journalDirectory);
             using Process own = Process.GetCurrentProcess();
-            string journal = Path.Combine(cfg.journalDirectory, $"launcher-{Environment.ProcessId}-{own.StartTime.ToUniversalTime().Ticks}.jsonl");
+            string launchNonce = Guid.NewGuid().ToString("D");
+            string launcherStartTicks = own.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            string journal = Path.Combine(cfg.journalDirectory, $"launcher-{Environment.ProcessId}-{launcherStartTicks}.jsonl");
             void Record(object value) => File.AppendAllText(journal, JsonSerializer.Serialize(value) + "\n");
-            Record(new { phase="native-start", launcherPid=Environment.ProcessId, launcherStartUtc=own.StartTime.ToUniversalTime(),
-                launcherStartTicks=own.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            Record(new { phase="native-start", launchNonce, launcherPid=Environment.ProcessId, launcherStartUtc=own.StartTime.ToUniversalTime(),
+                launcherStartTicks,
                 launcherPath=Environment.ProcessPath, cwd=Directory.GetCurrentDirectory(), args, configSHA256=Hash(configPath), synthetic=true });
             if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("codex-cli 0.0.0-fixture"); return 0; }
             var info = new ProcessStartInfo { FileName=node, WorkingDirectory=Directory.GetCurrentDirectory(),
                 UseShellExecute=false, CreateNoWindow=true, RedirectStandardInput=true, RedirectStandardOutput=true, RedirectStandardError=true };
             info.ArgumentList.Add(script);
             foreach (string arg in args) info.ArgumentList.Add(arg);
+            // Fixture correlation only; never a product IPC or authentication value.
+            info.Environment["REVIEWOPS_FIXTURE_LAUNCH_NONCE"] = launchNonce;
             using Process child = Process.Start(info) ?? throw new InvalidOperationException("Fixture child did not start");
-            Record(new { phase="node-child-start", launcherPid=Environment.ProcessId, nodeChildPid=child.Id,
-                nodeStartUtc=child.StartTime.ToUniversalTime(),
-                nodeStartTicks=child.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            string nodeStartTicks = child.StartTime.ToUniversalTime().Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            Record(new { phase="node-child-start", launchNonce, launcherPid=Environment.ProcessId, launcherStartTicks, nodeChildPid=child.Id,
+                nodeStartUtc=child.StartTime.ToUniversalTime(), nodeStartTicks,
                 nodeExecutable=node, nodeSHA256=cfg.nodeSHA256,
                 agentScript=script, agentSHA256=cfg.agentSHA256, cwd=info.WorkingDirectory, args,
                 stdio="redirected unchanged byte streams; stdin payload is not logged" });
@@ -56,7 +60,7 @@ internal static class Program
             await child.WaitForExitAsync();
             inputCancelled.Cancel();
             await Task.WhenAll(stdout, stderr);
-            Record(new { phase="node-child-exit", launcherPid=Environment.ProcessId, nodeChildPid=child.Id, exitCode=child.ExitCode });
+            Record(new { phase="node-child-exit", launchNonce, launcherPid=Environment.ProcessId, launcherStartTicks, nodeChildPid=child.Id, nodeStartTicks, exitCode=child.ExitCode });
             // Do not signal or kill a PID here. Product agent.cancel owns its
             // retained CLI process tree. Abrupt Windows cancellation may prevent
             // this log line; verify exact recorded identities read-only after it.

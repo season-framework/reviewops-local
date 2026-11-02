@@ -16,7 +16,7 @@ if(args[0]==='--version'){console.log('codex-cli 0.0.0-fixture');process.exit(0)
 if(args[0]==='login'&&args[1]==='status')process.exit(0);
 if(args[0]==='app-server'){require(path.join(base,'model-rpc.cjs'));return}
 let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',chunk=>{input+=chunk;if(input.length>262144)process.exit(81)});
-process.stdin.on('end',()=>{fs.writeFileSync(path.join(base,'regression-agent-'+process.pid+'-'+Date.now()+'.json'),JSON.stringify({pid:process.pid,argv:process.argv,cwd:process.cwd(),synthetic:true}));const send=value=>console.log(JSON.stringify(value));send({type:'thread.started',thread_id:'regression-'+process.pid});send({type:'turn.started'});
+process.stdin.on('end',()=>{fs.writeFileSync(path.join(base,'regression-agent-'+process.pid+'-'+Date.now()+'.json'),JSON.stringify({pid:process.pid,...(process.platform==='win32'?{launchNonce:process.env.REVIEWOPS_FIXTURE_LAUNCH_NONCE,ppid:process.ppid}:{}),argv:process.argv,cwd:process.cwd(),synthetic:true}));const send=value=>console.log(JSON.stringify(value));send({type:'thread.started',thread_id:'regression-'+process.pid});send({type:'turn.started'});
 const complete=()=>{send({type:'item.completed',item:{type:'agent_message',text:'QA_FIXTURE_RESULT '+path.basename(process.cwd())}});send({type:'turn.completed'});};
 const waiting=input.includes('WAIT_FOR_QA')||input.includes('synthetic observer');if(!waiting){setTimeout(complete,50);return}
 const timer=setInterval(()=>{if(fs.existsSync(path.join(base,'finish'))||fs.existsSync(path.join(process.cwd(),'finish'))){clearInterval(timer);complete();}},30);
