@@ -28,7 +28,7 @@ const readRow = row => {
   for(const key of JSON_FIELDS)if(result[key+'Json']!==undefined){result[key]=JSON.parse(result[key+'Json']);delete result[key+'Json'];}
   return result;
 };
-const fail = message => {throw new Error(message);};
+const fail = (message, code = 'INVALID_REQUEST') => {throw Object.assign(new Error(message), {code});};
 function text(value, label, max=10000, required=false, preserve=false) {
   if(typeof value!=='string'||value.includes('\0')||value.length>max||required&&!value.trim())fail(`${label}: 내용을 다시 입력하십시오.`);
   return preserve?value:value.trim();
@@ -152,8 +152,8 @@ function createRequestQueue({store,targetForReview,targetForRun,start}) {
     add(input) {
       const review=store.get('reviews',input.reviewId),target=targetForReview(review),id=identifier(input.requestId||randomUUID(),true),prompt=text(input.prompt,'후속 요청',100000,true,true),predecessorId=identifier(input.predecessorId||''),requiredResult=text(input.requiredResult||'','필요한 결과',10000);
       const existing=readRow(store.db.prepare('SELECT * FROM agent_requests WHERE id=?').get(id)),savedSettings=settings(input,target,existing),context=input.context===undefined?(existing?.context??null):requestContext(input.context);
-      if(existing){if(existing.reviewId!==review.id||existing.prompt!==prompt||existing.predecessorId!==predecessorId||existing.requiredResult!==requiredResult||JSON.stringify(existing.executionSettings)!==JSON.stringify(savedSettings.executionSettings)||existing.newConversation!==savedSettings.newConversation||JSON.stringify(existing.context)!==JSON.stringify(context))fail('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.');return state(existing);}
-      if(store.listAgentRuns().some(run=>run.id===id))fail('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.');
+      if(existing){if(existing.reviewId!==review.id||existing.prompt!==prompt||existing.predecessorId!==predecessorId||existing.requiredResult!==requiredResult||JSON.stringify(existing.executionSettings)!==JSON.stringify(savedSettings.executionSettings)||existing.newConversation!==savedSettings.newConversation||JSON.stringify(existing.context)!==JSON.stringify(context))fail('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.', 'REQUEST_ID_CONFLICT');return state(existing);}
+      if(store.listAgentRuns().some(run=>run.id===id))fail('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.', 'REQUEST_ID_CONFLICT');
       if(predecessorId){const run=store.get('agent_runs',predecessorId);if(store.get('reviews',run.reviewId).projectId!==review.projectId)fail('같은 프로젝트의 실행만 기다릴 수 있습니다.');}
       const now=new Date().toISOString();
       if(input.requestSignature!==undefined&&(typeof input.requestSignature!=='string'||!/^[a-f0-9]{64}$/.test(input.requestSignature)))fail('후속 요청의 저장 정보가 올바르지 않습니다.');

@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "features",
+      "title": "Save follow-up work through MCP",
+      "description": "Create, inspect and cancel saved follow-up requests for a specific project and review. Requests appear in the existing waiting list, keep their identity across retries and restarts, and wait for an explicit Run action before starting. Cancelling a queued request leaves ongoing work running.",
+      "commits": [
+        "df98c72ca299f34c3afd6c680b8131b9390fbca8"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Start and stop project-owned Node services",
       "description": "Save and start a local Node .cjs service for a project connection. Follow live logs and HTTP readiness while working in other project views or running agent jobs. Stopping waits for active requests and cleanup, closes unused plain HTTP connections, and confirms that the service has exited. An unconfirmed stop stays visible.",
       "commits": [

@@ -271,8 +271,8 @@ async function readAgentFile(payload,raw=false) {
 let followupRequests;
 function requestQueue() {
   if(!followupRequests)followupRequests=require('./agent-requests.cjs').createRequestQueue({store,
-    targetForReview:review=>{const service=serviceById(review.serviceId,true),settings=agentSettings(service);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,settings),settings};},
-    targetForRun:run=>{const service=serviceById(run.serviceId,true);return require('./agent-requests.cjs').requestTargetKey(service,{...agentSettings(service),workPath:run.workPath});},
+    targetForReview:review=>{const service=serviceById(review.serviceId),settings=agentSettings(service);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,settings),settings};},
+    targetForRun:run=>{const service=serviceById(run.serviceId);return require('./agent-requests.cjs').requestTargetKey(service,{...agentSettings(service),workPath:run.workPath});},
     start:payload=>agentAction('agent.start',payload)
   });
   return followupRequests;
@@ -280,10 +280,16 @@ function requestQueue() {
 async function agentAction(action,payload) {
   if(action.startsWith('agent.request.')){
     const method=action.slice('agent.request.'.length);if(!['list','add','update','confirmResult','cancel','start','resolve'].includes(method))throw new Error('지원하지 않는 후속 요청 기능입니다.');
+    if(payload.projectId!==undefined){
+      // Recheck inside the serialized action: a restore may have replaced the
+      // IDs after the public adapter's earlier snapshot and queue read.
+      const review=store.snapshot().reviews.find(row=>row.id===payload.reviewId);
+      if(!review||review.projectId!==payload.projectId||!['list','add'].includes(method)&&!require('./agent-requests.cjs').listSavedRequests(store.db,review.id).some(row=>row.id===payload.id))throw Object.assign(new Error('후속 요청이 지정한 프로젝트와 리뷰에 속하지 않습니다.'),{code:'TARGET_MISMATCH'});
+    }
     if(method==='add') {
-      const signature=digest(JSON.stringify([payload.reviewId,payload.prompt,payload.model??null,payload.reasoningEffort??null,payload.executionSettings??null,Boolean(payload.newConversation),payload.predecessorId||'',payload.requiredResult||'',payload.context??null,payload.attachmentTokens||[],payload.screenshotToken||'',payload.sourceRunId||'',payload.sourceTarget??null,payload.continuedFromRunId||'']));
+      const signature=digest(JSON.stringify([payload.reviewId,payload.prompt,payload.model??null,payload.reasoningEffort??null,payload.executionSettings??null,Boolean(payload.newConversation),payload.predecessorId||'',payload.requiredResult||'',payload.context??null,payload.attachmentTokens||[],payload.screenshotToken||'',payload.sourceRunId||'',payload.sourceTarget??null,payload.continuedFromRunId||'',...(payload.projectId===undefined?[]:[{projectId:payload.projectId}])]));
       const existing=payload.requestId&&require('./agent-requests.cjs').listSavedRequests(store.db,payload.reviewId).find(row=>row.id===payload.requestId);
-      if(existing?.requestSignature){if(existing.requestSignature!==signature)throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.');return requestQueue().list(payload.reviewId).requests.find(row=>row.id===existing.id);}
+      if(existing?.requestSignature){if(existing.requestSignature!==signature)throw Object.assign(new Error('이미 사용한 요청 ID입니다. 새 요청으로 등록하십시오.'),{code:'REQUEST_ID_CONFLICT'});return requestQueue().list(payload.reviewId).requests.find(row=>row.id===existing.id);}
       payload={...payload,requestSignature:signature};
     }
     if(['add','update'].includes(method)&&payload.context){const context={...payload.context},screenshotToken=payload.screenshotToken||context.screenshotToken;delete context.screenshotToken;payload={...payload,context,...(screenshotToken?{screenshotToken}:{})};}
