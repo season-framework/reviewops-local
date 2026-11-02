@@ -2,9 +2,9 @@
 // Private child IPC only. This launcher supports one in-process CommonJS server;
 // it deliberately does not supervise arbitrary descendants or expose an HTTP token.
 const exit=process.exit.bind(process),send=process.send?.bind(process);
-const originalArgv=[...process.argv],net=require('node:net'),Module=require('node:module');
+const originalArgv=[...process.argv],net=require('node:net'),http=require('node:http'),Module=require('node:module');
 let initialized=false,token='',instanceId='',entryExports,draining=false,drainReady=false,keepAlive;
-const servers=new Set(),closeMethods=new WeakMap(),address=net.Server.prototype.address;
+const servers=new Set(),closeMethods=new WeakMap(),httpPreconnections=new WeakMap(),address=net.Server.prototype.address;
 const describeError=error=>{try{return String(error?.message??error).slice(0,1000);}catch{return 'Unknown service cleanup failure.';}};
 const report=value=>{try{send?.({protocol:'reviewops-owned-node-v1',token,instanceId,...value},()=>{});}catch{}};
 const listeners=()=>{
@@ -14,6 +14,26 @@ const listeners=()=>{
 };
 const listen=net.Server.prototype.listen;
 const close=net.Server.prototype.close;
+function endEmptyHttpConnection(state,socket){
+ // A TCP connection is not an accepted HTTP request. End only an untouched
+ // plain-HTTP preconnection; never end partial headers or an active response.
+ if(!state.pending.has(socket)||socket.encrypted===true||socket.destroyed||socket.writableEnded||socket.bytesRead!==0||socket.bytesWritten!==0||socket.readableLength!==0)return;
+ state.finSent.add(socket);
+ try{socket.end();}catch(error){state.finSent.delete(socket);throw error;}
+}
+function trackHttpPreconnections(server){
+ if(httpPreconnections.has(server))return httpPreconnections.get(server);
+ // Do not infer HTTP behavior from a generic net/TLS server or a subclass.
+ if(Object.getPrototypeOf(server)!==http.Server.prototype)return null;
+ const state={pending:new Set(),finSent:new WeakSet()};httpPreconnections.set(server,state);
+ server.on('connection',socket=>{
+  if(socket.encrypted===true)return;
+  state.pending.add(socket);socket.once('close',()=>state.pending.delete(socket));
+  if(draining)try{endEmptyHttpConnection(state,socket);}catch(error){report({type:'drain-error',message:describeError(error)});}
+ });
+ server.on('close',()=>state.pending.clear());
+ return state;
+}
 net.Server.prototype.listen=function(...args){
  if(draining)throw Object.assign(new Error('The owned service is shutting down.'),{code:'SERVICE_STOPPING'});
  if(!servers.has(this)){
@@ -22,11 +42,23 @@ net.Server.prototype.listen=function(...args){
   // close can become idle later, so close only those idle sockets after finish.
   // Never use closeAllConnections or destroy an accepted request's socket.
   if(typeof this.closeIdleConnections==='function'){
-   const emit=this.emit,closeIdle=this.closeIdleConnections,server=this;
+   const emit=this.emit,closeIdle=this.closeIdleConnections,server=this,preconnections=trackHttpPreconnections(this);
    this.emit=function(event,...values){
-    if(event==='request'){
-     const response=values[1];
-     if(draining){response.statusCode=503;response.setHeader('Connection','close');response.end('Service is shutting down.');return true;}
+    if(event==='upgrade'||event==='connect'){
+     const socket=values[1];preconnections?.pending.delete(socket);
+     // The HTTP parser detaches for these protocols. Only an already-FINned
+     // preconnection is refused here; previously accepted handlers stay intact.
+     if(draining&&preconnections?.finSent.has(socket)){socket.resume();return true;}
+    }
+    if(event==='request'||preconnections&&(event==='checkContinue'||event==='checkExpectation')){
+     const request=values[0],response=values[1];preconnections?.pending.delete(request.socket);
+     if(draining){
+      // Its peer can send a first request after our FIN was queued. That new
+      // request was never accepted by the entry and has no writable response.
+      // Read only that refused input so the peer can finish without a forced close.
+      if(preconnections?.finSent.has(request.socket)){request.resume();return true;}
+      response.statusCode=503;response.setHeader('Connection','close');response.end('Service is shutting down.');return true;
+     }
      response.once('finish',()=>{if(draining)Reflect.apply(closeIdle,server,[]);});
     }
     return Reflect.apply(emit,this,[event,...values]);
@@ -50,7 +82,16 @@ function beginDrain(reason){
  // referenced handle until all listener closes and the optional hook complete.
  keepAlive=setInterval(()=>{},1000);
  const closing=[...servers].map(server=>new Promise((resolve,reject)=>{
-  try{Reflect.apply(closeMethods.get(server)||close,server,[error=>error&&error.code!=='ERR_SERVER_NOT_RUNNING'?reject(error):resolve()]);}catch(error){if(error.code==='ERR_SERVER_NOT_RUNNING')resolve();else reject(error);}
+  try{
+   const state=httpPreconnections.get(server);
+   if(state){
+    // Node checks listener counts before its automatic 100/417 writes. During
+    // drain, route both Expect branches through the refusal in our emit wrapper.
+    server.on('checkContinue',()=>{});server.on('checkExpectation',()=>{});
+   }
+   Reflect.apply(closeMethods.get(server)||close,server,[error=>error&&error.code!=='ERR_SERVER_NOT_RUNNING'?reject(error):resolve()]);
+   if(state)for(const socket of state.pending)endEmptyHttpConnection(state,socket);
+  }catch(error){if(error.code==='ERR_SERVER_NOT_RUNNING')resolve();else reject(error);}
  }));
  let cleanup;try{cleanup=typeof entryExports?.reviewopsShutdown==='function'?entryExports.reviewopsShutdown({reason}):undefined;}catch(error){cleanup=Promise.reject(error);}
  Promise.all([...closing,cleanup]).then(()=>{drainReady=true;announceReady();},error=>{report({type:'drain-error',message:describeError(error)});});
