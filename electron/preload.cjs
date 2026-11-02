@@ -82,6 +82,7 @@ contextBridge.exposeInMainWorld('accountManager', Object.freeze({
   openLogin: invoke('openLogin'),
   openUsagePage: invoke('openUsagePage'),
   chooseCodexBinary: invoke('chooseCodexBinary'),
+  recheckCodexRuntime: () => ipcRenderer.invoke('accounts:recheckCodexRuntime'),
   onState(callback) {
     if (typeof callback !== 'function') return () => {};
     const listener = (_event, state) => callback(state);

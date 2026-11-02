@@ -106,7 +106,7 @@ async function harness(t, options = {}) {
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
     },
     shell: { async openPath() { return ''; }, async openExternal() {} },
-    clipboard: {writeText(text){if(state.clipboardError)throw state.clipboardError;state.clipboardText=text;(state.clipboardWrites||=[]).push(text);}},
+    clipboard: {writeText(text){if(options.clipboardWrite)return options.clipboardWrite(text,state);if(state.clipboardError)throw state.clipboardError;state.clipboardText=text;(state.clipboardWrites||=[]).push(text);}},
     protocol: { registerSchemesAsPrivileged() {}, handle(_scheme,callback) { state.protocol=callback; } },
     net: { async fetch() { throw new Error('Network access must not occur in main tests'); } },
     Menu: { buildFromTemplate: value => value, setApplicationMenu() {} }
@@ -140,7 +140,8 @@ async function harness(t, options = {}) {
       },closeAll(){this.closed=true;this.views.clear();},async flush(){}};
       state.browserManagers.push(manager);return manager;
     }};
-    if (name === './agents.cjs') return {createAgentManager:({onUpdate})=>{
+    if (name === './agents.cjs') return {createAgentManager:({onUpdate,...agentOptions})=>{
+      state.agentOptions=agentOptions;
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
       state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
       return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},login({id,serviceId}){const job={id,serviceId,kind:'login',status:'running',output:'synthetic login'};state.agentStarts.push(job);return job;},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
@@ -160,7 +161,7 @@ async function harness(t, options = {}) {
     if (name === './html-preview.cjs') return require('../electron/html-preview.cjs');
     if (name === './files.cjs') return files;
     if (name === './agent-files.cjs') return require('../electron/agent-files.cjs');
-    if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
+    if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},localRuntime(){return state.codexRuntime;},async close(){state.codexClosed=true;},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
       if (state.seasonError) throw new Error(state.seasonError);
@@ -214,6 +215,20 @@ async function seed(h) {
   const review = await h.success('review.save', { projectId: project.id, serviceId: service.id, title: '합성 리뷰', body: '보존할 내용' });
   return { group, service, project, review };
 }
+
+test('local agent runtime lookup reads the current trusted account-manager selection without changing project settings', async t => {
+ const h=await harness(t),group=await h.success('group.save',{name:'Local runtime fixture'});
+ const project=await h.success('project.save',{groupId:group.id,name:'Local default CLI',connection:{kind:'local',rootPath:h.root,agentEnabled:true}}),service=project.connection;
+ const runtime={available:true,path:'/fixture/bundled-codex',command:'/usr/bin/arch',args:['-arm64','/fixture/bundled-codex']};
+ h.state.codexRuntime=runtime;
+ await h.success('agent.environment',{serviceId:service.id});
+ assert.deepEqual(h.state.agentOptions.getLocalRuntime(),runtime);
+ const changed={...runtime,path:'/fixture/new-bundled-codex',args:['-arm64','/fixture/new-bundled-codex']};
+ h.state.codexRuntime=changed;assert.deepEqual(h.state.agentOptions.getLocalRuntime(),changed);
+ const saved=(await h.success('snapshot')).projects.find(row=>row.id===project.id);
+ assert.equal(saved.connection.agentBinary,service.agentBinary);
+ assert.equal(h.state.environmentCheck.settings.binary,service.agentBinary||'codex');
+});
 test('detailed test identity agrees across app information, native About and copied information',async t=>{
  const buildInfo={channel:'test',version:'1.2.11',buildNumber:11001,developmentNumber:10,commit:'a'.repeat(40),builtAt:'2026-11-01T16:00:00.000Z'};
  const h=await harness(t,{version:'1.2.11',buildInfo,isPackaged:false});
@@ -1891,6 +1906,25 @@ test('issue 28 native clipboard writes exact original text only for a trusted ap
  h.state.clipboardError=new Error('synthetic clipboard failure');const failed=await h.invoke('clipboard.writeText',{text:'retry text'});assert.equal(failed.ok,false);assert.match(failed.error.message,/synthetic clipboard failure/);assert.equal(h.state.clipboardText,text);
  h.state.clipboardError=null;assert.deepEqual(await h.success('clipboard.writeText',{text:'retry text'}),{copied:true});assert.equal(h.state.clipboardText,'retry text');
  assert.equal(h.state.permissionCheck(host.webContents,'clipboard-read','reviewops://app/index.html'),false);assert.equal(h.state.permissionCheck(host.webContents,'clipboard-sanitized-write','https://external.example'),false);
+});
+
+test('native clipboard results wait for asynchronous writes and preserve rejections',async t=>{
+ const writes=[];
+ const h=await harness(t,{clipboardWrite(text){return new Promise((resolve,reject)=>writes.push({text,resolve,reject}));}});
+ for(const action of ['clipboard.writeText','update.copyInfo']){
+  let settled=false;
+  const pending=h.invoke(action,{text:'Owned diagnostic text'}).then(result=>{settled=true;return result;});
+  await new Promise(resolve=>setImmediate(resolve));
+  const write=writes.shift();assert.ok(write);assert.equal(typeof write.text,'string');
+  try{assert.equal(settled,false,'Copy success must wait for the native clipboard write');}
+  finally{write.resolve();}
+  assert.equal((await pending).ok,true);
+  const rejected=h.invoke(action,{text:'Owned rejected diagnostic text'});
+  await new Promise(resolve=>setImmediate(resolve));
+  const failure=writes.shift();assert.ok(failure);failure.reject(new Error('Synthetic asynchronous clipboard denial'));
+  const result=await rejected;assert.equal(result.ok,false);assert.match(result.error.message,/Synthetic asynchronous clipboard denial/);
+ }
+ assert.equal(writes.length,0);
 });
 
 test('update build information copies through the trusted native clipboard route',async t=>{

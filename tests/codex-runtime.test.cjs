@@ -43,6 +43,101 @@ test('returns a validated direct executable without a shell', async (t) => {
   assert.equal(calls[0][2].timeout, 5000);
 });
 
+test('macOS discovery includes the nested desktop CLI in system and user applications', () => {
+  const home = path.join(os.tmpdir(), 'codex-candidate-home');
+  const candidates = defaultCandidates({ home, env: { PATH: '' }, platform: 'darwin', target: platformTarget('darwin', 'arm64') });
+  for (const directory of ['/Applications', path.join(home, 'Applications')]) {
+    for (const app of ['Codex.app', 'ChatGPT.app']) {
+      assert.ok(candidates.includes(path.join(directory, app, 'Contents', 'Resources', 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex')));
+    }
+  }
+  assert.equal(candidates.length, new Set(candidates).size);
+});
+
+test('a fresh app-only profile discovers the bundled CLI and prerelease version without a manual selection', async (t) => {
+  for (const app of ['Codex.app', 'ChatGPT.app']) await t.test(app, async (t) => {
+    const { root, write } = await fixture(t);
+    const binary = await write(path.join('Applications', app, 'Contents', 'Resources', 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'));
+    // Every executable candidate is inside this test's private filesystem.
+    const candidates = defaultCandidates({ home: root, env: { PATH: '' }, platform: 'darwin', target: platformTarget('darwin', 'arm64') })
+      .filter(candidate => candidate.startsWith(root + path.sep));
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, env: { PATH: '' }, candidates, execute: async (...args) => {
+      calls.push(args); return { stdout: 'codex-cli 0.166.0-alpha.5.1\n' };
+    } });
+    const result = await find();
+    assert.equal(result.path, await fs.realpath(binary));
+    assert.equal(result.version, '0.166.0-alpha.5.1');
+    assert.equal(result.available, true);
+    assert.equal(calls.length, 1);
+    assert.deepEqual(calls[0].slice(0, 2), [result.path, ['--version']]);
+    assert.equal(calls[0][2].shell, false);
+  });
+});
+
+test('only cached missing desktop-app paths opt into rediscovery; explicit project paths remain strict', async (t) => {
+  const { root, write } = await fixture(t);
+  const old = path.join(root, 'Applications', 'ChatGPT.app', 'Contents', 'Resources', 'codex');
+  const binary = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const calls = [];
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [binary], execute: async file => {
+    calls.push(file); return { stdout: 'codex-cli 0.166.0-alpha.5.1' };
+  } });
+  assert.equal((await find(old)).available, false);
+  assert.deepEqual(calls, []);
+  assert.equal((await find(old, { rediscoverMissingAppPath: true })).path, await fs.realpath(binary));
+  assert.deepEqual(calls, [await fs.realpath(binary)]);
+  assert.equal((await find(path.join(root, 'manually-selected-but-missing'), { rediscoverMissingAppPath: true })).available, false);
+  assert.equal(calls.length, 1);
+});
+
+test('a valid manual selection keeps priority over the detected desktop CLI', async (t) => {
+  const { root, write } = await fixture(t);
+  const selected = await write('manual/codex');
+  const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const calls = [];
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => {
+    calls.push(file); return { stdout: 'codex-cli 0.165.0' };
+  } });
+  assert.equal((await find(selected, { rediscoverMissingAppPath: true })).path, await fs.realpath(selected));
+  assert.deepEqual(calls, [await fs.realpath(selected)]);
+});
+
+test('cached app launch errors do not count as missing selected files', async (t) => {
+  for (const code of ['ENOENT', 'ENOTDIR']) await t.test(code, async (t) => {
+    const { root, write } = await fixture(t);
+    const selected = await write('Applications/ChatGPT.app/Contents/Resources/codex');
+    const canonical = await fs.realpath(selected);
+    const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => {
+      calls.push(file);
+      if (file === canonical) throw Object.assign(new Error('Existing executable could not launch'), { code });
+      return { stdout: 'codex-cli 0.166.0-alpha.5.1' };
+    } });
+    assert.equal((await find(selected, { rediscoverMissingAppPath: true })).available, false);
+    assert.deepEqual(calls, [await fs.realpath(selected)]);
+    assert.equal((await fs.stat(selected)).isFile(), true);
+  });
+});
+
+test('cached desktop paths with existing invalid, timed-out, or inaccessible files do not silently switch CLIs', async (t) => {
+  const { root, write } = await fixture(t);
+  const selected = await write('Applications/ChatGPT.app/Contents/Resources/codex');
+  const bundled = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  for (const execute of [async () => ({ stdout: 'another-program 1.0.0' }), async () => { throw Object.assign(new Error('timeout'), { killed: true }); }, async () => { throw Object.assign(new Error('denied'), { code: 'EACCES' }); }]) {
+    const calls = [];
+    const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async file => { calls.push(file); return execute(); } });
+    assert.equal((await find(selected, { rediscoverMissingAppPath: true })).available, false);
+    assert.deepEqual(calls, [await fs.realpath(selected)]);
+  }
+  await fs.writeFile(selected, macBinary('x64'));
+  let executions = 0;
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bundled], execute: async () => { executions++; return { stdout: 'codex-cli 0.166.0' }; } });
+  assert.match((await find(selected, { rediscoverMissingAppPath: true })).error, /Apple Silicon/);
+  assert.equal(executions, 0);
+});
+
 test('resolves an npm symlink and JavaScript wrapper to the native optional dependency', async (t) => {
   const { root, write } = await fixture(t);
   const wrapper = await write('lib/node_modules/@openai/codex/bin/codex.js', '#!/usr/bin/env node\nthrow new Error("must not execute");');
@@ -64,7 +159,7 @@ test('rejects a wrapper with a missing native dependency without executing it', 
   const result = await find(wrapper);
   assert.equal(result.available, false);
   assert.equal(executions, 0);
-  assert.match(result.error, /다시 설치/);
+  assert.match(result.error, /설치하거나 실행 파일/);
 });
 
 test('invalid custom path does not silently fall back to another installation', async (t) => {
@@ -76,13 +171,13 @@ test('invalid custom path does not silently fall back to another installation', 
   assert.equal((await find('~/codex')).available, true);
 });
 
-test('rejects an unrelated program and reports version timeout', async (t) => {
+test('rejects an unrelated program and does not infer an owned timeout from killed alone', async (t) => {
   const { root, write } = await fixture(t);
   const file = await write('codex');
   const wrong = createRuntimeFinder({ home: root, execute: async () => ({ stdout: 'node v24.0.0' }) });
-  assert.match((await wrong(file)).error, /Codex CLI가 아닙니다/);
+  assert.equal((await wrong(file)).errorKind, 'invalid-version');
   const timeout = createRuntimeFinder({ home: root, execute: async () => { throw Object.assign(new Error('timeout'), { killed: true }); } });
-  assert.match((await timeout(file)).error, /응답하지 않습니다/);
+  assert.equal((await timeout(file)).errorKind, 'abnormal-exit');
 });
 
 test('continues discovery after one broken installation and deduplicates symlinks', async (t) => {
@@ -214,7 +309,22 @@ test('Intel Macs continue to accept an Intel Codex executable', async (t) => {
   const { root, write } = await fixture(t);
   const intel = await write('intel-codex', macBinary('x64'));
   const find = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, execute: async () => ({ stdout: 'codex-cli 0.161.0' }) });
-  assert.equal((await find(intel)).available, true);
+  const result = await find(intel);
+  assert.equal(result.available, true);
+  assert.equal(result.diagnostics.records.at(-1).architecture, 'x64');
+});
+
+test('Intel Macs preserve valid selected POSIX launchers while Apple Silicon keeps its native-only guard', async t => {
+  const { root, write } = await fixture(t);
+  const selected = await write('manual/codex', '#!/bin/sh\nprintf "codex-cli 0.166.0\\n"\n');
+  const canonical = await fs.realpath(selected), calls = [];
+  const intel = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, execute: async (...args) => { calls.push(args); return { stdout: 'codex-cli 0.166.0' }; } });
+  const result = await intel(selected);
+  assert.equal(result.available, true); assert.equal(result.path, canonical); assert.equal(result.command, canonical); assert.deepEqual(result.args, []);
+  assert.deepEqual(calls[0].slice(0, 2), [canonical, ['--version']]); assert.equal(calls[0][2].shell, false);
+  assert.equal(result.diagnostics.records.at(-1).architecture, null);
+  const arm = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, execute: async () => assert.fail('Unknown launcher architecture must not execute on Apple Silicon') });
+  assert.equal((await arm(selected)).errorKind, 'architecture');
 });
 
 test('Apple Silicon refuses an unknown launcher instead of running it to inspect its version', async (t) => {
@@ -224,4 +334,135 @@ test('Apple Silicon refuses an unknown launcher instead of running it to inspect
   const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [script, path.join(root, 'missing')], execute: async () => { executions++; return { stdout: 'codex-cli 0.161.0' }; } });
   assert.match((await find()).error, /Apple Silicon/);
   assert.equal(executions, 0);
+});
+
+function fakeClock() {
+  let time = 0, next = 0;
+  const timers = new Map();
+  return {
+    now: () => time,
+    setTimeout: (callback, delay) => { const id = ++next; timers.set(id, { callback, at: time + delay }); return id; },
+    clearTimeout: id => timers.delete(id),
+    advance: amount => { time += amount; for (const [id, timer] of timers) if (timer.at <= time) { timers.delete(id); timer.callback(); } },
+  };
+}
+
+test('a failed bundled CLI continues to a healthy independent CLI with sanitized failure metadata', async t => {
+  const { root, write } = await fixture(t);
+  const bad = await write('Applications/ChatGPT.app/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex');
+  const good = await write('.local/bin/codex');
+  const canonicalBad = await fs.realpath(bad), calls = [];
+  const find = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, candidates: [bad, good], execute: async file => {
+    calls.push(file);
+    if (file === canonicalBad) throw Object.assign(new Error('Bearer private-token'), { code: 137, signal: 'SIGKILL', stderr: 'secret stderr' });
+    return { stdout: 'codex-cli 0.166.0' };
+  } });
+  const result = await find();
+  assert.equal(result.path, await fs.realpath(good));
+  assert.deepEqual(calls, [canonicalBad, await fs.realpath(good)]);
+  assert.equal(result.errorKind, null);
+  assert.equal(result.diagnostics.records[0].kind, 'abnormal-exit');
+  assert.equal(result.diagnostics.records[0].signal, 'SIGKILL');
+  assert.equal(result.diagnostics.records[0].code, 137);
+  assert.ok(result.diagnostics.records[0].path.startsWith('$HOME/'));
+  assert.doesNotMatch(JSON.stringify(result.diagnostics), /Bearer|private-token|secret stderr|Signature|서명/);
+});
+
+test('version failures retain distinct safe reasons without publishing raw command output', async t => {
+  const { root, write } = await fixture(t), file = await write('codex');
+  for (const [error, expected] of [
+    [{ code: 'EACCES' }, 'permissions'], [{ code: 7 }, 'abnormal-exit'],
+    [{ code: 137, signal: 'SIGKILL', killed: true }, 'abnormal-exit'],
+  ]) {
+    const find = createRuntimeFinder({ home: root, candidates: [file], execute: async () => { throw Object.assign(new Error('private raw failure'), error); } });
+    const result = await find();
+    assert.equal(result.errorKind, expected);
+    assert.doesNotMatch(JSON.stringify(result), /private raw failure|Signature|서명/);
+  }
+  const empty = createRuntimeFinder({ home: root, candidates: [file], execute: async () => ({ stdout: '' }) });
+  const emptyResult = await empty();
+  assert.equal(emptyResult.errorKind, 'invalid-version');
+  assert.equal(emptyResult.diagnostics.records.at(-1).code, 0);
+  const missing = createRuntimeFinder({ home: root, candidates: [path.join(root, 'missing')], execute: async () => { assert.fail('Missing files must not execute'); } });
+  assert.equal((await missing()).errorKind, 'missing');
+});
+
+test('only the owned deadline labels a probe timeout and passes an AbortController signal', async t => {
+  const { root, write } = await fixture(t), file = await write('codex'), clock = fakeClock();
+  let entered, signal;
+  const started = new Promise(resolve => entered = resolve);
+  const find = createRuntimeFinder({ home: root, candidates: [file], clock, execute: async (_command, _args, options) => {
+    signal = options.signal; entered();
+    return new Promise((_, reject) => signal.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' })), { once: true }));
+  } });
+  const pending = find(); await started; clock.advance(5000);
+  const result = await pending;
+  assert.equal(signal.aborted, true);
+  assert.equal(result.errorKind, 'owned-timeout');
+  assert.equal(result.diagnostics.records.at(-1).elapsedMs, 5000);
+  assert.equal(result.diagnostics.records.at(-1).signal, null);
+});
+
+test('automatic failure cooldown expires after thirty seconds, invalidates changed files, and allows explicit validation', async t => {
+  const { root, write } = await fixture(t), file = await write('codex'), clock = fakeClock();
+  let calls = 0;
+  const find = createRuntimeFinder({ home: root, candidates: [file], clock, execute: async () => { calls++; return { stdout: '' }; } });
+  await find(); await find(); assert.equal(calls, 1);
+  clock.advance(29999); await find(); assert.equal(calls, 1);
+  clock.advance(1); await find(); assert.equal(calls, 2);
+  await fs.appendFile(file, Buffer.from([0])); await find(); assert.equal(calls, 3);
+  await find(file); assert.equal(calls, 4);
+  await find('', { bypassCooldown: true }); assert.equal(calls, 5);
+});
+
+test('diagnostic history and failed-candidate cache remain bounded', async t => {
+  const { root, write } = await fixture(t), files = [];
+  for (let index = 0; index < 65; index++) files.push(await write('codex-' + index));
+  const candidates = [...files]; let calls = 0;
+  const find = createRuntimeFinder({ home: root, candidates, execute: async () => { calls++; return { stdout: '' }; } });
+  const result = await find();
+  assert.equal(calls, 65); assert.equal(result.diagnostics.records.length, 16); assert.equal(result.diagnostics.omitted, 49);
+  candidates.splice(0, candidates.length, files[0]); await find(); assert.equal(calls, 66, 'Oldest of65failure entries must have been evicted from the64-entry cache');
+});
+
+test('an aborted owned child stays retained until close and cannot be launched twice', async t => {
+  const { EventEmitter } = require('node:events');
+  const { root, write } = await fixture(t), file = await write('codex'), clock = fakeClock();
+  const children = []; let entered;
+  const started = new Promise(resolve => entered = resolve);
+  const find = createRuntimeFinder({ home: root, candidates: [file], clock, execFile: (_command, _args, options, callback) => {
+    const child = new EventEmitter(); children.push(child);
+    assert.equal(options.shell, false); assert.equal(options.timeout, 0);
+    if (children.length === 1) { options.signal.addEventListener('abort', () => callback(Object.assign(new Error('aborted'), { code: 'ABORT_ERR' })), { once: true }); entered(); }
+    else setImmediate(() => { callback(null, 'codex-cli 0.166.0'); child.emit('close', 0); });
+    return child;
+  } });
+  const pending = find(); await started; clock.advance(5000);
+  assert.equal((await pending).errorKind, 'owned-timeout');
+  assert.equal((await find('', { bypassCooldown: true })).errorKind, 'owned-timeout');
+  assert.equal(children.length, 1);
+  children[0].emit('close', null, 'SIGTERM');
+  assert.equal((await find('', { bypassCooldown: true })).available, true);
+  assert.equal(children.length, 2);
+});
+
+test('backend diagnostic snapshots also enforce the sixteen-KiB budget for long paths', async t => {
+  const { root, write } = await fixture(t), candidates = [];
+  const long = Array.from({ length: 5 }, (_, index) => String(index) + 'x'.repeat(150)).join('/');
+  for (let index = 0; index < 20; index++) candidates.push(await write(long + '/codex-' + index));
+  const find = createRuntimeFinder({ home: root, candidates, execute: async () => ({ stdout: '' }) });
+  const result = await find();
+  assert.ok(Buffer.byteLength(JSON.stringify(result.diagnostics), 'utf8') <= 16 * 1024);
+  assert.ok(result.diagnostics.records.length <= 16); assert.ok(result.diagnostics.omitted >= 4);
+});
+
+test('Intel architecture metadata failure is best effort while Apple Silicon retains the failure', async t => {
+  const { root, write } = await fixture(t), selected = await write('manual-codex', macBinary('x64'));
+  const inspectArchitectures = async () => { throw Object.assign(new Error('Synthetic metadata read denied'), { code: 'EACCES' }); };
+  let executions = 0;
+  const intel = createRuntimeFinder({ platform: 'darwin', arch: 'x64', detectAppleSilicon: async () => false, home: root, inspectArchitectures, execute: async () => { executions++; return { stdout: 'codex-cli 0.166.0' }; } });
+  const result = await intel(selected);
+  assert.equal(result.available, true); assert.equal(result.diagnostics.records.at(-1).architecture, null); assert.equal(executions, 1);
+  const arm = createRuntimeFinder({ platform: 'darwin', arch: 'arm64', home: root, inspectArchitectures, execute: async () => assert.fail('ARM metadata failure must not execute') });
+  assert.equal((await arm(selected)).errorKind, 'permissions');
 });
