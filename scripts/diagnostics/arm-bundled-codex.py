@@ -73,6 +73,25 @@ def source_guard(root):
     return source, pins
 
 
+def owned_mount_device(attachment, mountpoint):
+    """Select only the device from this original attach's exact private mountpoint."""
+    require(isinstance(mountpoint, str) and mountpoint.startswith('/'), 'Expected an absolute owned mountpoint')
+    require(isinstance(attachment, dict) and isinstance(attachment.get('system-entities'), list), 'Unknown original attach metadata')
+    owners = [row for row in attachment['system-entities'] if isinstance(row, dict) and row.get('mount-point') == mountpoint]
+    require(len(owners) == 1, 'Unknown owned mount identity')
+    device = owners[0].get('dev-entry')
+    require(isinstance(device, str) and re.fullmatch('/dev/disk[0-9]+s[0-9]+', device), 'Unknown owned mount device')
+    return device
+
+
+def validate_readonly_mount(info, mountpoint, device):
+    """Require the actual disk-image identity and explicit Boolean nonwritability."""
+    require(isinstance(mountpoint, str) and mountpoint.startswith('/') and isinstance(device, str) and re.fullmatch('/dev/disk[0-9]+s[0-9]+', device), 'Expected the original owned mount identity')
+    require(isinstance(info, dict) and info.get('MountPoint') == mountpoint and info.get('DeviceNode') == device and info.get('BusProtocol') == 'Disk Image', 'Owned disk-image identity changed')
+    require(all(info.get(key) is False for key in ('Writable', 'WritableMedia', 'WritableVolume')), 'Owned mount is not explicitly non-writable')
+    require('ReadOnlyVolume' not in info or info['ReadOnlyVolume'] is True, 'Conflicting read-only metadata')
+
+
 def bounded_get(url, hosts, limit, seconds, destination=None, response_metadata=None):
     """One request chain; consume at most limit+1 bytes, retaining at most limit."""
     deadline = time.monotonic() + seconds
@@ -279,13 +298,11 @@ def main():
         mount.mkdir(mode=0o700)
         mount_attempted = True
         attach, _ = tool('mount-readonly', ['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', '-mountpoint', str(mount), str(dmg)])
-        entities = plistlib.loads(attach)['system-entities']
-        owners = [row for row in entities if row.get('mount-point') == str(mount)]
-        require(len(owners) == 1 and re.fullmatch('/dev/disk[0-9]+s[0-9]+', owners[0].get('dev-entry', '')), 'Unknown owned mount identity')
+        mounted = owned_mount_device(plistlib.loads(attach), str(mount))
+        write(output / 'owned-mount-identity.json', {'device': mounted, 'mountPoint': str(mount), 'originalAttachIdentityConfirmed': True})
         info, _ = tool('mount-readonly-info', ['/usr/sbin/diskutil', 'info', '-plist', str(mount)])
         info = plistlib.loads(info)
-        require(info.get('MountPoint') == str(mount) and info.get('DeviceNode') == owners[0]['dev-entry'] and info.get('ReadOnlyVolume') is True, 'Owned mount is not read-only')
-        mounted = owners[0]['dev-entry']
+        validate_readonly_mount(info, str(mount), mounted)
         apps = [file for file in mount.iterdir() if file.name.endswith('.app')]
         require(len(apps) == 1 and apps[0].name in ('Codex.app', 'ChatGPT.app') and apps[0].is_dir() and not apps[0].is_symlink(), 'Unknown original app layout')
         app = home / 'Applications' / apps[0].name
