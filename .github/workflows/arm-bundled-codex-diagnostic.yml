@@ -1,0 +1,53 @@
+name: ARM bundled Codex CLI diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Full reviewed diagnostic branch commit
+        type: string
+        required: true
+      allow_custom_path_diagnostic:
+        description: If an earlier real candidate exists, allow one custom-path version probe instead of default proof
+        type: boolean
+        required: false
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewops-arm-bundled-codex-diagnostic
+  cancel-in-progress: false
+
+jobs:
+  diagnostic:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/issue52-arm-bundled-cli-diagnostic' && github.sha == inputs.reviewed_commit
+    runs-on: macos-15
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.reviewed_commit }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+          architecture: arm64
+      - name: Run one authentic vendor-bundle metadata diagnostic
+        env:
+          REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+          ALLOW_CUSTOM_PATH_DIAGNOSTIC: ${{ inputs.allow_custom_path_diagnostic }}
+        shell: bash
+        run: |
+          export DIAGNOSTIC_NODE="$(command -v node)"
+          /usr/bin/python3 scripts/diagnostics/arm-bundled-codex.py
+      - name: Keep metadata and original-owner journals only
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-arm-bundled-codex-metadata-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/arm-bundled-codex/
+          if-no-files-found: warn
+          retention-days: 14
