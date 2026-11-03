@@ -6,7 +6,8 @@ const os=require('node:os');
 const path=require('node:path');
 const crypto=require('node:crypto');
 const {DatabaseSync}=require('node:sqlite');
-const {createStore,CATEGORIES,SCHEMA_VERSION}=require('../electron/store.cjs');
+const {createStore,CATEGORIES,SCHEMA_VERSION,BACKUP_FORMAT_VERSION}=require('../electron/store.cjs');
+const {removeWriteConsistencySchema} = require('./helpers/legacy-store-schema.cjs');
 
 function setup(t){
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-categories-')),dbPath=path.join(directory,'data.sqlite'),stores=[];
@@ -30,7 +31,7 @@ test('custom categories retain stable IDs, names, reviews and unused choices acr
   const updated=store.saveReview({id:review.id,title:'수정한 요청'});
   assert.equal(updated.category,category.id);
   const expected=store.snapshot(),backup=store.exportData();
-  assert.equal(backup.version,SCHEMA_VERSION);
+  assert.equal(backup.version,BACKUP_FORMAT_VERSION);
   store.close();const restarted=f.open();
   assert.deepEqual(restarted.snapshot(),expected);
   restarted.deleteReview(review.id);
@@ -82,6 +83,7 @@ test('v7 review constraint migration preserves foreign keys, indexes, triggers, 
   // The v7 fixture restores the exact former enum constraint in the persisted
   // schema, without using the migration's table-copy implementation.
   const legacy=new DatabaseSync(f.dbPath);
+  removeWriteConsistencySchema(legacy);
   const schema=legacy.prepare("SELECT sql FROM sqlite_master WHERE name='reviews'").get().sql;
   const old=schema.replace('category TEXT NOT NULL,',`category TEXT NOT NULL CHECK(category IN (${CATEGORIES.map(value=>`'${value}'`).join(',')})),`);
   assert.notEqual(old,schema);

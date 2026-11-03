@@ -6,7 +6,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const {createStore, SCHEMA_VERSION} = require('../electron/store.cjs');
+const {createStore, SCHEMA_VERSION, BACKUP_FORMAT_VERSION} = require('../electron/store.cjs');
+const {removeWriteConsistencySchema} = require('./helpers/legacy-store-schema.cjs');
 
 const SERVICE_FIELDS = ['agentEnabled','agentBinary','agentWorkPath','agentModel','agentReasoningEffort','agentInstructions','agentModels'];
 const clone = value => JSON.parse(JSON.stringify(value));
@@ -235,7 +236,7 @@ test('current backups round-trip agent settings, sessions, progress and response
   f.store.addActivity({reviewId:f.review.id,body:run.prompt,agentRunId:run.id});
   const done=f.store.saveAgentRun({id:run.id,status:'completed',sessionId:'session-backup',response:'백업할 응답'});
   const backup=f.store.exportData(),untouched=clone(backup);
-  assert.equal(backup.version,SCHEMA_VERSION);assert.equal(backup.agentRuns.length,1);
+  assert.equal(backup.version,BACKUP_FORMAT_VERSION);assert.equal(backup.agentRuns.length,1);
   f.store.importData(backup);
   assert.deepEqual(f.store.exportData(),backup);assert.deepEqual(backup,untouched);
   f.store.saveAgentRun(done);
@@ -277,6 +278,7 @@ test('version 2 JSON backups receive safe defaults and retain original comments'
 
 test('an existing version 2 database migrates in place without changing rows or file metadata', t => {
   const f=setup(t),before=f.store.snapshot();
+  removeWriteConsistencySchema(f.store.db);
   f.store.db.exec('DROP TRIGGER IF EXISTS agent_run_service_insert; DROP TRIGGER IF EXISTS agent_run_service_update; DROP TRIGGER IF EXISTS agent_run_project_service_delete; DROP TRIGGER service_delete_linked; DROP TABLE agent_runs; DROP INDEX agent_response_run;');
   for(const key of SERVICE_FIELDS)f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
   for(const key of ['managedProjectId','hostAlias','sshConfigPath'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
@@ -294,6 +296,7 @@ test('version 4 agent history migrates with every record intact and allows detac
   f.store.addActivity({reviewId:f.review.id,body:run.prompt,agentRunId:run.id});
   f.store.saveAgentRun({id:run.id,status:'completed',response:'기존 작업 응답',sessionId:'existing-session',usage:{input_tokens:12,output_tokens:8}});
   const legacyBackup=f.store.exportData();legacyBackup.version=4;
+  removeWriteConsistencySchema(f.store.db);
   for(const key of ['managedProjectId','hostAlias','sshConfigPath','agentModels'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
   const schema=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'").get().sql;
   const indexes=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='agent_runs' AND type='index' AND sql IS NOT NULL").all();
@@ -321,9 +324,9 @@ test('version 4 agent history migrates with every record intact and allows detac
   f.store.close();
   const migrated=f.open();
   assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version,SCHEMA_VERSION);
-  assert.deepEqual(migrated.exportData(),{...legacyBackup,version:SCHEMA_VERSION});
+  assert.deepEqual(migrated.exportData(),{...legacyBackup,version:BACKUP_FORMAT_VERSION});
   migrated.importData(legacyBackup);
-  assert.deepEqual(migrated.exportData(),{...legacyBackup,version:SCHEMA_VERSION});
+  assert.deepEqual(migrated.exportData(),{...legacyBackup,version:BACKUP_FORMAT_VERSION});
   migrated.saveProject({id:f.project.id,serviceIds:[]});
   migrated.deleteService(f.service.id);
   const archived=migrated.get('agent_runs',run.id);
