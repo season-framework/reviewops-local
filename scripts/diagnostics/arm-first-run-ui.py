@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
-"""Prepare authentic private inputs and run one native ARM first-launch UI check."""
+"""Prepare a private public package and run one ARM missing-CLI first-launch UI check."""
 from pathlib import Path
 import datetime
 import hashlib
-import importlib.util
 import json
 import os
-import plistlib
 import re
 import selectors
 import subprocess
@@ -19,7 +17,8 @@ import zipfile
 
 BASE = '84042d8bb8d7d6f758d936d63f41fc325349550e'
 REPOSITORY = 'season-framework/reviewops-local'
-BRANCH = 'refs/heads/codex/issue52-arm-first-run-ui'
+BRANCH = 'refs/heads/codex/issue52-arm-missing-cli-ui'
+SCENARIO = 'missing-cli-first-run'
 ADDITIONS = {
     '.github/workflows/arm-first-run-ui.yml',
     'scripts/diagnostics/arm-first-run-ui.py',
@@ -161,6 +160,7 @@ def main():
     need(os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and os.environ.get('GITHUB_REF') == BRANCH
          and os.environ.get('GITHUB_REPOSITORY') == REPOSITORY and os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'Reviewed manual branch, first attempt only')
     need(os.environ.get('GITHUB_WORKFLOW_REF') == REPOSITORY + '/.github/workflows/arm-first-run-ui.yml@' + BRANCH, 'Unexpected workflow source')
+    need(os.environ.get('DIAGNOSTIC_SCENARIO') == SCENARIO, 'Explicit reviewed missing-CLI scenario required')
     node = Path(os.environ['DIAGNOSTIC_NODE']).resolve(strict=True)
     runner_temp = Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
     evidence = root / 'test-results/arm-first-run-ui'
@@ -181,10 +181,9 @@ def main():
            'RUNNER_TEMP': str(runner_temp),
            'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TZ': 'UTC'}
     tools, held = [], []
-    mounted = None
-    attach_attempted = detached = detach_attempted = False
     result = {'ok': False, 'source': BASE, 'harnessSource': reviewed, 'startedAt': stamp(),
-              'maximumPositiveUILaunches': 1, 'actualUILaunchRequests': 0, 'harnessSignalsRequested': 0, 'retries': 0}
+              'scenario': SCENARIO, 'maximumAppLaunchRequests': 1, 'actualUIDriverInvocations': 0,
+              'vendorPrepared': False, 'vendorDownloadRequests': 0, 'harnessSignalsRequested': 0, 'retries': 0}
 
     def tool(label, argv, seconds=60):
         started, deadline = stamp(), time.monotonic() + seconds
@@ -277,95 +276,31 @@ def main():
             need(path.is_file() and not path.is_symlink() and path.stat().st_size == expected['bytes'] and sha(path) == expected['sha256'], 'Accepted package member differs')
         architecture, _ = tool('package-architecture', ['/usr/bin/lipo', '-archs', str(executable)])
         need(architecture.decode().split() == ['arm64'], 'Actual package executable is not native ARM')
-        spec = importlib.util.spec_from_file_location('_vendor_pure_helpers', root / 'scripts/diagnostics/arm-bundled-codex.py')
-        vendor = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(vendor)
-        page, page_receipt = vendor.bounded_get('https://learn.chatgpt.com/docs/app', {'learn.chatgpt.com', 'developers.openai.com'}, 4 * 1024**2, 30)
-        links = {href for href, content in re.findall(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page.decode('utf-8'), re.S | re.I)
-                 if ' '.join(re.sub('<[^>]+>', ' ', content).split()) == 'Download for macOS (Apple Silicon)'}
-        need(len(links) == 1, 'Unknown current official ARM link')
-        url = links.pop()
-        parsed = urlsplit(url)
-        need(parsed.hostname == 'persistent.oaistatic.com' and parsed.path.startswith('/codex-app-prod/') and parsed.path.endswith('.dmg') and not parsed.query, 'Unknown official vendor location')
-        write(output / 'official-page.json', page_receipt)
-        dmg = private / 'official.dmg'
-        _, download = vendor.bounded_get(url, {'persistent.oaistatic.com'}, 1024**3, 180, dmg, output / 'official-DMG-response.json')
-        write(output / 'official-DMG.json', download)
-        mount = private / 'mount'
-        mount.mkdir(mode=0o700)
-        attach_attempted = True
-        raw, _ = tool('attach-vendor-readonly', ['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', '-mountpoint', str(mount), str(dmg)])
-        mounted = vendor.owned_mount_device(plistlib.loads(raw), str(mount))
-        write(output / 'owned-mount.json', {'device': mounted, 'mountpoint': str(mount)})
-        raw, _ = tool('verify-vendor-mount', ['/usr/sbin/diskutil', 'info', '-plist', str(mount)])
-        vendor.validate_readonly_mount(plistlib.loads(raw), str(mount), mounted)
-        apps = [p for p in mount.iterdir() if p.name.endswith('.app')]
-        need(len(apps) == 1 and apps[0].name in ('Codex.app', 'ChatGPT.app') and not apps[0].is_symlink(), 'Unknown vendor app layout')
-        app_vendor = home / 'Applications' / apps[0].name
-        tool('copy-vendor-bundle', ['/usr/bin/ditto', '--rsrc', '--extattr', str(apps[0]), str(app_vendor)])
-        before = vendor.bundle_inventory(app_vendor)
-        need(before == vendor.bundle_inventory(apps[0]), 'Vendor copy differs from original')
-        inventory_path = output / 'vendor-bundle-before.json'
-        write(inventory_path, before)
-        detach_attempted = True
-        tool('detach-vendor-mount', ['/usr/bin/hdiutil', 'detach', mounted])
-        mounted, detached = None, True
-        plist = plistlib.loads((app_vendor / 'Contents/Info.plist').read_bytes())
-        need(plist.get('CFBundleIdentifier') == 'com.openai.codex', 'Unknown vendor bundle ID')
-        cli = (app_vendor / 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex').resolve(strict=True)
-        need(app_vendor in cli.parents and cli.is_file() and os.access(cli, os.X_OK), 'Unknown genuine nested CLI')
-        minimum = plist.get('LSMinimumSystemVersion')
-        need(isinstance(minimum, str) and re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', minimum), 'Unknown minimum vendor macOS')
-        host_os, _ = tool('host-macos', ['/usr/bin/sw_vers', '-productVersion'])
-        version = lambda value: tuple((list(map(int, value.split('.'))) + [0, 0])[:3])
-        need(version(host_os.decode().strip()) >= version(minimum), 'Vendor minimum macOS is not met')
-        cli_arch, _ = tool('vendor-cli-architecture', ['/usr/bin/lipo', '-archs', str(cli)])
-        need('arm64' in cli_arch.decode().split(), 'Genuine CLI lacks ARM')
-        for label, file in [('app', app_vendor), ('cli', cli)]:
-            tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', '=anchor apple generic', str(file)])
-            _, raw = tool(label + '-signature-metadata', ['/usr/bin/codesign', '-d', '--verbose=4', str(file)])
-            text = raw.decode('utf-8')
-            need(re.search(r'^TeamIdentifier=2DC432GLL2$', text, re.M) and re.search(r'^Authority=Developer ID Application: OpenAI(?:,|\s)', text, re.M)
-                 and 'Signature=adhoc' not in text, 'Actual vendor signing authority differs')
-        identity_path = output / 'vendor-identity.json'
-        write(identity_path, {'appPath': str(app_vendor), 'CLI': str(cli), 'bundleId': plist['CFBundleIdentifier'],
-              'appVersion': plist.get('CFBundleShortVersionString'), 'appBuild': plist.get('CFBundleVersion'),
-              'appTeamID': '2DC432GLL2', 'CLITeamID': '2DC432GLL2', 'appDeepStrictAppleOpenAIVerified': True,
-              'CLIDeepStrictAppleOpenAIVerified': True, 'CLIArchitecture': 'arm64', 'originalToolsClosed': True,
-              'ownedMountOrdinarilyDetached': True, 'CLISHA256': sha(cli), 'minimumOS': minimum,
-              'hostOS': host_os.decode().strip(), 'currentMutableVendorCohort': True, 'exactReporterCohortConfirmed': False})
-        binding = {'schema': 1, 'approvedForOnePositiveUILaunch': True, 'allowNormalStartupMetadata': True,
+        # This lane prepares no vendor app, DMG, CLI, mount or credentials.
+        need(not any((home / 'Applications').iterdir()), 'Private Applications must be empty')
+        binding = {'schema': 1, 'scenario': SCENARIO, 'approvedForOneMissingCLIUILaunch': True,
+                   'allowNormalStartupMetadata': True,
                    'root': str(root), 'source': BASE, 'harnessSource': reviewed, 'sourceGuard': source_guard,
                    'privateRoot': str(private), 'home': str(home), 'codeHome': str(code), 'dataDir': str(private / 'data'),
                    'sshConfig': str(ssh), 'packageApp': str(app), 'packageZipPin': pin(archive), 'expectedASARPin': pin(asar),
-                   'vendorApp': str(app_vendor), 'vendorIdentityPin': pin(identity_path), 'vendorInventoryPin': pin(inventory_path),
-                   'CLI': str(cli), 'CLISHA256': sha(cli), 'output': str(evidence / 'ui'), 'actualNodeIdentity': native_identity}
+                   'output': str(evidence / 'ui'), 'actualNodeIdentity': native_identity}
         binding_path = private / 'UI-binding.json'
         write(binding_path, binding)
         write(output / 'UI-binding.json', binding)
-        result['actualUILaunchRequests'] = 1
-        tool('positive-packaged-ui', [str(node), str(root / 'scripts/diagnostics/arm-first-run-ui.mjs'), '--run', str(binding_path)], seconds=240)
-        after = vendor.bundle_inventory(app_vendor)
-        write(output / 'vendor-bundle-after.json', after)
-        need(after == before and not (code / 'auth.json').exists(), 'Vendor bundle changed or unexpected private authentication')
+        result['actualUIDriverInvocations'] = 1
+        tool('missing-cli-packaged-ui', [str(node), str(root / 'scripts/diagnostics/arm-first-run-ui.mjs'), '--run', str(binding_path)], seconds=240)
+        need(not any((home / 'Applications').iterdir()) and not (code / 'auth.json').exists(),
+             'Unexpected private vendor app or authentication')
         need(sha(asar) == reference['asar']['sha256'] and sha(executable) == reference['executable']['sha256'], 'ReviewOps package members changed')
         need(not git('source-final-clean', 'status', '--porcelain=v1'), 'Tracked source changed during diagnostic')
-        result.update(ok=True, packageSHA256=sha(archive), vendorBytesUnchanged=True, packageMembersUnchanged=True)
+        result.update(ok=True, packageSHA256=sha(archive), privateApplicationsStillEmpty=True, packageMembersUnchanged=True)
     except Exception as error:
         result.update(errorType=type(error).__name__, error=str(error))
     finally:
-        if mounted and not held and not detach_attempted:
-            try:
-                detach_attempted = True
-                tool('failure-detach-vendor-mount', ['/usr/bin/hdiutil', 'detach', mounted])
-                mounted, detached = None, True
-            except Exception:
-                pass
         result.update(completedAt=stamp(), metadataTools=tools, heldOriginalOwners=[owner['child'].pid for owner in held],
-                      mountClosureUnconfirmed=attach_attempted and not detached, vendorInternalChildClosureClaimed=False,
-                      externalTrafficAbsenceClaimed=False)
+                      vendorInternalChildClosureClaimed=False, externalTrafficAbsenceClaimed=False)
         write(output / 'driver-result.json', result)
-        print(json.dumps({key: result[key] for key in ('ok', 'source', 'harnessSource', 'actualUILaunchRequests', 'mountClosureUnconfirmed')}))
+        print(json.dumps({key: result[key] for key in ('ok', 'source', 'harnessSource', 'scenario', 'actualUIDriverInvocations')}))
         for owner in held:
             reconcile_original(owner, output)
     return 0 if result['ok'] else 1

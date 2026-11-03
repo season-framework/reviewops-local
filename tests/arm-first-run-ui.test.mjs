@@ -1,7 +1,8 @@
 // Inert guards only. No vendor CLI, app, filesystem fixture, network or product import.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {PACKAGE, assertBinding, assertDefaultInventory, assertRuntimeObservation, assertOriginalClosure} from '../scripts/diagnostics/arm-first-run-ui.mjs';
+import {PACKAGE, assertBinding, assertDefaultInventory, assertRuntimeObservation, assertOriginalClosure,
+  ADDED_PATHS, assertMissingBinding, missingCandidateRow, assertAllMissingInventory, assertMissingRuntimeObservation} from '../scripts/diagnostics/arm-first-run-ui.mjs';
 
 const host = {platform: 'darwin', arch: 'arm64', node: '24.22.2', electron: undefined};
 function binding() {
@@ -67,4 +68,71 @@ test('a PID or application close alone cannot be reported as original launcher/s
   assert.doesNotThrow(() => assertOriginalClosure(owner));
   for (const changed of [{stderrEOF: false}, {stdoutEOF: false}, {stderrClosed: false}, {childClosed: false}, {applicationClosed: false}, {exit: {code: 0, signal: 'SIGTERM'}}, {pid: null}])
     assert.throws(() => assertOriginalClosure({...owner, ...changed}));
+});
+
+function missingBinding() {
+  const b = binding();
+  for (const name of ['approvedForOnePositiveUILaunch','vendorApp','CLI','CLISHA256','vendorIdentityPin','vendorInventoryPin']) delete b[name];
+  return {...b, scenario: 'missing-cli-first-run', approvedForOneMissingCLIUILaunch: true,
+    sourceGuard: {...b.sourceGuard, addedPaths: [...ADDED_PATHS]}};
+}
+test('missing first-run requires its own exact scenario and authority without a positive vendor grant', () => {
+  assert.doesNotThrow(() => assertMissingBinding(missingBinding(), host));
+  for (const change of [b => {delete b.scenario;}, b => {b.scenario = 'positive';},
+    b => {b.approvedForOneMissingCLIUILaunch = false;}, b => {b.approvedForOnePositiveUILaunch = true;},
+    b => {b.vendorIdentityPin = binding().vendorIdentityPin;}, b => {b.CLI = binding().CLI;}]) {
+    const b = missingBinding(); change(b); assert.throws(() => assertMissingBinding(b, host));
+  }
+});
+test('missing lane keeps the actual ARM package, unchanged baseline and fresh private profile boundaries', () => {
+  for (const changed of [{platform: 'linux'}, {arch: 'x64'}, {electron: '44.9.0'}, {node: '22.0.0'}])
+    assert.throws(() => assertMissingBinding(missingBinding(), {...host, ...changed}));
+  for (const change of [b => {b.sourceGuard.oldFilesUnchanged = false;}, b => {b.sourceGuard.addedPaths.pop();},
+    b => {b.sourceGuard.addedPaths[0] = 'electron/main.cjs';}, b => {b.home = '/Users/other';},
+    b => {b.packageZipPin.sha256 = '0'.repeat(64);}, b => {b.expectedASARPin.bytes++;},
+    b => {b.allowNormalStartupMetadata = false;}]) {
+    const b = missingBinding(); change(b); assert.throws(() => assertMissingBinding(b, host));
+  }
+});
+test('all actual default paths must be absent without assuming the former 63-candidate count', () => {
+  assert.doesNotThrow(() => assertAllMissingInventory([absent('/usr/bin/codex')]));
+  assert.doesNotThrow(() => assertAllMissingInventory([absent('/usr/bin/codex'), absent('/opt/homebrew/bin/codex')]));
+  for (const rows of [[], [absent('/usr/bin/codex'), absent('/usr/bin/codex')],
+    [present('/usr/bin/codex')], [{candidate: '/usr/bin/codex', status: 'permission-unknown'}],
+    [{candidate: '/usr/bin/codex', status: 'missing', canonical: '/another/cli'}]])
+    assert.throws(() => assertAllMissingInventory(rows));
+});
+test('lstat distinguishes absent candidates from present files, directories, dangling links and unknown failures', () => {
+  for (const code of ['ENOENT','ENOTDIR']) {
+    const row = missingCandidateRow('/usr/bin/codex', () => {throw Object.assign(new Error(code), {code});});
+    assert.deepEqual(row, absent('/usr/bin/codex')); assertAllMissingInventory([row]);
+  }
+  for (const stat of [{isFile: () => true}, {isDirectory: () => true}, {isSymbolicLink: () => true}]) {
+    const row = missingCandidateRow('/usr/bin/codex', () => stat);
+    assert.equal(row.status, 'present'); assert.throws(() => assertAllMissingInventory([row]));
+  }
+  for (const code of ['EACCES','EPERM','EIO'])
+    assert.throws(() => missingCandidateRow('/usr/bin/codex', () => {throw Object.assign(new Error(code), {code});}), error => error.code === code);
+});
+function missingObservation() {
+  return {state: {accounts: [], runtime: {available: false, path: null, version: null, errorKind: 'missing',
+    error: 'Codex CLI를 찾을 수 없습니다. 설치하거나 실행 파일을 선택해 주십시오.', diagnostics: {records: [{kind: 'missing'}]}}},
+  view: {notice: 'Could not find Codex CLI. Install it or choose its executable.', summaryCount: 0,
+    recheckVisible: true, chooseVisible: true, loginDialogCount: 0}};
+}
+test('only a settled missing runtime with installation guidance can pass the negative UI observation', () => {
+  const {state, view} = missingObservation(); assert.doesNotThrow(() => assertMissingRuntimeObservation(state, view));
+  assert.throws(() => assertMissingRuntimeObservation({accounts: [], runtime: {available: false}}, view));
+  for (const change of [s => {s.runtime.errorKind = 'permissions';}, s => {s.runtime.available = true;},
+    s => {s.runtime.path = '/usr/bin/codex';}, s => {s.runtime.version = '1.0.0';},
+    s => {s.runtime.diagnostics.records = [];}, s => {s.runtime.diagnostics.records.push({kind: 'available'});},
+    s => {s.accounts.push({id: 'other'});}, s => {s.runtime.error = 'Log in to continue.';}]) {
+    const next = missingObservation(); change(next.state); assert.throws(() => assertMissingRuntimeObservation(next.state, next.view));
+  }
+});
+test('a login notice, stale runtime summary or hidden recovery buttons cannot stand in for missing-CLI guidance', () => {
+  for (const change of [v => {v.notice = 'Log in to continue.';}, v => {v.summaryCount = 1;},
+    v => {v.chooseVisible = false;}, v => {v.recheckVisible = false;}, v => {v.loginDialogCount = 1;}]) {
+    const next = missingObservation(); change(next.view); assert.throws(() => assertMissingRuntimeObservation(next.state, next.view));
+  }
 });
