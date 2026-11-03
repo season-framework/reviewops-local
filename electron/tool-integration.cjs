@@ -21,7 +21,7 @@ function publicConnectionInfo(metadata, dataPath) {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) invalid();
   const platform = scalar(metadata.platform, 32), version = scalar(metadata.version, 128);
   if (typeof metadata.instanceId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(metadata.instanceId) || typeof metadata.isPackaged !== 'boolean') invalid();
-  const paths = platform === 'win32' ? path.win32 : path;
+  const paths = platform === 'win32' ? path.win32 : path.posix;
   const home = scalar(metadata.homePath, 4096);
   if (!paths.isAbsolute(home) || metadata.dataPath !== dataPath) invalid();
   const redact = value => {
