@@ -58,6 +58,16 @@ const localSharedActions = Object.freeze({
   'shared.reviews.list': 'reviews.list',
   'shared.reviews.get': 'reviews.get'
 });
+// Explicit Store-persisting dispatches. This is independent of notification
+// matching and does not fence later callbacks or staged attachment lifetimes.
+const storeWriteActions = new Set([
+  'group.save','group.delete','project.save','project.delete','service.save','service.delete',
+  'review.save','review.delete','review.copy','reviewCategory.save',
+  'review.version.save','review.version.target','activity.add','activity.update','settings.save',
+  'attachment.add','attachment.delete','agent.start','agent.cancel','agent.transfer',
+  'agent.request.add','agent.request.update','agent.request.confirmResult',
+  'agent.request.cancel','agent.request.start','agent.request.resolve','ssh.trust','backup.import'
+]);
 const windowFullScreenChanges = new WeakMap();
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const storagePattern = /^[a-zA-Z0-9-]+(?:\.[a-zA-Z0-9]{1,12})?$/;
@@ -1270,8 +1280,21 @@ else {
     ipcMain.handle('reviewops:invoke',async(event,action,payload)=>{
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       const admittedRecord=windowContexts.get(host);
+      const admittedProjectId=admittedRecord.projectId,admittedQaProjectId=qaProjectId(admittedRecord);
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
+        const admission=storeWriteActions.has(action)?store.captureWriteAdmission():null;
+        const execute=()=>{
+          if(admission){
+            const record=windowContexts.get(host);
+            if(senderWindow(event)!==host||record!==admittedRecord)
+              throw Object.assign(new Error('허용되지 않은 요청입니다.'),{code:'ACCESS_DENIED'});
+            if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId)
+              throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
+            store.assertWriteAdmission(admission);
+          }
+          return dispatch(action,payload);
+        };
         if (typeof action === 'string' && Object.hasOwn(localSharedActions, action)) {
           // Read after earlier mutations, then resolve the live sender and scope.
           // This path is local IPC only; integrationDispatch cannot grant access.
@@ -1285,9 +1308,9 @@ else {
             return queryLocalSharedData(store.snapshot(),record.projectId,localSharedActions[action],payload);
           });
           actionQueue=result.catch(()=>{});
-        } else if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','serviceRuntime.state','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=dispatch(action,payload);
+        } else if ((typeof action === 'string' && (action.startsWith('browser.')||action.startsWith('viewerSession.')||action.startsWith('modelCache.'))) || windowActions.has(action) || ['viewer.readiness','viewer.agentState','serviceRuntime.state','clipboard.writeText','update.state','update.check','update.download','update.install','update.apply','update.configure','update.openRelease','update.copyInfo','update.rendererReady','snapshot','integration.pending','integration.displayed','window.context','window.qaReady','window.openProject','window.navigation','app.info','terminal.read','terminal.write','terminal.resize','terminal.close','agent.models','agent.read','agent.list','agent.loginState','agent.cancel'].includes(action)) result=execute();
         else {
-          result=actionQueue.then(()=>dispatch(action,payload));
+          result=actionQueue.then(execute);
           actionQueue=result.catch(()=>{});
         }
         const data=await result;if(changesData(action))dataChanged();
@@ -1304,7 +1327,10 @@ else {
     startModelCache();
     createWindow();
     const integrationDispatch=(action,payload)=>{
-      const execute=async()=>{const result=await dispatch(action,payload);if(changesData(action))dataChanged();return result;};
+      // This admission belongs to one dispatch, not an outer multi-dispatch API
+      // action. Later asynchronous commits still need their own original fences.
+      const admission=storeWriteActions.has(action)?store.captureWriteAdmission():null;
+      const execute=async()=>{if(admission)store.assertWriteAdmission(admission);const result=await dispatch(action,payload);if(changesData(action))dataChanged();return result;};
       if(['snapshot','agent.read','agent.cancel'].includes(action))return execute();
       const result=actionQueue.then(execute);actionQueue=result.catch(()=>{});return result;
     };

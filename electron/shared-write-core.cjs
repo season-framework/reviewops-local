@@ -4,6 +4,7 @@ const {randomUUID, createHash} = require('node:crypto');
 
 const MAX_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_RECEIPTS = 100000;
+const writeAdmissions = new WeakMap();
 const OPERATION = 'review.status.set';
 const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -16,7 +17,8 @@ const MESSAGES = Object.freeze({
   REVISION_CONFLICT: 'The review changed. Reconcile before writing.',
   IDEMPOTENCY_CONFLICT: 'The command identity already has a different intent.',
   RECEIPT_LIMIT: 'The active dataset command receipt limit was reached.',
-  INVALID_CONSISTENCY_STATE: 'Durable review consistency state is unavailable.'
+  INVALID_CONSISTENCY_STATE: 'Durable review consistency state is unavailable.',
+  INVALID_WRITE_ADMISSION: 'An original application-owned write admission is required.'
 });
 function fail(code, extra) { throw Object.assign(new Error(MESSAGES[code]), {code, ...extra}); }
 function closed(value, keys, code) {
@@ -156,6 +158,21 @@ function beginLogicalImport(db) {
   db.exec('DELETE FROM command_receipts;'); reseed(db);
 }
 function finishLogicalImport(db) { currentEpoch(db); reseed(db); }
+// Admissions are process-local capabilities, not payload fields or write grants.
+function captureWriteAdmission(store) {
+  return store.transaction(() => {
+    const admission = Object.freeze(Object.create(null));
+    writeAdmissions.set(admission, {store, epoch: currentEpoch(store.db)});
+    return admission;
+  });
+}
+function assertWriteAdmission(store, admission) {
+  return store.transaction(() => {
+    const original = writeAdmissions.get(admission);
+    if (!original || original.store !== store) fail('INVALID_WRITE_ADMISSION');
+    if (original.epoch !== currentEpoch(store.db)) fail('STALE_EPOCH');
+  });
+}
 function readState(store, input, provider) {
   const intent = target(input, false);
   return store.transaction(() => {
@@ -194,4 +211,4 @@ function setStatus(store, input, provider) {
   });
 }
 
-module.exports = {migrate, beginLogicalImport, finishLogicalImport, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
+module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};

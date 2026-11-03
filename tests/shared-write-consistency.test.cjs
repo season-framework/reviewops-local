@@ -280,3 +280,46 @@ test('owned natural exits before and after COMMIT preserve rollback or one durab
   assert.deepEqual(reopened.setReviewStatusCommand(intent, data.provider), JSON.parse(saved[0].acknowledgementJson));
   t.diagnostic(JSON.stringify({originalChildren: [first, second].map(({rows, ...row}) => row), signalsSent: 0}));
 });
+
+
+test('write admissions are opaque Store-owned capabilities and do not grant status access', t => {
+  const {store, open} = setup(t), f = fixture(store), before = unchanged(store);
+  const admission = store.captureWriteAdmission();
+  assert.equal(Object.isFrozen(admission), true);
+  assert.deepEqual(Reflect.ownKeys(admission), []);
+  assert.equal(JSON.stringify(admission), '{}');
+  assert.equal(store.assertWriteAdmission(admission), undefined);
+  for (const forged of [null, undefined, {}, JSON.parse(JSON.stringify(admission)), {epoch: state(store, f).epoch}])
+    assert.throws(() => store.assertWriteAdmission(forged), code('INVALID_WRITE_ADMISSION'));
+  assert.throws(() => open().assertWriteAdmission(admission), code('INVALID_WRITE_ADMISSION'));
+  assert.throws(() => store.setReviewStatusCommand(command(store, f), () => admission), code('ACCESS_DENIED'));
+  assert.deepEqual(unchanged(store), before);
+});
+
+test('logical import invalidates an original admission even when all entity IDs survive', t => {
+  const {store} = setup(t), f = fixture(store), admission = store.captureWriteAdmission(), original = state(store, f);
+  const backup = store.exportData(); backup.reviews.find(row => row.id === f.review.id).title = 'Restored same-ID review';
+  store.importData(backup); const restored = unchanged(store);
+  assert.equal(store.get('reviews', f.review.id).projectId, f.a.id);
+  assert.notEqual(state(store, f).epoch, original.epoch);
+  assert.throws(() => store.assertWriteAdmission(admission), code('STALE_EPOCH'));
+  assert.equal(store.assertWriteAdmission(store.captureWriteAdmission()), undefined);
+  assert.deepEqual(unchanged(store), restored);
+});
+
+test('a rolled-back logical import preserves the original admission and all controls', t => {
+  const {store} = setup(t); fixture(store);
+  const admission = store.captureWriteAdmission(), before = unchanged(store);
+  assert.throws(() => store.transaction(() => { store.importData(store.exportData()); throw new Error('Owned import rollback'); }), /Owned import rollback/);
+  assert.deepEqual(unchanged(store), before);
+  assert.equal(store.assertWriteAdmission(admission), undefined);
+});
+
+test('admission validation observes an epoch replaced by another SQLite connection', t => {
+  const {store, open} = setup(t); fixture(store);
+  const admission = store.captureWriteAdmission(), other = open();
+  other.importData(other.exportData());
+  assert.throws(() => store.assertWriteAdmission(admission), code('STALE_EPOCH'));
+  const current = store.captureWriteAdmission(); store.close();
+  assert.throws(() => store.assertWriteAdmission(current), code('STORE_CLOSED'));
+});
