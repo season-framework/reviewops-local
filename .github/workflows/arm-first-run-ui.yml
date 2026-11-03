@@ -1,0 +1,51 @@
+name: ARM packaged first-run CLI UI diagnostic
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Full reviewed diagnostic branch commit
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewops-arm-first-run-ui
+  cancel-in-progress: false
+
+jobs:
+  first-run-ui:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/issue52-arm-first-run-ui' && github.sha == inputs.reviewed_commit
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.reviewed_commit }}
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+          architecture: arm64
+      - name: Install the reviewed harness dependencies
+        run: npm ci
+      - name: Run the inert admission guard checks
+        run: node --test tests/arm-first-run-ui.test.mjs
+      - name: Prepare authentic inputs and open one private ARM package
+        env:
+          REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+        shell: bash
+        run: |
+          export DIAGNOSTIC_NODE="$(command -v node)"
+          /usr/bin/python3 -I -B scripts/diagnostics/arm-first-run-ui.py
+      - name: Retain only diagnostic records and whole-window photographs
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-arm-first-run-ui-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/arm-first-run-ui/
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "source": "84042d8bb8d7d6f758d936d63f41fc325349550e",
+  "tree": "0dd627eedfbd4b76bd253708919e9ea5a497bb63",
+  "sourceFiles": 419,
+  "version": "1.4.0",
+  "target": "darwin-arm64",
+  "releaseID": 433155309,
+  "package": {
+    "name": "ReviewOps-1.4.0-arm64.zip",
+    "url": "https://github.com/season-framework/reviewops-local/releases/download/v1.4.0/ReviewOps-1.4.0-arm64.zip",
+    "assetID": 706904401,
+    "bytes": 133829932,
+    "sha256": "5e188c626666ff132dabc15143452138fc4fa6597a7423aba5ed07216ab03e0c"
+  },
+  "asar": {
+    "relativePath": "Contents/Resources/app.asar",
+    "bytes": 34904990,
+    "sha256": "d1ef134af9a118325f16899721085d00c1b3f4c566a01c79df86d2273a0b9003"
+  },
+  "executable": {
+    "relativePath": "Contents/MacOS/ReviewOps",
+    "bytes": 53008,
+    "sha256": "c932bbf45e4d173cb92b21ed689ec55335445efb2d9cf3eb8a0192f4d06d9966"
+  },
+  "runtime": {
+    "sourcePath": "electron/codex/runtime.cjs",
+    "bytes": 18643,
+    "sha256": "91e2a23e788ab3b004f52ed2438c8fd8ff1c24f4526cbb6f5da5c9d3f881ff93"
+  },
+  "runtimeDependencies": [
+    {
+      "sourcePath": "electron/codex/native-architecture.cjs",
+      "bytes": 3137,
+      "sha256": "da9c58401e06c5ea2fb81ce3852303566f5d8fb7db10b77b3149fe06f928b3a0"
+    }
+  ]
+}
