@@ -152,8 +152,8 @@ async function harness(t, options = {}) {
     if (name === './agents.cjs') return {createAgentManager:({onUpdate,...agentOptions})=>{
       state.agentOptions=agentOptions;
       const validator=require('../electron/agents.cjs').createAgentManager({spawn(){throw new Error('CLI must not run in main tests');}});
-      state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentUpdate=onUpdate;
-      return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},login({id,serviceId}){const job={id,serviceId,kind:'login',status:'running',output:'synthetic login'};state.agentStarts.push(job);return job;},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);onUpdate(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);onUpdate({...input,status:'cancelled',finishedAt:new Date().toISOString()});},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;}};
+      state.agentStarts=[];state.agentRestores=[];state.agentValidations=[];state.agentPreflights=[];state.agentCancelled=[];state.agentCallbacks=new Map();state.agentUpdate=job=>(state.agentCallbacks.get(job.id)||onUpdate)(job);
+      return {async preflight(config,settings){state.agentPreflights.push({config,settings});await state.preflightGate;if(state.preflightError)throw state.preflightError;return {installed:true,loggedIn:true,binary:settings.binary,workPath:settings.workPath};},login({id,serviceId}){const job={id,serviceId,kind:'login',status:'running',output:'synthetic login'};state.agentStarts.push(job);return job;},validateStart(input){state.agentValidations.push(input);validator.validateStart(input);},start(input){state.agentStarts.push(input);state.agentCallbacks.set(input.id,input.onUpdate);validator.validateStart(input);if(state.agentStartError)throw new Error('synthetic agent start failure');return {id:input.id,status:'running'};},restore(input){state.agentRestores.push(input);state.agentCallbacks.set(input.job.id,input.onUpdate);(input.onUpdate||onUpdate)(input.job);return input.job;},async cancel(id){if(state.agentCancelError)throw new Error('synthetic agent cancel failure');const input=state.agentStarts.find(item=>item.id===id);assert(input);state.agentCancelled.push(id);if(!state.agentCancelWithoutFinal)(input.onUpdate||onUpdate)({...input,status:'cancelled',finishedAt:new Date().toISOString(),...state.agentCancelFinal});if(state.agentCancelGate)await state.agentCancelGate(id);},async environment(config,settings){state.environmentCheck={config,settings};(state.environmentChecks||=[]).push({config,settings});await state.environmentGate;return state.agentEnvironment||{installed:true,loggedIn:true,models:[],modelSource:'none',defaultModel:'',defaultReasoningEffort:''};},async session(config,settings,sessionId){state.sessionCheck={config,settings,sessionId};return {available:true,sessionId,model:settings.model,status:'available'};},closeAll:async options=>{state.agentCloseOptions=options;await state.agentCloseGate?.();}};
     }};
     if (name === './automation-api.cjs' || name === path.join(resourcesPath,'mcp','automation-api.cjs')) {
       state.automationModulePath=name;
@@ -2549,4 +2549,332 @@ test('one integration dispatch keeps its original queue admission across restore
   await release(); assert.equal((await restore).ok, true); const result = await pending;
   assert.equal(result.ok, false); assert.equal(result.error.code, 'STALE_EPOCH');
   assert.equal(h.state.liveStore.get('reviews', a.review.id).title, 'Restored same-ID title');
+});
+
+
+const ownedAgentInput=(review,id)=>({requestId:id,reviewId:review.id,prompt:'Owned asynchronous fixture',context:{instruction:false,attachmentIds:[],logIds:[]}});
+async function holdOwnedPreflight(t,h,payload) {
+ let release;h.state.preflightGate=new Promise(resolve=>{release=resolve;});
+ const pending=h.invoke('agent.start',payload);t.after(()=>release());
+ await waitForValue(()=>h.state.agentPreflights.length===1,'Original synthetic preflight did not start');
+ return {pending,release};
+}
+
+test('an agent preflight retains its original epoch through a same-ID Store import',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const backup=h.state.liveStore.exportData(),held=await holdOwnedPreflight(t,h,ownedAgentInput(a.review,'old-preflight-epoch'));
+ h.state.liveStore.importData(backup);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ held.release();const result=await held.pending;
+ assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_EPOCH');assert.equal(h.state.agentStarts.length,0);
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+});
+
+test('a failed Store import does not invalidate an original delayed agent launch',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const held=await holdOwnedPreflight(t,h,ownedAgentInput(a.review,'failed-import-preflight'));
+ const invalid=h.state.liveStore.exportData();invalid.reviews[0].projectId='missing';
+ assert.throws(()=>h.state.liveStore.importData(invalid));held.release();
+ const result=await held.pending;assert.equal(result.ok,true);assert.equal(h.state.agentStarts.length,1);
+ assert.equal(h.state.liveStore.get('agent_runs',result.data.id).prompt,'Owned asynchronous fixture');
+});
+
+test('an agent launch rechecks its original window after preflight without adopting another window',async t=>{
+ const h=await harness(t),a=await seed(h),host=h.state.primaryWindow;await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const held=await holdOwnedPreflight(t,h,ownedAgentInput(a.review,'closed-preflight-owner'));
+ host.destroy();held.release();const result=await held.pending;
+ assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');assert.equal(h.state.agentStarts.length,0);
+ assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
+});
+
+test('a same-epoch running agent can persist after its original project window closes',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);await main.success('service.save',{id:a.service.id,agentEnabled:1});
+ await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host);
+ const run=await client.success('agent.start',ownedAgentInput(a.review,'closed-running-window'));
+ const callback=h.state.agentCallbacks.get(run.id);assert.equal(typeof callback,'function');host.destroy();
+ callback({id:run.id,kind:'agent',status:'completed',response:'Ordinary completion after window closure',finishedAt:new Date().toISOString()});
+ assert.equal(h.state.liveStore.get('agent_runs',run.id).response,'Ordinary completion after window closure');
+ assert.equal(h.state.liveStore.snapshot().activities.filter(row=>row.agentRunId===run.id&&row.role==='agent').length,1);
+});
+
+test('an old manager callback cannot persist into or remove a new same-ID job after restore',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const backup=path.join(h.root,'callback-owner.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data:h.state.liveStore.exportData(),files:{}}));
+ const payload=ownedAgentInput(a.review,'reused-manager-job'),old=await h.success('agent.start',payload),oldCallback=h.state.agentCallbacks.get(old.id);
+ oldCallback({id:old.id,kind:'agent',status:'completed',response:'Old completed graph',finishedAt:new Date().toISOString()});
+ h.state.openResult={canceled:false,filePaths:[backup]};assert.equal((await h.success('backup.import')).imported,true);
+ const fresh=await h.success('agent.start',{...payload,prompt:'Fresh intended job'}),freshCallback=h.state.agentCallbacks.get(fresh.id);
+ const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ oldCallback({id:old.id,kind:'agent',status:'completed',response:'Late obsolete response',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+ assert.equal((await h.success('snapshot')).agentRunning,1);
+ const refused=await h.invoke('backup.import');assert.equal(refused.ok,false);assert.match(refused.error.message,/진행 중인 SSH 또는 에이전트/);
+ freshCallback({id:fresh.id,kind:'agent',status:'completed',response:'New owner completion',finishedAt:new Date().toISOString()});
+ assert.equal(h.state.liveStore.get('agent_runs',fresh.id).response,'New owner completion');assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('callback persistence asserts original epoch and progress in the same rollback-capable transaction',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'atomic-owned-callback')),callback=h.state.agentCallbacks.get(run.id),before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ const save=h.state.liveStore.saveAgentRun;
+ h.state.liveStore.saveAgentRun=function(input){assert.equal(this.inTransaction,true);save.call(this,input);throw new Error('Injected final owner write failure');};
+ assert.throws(()=>callback({id:run.id,kind:'agent',status:'running',response:'Uncommitted progress'}),/Injected final owner/);
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+ h.state.liveStore.saveAgentRun=save;callback({id:run.id,kind:'agent',status:'completed',response:'Committed progress',finishedAt:new Date().toISOString()});
+ assert.equal(h.state.liveStore.get('agent_runs',run.id).response,'Committed progress');
+});
+
+test('callback target membership is rechecked without granting a moved review',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const other=await h.success('project.save',{groupId:a.group.id,name:'Other owner',serviceIds:[a.service.id]}),run=await h.success('agent.start',ownedAgentInput(a.review,'moved-callback-review')),callback=h.state.agentCallbacks.get(run.id);
+ h.state.liveStore.db.prepare('UPDATE reviews SET projectId=? WHERE id=?').run(other.id,a.review.id);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ callback({id:run.id,kind:'agent',status:'completed',response:'Wrong project completion',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('post-import interruption uses a new maintenance admission while old callbacks remain stale',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'maintenance-owned-run')),callback=h.state.agentCallbacks.get(run.id),data=h.state.liveStore.exportData();
+ callback({id:run.id,kind:'agent',status:'completed',response:'Original epoch complete',finishedAt:new Date().toISOString()});
+ const backup=path.join(h.root,'maintenance-owner.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data,files:{}}));h.state.openResult={canceled:false,filePaths:[backup]};
+ h.state.agentCloseGate=async()=>callback({id:run.id,kind:'agent',status:'completed',response:'Stale closeAll callback',finishedAt:new Date().toISOString()});
+ assert.equal((await h.success('backup.import')).imported,true);
+ const restored=h.state.liveStore.get('agent_runs',run.id);assert.equal(restored.status,'interrupted');assert.equal(restored.response,'');assert.equal(h.state.liveStore.snapshot().activities.some(row=>row.body==='Stale closeAll callback'),false);
+});
+
+
+test('a delayed agent launch cannot adopt a review moved to another project',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const other=await h.success('project.save',{groupId:a.group.id,name:'Other launch owner',serviceIds:[a.service.id]}),held=await holdOwnedPreflight(t,h,ownedAgentInput(a.review,'moved-preflight-review'));
+ h.state.liveStore.db.prepare('UPDATE reviews SET projectId=? WHERE id=?').run(other.id,a.review.id);held.release();const result=await held.pending;
+ assert.equal(result.ok,false);assert.match(result.error.message,/검사 중 프로젝트 설정이 변경/);assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
+});
+
+
+test('a same-manager callback keeps its old epoch instead of adopting restored same-ID rows',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'same-manager-restored-row')),callback=h.state.agentCallbacks.get(run.id),backup=h.state.liveStore.exportData();
+ h.state.liveStore.importData(backup);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ callback({id:run.id,kind:'agent',status:'completed',response:'Obsolete epoch callback',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.liveStore.get('agent_runs',run.id).status,'running');
+});
+
+test('a preflight launch cannot retain a released QA scope as a new grant',async t=>{
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);await main.success('service.save',{id:a.service.id,agentEnabled:1});
+ const qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'owned-preflight-qa-release'}),host=await projectHost(h,a.project.id),client=h.forWindow(host);
+ let release;h.state.preflightGate=new Promise(resolve=>{release=resolve;});t.after(()=>release());
+ const pending=client.invoke('agent.start',ownedAgentInput(a.review,'released-qa-preflight'));
+ await waitForValue(()=>h.state.agentPreflights.length===1,'Original QA preflight did not start');
+ await h.state.toolIntegration.automationHandler('automation.qa.release',qa);release();const result=await pending;
+ assert.equal(result.ok,false);assert.equal(result.error.code,'TARGET_MISMATCH');assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.listAgentRuns(),[]);
+});
+
+
+test('restore drops only the original cohort retained start-failure snapshot',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const backup=path.join(h.root,'failed-owner.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data:h.state.liveStore.exportData(),files:{}}));
+ h.state.agentStartError=true;const failed=await h.success('agent.start',ownedAgentInput(a.review,'retained-failed-owner'));
+ assert.equal(failed.status,'failed');assert.deepEqual(await h.success('agent.read',{id:failed.id}),failed);
+ h.state.openResult={canceled:false,filePaths:[backup]};assert.equal((await h.success('backup.import')).imported,true);
+ const missing=await h.invoke('agent.read',{id:failed.id});assert.equal(missing.ok,false);assert.equal(missing.error.code,'NOT_FOUND');
+});
+
+
+function recreateOwnedReview(store,id) {
+ const original={...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(id)},before=store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(id).generation;
+ store.deleteReview(id);store.upsert('reviews',original);
+ assert(store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(id).generation>before);
+ return original;
+}
+
+test('persisted terminal state is exposed without releasing a still-running original manager owner',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'persisted-terminal-winner')),callback=h.state.agentCallbacks.get(run.id);
+ const winner=h.state.liveStore.saveAgentRun({...run,status:'cancelled',response:'Stored terminal winner',finishedAt:new Date().toISOString()});
+ callback({id:run.id,kind:'agent',status:'running',response:'Obsolete running progress'});
+ assert.deepEqual(await h.success('agent.read',{id:run.id}),winner);assert.deepEqual(h.state.liveStore.get('agent_runs',run.id),winner);
+ assert.equal((await h.success('snapshot')).agentRunning,1,'The original source owner remains active');
+ const metadataCount=(h.state.environmentChecks||[]).length,probe=await h.invoke('agent.environment',{serviceId:a.service.id});assert.equal(probe.ok,false);assert.match(probe.error.message,/에이전트 실행 또는 로그인/);assert.equal((h.state.environmentChecks||[]).length,metadataCount);
+ const backup=path.join(h.root,'held-terminal-owner.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data:h.state.liveStore.exportData(),files:{}}));h.state.openResult={canceled:false,filePaths:[backup]};
+ assert.match((await h.invoke('backup.import')).error.message,/진행 중인 SSH 또는 에이전트/);
+ callback({id:run.id,kind:'agent',status:'failed',response:'Another conflicting final status',finishedAt:new Date().toISOString()});
+ assert.deepEqual(await h.success('agent.read',{id:run.id}),winner);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('a microtask closing the launch window sees an already accepted original manager owner',async t=>{
+ const h=await harness(t),a=await seed(h),host=h.state.primaryWindow;await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const add=h.state.liveStore.addActivity;h.state.liveStore.addActivity=function(input){const value=add.call(this,input);if(input.agentRunId==='microtask-close-owned-launch')queueMicrotask(()=>host.destroy());return value;};
+ const result=await h.invoke('agent.start',ownedAgentInput(a.review,'microtask-close-owned-launch'));
+ assert.equal(result.ok,true);assert.equal(host.isDestroyed(),true);assert.equal(h.state.agentStarts.length,1);
+ const saved=h.state.liveStore.get('agent_runs',result.data.id);assert.equal(saved.status,'running');assert.equal(typeof h.state.agentCallbacks.get(saved.id),'function');
+ h.state.agentCallbacks.get(saved.id)({id:saved.id,kind:'agent',status:'completed',response:'Accepted owner completed',finishedAt:new Date().toISOString()});
+ assert.equal(h.state.liveStore.get('agent_runs',saved.id).response,'Accepted owner completed');
+});
+
+test('synchronous scope loss after recording a launch fails only that accepted run and keeps its files',async t=>{
+ const h=await harness(t),a=await seed(h),host=h.state.primaryWindow;await h.success('service.save',{id:a.service.id,agentEnabled:1});const staged=await stageFile(h,'accepted-scope-loss.txt');
+ const add=h.state.liveStore.addActivity;h.state.liveStore.addActivity=function(input){const value=add.call(this,input);if(input.agentRunId==='synchronous-scope-loss')host.destroy();return value;};
+ const result=await h.invoke('agent.start',{...ownedAgentInput(a.review,'synchronous-scope-loss'),attachmentTokens:[staged.token]});
+ assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');assert.match(result.error.message,/허용되지 않은 요청/);assert.equal(h.state.agentStarts.length,0);
+ const saved=h.state.liveStore.get('agent_runs','synchronous-scope-loss');assert.equal(saved.status,'failed');assert.equal(saved.errorCode,'ACCESS_DENIED');
+ const snapshot=h.state.liveStore.snapshot(),activity=snapshot.activities.find(row=>row.agentRunId===saved.id&&row.role==='user'),file=snapshot.attachments.find(row=>row.activityId===activity.id);
+ assert(file);assert.equal(fs.readFileSync(path.join(h.dataPath,'attachments',file.storageName),'utf8'),'staged attachment content');
+});
+
+test('preflight cannot adopt a new same-ID review generation in the same epoch',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const held=await holdOwnedPreflight(t,h,ownedAgentInput(a.review,'recreated-preflight-review'));
+ recreateOwnedReview(h.state.liveStore,a.review.id);const before=h.state.liveStore.exportData();held.release();const result=await held.pending;
+ assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_REVIEW');assert.equal(h.state.agentStarts.length,0);assert.deepEqual(h.state.liveStore.exportData(),before);
+});
+
+test('an original callback cannot recreate a run in a new same-ID review generation',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'recreated-callback-review')),callback=h.state.agentCallbacks.get(run.id);
+ recreateOwnedReview(h.state.liveStore,a.review.id);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ callback({id:run.id,kind:'agent',status:'completed',response:'Obsolete prior birth',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('an original callback cannot overwrite a distinct same-ID run in the same review birth',async t=>{
+ for(const field of ['prompt','model']) {
+  const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+  const run=await h.success('agent.start',ownedAgentInput(a.review,'replaced-agent-record')),callback=h.state.agentCallbacks.get(run.id);
+  const replacement=field==='prompt'?{prompt:'Distinct replacement intent'}:{model:'different-model',executionSettings:require('../electron/agent-execution-settings.cjs').executionSettings(undefined,{model:'different-model',reasoningEffort:run.reasoningEffort})};
+  h.state.liveStore.db.prepare('DELETE FROM agent_runs WHERE id=?').run(run.id);h.state.liveStore.saveAgentRun({...run,...replacement});const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+  callback({id:run.id,kind:'agent',status:'completed',response:'Old run output',finishedAt:new Date().toISOString()});assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+ }
+});
+
+async function holdDetachedServiceCancellation(t,h,a,id) {
+ await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,id));
+ await h.success('project.save',{id:a.project.id,serviceIds:[]});
+ let release;const gate=new Promise(resolve=>{release=resolve;});h.state.agentCancelGate=()=>gate;t.after(()=>release());
+ const pending=h.invoke('service.delete',{id:a.service.id});
+ await waitForValue(()=>h.state.agentCancelled.includes(run.id),'Original service cancellation did not begin');
+ return {run,pending,release};
+}
+
+test('detached service deletion waits for the original cancel promise and preserves its actual final outcome',async t=>{
+ for(const status of ['cancelled','completed']) {
+  const h=await harness(t),a=await seed(h);h.state.agentCancelFinal={status,response:'Actual original final event'};
+  const held=await holdDetachedServiceCancellation(t,h,a,'detached-final-'+status);
+  assert.equal(h.state.liveStore.get('agent_runs',held.run.id).status,'running');assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);
+  held.release();const result=await held.pending;assert.equal(result.ok,true,result.error?.message);
+  const history=await h.success('agent.read',{id:held.run.id});assert.equal(history.status,status);assert.equal(history.serviceId,null);assert.equal(history.response,'Actual original final event');assert.equal(history.prompt,held.run.prompt);
+  assert.equal((await h.success('snapshot')).agentRunning,0);
+ }
+});
+
+test('detached service cancellation cannot write or delete after a same-ID logical import',async t=>{
+ const h=await harness(t),a=await seed(h),held=await holdDetachedServiceCancellation(t,h,a,'detached-import');
+ h.state.liveStore.importData(h.state.liveStore.exportData());const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ held.release();const result=await held.pending;assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_EPOCH');
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);
+});
+
+test('detached service cancellation cannot adopt a recreated review with the original IDs',async t=>{
+ const h=await harness(t),a=await seed(h),held=await holdDetachedServiceCancellation(t,h,a,'detached-review-birth');
+ recreateOwnedReview(h.state.liveStore,a.review.id);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ held.release();const result=await held.pending;assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_REVIEW');
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+});
+
+test('detached service cancellation cannot overwrite or delete for a distinct same-ID run',async t=>{
+ const h=await harness(t),a=await seed(h),held=await holdDetachedServiceCancellation(t,h,a,'detached-run-replacement');
+ const raw={...h.state.liveStore.db.prepare('SELECT * FROM agent_runs WHERE id=?').get(held.run.id)};
+ h.state.liveStore.db.prepare('DELETE FROM agent_runs WHERE id=?').run(held.run.id);
+ h.state.liveStore.upsert('agent_runs',{...raw,prompt:'Replacement execution intent',createdAt:'2026-11-03T00:00:00.000Z'});
+ const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ held.release();const result=await held.pending;assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_AGENT');
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);
+});
+
+test('detached service deletion rechecks its original window before maintaining status or deleting',async t=>{
+ const h=await harness(t),a=await seed(h),held=await holdDetachedServiceCancellation(t,h,a,'detached-window-close');
+ h.state.primaryWindow.destroy();const before=h.state.liveStore.exportData();held.release();const result=await held.pending;
+ assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');assert.deepEqual(h.state.liveStore.exportData(),before);
+});
+
+test('unconfirmed detached cancellation stays held until its own late final without fabricating a status',async t=>{
+ for(const rejected of [false,true]) {
+  const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+  const run=await h.success('agent.start',ownedAgentInput(a.review,'detached-unconfirmed-'+rejected)),callback=h.state.agentCallbacks.get(run.id);
+  await h.success('project.save',{id:a.project.id,serviceIds:[]});h.state.agentCancelWithoutFinal=true;h.state.agentCancelError=rejected;
+  const before=h.state.liveStore.exportData(),result=await h.invoke('service.delete',{id:a.service.id});assert.equal(result.ok,false);
+  if(rejected)assert.match(result.error.message,/synthetic agent cancel failure/);else assert.equal(result.error.code,'AGENT_CANCELLATION_UNCONFIRMED');
+  const backup=path.join(h.root,'detached-cancel-probe.reviewops.json');fs.writeFileSync(backup,JSON.stringify({format:'reviewops-local-backup',version:1,data:before,files:{}}));
+  h.state.openResult={canceled:false,filePaths:[backup]};const confirmations=h.state.messageCalls;
+  assert.deepEqual(h.state.liveStore.exportData(),before);const blocked=await h.invoke('backup.import');assert.equal(blocked.ok,false);assert.match(blocked.error.message,/진행 중인 SSH 또는 에이전트/);assert.equal(h.state.messageCalls,confirmations,'Busy refusal must occur before restore confirmation');assert.deepEqual(h.state.liveStore.exportData(),before);
+  callback({id:run.id,kind:'agent',status:'cancelled',finishedAt:new Date().toISOString()});assert.deepEqual(h.state.liveStore.exportData(),before,'A later strict callback cannot become detached maintenance');
+  h.state.messageResponse=0;const cancelled=await h.success('backup.import');assert.deepEqual(cancelled,{cancelled:true},'The same valid selection reaches the restore confirmation after exact late-final release');assert.equal(h.state.messageCalls,confirmations+1);assert.deepEqual(h.state.liveStore.exportData(),before,'Cancelling confirmation must leave the graph unchanged');
+ }
+});
+
+test('a service credential deletion failure preserves the confirmed original cancellation history',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'detached-vault-failure'));await h.success('project.save',{id:a.project.id,serviceIds:[]});
+ h.state.failures.delete='after';const result=await h.invoke('service.delete',{id:a.service.id});assert.equal(result.ok,false);assert.match(result.error.message,/simulated vault delete/);
+ assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);const history=await h.success('agent.read',{id:run.id});assert.equal(history.status,'cancelled');assert.equal(history.serviceId,a.service.id);
+ assert.equal(h.state.realVault.get(a.service.id).password,'synthetic-old-password');assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+
+test('an accepted original run keeps its own completion when the next selected service and notes change',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Next selected target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'original-service-completion')),callback=h.state.agentCallbacks.get(run.id);
+ await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Current reviewer notes for the next execution'});const current={...h.state.liveStore.get('reviews',a.review.id)};
+ callback({id:run.id,kind:'agent',status:'completed',response:'Original linked service completed',finishedAt:new Date().toISOString()});
+ const latest=h.state.liveStore.get('reviews',a.review.id),{updatedAt:beforeUpdatedAt,...beforeFields}=current,{updatedAt:afterUpdatedAt,...afterFields}=latest;
+ assert.deepEqual(afterFields,beforeFields);assert.equal(current.serviceId,next.id);
+ const saved=h.state.liveStore.get('agent_runs',run.id);assert.equal(afterUpdatedAt,saved.updatedAt);assert.equal(saved.serviceId,a.service.id);assert.equal(saved.response,'Original linked service completed');assert.equal(saved.status,'completed');
+ assert.equal(h.state.liveStore.snapshot().activities.filter(row=>row.agentRunId===run.id&&row.role==='agent').length,1);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('a selected-service change never lets an original callback write after its project service is unlinked',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Remaining selected target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'unlinked-original-completion')),callback=h.state.agentCallbacks.get(run.id);
+ await h.success('review.save',{id:a.review.id,serviceId:next.id});h.state.liveStore.setProjectServices(a.project.id,[next.id]);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ callback({id:run.id,kind:'agent',status:'completed',response:'Must not persist after unlink',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+
+test('detached original service deletion preserves the next selected service and its running owner',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Next still-running target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const original=await h.success('agent.start',{...ownedAgentInput(a.review,'delete-original-P'),newConversation:true,independentExecution:true});
+ await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Notes for the next selected service'});
+ const active=await h.success('agent.start',{...ownedAgentInput(a.review,'retain-current-A'),newConversation:true,independentExecution:true}),callback=h.state.agentCallbacks.get(active.id);
+ await h.success('project.save',{id:a.project.id,serviceIds:[next.id]});const current={...h.state.liveStore.get('reviews',a.review.id)};
+ h.state.agentCancelFinal={status:'completed',response:'Confirmed original P outcome'};
+ assert.equal((await h.success('service.delete',{id:a.service.id})).deleted,true);
+ const history=await h.success('agent.read',{id:original.id});assert.equal(history.status,'completed');assert.equal(history.response,'Confirmed original P outcome');assert.equal(history.serviceId,null);
+ const {updatedAt:beforeUpdatedAt,...beforeFields}=current,{updatedAt:afterUpdatedAt,...afterFields}=h.state.liveStore.get('reviews',a.review.id);assert.deepEqual(afterFields,beforeFields);assert.equal(afterUpdatedAt,history.updatedAt);
+ assert.deepEqual(h.state.agentCancelled,[original.id]);assert.equal(h.state.agentStarts.length,2);assert.equal(h.state.agentCallbacks.get(active.id),callback);assert.equal((await h.success('snapshot')).agentRunning,1);
+ assert.equal((await h.success('agent.read',{id:active.id})).status,'running');
+ callback({id:active.id,kind:'agent',status:'running',response:'Original A owner still accepts progress'});assert.equal(h.state.liveStore.get('agent_runs',active.id).response,'Original A owner still accepts progress');
+ callback({id:active.id,kind:'agent',status:'completed',response:'A original final',finishedAt:new Date().toISOString()});assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('a different next selection cannot upgrade stale detached cancellation ownership',async t=>{
+ for(const kind of ['restore','review-birth','run-replacement','project-move']){
+  const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+  const next=await h.success('service.save',{groupId:a.group.id,name:'Next selected target',kind:'local',rootPath:h.root,agentEnabled:1});await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+  const original=await h.success('agent.start',ownedAgentInput(a.review,'detached-next-'+kind));await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Current next-service notes'});await h.success('project.save',{id:a.project.id,serviceIds:[next.id]});
+  let release;const gate=new Promise(resolve=>{release=resolve;});h.state.agentCancelGate=()=>gate;const pending=h.invoke('service.delete',{id:a.service.id});
+  try{
+   await waitForValue(()=>h.state.agentCancelled.includes(original.id),'Original P cancellation did not begin');
+   if(kind==='restore')h.state.liveStore.importData(h.state.liveStore.exportData());
+   else if(kind==='review-birth')recreateOwnedReview(h.state.liveStore,a.review.id);
+   else if(kind==='project-move'){const other=h.state.liveStore.saveProject({groupId:a.group.id,name:'Different project',serviceIds:[next.id]});h.state.liveStore.db.prepare('UPDATE reviews SET projectId=? WHERE id=?').run(other.id,a.review.id);}
+   else {const raw={...h.state.liveStore.db.prepare('SELECT * FROM agent_runs WHERE id=?').get(original.id)};h.state.liveStore.db.prepare('DELETE FROM agent_runs WHERE id=?').run(original.id);h.state.liveStore.upsert('agent_runs',{...raw,prompt:'Distinct replacement execution',createdAt:'2026-11-03T00:00:00.000Z'});}
+   const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;release();const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,kind==='restore'?'STALE_EPOCH':kind==='run-replacement'?'STALE_AGENT':'STALE_REVIEW');assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);
+  }finally{release();await pending;}
+ }
 });

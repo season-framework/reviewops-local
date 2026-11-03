@@ -45,7 +45,9 @@ const requestWindowContext = new AsyncLocalStorage();
 let quitAttempt = null;
 const QUIT_CLOSE_TIMEOUT_MS = 10000;
 let integrationSequence = 0, dataRevision = 0;
-const agentJobs = new Map();
+const agentJobs = new Map(), agentOwners = new Map();
+const serviceDeletionCancellations = new WeakMap();
+let agentCohort;
 let quitting = false;
 let restoring = false;
 let actionQueue = Promise.resolve();
@@ -61,7 +63,7 @@ const localSharedActions = Object.freeze({
   'shared.reviews.get': 'reviews.get'
 });
 // Explicit Store-persisting dispatches. This is independent of notification
-// matching and does not fence later callbacks or staged attachment lifetimes.
+// matching; only the explicitly owned agent/request paths below fence callbacks.
 const storeWriteActions = new Set([
   'group.save','group.delete','project.save','project.delete','service.save','service.delete',
   'review.save','review.delete','review.copy','reviewCategory.save',
@@ -199,41 +201,186 @@ function sameAgentLocation(run,service,settings) {
   // A model selection changes the next turn, not the conversation's location.
   return savedAgentExecutionScope(run)===agentExecutionScope(service,{...settings,model:run.model});
 }
-function agentManager() {
-  if(!agents) agents=require('./agents.cjs').createAgentManager({getLocalRuntime:()=>codexManager?.localRuntime(),onUpdate:job=>{
-    const previous=agentJobs.get(job.id);
-    const merged={...previous,...job,...(previous?.prompt?{prompt:previous.prompt}:{}),...(previous?.sessionScope?{sessionScope:previous.sessionScope,workPath:previous.workPath}:{})};
-    agentJobs.set(job.id,merged);
-    if(job.kind==='agent' && store && !store.closed)store.saveAgentRun(merged);
-    if(job.kind==='agent'){for(const record of windowContexts.values())if(record.pendingReview?.reviewId===job.reviewId&&!record.host.isDestroyed())record.host.webContents.send('reviewops:season-update',{reviewId:job.reviewId});dataChanged();}
-    if(job.status!=='running'){
-      operations.delete(`agent:${job.id}`);
-      if(job.kind==='agent')agentJobs.delete(job.id);
-      if(job.kind==='login'&&job.status==='completed')refreshServiceModels(job.serviceId);
+// Frames and callback owners are application-created closures, never payload data.
+// Callers pass the original frame explicitly; there is no current-context fallback.
+function writeFrame(admission, assertScope = () => {}) {
+  return Object.freeze({admission, assertScope});
+}
+function assertWriteFrame(frame) {
+  if(!frame)throw Object.assign(new Error('An original write operation is required.'),{code:'INVALID_WRITE_ADMISSION'});
+  frame.assertScope();store.assertWriteAdmission(frame.admission);
+}
+function commitWriteFrame(frame, change, target) {
+  return store.transaction(()=>{assertWriteFrame(frame);if(target)store.assertReviewWriteAdmission(target);return change();});
+}
+function releaseAgentOwner(owner, removeJob=true) {
+  operations.delete(owner.operation);
+  if(agentOwners.get(owner.id)===owner){agentOwners.delete(owner.id);if(removeJob)agentJobs.delete(owner.id);}
+}
+function ownAgentJob(cohort, job, frame, target, projectId) {
+  // target was captured before preparation, never minted at final registration.
+  store.assertReviewWriteAdmission(target);
+  const owner=Object.freeze({id:job.id,cohort,admission:frame.admission,target,reviewId:job.reviewId,projectId,serviceId:job.serviceId,sourceJob:Object.freeze({...job,status:'running'}),operation:`agent:${job.id}:${crypto.randomUUID()}`});
+  agentOwners.set(job.id,owner);cohort.owners.add(owner);operations.add(owner.operation);agentJobs.set(job.id,job);return owner;
+}
+function assertOwnedAgentRow(owner) {
+  store.assertReviewWriteAdmission(owner.target);
+  return assertAgentRecordIdentity(owner);
+}
+function assertOwnedRunningAgentRow(owner) {
+  store.assertRunningReviewCallback(owner.target);
+  return assertAgentRecordIdentity(owner);
+}
+function assertAgentRecordIdentity(owner) {
+  const current=store.get('agent_runs',owner.id),original=owner.sourceJob;
+  const identity=['reviewId','serviceId','createdAt','prompt','model','reasoningEffort','workPath','sessionScope','context','requestId','requestSignature','newConversation','retryOf','independentExecution','sourceRunId','executionTarget','executionSettings','continuedFromRunId'];
+  if(JSON.stringify(identity.map(key=>current[key]??null))!==JSON.stringify(identity.map(key=>original[key]??null)))
+    throw Object.assign(new Error('The original agent record was replaced.'),{code:'STALE_AGENT'});
+  return current;
+}
+function releaseServiceDeletionCancellation(context) {
+  // A pending original cancel remains held even if its final event arrived.
+  // If cancel returned without that event, its later original callback releases
+  // only this maintenance token; it never clears a still-held manager owner.
+  if(!context.started||(context.returned&&context.settled&&context.finalEvent)) {
+    operations.delete(context.operation);
+    if(serviceDeletionCancellations.get(context.owner)===context)serviceDeletionCancellations.delete(context.owner);
+  }
+}
+function observeServiceDeletionFinal(owner, job) {
+  const context=serviceDeletionCancellations.get(owner);
+  if(!context||context.finalEvent||job.id!==owner.id||job.kind!=='agent'||!['completed','failed','cancelled'].includes(job.status))return;
+  if((job.reviewId!==undefined&&job.reviewId!==owner.reviewId)||(job.serviceId!==undefined&&job.serviceId!==owner.serviceId))return;
+  context.finalEvent=Object.freeze({...job});releaseServiceDeletionCancellation(context);
+}
+function prepareServiceDeletionCancellation(job, frame) {
+  const owner=agentOwners.get(job.id);
+  if(!owner||owner.sourceJob!==job||agents!==owner.cohort.manager||agentCohort!==owner.cohort||serviceDeletionCancellations.has(owner))
+    throw Object.assign(new Error('The original service cancellation owner is unavailable.'),{code:'STALE_AGENT'});
+  store.transaction(()=>{assertWriteFrame(frame);store.assertDetachedReviewCancellation(owner.target);assertAgentRecordIdentity(owner);});
+  const context={owner,frame,manager:owner.cohort.manager,cohort:owner.cohort,operation:`service-cancel:${owner.id}:${crypto.randomUUID()}`,started:false,settled:false,succeeded:false,returned:false,finalEvent:null};
+  serviceDeletionCancellations.set(owner,context);operations.add(context.operation);return context;
+}
+async function cancelForServiceDeletion(context) {
+  context.started=true;
+  try {await context.manager.cancel(context.owner.id);context.succeeded=true;}
+  finally {context.settled=true;releaseServiceDeletionCancellation(context);}
+}
+function assertServiceDeletionCancellation(context) {
+  const owner=context.owner,currentOwner=agentOwners.get(owner.id);
+  if(serviceDeletionCancellations.get(owner)!==context||agents!==context.manager||agentCohort!==context.cohort||(currentOwner&&currentOwner!==owner))
+    throw Object.assign(new Error('The original service cancellation owner was replaced.'),{code:'STALE_AGENT'});
+  assertWriteFrame(context.frame);store.assertDetachedReviewCancellation(owner.target);
+  const current=assertAgentRecordIdentity(owner);
+  if(!context.succeeded||!context.settled||!context.finalEvent)
+    throw Object.assign(new Error('The original agent cancellation is not confirmed.'),{code:'AGENT_CANCELLATION_UNCONFIRMED'});
+  return current;
+}
+function persistServiceDeletionFinals(contexts) {
+  if(!contexts.length)return;
+  store.transaction(()=>{
+    for(const context of contexts) {
+      const current=assertServiceDeletionCancellation(context);
+      // Preserve the accepted execution identity while storing the actual final
+      // event. Store still decides any previously committed terminal winner.
+      store.saveAgentRun({...current,...context.finalEvent,prompt:current.prompt,sessionScope:current.sessionScope,workPath:current.workPath});
     }
-  }});
+  });
+}
+function failAcceptedAgentLaunch(owner, error) {
+  const failed=store.transaction(()=>{
+    if(agentOwners.get(owner.id)!==owner)throw Object.assign(new Error('The original agent owner was replaced.'),{code:'STALE_AGENT'});
+    assertOwnedAgentRow(owner);
+    return store.saveAgentRun({...owner.sourceJob,status:'failed',error:error.message||'에이전트 실행을 시작하지 못했습니다.',errorCode:error.code||'AGENT_START_FAILED',finishedAt:new Date().toISOString()});
+  });
+  if(agentOwners.get(owner.id)===owner){agentJobs.set(owner.id,failed);owner.cohort.retained.set(owner.id,failed);}
+  dataChanged();return failed;
+}
+function settleRejectedAgentLaunch(owner, error) {
+  try {
+    const failed=failAcceptedAgentLaunch(owner,error);
+    releaseAgentOwner(owner,false);owner.cohort.owners.delete(owner);return failed;
+  } catch(cleanupError) {
+    if(['STALE_EPOCH','STALE_REVIEW','STALE_AGENT','TARGET_MISMATCH','NOT_FOUND','STORE_CLOSED'].includes(cleanupError.code)){
+      releaseAgentOwner(owner);owner.cohort.owners.delete(owner);
+    } else {
+      // A failed persistence cleanup is held, not silently declared complete.
+      error.acceptedLaunchCleanupUnconfirmed=true;
+    }
+    throw error;
+  }
+}
+function activeAgentJobs() {
+  // Durable terminal state is not proof that the original manager stopped.
+  const active=new Map([...agentJobs].filter(([,job])=>job.status==='running'));
+  for(const [id,owner] of agentOwners)active.set(id,owner.sourceJob);
+  return [...active.values()];
+}
+function updateOwnedAgent(owner, job) {
+  const final=job.status!=='running';
+  if(final)observeServiceDeletionFinal(owner,job);
+  try {
+    if(agents!==owner.cohort.manager||agentOwners.get(owner.id)!==owner)return;
+    const previous=agentJobs.get(owner.id);
+    const merged={...previous,...job,...(previous?.prompt?{prompt:previous.prompt}:{}),...(previous?.sessionScope?{sessionScope:previous.sessionScope,workPath:previous.workPath}:{})};
+    const persisted=store.transaction(()=>{
+      assertOwnedRunningAgentRow(owner);
+      const review=store.get('reviews',owner.reviewId);
+      if(merged.id!==owner.id||merged.kind!=='agent'||merged.reviewId!==owner.reviewId||merged.serviceId!==owner.serviceId||review.projectId!==owner.projectId)
+        throw Object.assign(new Error('The original agent target is no longer current.'),{code:'TARGET_MISMATCH'});
+      store.get('projects',owner.projectId);return store.saveAgentRun(merged);
+    });
+    agentJobs.set(owner.id,persisted);
+    for(const record of windowContexts.values())if(record.pendingReview?.reviewId===persisted.reviewId&&!record.host.isDestroyed())record.host.webContents.send('reviewops:season-update',{reviewId:persisted.reviewId});
+    dataChanged();
+  } catch(error) {
+    if(!['STALE_EPOCH','STALE_REVIEW','STALE_AGENT','TARGET_MISMATCH','NOT_FOUND','STORE_CLOSED'].includes(error.code))throw error;
+    // Persistence is refused; the original manager still owns process cleanup.
+  } finally {
+    if(final){releaseAgentOwner(owner);owner.cohort.owners.delete(owner);}
+  }
+}
+function agentManager() {
+  if(!agents) {
+    const cohort={manager:null,owners:new Set(),retained:new Map()};
+    const manager=require('./agents.cjs').createAgentManager({getLocalRuntime:()=>codexManager?.localRuntime(),onUpdate:job=>{
+      // Agent jobs use their explicitly retained per-job callback below. Login
+      // updates retain their existing non-persistent manager-lifetime policy.
+      if(agents!==cohort.manager||job.kind==='agent')return;
+      const merged={...agentJobs.get(job.id),...job};agentJobs.set(job.id,merged);cohort.retained.set(job.id,merged);
+      if(job.status!=='running'){
+        operations.delete(`agent:${job.id}`);
+        if(job.kind==='login'&&job.status==='completed')refreshServiceModels(job.serviceId);
+      }
+    }});
+    cohort.manager=manager;agents=manager;agentCohort=cohort;
+  }
   return agents;
 }
 function restoreRemoteAgents() {
+  // Startup recovery is a newly admitted owner, not an upgrade of an old callback.
+  const frame=writeFrame(store.captureWriteAdmission());
   for(const job of store.listAgentRuns().filter(run=>run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready)) {
+    let owner;
     try {
       const config=serviceById(job.serviceId,true),settings={...agentSettings(config),workPath:job.workPath,model:job.model,reasoningEffort:job.reasoningEffort};
       if(config.kind!=='ssh'||job.sessionScope!==agentExecutionScope(config,settings))throw new Error('저장된 SSH 접속 설정이 변경되어 에이전트에 다시 연결하지 못했습니다.');
-      agentJobs.set(job.id,job);operations.add(`agent:${job.id}`);
-      agentManager().restore({job,config,settings});
+      const target=store.captureReviewWriteAdmission(frame.admission,Object.assign(Object.create(null),{reviewId:job.reviewId,projectId:store.get('reviews',job.reviewId).projectId,serviceId:job.serviceId}));
+      const manager=agentManager();owner=ownAgentJob(agentCohort,job,frame,target,store.get('reviews',job.reviewId).projectId);
+      manager.restore({job,config,settings,onUpdate:update=>updateOwnedAgent(owner,update)});
     } catch(error) {
-      operations.delete(`agent:${job.id}`);agentJobs.delete(job.id);
-      store.saveAgentRun({...job,status:'interrupted',error:error.message,finishedAt:new Date().toISOString()});
+      if(owner){releaseAgentOwner(owner);owner.cohort.owners.delete(owner);}
+      commitWriteFrame(frame,()=>store.saveAgentRun({...job,status:'interrupted',error:error.message,finishedAt:new Date().toISOString()}));
     }
   }
 }
 function assertNoAgent(predicate) {
-  if([...agentJobs.values()].some(job=>job.status==='running'&&predicate(job)))throw new Error('에이전트 실행 또는 로그인이 끝난 후 변경하십시오.');
+  if(activeAgentJobs().some(predicate))throw new Error('에이전트 실행 또는 로그인이 끝난 후 변경하십시오.');
 }
 function assertNoAgentWorkspaceConflict(service,settings,independentExecution=false) {
   if(independentExecution)return;
   const {requestTargetKey,conflictingTargets}=require('./agent-requests.cjs'),target=requestTargetKey(service,settings);
-  for(const job of agentJobs.values()){
+  for(const job of activeAgentJobs()){
     if(job.kind!=='agent'||job.status!=='running')continue;
     const previous=job.executionTarget||serviceById(job.serviceId,true),previousSettings={workPath:job.workPath||previous.workPath||agentSettings(previous).workPath};
     if(conflictingTargets(target,requestTargetKey(previous,previousSettings)))throw new Error('같은 작업 폴더 또는 그 안의 폴더에서 에이전트가 실행 중입니다. 실행이 끝난 뒤 다시 요청하십시오.');
@@ -291,11 +438,12 @@ function requestQueue() {
   if(!followupRequests)followupRequests=require('./agent-requests.cjs').createRequestQueue({store,
     targetForReview:review=>{const service=serviceById(review.serviceId),settings=agentSettings(service);return {serviceId:service.id,key:require('./agent-requests.cjs').requestTargetKey(service,settings),settings};},
     targetForRun:run=>{const service=serviceById(run.serviceId);return require('./agent-requests.cjs').requestTargetKey(service,{...agentSettings(service),workPath:run.workPath});},
-    start:payload=>agentAction('agent.start',payload)
+    admitStart:frame=>{assertWriteFrame(frame);return frame.admission;},
+    start:(payload,frame)=>agentAction('agent.start',payload,frame)
   });
   return followupRequests;
 }
-async function agentAction(action,payload) {
+async function agentAction(action,payload,originalFrame) {
   if(action.startsWith('agent.request.')){
     const method=action.slice('agent.request.'.length);if(!['list','add','update','confirmResult','cancel','start','resolve'].includes(method))throw new Error('지원하지 않는 후속 요청 기능입니다.');
     if(payload.projectId!==undefined){
@@ -319,7 +467,7 @@ async function agentAction(action,payload) {
       const updated={...payload,context:{...context,screenshotId:screenshot?.metadata.id||context.screenshotId,attachmentIds:[...new Set([...context.attachmentIds,...staged.filter(item=>item&&item!==screenshot).map(item=>item.metadata.id)])]}};
       const result=await saveWithAttachments(tokens,()=>requestQueue()[method](updated),row=>({reviewId:row.reviewId}));return result.entity;
     }
-    return requestQueue()[method](method==='list'?payload.reviewId:payload);
+    return requestQueue()[method](method==='list'?payload.reviewId:payload,originalFrame);
   }
   if(action==='agent.loginState'){serviceById(payload.serviceId);return [...agentJobs.values()].reverse().find(job=>job.kind==='login'&&job.serviceId===payload.serviceId)||null;}
   if(action==='agent.list')return store.listAgentRuns(payload.reviewId);
@@ -360,10 +508,11 @@ async function agentAction(action,payload) {
   const requestSignature=action==='agent.start'?digest(JSON.stringify([payload.reviewId,typeof payload.prompt==='string'?payload.prompt:'',Boolean(payload.newConversation),payload.model ?? null,payload.reasoningEffort ?? null,payload.context ?? null,payload.attachmentTokens || [],payload.retryOf ?? null,Boolean(payload.independentExecution),...(payload.sourceRunId?[payload.sourceRunId,payload.sourceTarget??null]:[]),...(payload.executionSettings?[payload.executionSettings]:[]),...(payload.continuedFromRunId?[payload.continuedFromRunId]:[])])):'';
   if(requestId && (typeof requestId!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(requestId)))throw new Error('에이전트 요청 ID가 올바르지 않습니다.');
   if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.reviewId!==payload.reviewId||existing.prompt!==payload.prompt||(existing.requestSignature&&existing.requestSignature!==requestSignature))throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
-  const manager=agentManager();
+  const manager=agentManager(),cohort=agentCohort;
   if(action==='agent.cancel')return manager.cancel(payload.id);
   const review=['agent.start','agent.session'].includes(action)?store.get('reviews',payload.reviewId):null;
   const service=serviceById(review?.serviceId||payload.serviceId||(payload.projectId?store.project(payload.projectId).connection?.id:null),true),settings=agentSettings(service);
+  const originalTarget=action==='agent.start'?store.captureReviewWriteAdmission(originalFrame.admission,Object.assign(Object.create(null),{reviewId:review.id,projectId:review.projectId,serviceId:service.id})):null;
   const retry=action==='agent.start'&&payload.retryOf?store.get('agent_runs',payload.retryOf):null;
   if(retry&&retry.reviewId!==review.id)throw new Error('같은 리뷰의 요청만 재실행할 수 있습니다.');
   const source=action==='agent.start'&&payload.sourceRunId?store.get('agent_runs',payload.sourceRunId):null;
@@ -401,7 +550,7 @@ async function agentAction(action,payload) {
   if(action==='agent.login') {
     for(const [key,job] of agentJobs)if(job.kind==='login'&&job.serviceId===service.id&&job.status!=='running')agentJobs.delete(key);
     operations.add(`agent:${id}`);
-    try{const job=manager.login({id,serviceId:service.id,config:service,settings});agentJobs.set(id,job);return job;}catch(error){operations.delete(`agent:${id}`);throw error;}
+    try{const job=manager.login({id,serviceId:service.id,config:service,settings});agentJobs.set(id,job);cohort.retained.set(id,job);return job;}catch(error){operations.delete(`agent:${id}`);throw error;}
   }
   if(action!=='agent.start')throw new Error('지원하지 않는 에이전트 기능입니다.');
   if(!service.agentEnabled)throw new Error('프로젝트 설정에서 에이전트 사용을 켜십시오.');
@@ -471,21 +620,39 @@ async function agentAction(action,payload) {
   if(logs.length)files.push({name:'review-logs.json',mimeType:'application/json',bytes:Buffer.from(JSON.stringify(logs,null,2))});
   const job={id,kind:'agent',reviewId:review.id,serviceId:service.id,prompt,executionSettings,...(logicalPrevious?{continuedFromRunId:logicalPrevious.id}:{}),executionTarget:currentTarget,...(source?{sourceRunId:source.id}:{}),model:settings.model,reasoningEffort:settings.reasoningEffort,workPath:settings.workPath,sessionScope,status:'running',sessionId:previous?.sessionId||'',startedAt:new Date().toISOString(),context,newConversation,independentExecution,...(retry?{retryOf:retry.id}:{}),...(requestId?{requestId,requestSignature}:{})};
   const execution={...job,prompt:input,config:service,settings,images,files};
+  // Keep this exact frame across attachment reads and preflight; never recapture.
+  assertWriteFrame(originalFrame);
   manager.validateStart(execution);
-  const preflightOperation=`agent-preflight:${id}`;operations.add(preflightOperation);
+  const preflightOperation=`agent-preflight:${id}:${crypto.randomUUID()}`;operations.add(preflightOperation);
   try{await manager.preflight(service,settings);}
   catch(error){if(error.code==='SSH_TRUST_REQUIRED'&&error.fingerprint)pendingTrust.set(service.id,{fingerprint:error.fingerprint,host:service.host,port:service.port,expires:Date.now()+300000});throw error;}
   finally{operations.delete(preflightOperation);}
+  assertWriteFrame(originalFrame);
   if(requestWindowContext.getStore())getRequestWindow();
-  if(store.get('reviews',review.id).serviceId!==service.id||JSON.stringify(serviceById(service.id,true))!==JSON.stringify(service))throw new Error('검사 중 프로젝트 설정이 변경되었습니다. 실행 대상을 살펴본 후 요청을 다시 보내십시오.');
+  if(store.get('reviews',review.id).projectId!==review.projectId||store.get('reviews',review.id).serviceId!==service.id||JSON.stringify(serviceById(service.id,true))!==JSON.stringify(service))throw new Error('검사 중 프로젝트 설정이 변경되었습니다. 실행 대상을 살펴본 후 요청을 다시 보내십시오.');
+  store.assertReviewWriteAdmission(originalTarget);
   if(requestId){const existing=store.listAgentRuns().find(run=>run.id===requestId);if(existing){if(existing.requestSignature!==requestSignature)throw new Error('이미 사용한 요청 ID입니다. 새 요청으로 실행하십시오.');return agentJobs.get(requestId)||existing;}}
   assertNoAgent(job=>job.serviceId===service.id);
   assertNoAgentWorkspaceConflict(service,settings,independentExecution);
   manager.validateStart(execution);
-  await saveWithAttachments(tokens,()=>{store.saveAgentRun(job);return store.addActivity({reviewId:review.id,body:displayPrompt,role:'user',agentRunId:id,status:'in_progress'});},activity=>({reviewId:review.id,activityId:activity.id}));
-  operations.add(`agent:${id}`);agentJobs.set(id,job);
-  try{manager.start(execution);return agentJobs.get(id);}
-  catch(error){const failed={...job,status:'failed',error:error.message||'에이전트 실행을 시작하지 못했습니다.',errorCode:error.code||'AGENT_START_FAILED',finishedAt:new Date().toISOString()};agentJobs.set(id,failed);store.saveAgentRun(failed);operations.delete(`agent:${id}`);return failed;}
+  let acceptedRun;
+  return saveWithAttachments(tokens,()=>commitWriteFrame(originalFrame,()=>{
+    acceptedRun=store.saveAgentRun(job);
+    return store.addActivity({reviewId:review.id,body:displayPrompt,role:'user',agentRunId:id,status:'in_progress'});
+  },originalTarget),activity=>({reviewId:review.id,activityId:activity.id}),()=>{
+    // This continuation runs after commit and before the async helper yields.
+    const owner=ownAgentJob(cohort,acceptedRun,originalFrame,originalTarget,review.projectId);
+    try {
+      assertWriteFrame(originalFrame);store.assertReviewWriteAdmission(originalTarget);
+      if(agents!==manager||agentCohort!==cohort)throw Object.assign(new Error('앱이 종료 중입니다.'),{code:'AGENT_CLOSING'});
+    } catch(error) {
+      // Cleanup of this already accepted run is not a new action/window grant.
+      try{settleRejectedAgentLaunch(owner,error);}catch{/* Keep the original caller rejection, including unconfirmed cleanup. */}
+      throw error;
+    }
+    try{manager.start({...execution,onUpdate:update=>updateOwnedAgent(owner,update)});return agentJobs.get(id);}
+    catch(error){return settleRejectedAgentLaunch(owner,error);}
+  });
 }
 
 function attachmentTokens(value = []) {
@@ -513,7 +680,7 @@ async function stageAttachments(paths) {
   for (const item of pending) stagedAttachments.set(item.token,item);
   return pending.map(({token,metadata})=>({token,name:metadata.name,mimeType:metadata.mimeType,size:metadata.size}));
 }
-async function saveWithAttachments(value, change, references) {
+async function saveWithAttachments(value, change, references, onCommitted) {
   const tokens = attachmentTokens(value);
   const staged = tokens.map(token=>{
     const item = ownedStaged(token);
@@ -543,7 +710,9 @@ async function saveWithAttachments(value, change, references) {
     throw error;
   }
   for (const token of tokens) stagedAttachments.delete(token);
-  return {entity,attachments};
+  // A committed continuation must never enter the file/DB rollback catch above.
+  // Only agent launch supplies it; other attachment callers keep their result.
+  return onCommitted?onCommitted({entity,attachments}):{entity,attachments};
 }
 
 function changeWithCredentials(change) {
@@ -555,8 +724,8 @@ function changeWithCredentials(change) {
     throw error;
   }
 }
-async function deleteEntity(kind, itemId) {
-  store.get({group:'groups',project:'projects',service:'services',review:'reviews'}[kind],itemId);
+async function deleteEntity(kind, itemId, originalFrame) {
+  const originalEntity=store.get({group:'groups',project:'projects',service:'services',review:'reviews'}[kind],itemId);
   const snapshot=store.snapshot();
   const projects=new Set(snapshot.projects.filter(item=>kind==='group'?item.groupId===itemId:kind==='project'&&item.id===itemId).map(item=>item.id));
   const services=new Set(snapshot.services.filter(item=>kind==='group'?item.groupId===itemId:kind==='service'&&item.id===itemId).map(item=>item.id));
@@ -565,7 +734,24 @@ async function deleteEntity(kind, itemId) {
   if(kind==='project')for(const config of snapshot.services)if(config.managedProjectId===itemId&&!snapshot.projects.some(project=>project.id!==itemId&&project.serviceIds.includes(config.id))&&!store.listAgentRuns().some(run=>run.serviceId===config.id&&!reviews.has(run.reviewId)))services.add(config.id);
   if(kind==='service'&&snapshot.projects.some(item=>item.serviceIds.includes(itemId)))throw Object.assign(new Error('연결된 프로젝트를 모두 해제한 뒤 서비스를 삭제하십시오.'),{code:'IN_USE'});
   const affected=job=>reviews.has(job.reviewId)||services.has(job.serviceId);
-  await Promise.all([...agentJobs.values()].filter(job=>job.status==='running'&&affected(job)).map(job=>agents.cancel(job.id)));
+  const cancellationContexts=[];
+  try {
+  const selected=activeAgentJobs().filter(affected);
+  if(kind==='service')for(const job of selected)if(job.kind==='agent')cancellationContexts.push(prepareServiceDeletionCancellation(job,originalFrame));
+  await Promise.all(selected.map(job=>{
+    const context=cancellationContexts.find(item=>item.owner.id===job.id);
+    return context?cancelForServiceDeletion(context):agents.cancel(job.id);
+  }));
+  if(kind==='service') {
+    // Confirmed cancellation is truthful history even if later credential
+    // removal fails. Stale originals cannot enter this maintenance transaction.
+    store.transaction(()=>{
+      assertWriteFrame(originalFrame);
+      if(JSON.stringify(store.get('services',itemId))!==JSON.stringify(originalEntity))throw Object.assign(new Error('The original service was replaced or changed.'),{code:'TARGET_MISMATCH'});
+      persistServiceDeletionFinals(cancellationContexts);
+    });
+    if(cancellationContexts.length)dataChanged();
+  }
   const attachments=snapshot.attachments.filter(item=>reviews.has(item.reviewId));
   const staging=attachments.length?path.join(attachmentPath,`.deleting-${crypto.randomUUID()}`):null,moved=[];let committed=false;
   try {
@@ -576,6 +762,11 @@ async function deleteEntity(kind, itemId) {
       catch(error){if(error.code!=='ENOENT')throw error;}
     }
     const remove=()=>{
+      if(kind==='service') {
+        assertWriteFrame(originalFrame);
+        if(JSON.stringify(store.get('services',itemId))!==JSON.stringify(originalEntity))throw Object.assign(new Error('The original service was replaced or changed.'),{code:'TARGET_MISMATCH'});
+        for(const context of cancellationContexts)assertServiceDeletionCancellation(context);
+      }
       const result=store[`delete${kind[0].toUpperCase()+kind.slice(1)}`](itemId);
       for(const serviceId of services)vault.delete(serviceId);
       return result;
@@ -592,6 +783,9 @@ async function deleteEntity(kind, itemId) {
     if(!committed)for(const storageName of moved)await fsp.rename(path.join(staging,storageName),path.join(attachmentPath,storageName));
     if(staging)await fsp.rm(staging,{recursive:true,force:true});
     throw error;
+  }
+  } finally {
+    for(const context of cancellationContexts){context.returned=true;releaseServiceDeletionCancellation(context);}
   }
 }
 async function cleanDeletedAttachments() {
@@ -610,11 +804,11 @@ async function assertExportDestination(file) {
 
 function publicSnapshot() {
   const snapshot = store.snapshot();
-  snapshot.agentRunning=[...agentJobs.values()].filter(job=>job.kind==='agent'&&job.status==='running').length;
+  snapshot.agentRunning=activeAgentJobs().filter(job=>job.kind==='agent').length;
   snapshot.services = snapshot.services.map(service => ({...service, ...vault.flags(service.id)}));
   snapshot.projects=snapshot.projects.map(project=>({...project,connection:project.connection?{...project.connection,...vault.flags(project.connection.id)}:null}));
   const scoped=scopedSnapshot(snapshot,requestQaProjectId());
-  if(requestQaProjectId())scoped.agentRunning=[...agentJobs.values()].filter(job=>job.kind==='agent'&&job.status==='running'&&scoped.reviews.some(review=>review.id===job.reviewId)).length;
+  if(requestQaProjectId())scoped.agentRunning=activeAgentJobs().filter(job=>job.kind==='agent'&&scoped.reviews.some(review=>review.id===job.reviewId)).length;
   return scoped;
 }
 function credentialValues(service) {
@@ -712,8 +906,14 @@ async function importBackup() {
     throw error;
   }
   pendingTrust.clear();
-  await agents?.closeAll();agents=null;agentJobs.clear();
-  store.interruptAgentRuns();
+  const previousManager=agents,previousCohort=agentCohort;
+  await previousManager?.closeAll();
+  if(agents===previousManager){agents=null;agentCohort=null;}
+  for(const owner of previousCohort?.owners||[])releaseAgentOwner(owner);
+  for(const [id,job] of previousCohort?.retained||[])if(agentJobs.get(id)===job){agentJobs.delete(id);operations.delete(`agent:${id}`);}
+  // This maintenance intentionally belongs to the newly imported dataset.
+  const maintenance=writeFrame(store.captureWriteAdmission());
+  commitWriteFrame(maintenance,()=>store.interruptAgentRuns());
   closeAllBrowsers();
   terminals.closeAll();terminalOwners.clear();
   stagedAttachments.clear();
@@ -804,7 +1004,7 @@ function withCaptureEvidence(payload){
   const screenshots=attachmentTokens(payload.attachmentTokens).map(token=>ownedStaged(token)?.capture).filter(Boolean);
   return screenshots.length?{...payload,evidence:{...(payload.evidence||{}),capturedAt:new Date().toISOString(),screenshots}}:payload;
 }
-async function dispatch(action, payload = {}) {
+async function dispatch(action, payload = {}, originalFrame) {
   if(requestWindowContext.getStore())getRequestWindow();
   const projectScope=requestQaProjectId();
   if(projectScope)assertProjectAction({projectId:projectScope,action,payload,snapshot:store.snapshot(),
@@ -901,7 +1101,7 @@ async function dispatch(action, payload = {}) {
     return nativeWindowState(host);
   }
   if (restoring && !['snapshot','app.info','terminal.read','terminal.close','terminal.resize'].includes(action)) throw new Error('백업 복원이 끝난 후 다시 시도하십시오.');
-  if(action.startsWith('agent.'))return agentAction(action,payload);
+  if(action.startsWith('agent.'))return agentAction(action,payload,originalFrame);
   if(action==='attachment.stageData')return stageScreenshot(payload);
   if(action==='screenshot.export') {
     const bytes=screenshotBytes(payload),selection=await dialog.showSaveDialog(getRequestWindow(),{title:'스크린샷 저장',defaultPath:screenshotName(payload.name),filters:[{name:'PNG 이미지',extensions:['png']}]});
@@ -1039,7 +1239,7 @@ async function dispatch(action, payload = {}) {
     }
     return {...service,...vault.flags(service.id)};
   }
-  if (['group.delete','project.delete','service.delete','review.delete'].includes(action)) return deleteEntity(action.split('.')[0],payload.id);
+  if (['group.delete','project.delete','service.delete','review.delete'].includes(action)) return deleteEntity(action.split('.')[0],payload.id,originalFrame);
   if (action === 'activity.add') {payload=withCaptureEvidence(payload);return (await saveWithAttachments(payload.attachmentTokens,count=>store.addActivity({...payload,allowEmpty:count>0}),activity=>({reviewId:payload.reviewId,activityId:activity.id}))).entity;}
   if (action === 'activity.update') {
     payload=withCaptureEvidence(payload);
@@ -1285,17 +1485,16 @@ else {
       const admittedProjectId=admittedRecord.projectId,admittedQaProjectId=qaProjectId(admittedRecord);
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
-        const admission=storeWriteActions.has(action)?store.captureWriteAdmission():null;
+        const frame=storeWriteActions.has(action)?writeFrame(store.captureWriteAdmission(),()=>{
+          const record=windowContexts.get(host);
+          if(senderWindow(event)!==host||record!==admittedRecord)
+            throw Object.assign(new Error('허용되지 않은 요청입니다.'),{code:'ACCESS_DENIED'});
+          if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId)
+            throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
+        }):null;
         const execute=()=>{
-          if(admission){
-            const record=windowContexts.get(host);
-            if(senderWindow(event)!==host||record!==admittedRecord)
-              throw Object.assign(new Error('허용되지 않은 요청입니다.'),{code:'ACCESS_DENIED'});
-            if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId)
-              throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
-            store.assertWriteAdmission(admission);
-          }
-          return dispatch(action,payload);
+          if(frame)assertWriteFrame(frame);
+          return dispatch(action,payload,frame);
         };
         if (typeof action === 'string' && Object.hasOwn(localSharedActions, action)) {
           // Read after earlier mutations, then resolve the live sender and scope.
@@ -1329,10 +1528,11 @@ else {
     startModelCache();
     createWindow();
     const integrationDispatch=(action,payload)=>{
-      // This admission belongs to one dispatch, not an outer multi-dispatch API
-      // action. Later asynchronous commits still need their own original fences.
-      const admission=storeWriteActions.has(action)?store.captureWriteAdmission():null;
-      const execute=async()=>{if(admission)store.assertWriteAdmission(admission);const result=await dispatch(action,payload);if(changesData(action))dataChanged();return result;};
+      // This frame belongs to one dispatch, not an outer multi-dispatch API
+      // action. Explicitly owned agent/request paths and service-deletion
+      // cancellation carry it into their later commits.
+      const frame=storeWriteActions.has(action)?writeFrame(store.captureWriteAdmission()):null;
+      const execute=async()=>{if(frame)assertWriteFrame(frame);const result=await dispatch(action,payload,frame);if(changesData(action))dataChanged();return result;};
       if(['snapshot','agent.read','agent.cancel'].includes(action))return execute();
       const result=actionQueue.then(execute);actionQueue=result.catch(()=>{});return result;
     };

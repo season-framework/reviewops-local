@@ -861,3 +861,16 @@ for(const kind of ['local','ssh'])test(`${kind} stored-session checks read metad
  await assert.rejects(fs.access(path.join(f.root,'last-input.json')));assert.equal(f.manager.size,0);
  if(kind==='ssh')await assert.rejects(f.manager.session({...f.config,hostFingerprint:''},settings,sessionId),{code:'SSH_TRUST_REQUIRED'});
 });
+
+
+test('each original agent job retains its private update callback outside public job data',async t=>{
+ const f=await fixture(t),firstUpdates=[],secondUpdates=[];
+ const first=f.manager.start({id:'owned-callback-first',reviewId:'review-1',config:f.config,settings:f.settings,prompt:'First synthetic callback',onUpdate:job=>firstUpdates.push(job)});
+ assert.equal((await completed(f.manager,first.id)).status,'completed');
+ const firstCount=firstUpdates.length;
+ const second=f.manager.start({id:'owned-callback-second',reviewId:'review-1',config:f.config,settings:f.settings,prompt:'Second synthetic callback',onUpdate:job=>secondUpdates.push(job)});
+ assert.equal((await completed(f.manager,second.id)).status,'completed');
+ assert(firstCount>1);assert(secondUpdates.length>1);assert.equal(firstUpdates.length,firstCount);
+ assert(firstUpdates.every(job=>job.id===first.id));assert(secondUpdates.every(job=>job.id===second.id));
+ assert.equal(f.updates.length,0);assert.equal(Object.hasOwn(f.manager.read(first.id),'onUpdate'),false);assert.equal(Object.hasOwn(f.manager.read(second.id),'notify'),false);
+});

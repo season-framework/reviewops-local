@@ -483,8 +483,9 @@ test('QA-06 another completion during attachment reading cannot select a followu
  const previous=await start(review,'09 완료 응답 대기');
  await h.success('review.save',{id:review.id,serviceId:services[0].id});
  let release;h.state.attachmentReadGate=new Promise(resolve=>release=resolve);h.state.readArrived=false;
- t.after(()=>{h.state.attachmentReadGate=null;release();});
  const pending=start(review,'QA:FAIL',{retryOf:original.id});
+ const pendingSettled=pending.then(value=>({value}),error=>({error}));let primaryFailure;
+ try {
  for(let i=0;i<1000&&!h.state.readArrived;i++)await new Promise(resolve=>setTimeout(resolve,5));
  assert.ok(h.state.readArrived,'main waits after reading the previous conversation');
  h.state.agentUpdate({id:previous.id,kind:'agent',status:'completed',response:'09 첨부 읽기 중 새로 추가한 완료 응답 😺'});
@@ -505,4 +506,13 @@ test('QA-06 another completion during attachment reading cannot select a followu
  const selected=JSON.parse(fs.readFileSync(calls,'utf8').trim().split('\n').at(-1));assert.equal(selected.selectedRunId,b.id);
  const resultPath=path.join(h.root,'qa06-results.json');fs.writeFileSync(resultPath,JSON.stringify({dbPath,scriptSha256:hash(fs.readFileSync(script)),timestampModified:false,a,b,added,inputSha256:hash(input),alone,pair,rejectedCalls,supported,selected},null,2),{flag:'wx'});
  console.log(JSON.stringify({resultPath,resultSha256:hash(fs.readFileSync(resultPath)),dbPath,rejectedProcesses:3,supportedProcesses:1}));
+ } catch(error) {primaryFailure=error;throw error;}
+ finally {
+  h.state.attachmentReadGate=null;release();
+  const settled=await pendingSettled;
+  if(settled.error){
+   if(primaryFailure&&primaryFailure!==settled.error)throw new AggregateError([primaryFailure,settled.error],'QA-06 assertion and original pending launch both failed');
+   throw settled.error;
+  }
+ }
 });

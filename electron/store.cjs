@@ -505,6 +505,10 @@ class LocalStore {
   setReviewStatusCommand(input, callerProvider) { return sharedWrites.setStatus(this, input, callerProvider); }
   captureWriteAdmission() { return sharedWrites.captureWriteAdmission(this); }
   assertWriteAdmission(admission) { return sharedWrites.assertWriteAdmission(this, admission); }
+  captureReviewWriteAdmission(admission, input) { return sharedWrites.captureReviewWriteAdmission(this, admission, input); }
+  assertReviewWriteAdmission(token) { return sharedWrites.assertReviewWriteAdmission(this, token); }
+  assertRunningReviewCallback(token) { return sharedWrites.assertRunningReviewCallback(this, token); }
+  assertDetachedReviewCancellation(token) { return sharedWrites.assertDetachedReviewCancellation(this, token); }
 
   get(table, itemId) {
     if (!TABLES.includes(table) || ['project_services', 'settings'].includes(table)) fail('항목 종류가 올바르지 않습니다.');
