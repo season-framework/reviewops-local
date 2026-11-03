@@ -48,7 +48,8 @@
       "title": "Protect reviews from outdated background results",
       "description": "Old agent or saved-request results are rejected after a dataset restore or replacement of their original review or execution. Accepted runs retain their own history when the next service selection changes and their original project link remains. Service deletion preserves confirmed final status. File operations and renderer edits remain separate.",
       "commits": [
-        "a4209117a28ee74745837a239d0aeb76bd4cb762"
+        "a4209117a28ee74745837a239d0aeb76bd4cb762",
+        "e30acf21bbd8000ccf7fa00710957cb1b8f75c55"
       ]
     }
   ]
