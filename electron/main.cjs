@@ -1559,7 +1559,7 @@ else {
         homePath:app.getPath('home'),appPath:app.getAppPath(),executablePath:app.getPath('exe'),dataPath,
         dataRootSource,qa:qaAutomation.capabilities()};}
     catch{console.warn('실행 앱의 연결 진단 정보를 준비하지 못했습니다.');}
-    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle,connectionInfo});}
+    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle,connectionInfo,qaConnectionStatus:payload=>qaAutomation.connectionStatus(payload)});}
     catch(error){console.warn('외부 도구 연결을 시작하지 못했습니다:',error.message);}
     if(process.platform!=='win32')try{seasonIntegration=await require('./season-integration.cjs').createSeasonIntegration({dataPath,workspaceRoot:path.join(app.getPath('appData'),'Season AI','reviewops-workspace'),showReview:showProjectReview,dispatch:integrationDispatch});}
     catch(error){console.warn('Season AI 연결을 시작하지 못했습니다:',error.message);}

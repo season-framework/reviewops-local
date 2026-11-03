@@ -30,6 +30,28 @@ The advertised QA protocol label `1` describes the current session/project/windo
 
 The native owned-service harness observes this query through the actual MCP JSON-RPC exports and the selected authenticated socket while retaining its original Electron app and driver Node. Its initial launch, existing QA-lease interval and ordinary reopen record metadata separately from the unchanged service scenario IDs. Package checks bind the physical MCP resource files to their ASAR/source copies and read actual embedded test identity; an omitted bundle-summary field does not establish missing runtime metadata. Database/WAL bytes, descriptor bytes, renderer data-change events and owned-window state must remain unchanged during the quiescent query; SQLite SHM is diagnostic only. This observes the declared fixture cohort, not external-chat registration or controller reconnection. These added checks require a new source-bound native run before being reported as passed.
 
+## Inspect a project's QA connection status
+
+Call `reviewops_qa_connection_status` with `{ "projectId": "PROJECT_ID" }` to read the selected app's instance ID and that project's current QA availability. This separate read-only query leaves the existing `reviewops_connection_info` DTO and eleven-action QA protocol unchanged. It does not open a window, focus a view, acquire or release a lease, renew its idle time, clear a timeout or reconnect a controller.
+
+The MCP server supplies its own recorded binding only when it has exactly one for that project. Callers cannot supply `clientId`, `sessionId` or `windowId` to this tool. A new MCP connection without that record sees an existing unverified lease as busy; a matching caller-chosen client name would not prove ownership. The response includes no session, window or controller IDs; it cannot be used as a grant for input. Continue to use the binding returned by `reviewops_qa_open` for control operations.
+
+| Field | Meaning |
+| --- | --- |
+| `instanceId` | The selected app's existing startup instance ID. It is not an MCP process ID or proof of process ownership. |
+| `availability: available` | The known project has no retained lease or quarantined window and no old binding was supplied, or a matching retained record proves its lease expired or window closed. `qa_open` still performs its normal checks. |
+| `availability: busy` | A retained lease or pending open occupies the project, including a lease recorded by this MCP connection. Other controllers' identifiers are not disclosed. |
+| `availability: quarantined` | A known window for this project is blocked after a QA timeout. This query does not reset it. |
+| `availability: unavailable` | The project is unavailable or the supplied old binding is missing and the retained records cannot establish its state. |
+| `bindingState: not_supplied` | No unambiguous recorded binding was supplied by this MCP server. |
+| `bindingState: attached`, `expired`, `target_closed`, `timed_out` | The matching retained session/window records establish this state. The query does not change them. |
+| `bindingState: unavailable` | A remembered binding is no longer present or cannot be matched. A missing record is not reported as an inferred expiration or closure. |
+| `client.bindingSource` | `recorded`, `none` or `ambiguous` describes this MCP server's local records. Ambiguous old records cannot establish availability after their sessions disappear; the query reports unavailable instead of selecting one. `client.scope: mcp-server` is not a chat identity; a host may share one MCP server across chats. |
+
+The query rereads only the configured connection descriptor using the existing file/socket checks. It does not search for unknown custom data folders or switch to another app or the active window. An older app's explicit unknown-action response becomes `QA_CONNECTION_STATUS_UNSUPPORTED`; inspect `reviewops_connection_info` without assuming that an old app caused the problem. Missing or malformed status information remains unavailable. Existing session expiry may run independently of this observation.
+
+Status is a point-in-time observation, not an ownership handoff. Same-client `qa_open` reuse, `PROJECT_BUSY`, request idempotency, timeout quarantine and MCP-disconnect release keep their existing behavior. Actual external-chat registration, separate-chat identity and reconnection across transport loss remain separate validation and implementation boundaries.
+
 ## Connect Codex
 
 Use the stdio connection supported by [Codex MCP configuration](https://developers.openai.com/codex/mcp).

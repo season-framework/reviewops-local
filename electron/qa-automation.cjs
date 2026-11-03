@@ -72,6 +72,38 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     if(!getProject(session.projectId)||!record||record.projectId!==session.projectId||record.host.isDestroyed()){forget(session);fail('연결한 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');}
     session.touched=now();return record;
   }
+  function connectionStatus(payload={}){
+    if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).some(key=>!['projectId','binding'].includes(key)))fail('Invalid QA connection status request.');
+    const projectId=id(payload.projectId,'projectId'),hasBinding=Object.hasOwn(payload,'binding');
+    if(hasBinding){
+      const value=payload.binding;
+      if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==3||Object.keys(value).some(key=>!['sessionId','projectId','windowId'].includes(key)))fail('Invalid recorded QA binding.');
+      for(const key of ['sessionId','projectId','windowId'])id(value[key],key);
+      if(value.projectId!==projectId)fail('Recorded QA binding belongs to another project.','TARGET_MISMATCH');
+    }
+    const result={projectId,availability:'unavailable',bindingState:hasBinding?'unavailable':'not_supplied'};
+    if(closed||!getProject(projectId))return result;
+    // Peek only: check/prune renew or forget leases and must not run here.
+    const current=projects.get(projectId),record=current?.windowId?getWindow(current.windowId):null;
+    const remembered=hasBinding&&sessions.get(payload.binding.sessionId);
+    const matched=Boolean(remembered&&remembered===current&&remembered.projectId===projectId&&remembered.windowId===payload.binding.windowId);
+    const quarantinedHere=[...quarantined].some(windowId=>{const value=getWindow(windowId);return value?.projectId===projectId&&!value.host.isDestroyed();});
+    const expired=current&&!current.active&&now()-current.touched>sessionTimeoutMs;
+    if(quarantinedHere)result.availability='quarantined';
+    else if(!current)result.availability=hasBinding?'unavailable':'available';
+    else if(!matched)result.availability='busy';
+    else if(!current.windowId)result.availability='busy';
+    else if(!record||record.projectId!==projectId)result.availability='unavailable';
+    else if(record.host.isDestroyed()||expired)result.availability='available';
+    else result.availability=current.failed?'quarantined':'busy';
+    if(!matched)return result;
+    if(remembered.failed)result.bindingState='timed_out';
+    else if(!record||record.projectId!==projectId)result.bindingState='unavailable';
+    else if(record.host.isDestroyed())result.bindingState='target_closed';
+    else if(expired)result.bindingState='expired';
+    else result.bindingState='attached';
+    return result;
+  }
   async function open(payload){
     const projectId=id(payload.projectId,'프로젝트 ID'),clientId=id(payload.clientId,'클라이언트 ID');
     if(payload.reviewId!==undefined)id(payload.reviewId,'리뷰 ID');
@@ -185,6 +217,6 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,connectionStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

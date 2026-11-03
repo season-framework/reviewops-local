@@ -7,7 +7,7 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 const { dataTools, validate, schema, ID, string } = require('./automation-api.cjs');
 
-const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024, MAX_CONNECTION_INFO = 16 * 1024;
+const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024, MAX_CONNECTION_INFO = 16 * 1024, MAX_QA_CONNECTION_STATUS = 2048;
 const versions = ['2025-11-25','2025-06-18','2025-03-26','2024-11-05'];
 const binding = { sessionId: ID, projectId: ID, windowId: ID };
 const surface = { ...binding, browserId: ID };
@@ -28,7 +28,8 @@ const qaTools = [
 ].map(([action, description, inputSchema]) => ({ name: 'reviewops_qa_' + action, action: 'automation.qa.' + action, description, inputSchema,
   annotations: { readOnlyHint: ['state','capture'].includes(action), destructiveHint: ['close','reload'].includes(action), openWorldHint: ['navigate','click','key','type'].includes(action) } }));
 const connectionTool = { name: 'reviewops_connection_info', action: 'connection.info', description: 'Read the connected running app identity, reported QA capabilities and selected connection location without opening, focusing or controlling a project. This does not discover unknown data roots or grant QA ownership.', inputSchema: schema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
-const tools = [...dataTools, ...qaTools, connectionTool];
+const qaConnectionTool = { name: 'reviewops_qa_connection_status', action: 'connection.qa.status', description: 'Read QA availability for the selected app and project, using only this MCP server process\'s recorded binding when unambiguous. This is not chat ownership, reconnection or permission to control a window. It does not acquire, release or renew a QA session.', inputSchema: schema({projectId:ID},['projectId']), annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false} };
+const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool];
 const error = (message, code = 'CLIENT_ERROR') => Object.assign(new Error(message), { code });
 function connectionInfoResult(value, selection, projectId) {
   const invalid = () => { throw error('Running app connection information is unavailable or invalid.', 'INVALID_CONNECTION_INFO'); };
@@ -72,6 +73,17 @@ function connectionInfoResult(value, selection, projectId) {
   if (Buffer.byteLength(JSON.stringify(result)) > MAX_CONNECTION_INFO) invalid();
   return result;
 }
+function qaConnectionStatusResult(value, projectId, bindingSource, boundProjectId) {
+  const invalid=()=>{throw error('QA connection status is unavailable or invalid for the selected app.','INVALID_QA_CONNECTION_STATUS');};
+  try{validate(schema({schema:{type:'integer',enum:[1]},instanceId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'},projectId:ID,
+    availability:{type:'string',enum:['available','busy','quarantined','unavailable']},bindingState:{type:'string',enum:['not_supplied','attached','expired','target_closed','timed_out','unavailable']}},['schema','instanceId','projectId','availability','bindingState']),value);}catch{invalid();}
+  if(value.projectId!==projectId||bindingSource!=='recorded'&&value.bindingState!=='not_supplied')invalid();
+  // Ambiguous old records cannot establish an idle connection by omission.
+  const result={...value,availability:bindingSource==='ambiguous'&&value.availability==='available'?'unavailable':value.availability,
+    client:{bindingSource,scope:'mcp-server',boundProjectId:boundProjectId??null}};
+  if(Buffer.byteLength(JSON.stringify(result))>MAX_QA_CONNECTION_STATUS)invalid();
+  return result;
+}
 function defaultDataPath(env = process.env) {
   if (env.REVIEWOPS_DATA_DIR) return path.resolve(env.REVIEWOPS_DATA_DIR);
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'ReviewOps Local');
@@ -102,8 +114,8 @@ async function invokeSocket(connectionPath, action, payload, { timeoutMs = 40000
     socket.on('connect', () => socket.write(request));
     socket.on('data', chunk => {
       input += chunk;
-      const limit = action === 'connection.info' ? MAX_CONNECTION_INFO + 128 : MAX_RESPONSE;
-      if (Buffer.byteLength(input) > limit) return finish(error(action === 'connection.info' ? 'ReviewOps connection information exceeds the allowed size.' : 'ReviewOps response exceeds 32 MiB.', 'RESPONSE_TOO_LARGE'));
+      const limit = action === 'connection.info' ? MAX_CONNECTION_INFO + 128 : action === 'connection.qa.status' ? MAX_QA_CONNECTION_STATUS + 128 : MAX_RESPONSE;
+      if (Buffer.byteLength(input) > limit) return finish(error(action === 'connection.info' ? 'ReviewOps connection information exceeds the allowed size.' : action === 'connection.qa.status' ? 'QA connection status exceeds the allowed size.' : 'ReviewOps response exceeds 32 MiB.', 'RESPONSE_TOO_LARGE'));
       const end = input.indexOf('\n'); if (end < 0) return;
       let response; try { response = JSON.parse(input.slice(0,end)); } catch { return finish(error('Invalid ReviewOps response.', 'INVALID_RESPONSE')); }
       if (!response || typeof response.ok !== 'boolean') return finish(error('Invalid ReviewOps response.', 'INVALID_RESPONSE'));
@@ -158,13 +170,25 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
           const args = params.arguments === undefined ? {} : params.arguments;
           validate(tool.inputSchema,args);
           if (projectId && args.projectId !== undefined && args.projectId !== projectId) throw error('This MCP connection is bound to another project.', 'TARGET_MISMATCH');
+          let invocation=args,bindingSource;
+          if(tool.action==='connection.qa.status'){
+            const recorded=[...sessions.values()].filter(value=>value.projectId===args.projectId);
+            bindingSource=recorded.length===1?'recorded':recorded.length?'ambiguous':'none';
+            invocation={projectId:args.projectId};
+            if(recorded.length===1){
+              try{validate(schema(binding,required),recorded[0]);}catch{throw error('The recorded QA binding is unavailable.','INVALID_QA_CONNECTION_STATUS');}
+              invocation.binding={...recorded[0]};
+            }
+          }
           let value;
-          try { value = await invoke(tool.action,args); }
+          try { value = await invoke(tool.action,invocation); }
           catch (failure) {
             if (tool.action === 'connection.info' && failure.code === 'UNKNOWN_ACTION') throw error('The connected app does not report connection identity or capabilities. Check the configured app and MCP paths; no project connection was changed.', 'CONNECTION_INFO_UNSUPPORTED');
+            if (tool.action === 'connection.qa.status' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not provide QA connection status. Inspect reviewops_connection_info; no QA connection was changed.','QA_CONNECTION_STATUS_UNSUPPORTED');
             throw failure;
           }
           if (tool.action === 'connection.info') value = connectionInfoResult(value, connectionSelection, projectId);
+          if (tool.action === 'connection.qa.status') value = qaConnectionStatusResult(value,args.projectId,bindingSource,projectId);
           if (tool.action === 'automation.projects.list' && projectId) value = { ...value, projects: value.projects.filter(project => (project.projectId || project.id) === projectId) };
           if (tool.action === 'automation.qa.open' && value?.sessionId) {
             const binding = { sessionId: value.sessionId, projectId: value.projectId, windowId: value.windowId };
