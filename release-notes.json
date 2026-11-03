@@ -34,6 +34,14 @@
       "commits": [
         "7635d746af728cc90c9ca44bfdc278020625f268"
       ]
+    },
+    {
+      "category": "features",
+      "title": "Inspect the app selected by your MCP connection",
+      "description": "Inspect the selected app's version, data location and QA capabilities through MCP without opening or focusing projects or changing leases. Unknown build fields stay null. Finding unknown custom data roots, reconnecting controllers and refreshing external tool lists remain separate.",
+      "commits": [
+        "fdaabbb79528cf754ad4ac1a936d04029192c6fc"
+      ]
     }
   ]
 }

@@ -5,17 +5,26 @@ const {spawnSync}=require('node:child_process');
 const {finished}=require('node:stream/promises');
 const root=path.resolve(__dirname,'..'),asar=require('@electron/asar');
 const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
-async function bundle(t){
+async function bundle(t,{overrides={},build}={}){
  const temporary=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'rv-owned-package-')));
  const fixture={temporary,manager:null};
  t.after(async()=>{if(fixture.manager)await fixture.manager.close();await fs.rm(temporary,{recursive:true,force:true});});
  const input=path.join(temporary,'input'),resources=path.join(temporary,'Mock App.app','Contents','Resources');
  await fs.mkdir(path.join(input,'electron'),{recursive:true});await fs.mkdir(resources,{recursive:true});
  const canonical=['mcp-server.cjs','automation-api.cjs','review-categories.json','owned-node-bootstrap.cjs'],bytes={};
- for(const name of canonical){bytes[name]=await fs.readFile(path.join(root,'electron',name));await fs.writeFile(path.join(input,'electron',name),bytes[name]);}
+ for(const name of canonical){bytes[name]=await fs.readFile(path.join(root,'electron',name));await fs.writeFile(path.join(input,'electron',name),overrides[name]??bytes[name]);}
+ if(build!==undefined)await fs.writeFile(path.join(input,'electron','reviewops-build.json'),JSON.stringify(build));
  await finished(await asar.createPackage(input,path.join(resources,'app.asar')));
  await require(path.join(root,'scripts/after-pack.cjs'))({appOutDir:path.dirname(resources),packager:{getResourcesDir:()=>resources}});
  return Object.assign(fixture,{resources,bytes});
+}
+function archiveOptions(f){
+ const archive=path.join(f.resources,'app.asar'),entries=new Map();
+ for(const item of asar.listPackage(archive)){
+  const name=item.replaceAll('\\','/').replace(/^\/+/,'');if(asar.statFile(archive,name).files)continue;
+  const bytes=asar.extractFile(archive,name);entries.set(name,{path:name,bytes:bytes.length,sha256:digest(bytes)});
+ }
+ return {root,resources:f.resources,archive,entries,asar};
 }
 test('afterPack publishes the exact canonical owned bootstrap outside the archive and preserves MCP copies',async t=>{
  const f=await bundle(t);
@@ -46,4 +55,24 @@ test('standalone Node starts and cooperatively stops an owned service through th
  assert.equal(response.status,200);assert.equal(body.pid,state.instance.pid);assert.equal(body.entry,path.join(work,'server.cjs'));assert.deepEqual(body.argv,[executable,path.join(work,'server.cjs'),'packaged argument with spaces']);
  const stopped=await manager.stop('project','connection',state.instance.instanceId);
  assert.equal(stopped.instance.status,'exited');assert.equal(stopped.instance.exit.code,0);assert.equal(stopped.instance.exit.signal,null);assert.equal(stopped.instance.exit.drainConfirmed,true);
+});
+test('native package verification rejects physical and archived MCP bytes outside the reviewed three-file closure',async t=>{
+ const {verifyPackagedMcpResources}=await import('../scripts/packaged-bundle-guards.mjs'),f=await bundle(t),options=archiveOptions(f);
+ const observed=verifyPackagedMcpResources(options);assert.equal(observed.files.length,3);assert.equal(observed.modulePath,path.join(f.resources,'mcp','reviewops-mcp.cjs'));
+ for(const name of ['reviewops-mcp.cjs','automation-api.cjs','review-categories.json']){
+  const file=path.join(f.resources,'mcp',name),original=await fs.readFile(file),changed=Buffer.from(original);changed[0]^=1;await fs.writeFile(file,changed);
+  assert.throws(()=>verifyPackagedMcpResources(options));await fs.writeFile(file,original);
+ }
+ const changed=Buffer.from(f.bytes['mcp-server.cjs']);changed[0]^=1;const altered=await bundle(t,{overrides:{'mcp-server.cjs':changed}});
+ assert.throws(()=>verifyPackagedMcpResources(archiveOptions(altered)),/differs from reviewed source/);
+});
+test('native package build identity distinguishes absent metadata from actual valid or foreign test metadata',async t=>{
+ const {readPackagedBuildIdentity}=await import('../scripts/packaged-bundle-guards.mjs'),source='a'.repeat(40),version='1.4.0',valid={channel:'test',version,buildNumber:12345,developmentNumber:7,commit:source,builtAt:'2026-11-03T00:00:00.000Z'};
+ const missing=await bundle(t);assert.equal(readPackagedBuildIdentity({...archiveOptions(missing),expectedHead:source,expectedVersion:version}),null);
+ for(const build of [valid,(({developmentNumber,...rest})=>rest)(valid)]){
+  const f=await bundle(t,{build});assert.deepEqual(readPackagedBuildIdentity({...archiveOptions(f),expectedHead:source,expectedVersion:version}),build);
+ }
+ for(const build of [{...valid,commit:'b'.repeat(40)},{...valid,version:'1.3.0'},{...valid,developmentNumber:0},{...valid,padding:'x'.repeat(65536)}]){
+  const f=await bundle(t,{build});assert.throws(()=>readPackagedBuildIdentity({...archiveOptions(f),expectedHead:source,expectedVersion:version}));
+ }
 });

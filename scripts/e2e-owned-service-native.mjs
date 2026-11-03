@@ -8,6 +8,8 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
+import {PassThrough} from 'node:stream';
+import {finished} from 'node:stream/promises';
 import {fileURLToPath} from 'node:url';
 import {verifyPackagedBundle,readBoundedJSON} from './packaged-bundle-guards.mjs';
 import {verifyNativePacket,verifyReviewedGitFiles,prepareNativeAgentFixture,verifyWindowsAgentExit,verifyNativeFixtureCleanup,snapshotNativeFixtureEvidence} from './native-packet.mjs';
@@ -44,6 +46,8 @@ if(mode!=='source')assert.ok(appPath&&privateInstallRoot&&bundleManifestPath,'Pr
 const packageVersion=readBoundedJSON(path.join(root,'package.json')).version,asar=require('@electron/asar');
 const verifyBundle=()=>mode==='source'?(verifyNativePacket(packet),null):verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPath:bundleManifestPath,expectedHead,expectedVersion:packageVersion,buildFiles:buildRecord.files,sourceManifestSHA256:fileSha(expectedFilesPath),rendererBuildRecordSHA256:fileSha(buildRecordPath),asar,expectedTarget:target,installReceiptPath:packet.installReceiptPath});
 const bundle=verifyBundle(); // Read-only. Before creating a profile or launching.
+const connectionMcp=require(bundle?bundle.mcp.modulePath:path.join(root,'electron/mcp-server.cjs'));
+const {getBuildInfo}=require(path.join(root,'electron/build-info.cjs'));
 
 const temporary=fs.realpathSync(packet.ownedRoot),home=path.join(temporary,'home'),data=path.join(temporary,'data');
 const output=packet.outputDir;
@@ -59,6 +63,7 @@ write(path.join(data,'updates/settings.json'),JSON.stringify({automatic:false,in
 const result={source:expectedHead,dirty:false,mode,target,temporary,platform:process.platform,arch:process.arch,startedAt:new Date().toISOString(),toolSocketPreflight,syntheticCLI:true,externalAI:0,SSH:0,installedPackage:mode!=='source',privateCopiedInstallation:mode==='private-bundle',bundleVerification:bundle,checks:[],photos:[],operations:[],errors:[],externalRendererRequests:[],agentRuns:[],runtimeSnapshots:[],requirements:plan.requirements.map(row=>({...row,status:'not-run',observations:[]})),limits:['Only this actual declared target/mode cohort; same16 repeats add no unique count; original NEXT10 incomplete',...plan.limits.filter(text=>!text.includes('Syntax-only')&&!text.includes('source UI')&&!text.includes('native checks on other'))],fullIssueComplete:false};
 result.reviewedUICompatibility=reviewedUICompatibility;
 result.agentReadDiagnostics=createAgentReadDiagnostics();
+result.connectionInfoObservations=[];
 const save=()=>fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(result,null,2));
 const record=(action,details={})=>{result.operations.push({at:new Date().toISOString(),action,...details});save();};
 const pass=(id,name,actual)=>{result.requirements.find(row=>row.id===id).observations.push(name);result.checks.push({id,name,actual,status:'pass'});save();};
@@ -168,6 +173,89 @@ const request=(page,action,payload={})=>page.evaluate(({action,payload})=>window
 async function until(read,predicate,label,timeout=10000){const start=Date.now();while(Date.now()-start<timeout){const value=await read();if(predicate(value))return value;await sleep(50)}throw new Error('Timed out: '+label);}
 async function denied(page,action,payload,code){const response=await request(page,action,payload);assert.equal(response.ok,false,action);if(code)assert.equal(response.error.code,code);record('denied',{action,code:response.error.code});return response.error;}
 async function locale(page){await page.waitForFunction(()=>location.protocol==='reviewops:'&&Boolean(window.reviewops?.invoke));await page.evaluate(()=>localStorage.setItem('reviewops.language','ko'));await page.reload();await page.waitForFunction(()=>document.documentElement.lang==='ko');}
+function connectionFileSnapshot(file,max,optional=false){
+ let info;try{info=fs.lstatSync(file);}catch(error){if(optional&&error.code==='ENOENT')return {exists:false};throw error;}
+ assert.ok(info.isFile()&&!info.isSymbolicLink());assert.ok(Number.isSafeInteger(info.size)&&info.size<=max);
+ const bytes=fs.readFileSync(file);assert.equal(bytes.length,info.size);const after=fs.lstatSync(file);
+ for(const key of ['dev','ino','size','mtimeMs','ctimeMs'])assert.equal(after[key],info[key],'Observed file changed during its snapshot');
+ return {exists:true,bytes:bytes.length,sha256:sha(bytes)};
+}
+function connectionDatabaseSnapshot(){
+ return Object.fromEntries(['reviewops.sqlite','reviewops.sqlite-wal'].map(name=>[name,connectionFileSnapshot(path.join(data,name),32*1024*1024,true)]));
+}
+function connectionShmDiagnostic(){
+ try{return connectionFileSnapshot(path.join(data,'reviewops.sqlite-shm'),32*1024*1024,true);}
+ catch(error){return {unavailable:true,reason:error.code||error.name||'snapshot-unavailable',strictEqualityRequired:false};}
+}
+const normalizedConnectionBuild=build=>({channel:build.channel,version:build.version,buildNumber:build.buildNumber??null,developmentNumber:build.developmentNumber??null,commit:build.commit??null,builtAt:build.builtAt??null});
+const redactedConnectionPath=(homePath,value)=>{const relative=path.relative(homePath,value);return !relative?'$HOME':relative!=='..'&&!relative.startsWith('..'+path.sep)&&!path.isAbsolute(relative)?'$HOME'+path.sep+relative:value;};
+async function connectionWindowSnapshot(application){
+ return application.evaluate(({BrowserWindow})=>({focusedOwnedWindowId:BrowserWindow.getFocusedWindow()?.id??null,windows:BrowserWindow.getAllWindows().map(host=>({id:host.id,url:host.webContents.getURL(),visible:host.isVisible(),minimized:host.isMinimized(),bounds:host.getBounds()})).sort((a,b)=>a.id-b.id)}));
+}
+async function observeConnectionInfo(application,page,phase,qaBinding=null){
+ const owner=ownedApps.find(value=>value.application===application);assert.ok(owner?.connectionIdentity,'Use only the original retained app and startup getters');
+ const {native,info}=owner.connectionIdentity,observerKey='__ownedConnectionInfo_'+crypto.randomUUID().replaceAll('-','');
+ const row={phase,launchAttemptId:owner.launchAttemptId,originalAppPID:owner.pid,target,mode,source:expectedHead,startedAt:new Date().toISOString(),status:'pending',formalQAIDsAdded:0,newOSProcesses:0,transport:'actual MCP JSON-RPC exports in original driver Node and authenticated selected app socket',...(qaBinding?{originalLease:{...qaBinding},originalLeaseReleaseConfirmed:false}:{})};
+ result.connectionInfoObservations.push(row);save();
+ const config=connectionMcp.options(['--data-path',data,...(qaBinding?['--project-id',qaBinding.projectId]:[])]);
+ assert.equal(config.selection,'data-path-argument');assert.equal(config.connectionPath,path.join(data,'integrations','tools.json'));
+ const descriptor=fs.readFileSync(config.connectionPath);assert.ok(descriptor.length<=8192);
+ let selected;try{selected=JSON.parse(descriptor.toString('utf8'));}catch{throw new Error('Owned connection descriptor JSON is invalid');}
+ assert.ok(selected&&typeof selected==='object'&&!Array.isArray(selected)&&Object.keys(selected).sort().join(',')==='pid,socketPath,token,version','Owned descriptor shape is invalid');assert.ok(selected.pid===owner.child.pid,'Owned descriptor PID differs from retained child');assert.ok(selected.socketPath===preflightSocketPath&&selected.version===1,'Owned descriptor route/version differs');
+ // Raw descriptor/token bytes remain volatile. Only equality booleans are saved.
+ const databaseBefore=connectionDatabaseSnapshot(),windowsBefore=await connectionWindowSnapshot(application),shmBefore=connectionShmDiagnostic();
+ await page.evaluate(key=>{const state={changes:0};state.unsubscribe=window.reviewops.onDataChange(()=>{state.changes++;});Object.defineProperty(globalThis,key,{value:state,configurable:true});},observerKey);
+ const input=new PassThrough(),outputStream=new PassThrough(),pendingReplies=new Map(),pendingSockets=new Set(),wire=[];row.wire=wire;
+ let sequence=0,buffer='',wireBytes=0,wireError,server,originalError;
+ const failReplies=error=>{wireError=error;for(const pending of pendingReplies.values())pending.reject(error);pendingReplies.clear();};
+ outputStream.setEncoding('utf8');outputStream.on('data',chunk=>{
+  if(wireError)return;wireBytes+=Buffer.byteLength(chunk);if(wireBytes>64*1024){failReplies(new Error('Connection diagnostic response budget exceeded'));return;}
+  buffer+=chunk;
+  try{while(buffer.includes('\n')){const end=buffer.indexOf('\n'),message=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);wire.push({direction:'response',message});const pending=pendingReplies.get(message.id);assert.ok(pending,'Unexpected connection diagnostic response');pendingReplies.delete(message.id);pending.resolve(message);}}
+  catch(error){failReplies(error);}
+ });
+ const rpc=(method,params)=>{
+  assert.equal(wireError,undefined);const id=++sequence,message={jsonrpc:'2.0',id,method,params};
+  const response=new Promise((resolve,reject)=>pendingReplies.set(id,{resolve,reject}));wire.push({direction:'request',message});input.write(JSON.stringify(message)+'\n');
+  return boundedCleanup(response,'selected-app MCP response');
+ };
+ try{
+  server=connectionMcp.createMcpServer({input,output:outputStream,projectId:config.projectId,connectionSelection:{selection:config.selection,connectionPath:config.connectionPath,homePath:os.homedir(),platform:process.platform},invoke:(action,args)=>{
+   assert.equal(action,'connection.info','Diagnostic client cannot acquire or release a QA lease');assert.deepEqual(args,{});
+   const pending=connectionMcp.invokeSocket(config.connectionPath,action,args,{timeoutMs:5000}).finally(()=>pendingSockets.delete(pending));pendingSockets.add(pending);return pending;
+  }});
+  const initialized=await rpc('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'owned-native-connection-info',version:'1'}});assert.equal(initialized.error,undefined);
+  const response=await rpc('tools/call',{name:'reviewops_connection_info',arguments:{}});assert.equal(response.error,undefined);assert.equal(response.result?.isError,false);
+  const value=response.result.structuredContent;assert.ok(value);assert.equal(Buffer.byteLength(JSON.stringify(value))<=16*1024,true);
+  assert.equal(value.app.version,native.version);assert.equal(value.app.isPackaged,native.isPackaged);assert.equal(value.app.platform,native.platform);assert.equal(value.app.arch,native.arch);
+  const actualBuild=bundle?(bundle.embeddedBuild||{channel:'stable',version:packageVersion}):getBuildInfo(packageVersion),expectedBuild=normalizedConnectionBuild(actualBuild);
+  assert.deepEqual(value.app.build,expectedBuild);assert.deepEqual(normalizedConnectionBuild(info.build),expectedBuild);
+  assert.equal(value.app.displayVersion,actualBuild.channel==='test'?actualBuild.developmentNumber?`${packageVersion}-dev-${actualBuild.developmentNumber}`:`${packageVersion}-test.${actualBuild.buildNumber}`:packageVersion);
+  assert.deepEqual(value.location,{dataRootSource:'environment',dataPath:redactedConnectionPath(native.OSHome,data),appPath:redactedConnectionPath(native.OSHome,native.appPath),executablePath:redactedConnectionPath(native.OSHome,native.executablePath),homeRedacted:true});
+  assert.deepEqual(value.qa,{protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false});
+  assert.equal(value.client.selection,'data-path-argument');assert.equal(value.client.boundProjectId,qaBinding?.projectId??null);assert.equal(value.client.connectionPath,redactedConnectionPath(os.homedir(),config.connectionPath));
+  assert.match(value.instanceId,/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
+  if(owner.connectionInstanceId)assert.equal(value.instanceId,owner.connectionInstanceId);else{assert.ok(ownedApps.every(other=>other===owner||other.connectionInstanceId!==value.instanceId));owner.connectionInstanceId=value.instanceId;}
+  const changes=await page.evaluate(key=>globalThis[key].changes,observerKey),databaseAfter=connectionDatabaseSnapshot(),windowsAfter=await connectionWindowSnapshot(application);assert.equal(changes,0);
+  assert.deepEqual(databaseAfter,databaseBefore);assert.deepEqual(windowsAfter,windowsBefore);assert.ok(fs.readFileSync(config.connectionPath).equals(descriptor),'Connection query changed its selected descriptor');assert.equal(pendingReplies.size,0);assert.equal(buffer,'');
+  Object.assign(row,{status:'query-validated',publicInformation:value,wire,descriptorUnchanged:true,descriptorPIDMatchesOriginalOwner:true,tokenOrDescriptorLogged:false,databaseBefore,databaseAfter,rendererDataChangeEvents:changes,windowsBefore,windowsAfter,ownedWindowsUnchanged:true,shmDiagnostic:{before:shmBefore,after:connectionShmDiagnostic(),strictEqualityRequired:false},MCPModule:bundle?bundle.mcp:{modulePath:path.join(root,'electron/mcp-server.cjs'),sha256:fileSha(path.join(root,'electron/mcp-server.cjs'))}});
+  return row;
+ }catch(error){originalError=error;row.failure=diagnosticError(error);throw error;}
+ finally{
+  let cleanupError;
+  try{await Promise.allSettled([...pendingSockets]);input.end();await server?.close();input.resume();outputStream.end();await Promise.all([finished(input),finished(outputStream)]);row.inProcessStreamsFinished=true;}
+  catch(error){cleanupError=error;row.streamCleanupFailure=diagnosticError(error);}
+  try{
+   if(page.isClosed())throw new Error('Original diagnostic observer page closed before cleanup');
+   const finalChanges=await page.evaluate(key=>{const state=globalThis[key];if(!state)throw new Error('Original diagnostic observer is missing');state.unsubscribe();delete globalThis[key];return state.changes;},observerKey);
+   row.rendererDataChangeEvents=finalChanges;assert.equal(finalChanges,0,'Connection query or its client cleanup emitted a data change');
+  }
+  catch(error){cleanupError||=error;row.observerCleanupFailure=diagnosticError(error);}
+  row.status=originalError||cleanupError?'failed':'pass';
+  row.completedAt=new Date().toISOString();save();
+  if(cleanupError&&!originalError)throw cleanupError;
+ }
+}
 function environment(){assert.ok(fixture,'Synthetic fixture must compile/preflight before app launch');return fixture.environment;}
 async function launch(){
  verifyBundle();assertSyntheticLaunchInputs();
@@ -184,6 +272,7 @@ async function launch(){
  for(const k of ['HOME','USERPROFILE'])assert.equal(fs.realpathSync(native.selectedEnvironment[k]),home);assert.equal(native.selectedEnvironment.CODEX_HOME,path.join(home,'.codex'));assert.equal(native.selectedEnvironment.REVIEWOPS_DATA_DIR,data);assert.equal(native.selectedEnvironment.REVIEWOPS_SSH_CONFIG,path.join(home,'ssh-config'));assert.equal(native.selectedEnvironment.REVIEWOPS_CODEX_SSH_CONFIG,path.join(home,'ssh-config'));
  assert.equal(info.version,packageVersion);assert.equal(fs.realpathSync(info.dataPath),data);assert.equal(info.platform,process.platform);assert.equal(info.arch,process.arch);if(bundle?.build)assert.deepEqual(info.build,bundle.build);
  record('actual-effective-private-paths-before-account-query',{native,appInfo:info,nativeHomeIsOSGetterNotOverridden:true});assert.equal(typeof native.OSHome,'string');assert.ok(path.isAbsolute(native.OSHome));for(const value of Object.values(native.selectedEnvironment)){assert.ok(inside(path.resolve(value)));if(fs.existsSync(value))assert.ok(inside(fs.realpathSync(value)));}assert.equal(native.sshAuthSocketPresent,false);assert.deepEqual(native.externalCredentialNames,[]);
+ owner.connectionIdentity={native,info};await observeConnectionInfo(launched,page,'startup');
  const accounts=await page.evaluate(()=>window.accountManager.getState()),hosts=await page.evaluate(()=>window.hostManager.getState());assert.deepEqual(accounts.accounts,[]);assert.equal(accounts.runtime.available,false);assert.equal(accounts.runtime.path,null);assert.deepEqual(hosts.hosts,[]);
  record('actual-packaged-app-and-private-runtime',{native,appInfo:info,accountCount:accounts.accounts.length,accountRuntimeAvailable:accounts.runtime.available,hostCount:hosts.hosts.length,appInfoDoesNotExposeIsPackagedOrPaths:true,sourceOfPackagedFlagAndPaths:'Same actual retained Electron main handle, readonly getters'});
 
@@ -559,6 +648,7 @@ try{
  // Actual private integration/QA route and real renderer IPC, no fake snapshots.
  qaHandle=await invokeSocket(path.join(data,'integrations/tools.json'),'automation.qa.open',{projectId:pa.id,clientId:'owned-ui-'+crypto.randomUUID()});
  await expect(a.locator('.workspace-app')).toHaveAttribute('data-qa-project-id',pa.id);
+ const connectionLeaseObservation=await observeConnectionInfo(app,a,'held-existing-QA-lease',qaHandle);await expect(a.locator('.workspace-app')).toHaveAttribute('data-qa-project-id',pa.id);
  await ipc(a,'serviceRuntime.state',{projectId:pa.id,connectionId:pa.connection.id});
  for(const action of ['serviceRuntime.state','serviceRuntime.start','serviceRuntime.stop','serviceRuntime.restart'])await denied(a,action,{projectId:pb.id,connectionId:pb.connection.id,...(['serviceRuntime.stop','serviceRuntime.restart'].includes(action)?{instanceId:initialB.instanceId}:{})},'TARGET_MISMATCH');
  await denied(a,'serviceRuntime.configure',{projectId:pa.id,connectionId:pa.connection.id,config:pa.config},'TARGET_MISMATCH');
@@ -568,7 +658,7 @@ try{
  await assert.rejects(invokeSocket(path.join(data,'integrations/tools.json'),'serviceRuntime.start',{projectId:pa.id,connectionId:pa.connection.id}));
  assert.equal(await nativeRead(a,pa.origin,'typeof window.reviewops'),'undefined');
  assert.equal((await runtime(pb,b)).instance.instanceId,initialB.instanceId);
- await invokeSocket(path.join(data,'integrations/tools.json'),'automation.qa.release',qaHandle);qaHandle=null;
+ await invokeSocket(path.join(data,'integrations/tools.json'),'automation.qa.release',qaHandle);connectionLeaseObservation.originalLeaseReleaseConfirmed=true;save();qaHandle=null;
  pass('NEXT-015-005','actual-consumer-and-foreign-control-denied',{foreignBPreserved:true,PIDReuse:'not-run separately required',harnessPIDSignals:0});
  // Stop during an accepted request and, separately, after a response while its
  // actual asynchronous fs write remains pending. Product deadlines are unchanged.
@@ -732,6 +822,7 @@ try{
  for(const row of expectedFiles)assert.equal(fileSha(path.join(root,row.path)),row.sha256,row.path);
  result.finalBundleVerification=verifyBundle();if(bundle){result.packagedObservation={bundle:result.finalBundleVerification,target,sameProductAgentAndServicePaths:true};result.requirements.find(row=>row.id==='NEXT-015-010').status='partial-observed';}
  const expectedChecks=readJSON(path.join(here,'expected-owned-checks.json'));assert.deepEqual(result.checks.map(({id,name})=>({id,name})),expectedChecks);
+ assert.equal(result.connectionInfoObservations.length,3);assert.ok(result.connectionInfoObservations.every(row=>row.status==='pass'&&row.inProcessStreamsFinished));assert.equal(result.connectionInfoObservations.filter(row=>row.originalLeaseReleaseConfirmed===true).length,1);
  result.ok=true;save();
 }catch(error){retainAgentReadFailure(result.agentReadDiagnostics,new Date().toISOString());result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();captureFixtureFiles('harness-catch');if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
 finally{

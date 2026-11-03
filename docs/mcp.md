@@ -28,6 +28,8 @@ An invalid connection record retains `INVALID_CONNECTION` and asks you to check 
 
 The advertised QA protocol label `1` describes the current session/project/window and optional browser-ID contract. It does not include document-generation fencing or transport reconnection. Existing QA ownership, input and timeout rules below still apply. An external chat host may require its own tool-list refresh or configuration change before exposing a newly registered tool; this app does not control that behavior. Installing an app update and reconnecting an agent to an already capable app are separate operations.
 
+The native owned-service harness observes this query through the actual MCP JSON-RPC exports and the selected authenticated socket while retaining its original Electron app and driver Node. Its initial launch, existing QA-lease interval and ordinary reopen record metadata separately from the unchanged service scenario IDs. Package checks bind the physical MCP resource files to their ASAR/source copies and read actual embedded test identity; an omitted bundle-summary field does not establish missing runtime metadata. Database/WAL bytes, descriptor bytes, renderer data-change events and owned-window state must remain unchanged during the quiescent query; SQLite SHM is diagnostic only. This observes the declared fixture cohort, not external-chat registration or controller reconnection. These added checks require a new source-bound native run before being reported as passed.
+
 ## Connect Codex
 
 Use the stdio connection supported by [Codex MCP configuration](https://developers.openai.com/codex/mcp).

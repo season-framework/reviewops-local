@@ -5,6 +5,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import {canonicalPath} from './native-adapters.mjs';
+import buildInfo from '../electron/build-info.cjs';
 const hash=value=>crypto.createHash('sha256').update(value).digest('hex');
 const within=(base,value)=>value===base||value.startsWith(base+path.sep);
 const relative=value=>typeof value==='string'&&value.length>0&&!path.isAbsolute(value)&&!value.split(/[\\/]/).some(part=>!part||part==='.'||part==='..');
@@ -20,6 +21,27 @@ export function inventory(directory,base=directory,rows=[]){
   else{assert.ok(entry.isFile(),'Unsupported bundle file type');rows.push({path:rel,kind:'file',bytes:fs.statSync(file).size,sha256:hash(fs.readFileSync(file))});}
  }
  return rows.sort((a,b)=>a.path.localeCompare(b.path));
+}
+export function verifyPackagedMcpResources({root,resources,archive,entries,asar}){
+ const files=[];
+ for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+  const name='electron/'+source,row=entries.get(name),physical=path.join(resources,'mcp',target);
+  assert.ok(row&&Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=8*1024*1024,'Missing or oversized canonical MCP archive entry '+name);
+  const archived=asar.extractFile(archive,path.join('electron',source)),local=fs.readFileSync(path.join(root,'electron',source));
+  assert.equal(archived.length,row.bytes);assert.equal(hash(archived),row.sha256,name+' archive bytes differ from manifest');assert.deepEqual(archived,local,name+' differs from reviewed source');
+  const info=fs.lstatSync(physical);assert.ok(info.isFile()&&!info.isSymbolicLink(),'Physical MCP resource must be a regular file');assert.equal(info.size,archived.length);
+  assert.deepEqual(fs.readFileSync(physical),archived,'Physical MCP resource differs from canonical ASAR '+target);
+  files.push({sourcePath:name,physicalPath:physical,bytes:archived.length,sha256:hash(archived)});
+ }
+ return {modulePath:path.join(resources,'mcp','reviewops-mcp.cjs'),files};
+}
+export function readPackagedBuildIdentity({archive,entries,asar,expectedHead,expectedVersion}){
+ const name='electron/reviewops-build.json',row=entries.get(name);
+ if(!row)return null;
+ assert.ok(Number.isSafeInteger(row.bytes)&&row.bytes>0&&row.bytes<=65536,'Embedded build metadata exceeds its bound');
+ const bytes=asar.extractFile(archive,path.join('electron','reviewops-build.json'));assert.equal(bytes.length,row.bytes);assert.equal(hash(bytes),row.sha256,'Embedded build bytes differ from manifest');
+ const observed=buildInfo.validateBuildInfo(JSON.parse(bytes.toString('utf8')),expectedVersion);assert.equal(observed.commit,expectedHead,'Embedded build source differs from admitted source');
+ return observed;
 }
 export function verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPath,expectedHead,expectedVersion,buildFiles,sourceManifestSHA256,rendererBuildRecordSHA256,asar,expectedTarget,installReceiptPath}){
  assert.ok(path.isAbsolute(appPath)&&path.isAbsolute(privateInstallRoot)&&path.isAbsolute(manifestPath));
@@ -50,7 +72,7 @@ export function verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPa
  for(const [key,file]of [['asar',archive],['bootstrap',bootstrap]]){const row=manifest.files.find(value=>value.path===path.relative(appRoot,file).split(path.sep).join('/'));assert.deepEqual(manifest[key],row,key+' summary must match its physical file row');}
  assert.ok(Array.isArray(manifest.archiveEntries)&&manifest.archiveEntries.length>0&&manifest.archiveEntries.length<=20000);
  const entries=new Map();for(const row of manifest.archiveEntries){assert.ok(relative(row.path)&&!entries.has(row.path)&&/^[a-f0-9]{64}$/.test(row.sha256));const bytes=asar.extractFile(archive,path.join(...row.path.split('/')));assert.equal(bytes.length,row.bytes);assert.equal(hash(bytes),row.sha256,row.path);entries.set(row.path,row);}
- const sourceModules=['electron/main.cjs','electron/browser.cjs','electron/project-service-runtime.cjs','electron/owned-node-bootstrap.cjs','electron/codex/runtime.cjs','electron/codex/index.cjs','electron/agents.cjs','electron/model-targets.cjs','electron/preload.cjs','electron/build-info.cjs'];
+ const sourceModules=['electron/main.cjs','electron/browser.cjs','electron/project-service-runtime.cjs','electron/owned-node-bootstrap.cjs','electron/codex/runtime.cjs','electron/codex/index.cjs','electron/agents.cjs','electron/model-targets.cjs','electron/preload.cjs','electron/build-info.cjs','electron/tool-integration.cjs','electron/qa-automation.cjs'];
  for(const name of sourceModules){assert.ok(entries.has(name),'Missing source-fidelity archive entry '+name);assert.equal(entries.get(name).sha256,hash(fs.readFileSync(path.join(root,name))),name+' differs from reviewed source');}
  for(const row of buildFiles){assert.ok(row.path.startsWith('dist/'));assert.ok(entries.has(row.path),'Missing built renderer archive entry '+row.path);assert.equal(entries.get(row.path).sha256,row.sha256,row.path);}
  const archivedDist=asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\/+(?=.)/,'')).filter(name=>name.startsWith('dist/')&&!asar.statFile(archive,path.join(...name.split('/'))).files);
@@ -59,6 +81,7 @@ export function verifyPackagedBundle({root,appPath,privateInstallRoot,manifestPa
  assert.ok(entries.has('package.json'),'Missing packaged package.json manifest row');
  const packagedPackage=JSON.parse(asar.extractFile(archive,'package.json').toString()),sourcePackage=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8'));
  assert.equal(packagedPackage.version,expectedVersion);assert.equal(packagedPackage.name,sourcePackage.name);
- if(manifest.build!==undefined){assert.equal(manifest.build.commit,expectedHead);assert.equal(manifest.build.version,expectedVersion);assert.deepEqual(JSON.parse(asar.extractFile(archive,path.join('electron','reviewops-build.json')).toString()),manifest.build);}
- return {source:expectedHead,version:expectedVersion,appPath:app,privateInstallRoot:install,executablePath:executable,resourcesPath:resources,appArchivePath:archive,manifestPath,manifestSHA256:hash(fs.readFileSync(manifestPath)),sourceManifestSHA256,rendererBuildRecordSHA256,bundleFiles:actual.length,appArchiveSHA256:hash(fs.readFileSync(archive)),physicalBootstrapSHA256:hash(fs.readFileSync(bootstrap)),rendererFiles:archivedDist.length,build:manifest.build||null};
+ const mcp=verifyPackagedMcpResources({root,resources,archive,entries,asar}),embeddedBuild=readPackagedBuildIdentity({archive,entries,asar,expectedHead,expectedVersion});
+ if(manifest.build!==undefined){assert.ok(embeddedBuild,'Declared test build must exist in the actual ASAR');assert.equal(manifest.build.commit,expectedHead);assert.equal(manifest.build.version,expectedVersion);assert.deepEqual(JSON.parse(asar.extractFile(archive,path.join('electron','reviewops-build.json')).toString()),manifest.build);}
+ return {source:expectedHead,version:expectedVersion,appPath:app,privateInstallRoot:install,executablePath:executable,resourcesPath:resources,appArchivePath:archive,manifestPath,manifestSHA256:hash(fs.readFileSync(manifestPath)),sourceManifestSHA256,rendererBuildRecordSHA256,bundleFiles:actual.length,appArchiveSHA256:hash(fs.readFileSync(archive)),physicalBootstrapSHA256:hash(fs.readFileSync(bootstrap)),rendererFiles:archivedDist.length,build:manifest.build||null,embeddedBuild,mcp};
 }
