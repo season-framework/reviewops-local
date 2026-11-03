@@ -13,7 +13,7 @@ import {finished} from 'node:stream/promises';
 import {fileURLToPath} from 'node:url';
 import {verifyPackagedBundle,readBoundedJSON} from './packaged-bundle-guards.mjs';
 import {verifyNativePacket,verifyReviewedGitFiles,prepareNativeAgentFixture,verifyWindowsAgentExit,verifyNativeFixtureCleanup,snapshotNativeFixtureEvidence} from './native-packet.mjs';
-import {selectMainHost,nativePhoto} from './native-adapters.mjs';
+import {selectMainHost,nativePhoto,verifyOriginalMainProcess,verifyOriginalConnectionPID} from './native-adapters.mjs';
 const here=path.dirname(fileURLToPath(import.meta.url));
 const args=process.argv.slice(2),cli=name=>{const i=args.indexOf(name);return i<0?null:args[i+1]};
 assert.ok(cli('--inputs'),'Exact native input packet required');
@@ -195,13 +195,14 @@ async function connectionWindowSnapshot(application){
 async function observeConnectionInfo(application,page,phase,qaBinding=null){
  const owner=ownedApps.find(value=>value.application===application);assert.ok(owner?.connectionIdentity,'Use only the original retained app and startup getters');
  const {native,info}=owner.connectionIdentity,observerKey='__ownedConnectionInfo_'+crypto.randomUUID().replaceAll('-','');
- const row={phase,launchAttemptId:owner.launchAttemptId,originalAppPID:owner.pid,target,mode,source:expectedHead,startedAt:new Date().toISOString(),status:'pending',formalQAIDsAdded:0,newOSProcesses:0,transport:'actual MCP JSON-RPC exports in original driver Node and authenticated selected app socket',...(qaBinding?{originalLease:{...qaBinding},originalLeaseReleaseConfirmed:false}:{})};
- result.connectionInfoObservations.push(row);save();
  const config=connectionMcp.options(['--data-path',data,...(qaBinding?['--project-id',qaBinding.projectId]:[])]);
  assert.equal(config.selection,'data-path-argument');assert.equal(config.connectionPath,path.join(data,'integrations','tools.json'));
  const descriptor=fs.readFileSync(config.connectionPath);assert.ok(descriptor.length<=8192);
  let selected;try{selected=JSON.parse(descriptor.toString('utf8'));}catch{throw new Error('Owned connection descriptor JSON is invalid');}
- assert.ok(selected&&typeof selected==='object'&&!Array.isArray(selected)&&Object.keys(selected).sort().join(',')==='pid,socketPath,token,version','Owned descriptor shape is invalid');assert.ok(selected.pid===owner.child.pid,'Owned descriptor PID differs from retained child');assert.ok(selected.socketPath===preflightSocketPath&&selected.version===1,'Owned descriptor route/version differs');
+ assert.ok(selected&&typeof selected==='object'&&!Array.isArray(selected)&&Object.keys(selected).sort().join(',')==='pid,socketPath,token,version','Owned descriptor shape is invalid');verifyOriginalConnectionPID(owner.mainProcessIdentity,selected.pid);assert.ok(selected.socketPath===preflightSocketPath&&selected.version===1,'Owned descriptor route/version differs');
+ // Publish a pending observation only after the original main/descriptor identity is verified.
+ const row={phase,launchAttemptId:owner.launchAttemptId,originalAppPID:owner.mainProcessIdentity.pid,originalChildProcessPID:owner.pid,originalMainPPID:owner.mainProcessIdentity.ppid,target,mode,source:expectedHead,startedAt:new Date().toISOString(),status:'pending',formalQAIDsAdded:0,newOSProcesses:0,transport:'actual MCP JSON-RPC exports in original driver Node and authenticated selected app socket',...(qaBinding?{originalLease:{...qaBinding},originalLeaseReleaseConfirmed:false}:{})};
+ result.connectionInfoObservations.push(row);save();
  // Raw descriptor/token bytes remain volatile. Only equality booleans are saved.
  const databaseBefore=connectionDatabaseSnapshot(),windowsBefore=await connectionWindowSnapshot(application),shmBefore=connectionShmDiagnostic();
  await page.evaluate(key=>{const state={changes:0};state.unsubscribe=window.reviewops.onDataChange(()=>{state.changes++;});Object.defineProperty(globalThis,key,{value:state,configurable:true});},observerKey);
@@ -265,13 +266,15 @@ async function launch(){
  try{launched=await electron.launch(launchOptions);}catch(error){attempt.rejection=error.message;save();throw error;}
  app=launched;const owner=retainOwnedApp(launched,attempt.id);attempt.status='retained';attempt.pid=owner.pid;save();main=null;
  const selected=await selectMainHost(launched,until,ipc,boundedCleanup),page=selected.page;main=page;await locale(page);
- const native=await launched.evaluate(({app})=>({isPackaged:app.isPackaged,version:app.getVersion(),appPath:app.getAppPath(),executablePath:process.execPath,resourcesPath:process.resourcesPath,userData:app.getPath('userData'),OSHome:app.getPath('home'),nodeHome:process.getBuiltinModule('os').homedir(),selectedEnvironment:Object.fromEntries(['HOME','USERPROFILE','CODEX_HOME','REVIEWOPS_DATA_DIR','REVIEWOPS_SSH_CONFIG','REVIEWOPS_CODEX_SSH_CONFIG'].map(k=>[k,process.env[k]])),sshAuthSocketPresent:Boolean(process.env.SSH_AUTH_SOCK),externalCredentialNames:['OPENAI_API_KEY','ANTHROPIC_API_KEY','AZURE_OPENAI_API_KEY','GH_TOKEN','GITHUB_TOKEN','AWS_ACCESS_KEY_ID'].filter(name=>Boolean(process.env[name])),platform:process.platform,arch:process.arch}));
+ const native=await launched.evaluate(({app})=>({pid:process.pid,ppid:process.ppid,isPackaged:app.isPackaged,version:app.getVersion(),appPath:app.getAppPath(),executablePath:process.execPath,resourcesPath:process.resourcesPath,userData:app.getPath('userData'),OSHome:app.getPath('home'),nodeHome:process.getBuiltinModule('os').homedir(),selectedEnvironment:Object.fromEntries(['HOME','USERPROFILE','CODEX_HOME','REVIEWOPS_DATA_DIR','REVIEWOPS_SSH_CONFIG','REVIEWOPS_CODEX_SSH_CONFIG'].map(k=>[k,process.env[k]])),sshAuthSocketPresent:Boolean(process.env.SSH_AUTH_SOCK),externalCredentialNames:['OPENAI_API_KEY','ANTHROPIC_API_KEY','AZURE_OPENAI_API_KEY','GH_TOKEN','GITHUB_TOKEN','AWS_ACCESS_KEY_ID'].filter(name=>Boolean(process.env[name])),platform:process.platform,arch:process.arch}));
  const info=await ipc(page,'app.info');assert.equal(native.isPackaged,mode!=='source');assert.equal(native.version,packageVersion);
  if(bundle){assert.equal(fs.realpathSync(native.appPath),bundle.appArchivePath);assert.equal(fs.realpathSync(native.executablePath),bundle.executablePath);assert.equal(fs.realpathSync(native.resourcesPath),bundle.resourcesPath);}else assert.equal(fs.realpathSync(native.appPath),root);
  assert.equal(fs.realpathSync(native.userData),data);assert.equal(fs.realpathSync(native.nodeHome),home);assert.equal(native.platform,process.platform);assert.equal(native.arch,process.arch);
  for(const k of ['HOME','USERPROFILE'])assert.equal(fs.realpathSync(native.selectedEnvironment[k]),home);assert.equal(native.selectedEnvironment.CODEX_HOME,path.join(home,'.codex'));assert.equal(native.selectedEnvironment.REVIEWOPS_DATA_DIR,data);assert.equal(native.selectedEnvironment.REVIEWOPS_SSH_CONFIG,path.join(home,'ssh-config'));assert.equal(native.selectedEnvironment.REVIEWOPS_CODEX_SSH_CONFIG,path.join(home,'ssh-config'));
  assert.equal(info.version,packageVersion);assert.equal(fs.realpathSync(info.dataPath),data);assert.equal(info.platform,process.platform);assert.equal(info.arch,process.arch);if(bundle?.build)assert.deepEqual(info.build,bundle.build);
  record('actual-effective-private-paths-before-account-query',{native,appInfo:info,nativeHomeIsOSGetterNotOverridden:true});assert.equal(typeof native.OSHome,'string');assert.ok(path.isAbsolute(native.OSHome));for(const value of Object.values(native.selectedEnvironment)){assert.ok(inside(path.resolve(value)));if(fs.existsSync(value))assert.ok(inside(fs.realpathSync(value)));}assert.equal(native.sshAuthSocketPresent,false);assert.deepEqual(native.externalCredentialNames,[]);
+ owner.mainProcessIdentity=verifyOriginalMainProcess({platform:native.platform,expectedPlatform:process.platform,pid:native.pid,ppid:native.ppid,childPID:owner.child.pid});
+ journalOwnedApp(owner,'main-process-identity',{mainPID:native.pid,mainPPID:native.ppid});
  owner.connectionIdentity={native,info};await observeConnectionInfo(launched,page,'startup');
  const accounts=await page.evaluate(()=>window.accountManager.getState()),hosts=await page.evaluate(()=>window.hostManager.getState());assert.deepEqual(accounts.accounts,[]);assert.equal(accounts.runtime.available,false);assert.equal(accounts.runtime.path,null);assert.deepEqual(hosts.hosts,[]);
  record('actual-packaged-app-and-private-runtime',{native,appInfo:info,accountCount:accounts.accounts.length,accountRuntimeAvailable:accounts.runtime.available,hostCount:hosts.hosts.length,appInfoDoesNotExposeIsPackagedOrPaths:true,sourceOfPackagedFlagAndPaths:'Same actual retained Electron main handle, readonly getters'});
