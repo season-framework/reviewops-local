@@ -52,6 +52,8 @@ The query rereads only the configured connection descriptor using the existing f
 
 Status is a point-in-time observation, not an ownership handoff. Same-client `qa_open` reuse, `PROJECT_BUSY`, request idempotency, timeout quarantine and MCP-disconnect release keep their existing behavior. Actual external-chat registration, separate-chat identity and reconnection across transport loss remain separate validation and implementation boundaries.
 
+The native harness adds this query to its existing initial-launch, held-lease and ordinary-reopen observations, using the original retained app and driver Node. Startup and reopen use a deliberately absent fixture project and expect unavailable. During the original A lease, the fresh MCP record sees A as busy without receiving its control IDs; a query for B on that A-bound MCP connection must be rejected before app invocation. The observer permits only `connection.info` and `connection.qa.status`, preserves the original explicit release and checks database/WAL bytes, descriptor bytes, QA scope, owned-window state and renderer data-change events. SQLite SHM remains diagnostic. These native checks require a new source-bound execution before any pass claim. Own recorded bindings, known-idle availability, expiry, stale records and quarantine remain controlled-unit coverage in this phase; no formal service scenario IDs are added.
+
 ## Connect Codex
 
 Use the stdio connection supported by [Codex MCP configuration](https://developers.openai.com/codex/mcp).

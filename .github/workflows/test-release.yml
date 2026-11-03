@@ -105,7 +105,7 @@ jobs:
           cache: false
       - run: npm ci
       - name: Test MCP connection identity and QA contracts on every native target
-        run: node --test --test-concurrency=1 --test-timeout=90000 --test-reporter=tap tests/tool-integration.test.cjs tests/mcp-server.test.cjs tests/qa-automation.test.cjs
+        run: node --test --test-concurrency=1 --test-timeout=90000 --test-reporter=tap tests/tool-integration.test.cjs tests/mcp-server.test.cjs tests/qa-automation.test.cjs tests/qa-connection-status.test.cjs
       - name: Test publication and updater contracts
         run: node --test tests/test-release.test.cjs tests/test-updates.test.cjs tests/test-development-release.test.cjs tests/test-development-version.test.cjs tests/test-release-references.test.cjs tests/test-build-context.test.cjs
       - name: Test existing updater contracts on Intel macOS

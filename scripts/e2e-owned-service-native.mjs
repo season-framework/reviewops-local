@@ -205,6 +205,11 @@ async function observeConnectionInfo(application,page,phase,qaBinding=null){
  result.connectionInfoObservations.push(row);save();
  // Raw descriptor/token bytes remain volatile. Only equality booleans are saved.
  const databaseBefore=connectionDatabaseSnapshot(),windowsBefore=await connectionWindowSnapshot(application),shmBefore=connectionShmDiagnostic();
+ const absentProjectId='owned-native-status-absent-project',statusProjectId=qaBinding?.projectId??absentProjectId;
+ if(!qaBinding)assert.ok(!projects.some(project=>project.id===absentProjectId),'Use only a deliberately absent fixture project');
+ const qaScope=()=>page.evaluate(()=>document.querySelector('.workspace-app')?.getAttribute('data-qa-project-id')??null);
+ const qaScopeBefore=await qaScope(),leaseBefore=qaBinding?JSON.stringify(qaBinding):null,appInvocations=[];
+ if(qaBinding)assert.equal(qaScopeBefore,qaBinding.projectId);
  await page.evaluate(key=>{const state={changes:0};state.unsubscribe=window.reviewops.onDataChange(()=>{state.changes++;});Object.defineProperty(globalThis,key,{value:state,configurable:true});},observerKey);
  const input=new PassThrough(),outputStream=new PassThrough(),pendingReplies=new Map(),pendingSockets=new Set(),wire=[];row.wire=wire;
  let sequence=0,buffer='',wireBytes=0,wireError,server,originalError;
@@ -222,7 +227,9 @@ async function observeConnectionInfo(application,page,phase,qaBinding=null){
  };
  try{
   server=connectionMcp.createMcpServer({input,output:outputStream,projectId:config.projectId,connectionSelection:{selection:config.selection,connectionPath:config.connectionPath,homePath:os.homedir(),platform:process.platform},invoke:(action,args)=>{
-   assert.equal(action,'connection.info','Diagnostic client cannot acquire or release a QA lease');assert.deepEqual(args,{});
+   assert.ok(['connection.info','connection.qa.status'].includes(action),'Diagnostic client cannot acquire, release or otherwise operate a QA lease');
+   assert.deepEqual(args,action==='connection.info'?{}:{projectId:statusProjectId},'Only the exact query target is allowed; no binding may be supplied');
+   appInvocations.push({action,payload:{...args}});
    const pending=connectionMcp.invokeSocket(config.connectionPath,action,args,{timeoutMs:5000}).finally(()=>pendingSockets.delete(pending));pendingSockets.add(pending);return pending;
   }});
   const initialized=await rpc('initialize',{protocolVersion:'2025-11-25',capabilities:{},clientInfo:{name:'owned-native-connection-info',version:'1'}});assert.equal(initialized.error,undefined);
@@ -237,6 +244,19 @@ async function observeConnectionInfo(application,page,phase,qaBinding=null){
   assert.equal(value.client.selection,'data-path-argument');assert.equal(value.client.boundProjectId,qaBinding?.projectId??null);assert.equal(value.client.connectionPath,redactedConnectionPath(os.homedir(),config.connectionPath));
   assert.match(value.instanceId,/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/);
   if(owner.connectionInstanceId)assert.equal(value.instanceId,owner.connectionInstanceId);else{assert.ok(ownedApps.every(other=>other===owner||other.connectionInstanceId!==value.instanceId));owner.connectionInstanceId=value.instanceId;}
+  const statusResponse=await rpc('tools/call',{name:'reviewops_qa_connection_status',arguments:{projectId:statusProjectId}});assert.equal(statusResponse.error,undefined);assert.equal(statusResponse.result?.isError,false);
+  const publicStatus=statusResponse.result.structuredContent;assert.ok(Buffer.byteLength(JSON.stringify(publicStatus))<=2048);
+  assert.deepEqual(publicStatus,{schema:1,instanceId:value.instanceId,projectId:statusProjectId,availability:qaBinding?'busy':'unavailable',bindingState:'not_supplied',client:{bindingSource:'none',scope:'mcp-server',boundProjectId:qaBinding?.projectId??null}});
+  const statusObservation={projectKind:qaBinding?'foreign-existing-lease':'deliberate-absent-fixture-project',publicStatus,appInvocations,queryAcquiredOrReleasedLease:false,formalQAIDsAdded:0};
+  row.qaConnectionStatus=statusObservation;
+  if(qaBinding){
+   const otherProject=projects.find(project=>project.label==='B');assert.ok(otherProject&&otherProject.id!==qaBinding.projectId,'Use only the existing B fixture project');
+   const invokedBefore=appInvocations.length,denied=await rpc('tools/call',{name:'reviewops_qa_connection_status',arguments:{projectId:otherProject.id}});
+   assert.equal(denied.error,undefined);assert.equal(denied.result?.isError,true);assert.equal(JSON.parse(denied.result.content[0].text).code,'TARGET_MISMATCH');assert.equal(appInvocations.length,invokedBefore,'The bound MCP connection must reject B before app invocation');
+   statusObservation.foreignProjectDenied={projectId:otherProject.id,code:'TARGET_MISMATCH',appInvoked:false};assert.equal(JSON.stringify(qaBinding),leaseBefore);
+  }
+  assert.deepEqual(appInvocations,[{action:'connection.info',payload:{}},{action:'connection.qa.status',payload:{projectId:statusProjectId}}]);
+  const qaScopeAfter=await qaScope();assert.equal(qaScopeAfter,qaScopeBefore);Object.assign(statusObservation,{validated:true,qaScopeBefore,qaScopeAfter});
   const changes=await page.evaluate(key=>globalThis[key].changes,observerKey),databaseAfter=connectionDatabaseSnapshot(),windowsAfter=await connectionWindowSnapshot(application);assert.equal(changes,0);
   assert.deepEqual(databaseAfter,databaseBefore);assert.deepEqual(windowsAfter,windowsBefore);assert.ok(fs.readFileSync(config.connectionPath).equals(descriptor),'Connection query changed its selected descriptor');assert.equal(pendingReplies.size,0);assert.equal(buffer,'');
   Object.assign(row,{status:'query-validated',publicInformation:value,wire,descriptorUnchanged:true,descriptorPIDMatchesOriginalOwner:true,tokenOrDescriptorLogged:false,databaseBefore,databaseAfter,rendererDataChangeEvents:changes,windowsBefore,windowsAfter,ownedWindowsUnchanged:true,shmDiagnostic:{before:shmBefore,after:connectionShmDiagnostic(),strictEqualityRequired:false},MCPModule:bundle?bundle.mcp:{modulePath:path.join(root,'electron/mcp-server.cjs'),sha256:fileSha(path.join(root,'electron/mcp-server.cjs'))}});
@@ -254,6 +274,9 @@ async function observeConnectionInfo(application,page,phase,qaBinding=null){
   catch(error){cleanupError||=error;row.observerCleanupFailure=diagnosticError(error);}
   row.status=originalError||cleanupError?'failed':'pass';
   row.completedAt=new Date().toISOString();save();
+  if(row.status==='pass')console.log(JSON.stringify({event:'reviewops-qa-connection-status',phase,launchAttemptId:owner.launchAttemptId,source:expectedHead,target,mode,publicStatus:row.qaConnectionStatus.publicStatus,
+   foreignProjectDenied:row.qaConnectionStatus.foreignProjectDenied?{code:row.qaConnectionStatus.foreignProjectDenied.code,appInvoked:false}:null,
+   invariants:{descriptorUnchanged:row.descriptorUnchanged,databaseAndWALUnchanged:true,ownedWindowsUnchanged:row.ownedWindowsUnchanged,rendererDataChangeEvents:row.rendererDataChangeEvents,qaScopeUnchanged:row.qaConnectionStatus.qaScopeBefore===row.qaConnectionStatus.qaScopeAfter,MCPStreamsFinished:row.inProcessStreamsFinished,queryAcquiredOrReleasedLease:false},formalQAIDsAdded:0}));
   if(cleanupError&&!originalError)throw cleanupError;
  }
 }
@@ -826,6 +849,7 @@ try{
  result.finalBundleVerification=verifyBundle();if(bundle){result.packagedObservation={bundle:result.finalBundleVerification,target,sameProductAgentAndServicePaths:true};result.requirements.find(row=>row.id==='NEXT-015-010').status='partial-observed';}
  const expectedChecks=readJSON(path.join(here,'expected-owned-checks.json'));assert.deepEqual(result.checks.map(({id,name})=>({id,name})),expectedChecks);
  assert.equal(result.connectionInfoObservations.length,3);assert.ok(result.connectionInfoObservations.every(row=>row.status==='pass'&&row.inProcessStreamsFinished));assert.equal(result.connectionInfoObservations.filter(row=>row.originalLeaseReleaseConfirmed===true).length,1);
+ assert.ok(result.connectionInfoObservations.every(row=>row.qaConnectionStatus?.validated===true));assert.equal(result.connectionInfoObservations.filter(row=>row.qaConnectionStatus?.foreignProjectDenied?.appInvoked===false).length,1);
  result.ok=true;save();
 }catch(error){retainAgentReadFailure(result.agentReadDiagnostics,new Date().toISOString());result.ok=false;result.failure={message:error.message,stack:error.stack,at:new Date().toISOString()};save();captureFixtureFiles('harness-catch');if(app)await ownWindowDiagnostics(null,'harness-failure').catch(cause=>{result.failureWindowDiagnosticError=cause.name||'unavailable'});if(app&&a&&!a.isClosed())await photo(a,'failure').catch(cause=>{result.failurePhotoError=cause.message});save();throw error;}
 finally{
