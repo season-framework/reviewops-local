@@ -5,7 +5,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
+const BACKUP_FORMAT_VERSION = 10;
+const sharedWrites = require('./shared-write-core.cjs');
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
@@ -468,16 +470,39 @@ class LocalStore {
       for(const [name,type] of [['model',"TEXT NOT NULL DEFAULT ''"],['reasoningEffort',"TEXT NOT NULL DEFAULT ''"],['binary',"TEXT NOT NULL DEFAULT ''"],['settingsRecorded','INTEGER NOT NULL DEFAULT 0 CHECK(settingsRecorded IN (0,1))'],['newConversation','INTEGER NOT NULL DEFAULT 0 CHECK(newConversation IN (0,1))'],['executionSettingsJson',"TEXT NOT NULL DEFAULT 'null'"],['contextJson',"TEXT NOT NULL DEFAULT 'null'"],['sourceRunId',"TEXT NOT NULL DEFAULT ''"],['sourceTargetJson',"TEXT NOT NULL DEFAULT 'null'"],['continuedFromRunId',"TEXT NOT NULL DEFAULT ''"],['requestSignature',"TEXT NOT NULL DEFAULT ''"]])if(!columns.has(name))this.db.exec(`ALTER TABLE agent_requests ADD COLUMN ${name} ${type}`);
       this.db.exec('PRAGMA user_version=10;');
     });
+    if (current < 11) this.transaction(() => {
+      sharedWrites.migrate(this.db);
+      this.db.exec('PRAGMA user_version=11;');
+    });
   }
 
   transaction(fn) {
     if (this.closed) fail('데이터베이스가 닫혀 있습니다.', 'STORE_CLOSED');
-    if (this.inTransaction) return fn();
+    const invoke = () => {
+      const result = fn();
+      if (result !== null && ['object', 'function'].includes(typeof result) && typeof result.then === 'function') fail('Database transactions require synchronous callbacks.', 'ASYNC_TRANSACTION');
+      return result;
+    };
+    if (this.inTransaction) {
+      try { return invoke(); }
+      catch (error) {
+        if (!this.transactionFailed) this.transactionFailure = error;
+        this.transactionFailed = true; throw error;
+      }
+    }
     this.db.exec('BEGIN IMMEDIATE'); this.inTransaction = true;
-    try { const result = fn(); this.db.exec('COMMIT'); return result; }
-    catch (error) { this.db.exec('ROLLBACK'); throw error; }
-    finally { this.inTransaction = false; }
+    this.transactionFailed = false; this.transactionFailure = null;
+    try {
+      const result = invoke();
+      if (this.transactionFailed) throw this.transactionFailure;
+      this.db.exec('COMMIT'); return result;
+    }
+    catch (error) { try { this.db.exec('ROLLBACK'); } catch {} throw error; }
+    finally { this.inTransaction = false; this.transactionFailed = false; this.transactionFailure = null; }
   }
+
+  reviewWriteState(input, callerProvider) { return sharedWrites.readState(this, input, callerProvider); }
+  setReviewStatusCommand(input, callerProvider) { return sharedWrites.setStatus(this, input, callerProvider); }
 
   get(table, itemId) {
     if (!TABLES.includes(table) || ['project_services', 'settings'].includes(table)) fail('항목 종류가 올바르지 않습니다.');
@@ -877,11 +902,13 @@ class LocalStore {
       settings: this.settings()
     }));
   }
-  exportData() { return this.transaction(() => ({ format: 'reviewops-local', version: SCHEMA_VERSION, ...this.snapshot(), agentRuns:this.listAgentRuns(),agentRequests:listSavedRequests(this.db) })); }
+  exportData() { return this.transaction(() => ({ format: 'reviewops-local', version: BACKUP_FORMAT_VERSION, ...this.snapshot(), agentRuns:this.listAgentRuns(),agentRequests:listSavedRequests(this.db) })); }
 
   importData(payload) {
     object(payload, '백업 파일');
-    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,9,SCHEMA_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,9,BACKUP_FORMAT_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
+    const backupKeys = ['format', 'version', 'groups', 'projects', 'services', 'reviews', 'activities', 'attachments', 'settings', 'agentRuns', 'agentRequests'];
+    if (Reflect.ownKeys(payload).some(key => !backupKeys.includes(key))) fail('Backup files cannot contain unsupported or consistency control data.');
     for (const table of ['groups', 'projects', 'services', 'reviews', 'activities', 'attachments']) {
       if (!Array.isArray(payload[table]) || payload[table].length > MAX_ITEMS) fail('백업 자료의 항목 수가 올바르지 않습니다.');
     }
@@ -896,8 +923,10 @@ class LocalStore {
     try { validation.insertImport(payload); clean = validation.exportData(); }
     finally { validation.close(); }
     return this.transaction(() => {
+      sharedWrites.beginLogicalImport(this.db);
       for (const table of [...TABLES].reverse()) this.db.exec(`DELETE FROM ${table}`);
       this.insertImport(clean);
+      sharedWrites.finishLogicalImport(this.db);
       return this.snapshot();
     });
   }
@@ -1012,4 +1041,4 @@ class LocalStore {
   }
 }
 
-module.exports = { LocalStore, createStore: options => new LocalStore(options), SCHEMA_VERSION, STATUSES, PRIORITIES, CATEGORIES };
+module.exports = { LocalStore, createStore: options => new LocalStore(options), SCHEMA_VERSION, BACKUP_FORMAT_VERSION, STATUSES, PRIORITIES, CATEGORIES };

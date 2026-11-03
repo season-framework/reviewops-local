@@ -1,4 +1,5 @@
 'use strict';
+const {removeWriteConsistencySchema} = require('./helpers/legacy-store-schema.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {createStore,SCHEMA_VERSION}=require('../electron/store.cjs');
 function fixture(t){const directory=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-evidence-store-')),dbPath=path.join(directory,'data.sqlite'),stores=[];const open=()=>{const store=createStore({dbPath});stores.push(store);return store;};const store=open(),group=store.saveGroup({name:'로그 검사'}),project=store.saveProject({groupId:group.id,name:'등록 자료'});t.after(()=>{stores.forEach(item=>item.close());fs.rmSync(directory,{recursive:true,force:true})});return {store,open,project};}
@@ -22,6 +23,7 @@ test('version 3 SQLite and JSON data migrate with empty evidence while preservin
  const f=fixture(t),review=f.store.saveReview({projectId:f.project.id,title:'기존 리뷰'}),backup=f.store.exportData();
  // Restore the actual version 3 service constraints and triggers before reopening.
  // Merely lowering user_version would leave version 5 deletion rules in this fixture.
+ removeWriteConsistencySchema(f.store.db);
  for(const key of ['managedProjectId','hostAlias','sshConfigPath','agentModels'])f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
  const schema=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='agent_runs'").get().sql;
  const indexes=f.store.db.prepare("SELECT sql FROM sqlite_master WHERE tbl_name='agent_runs' AND type='index' AND sql IS NOT NULL").all();

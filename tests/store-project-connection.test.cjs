@@ -5,7 +5,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { createStore, SCHEMA_VERSION } = require('../electron/store.cjs');
+const { createStore, SCHEMA_VERSION, BACKUP_FORMAT_VERSION } = require('../electron/store.cjs');
+const {removeWriteConsistencySchema} = require('./helpers/legacy-store-schema.cjs');
 const clone = value => JSON.parse(JSON.stringify(value));
 const NEW_FIELDS = ['managedProjectId', 'hostAlias', 'sshConfigPath', 'agentModels'];
 
@@ -147,7 +148,7 @@ test('SSH Host selection fields persist and malformed names or config paths are 
 test('current backups verify duplicated project connection fields and reject mismatches without changing data', t => {
   const f = fixture(t), project = f.store.saveProject({ groupId: f.group.id, name: '백업할 프로젝트', connection: local(f) });
   const before = f.store.exportData();
-  assert.equal(before.version, SCHEMA_VERSION);
+  assert.equal(before.version, BACKUP_FORMAT_VERSION);
   f.store.importData(before); assert.deepEqual(f.store.exportData(), before);
   for (const mutate of [
     data => { data.projects[0].connection = null; },
@@ -172,6 +173,7 @@ test('version 5 SQLite and JSON data retain all fields and links while new conne
   const before = f.store.exportData(), legacy = clone(before); legacy.version = 5;
   for (const row of legacy.projects) delete row.connection;
   for (const row of legacy.services) for (const key of NEW_FIELDS) delete row[key];
+  removeWriteConsistencySchema(f.store.db);
   for (const key of NEW_FIELDS) f.store.db.exec(`ALTER TABLE services DROP COLUMN ${key};`);
   f.store.db.exec('PRAGMA user_version=5;'); f.store.close();
   const migrated = f.open();

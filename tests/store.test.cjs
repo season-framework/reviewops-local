@@ -8,7 +8,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { DatabaseSync } = require('node:sqlite');
-const { createStore, SCHEMA_VERSION } = require('../electron/store.cjs');
+const { createStore, SCHEMA_VERSION, BACKUP_FORMAT_VERSION } = require('../electron/store.cjs');
 
 function setup(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reviewops-store-test-'));
@@ -310,7 +310,7 @@ test('export and import preserve all local content and IDs, while dropping SSH t
   expected.services[0].hostFingerprint = '';
   for (const project of expected.projects) if (project.connection) project.connection.hostFingerprint = '';
   assert.deepEqual(restored, expected);
-  assert.deepEqual(store.exportData(), { format: 'reviewops-local', version: SCHEMA_VERSION, ...expected, agentRuns: [], agentRequests: [] });
+  assert.deepEqual(store.exportData(), { format: 'reviewops-local', version: BACKUP_FORMAT_VERSION, ...expected, agentRuns: [], agentRequests: [] });
   assert.equal(backup.services[0].hostFingerprint, PIN, 'input object must remain unchanged');
 });
 
@@ -438,7 +438,7 @@ test('all original ReviewOps categories can be saved and restored without losing
   }
   const before = store.snapshot();
   const backup = store.exportData();
-  assert.equal(backup.version, SCHEMA_VERSION);
+  assert.equal(backup.version, BACKUP_FORMAT_VERSION);
   assert.deepEqual(store.importData(backup), before);
   assert.throws(() => store.saveReview({ projectId: project.id, title: '저장 금지', category: 'not-a-category' }), /올바르지 않습니다/);
   assert.deepEqual(store.snapshot(), before);
@@ -577,7 +577,7 @@ test('a version 1 JSON backup restores with metadata defaults while preserving a
   const unchanged = clone(original);
   assertOldDataPreserved(store.importData(original), original, { resetTrust: true });
   assert.deepEqual(original, unchanged);
-  assert.equal(store.exportData().version, SCHEMA_VERSION);
+  assert.equal(store.exportData().version, BACKUP_FORMAT_VERSION);
 });
 
 test('project introduction is independent of its description and survives backup',t=>{

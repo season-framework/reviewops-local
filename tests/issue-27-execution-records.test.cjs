@@ -5,6 +5,7 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const {createStore,SCHEMA_VERSION}=require('../electron/store.cjs');
+const {removeWriteConsistencySchema}=require('./helpers/legacy-store-schema.cjs');
 const {createRequestQueue,listSavedRequests}=require('../electron/agent-requests.cjs');
 const {createAgentManager,buildArguments}=require('../electron/agents.cjs');
 
@@ -74,6 +75,7 @@ test('version 9 database and backup retain old requests without inventing select
  queue.add({requestId:'old-request',reviewId:f.review.id,prompt:'과거 대기 요청'});
  const legacy=f.store.exportData();legacy.version=9;
  for(const row of legacy.agentRequests)for(const key of ['model','reasoningEffort','binary','settingsRecorded','newConversation','executionSettings','context','sourceRunId','sourceTarget','continuedFromRunId','requestSignature'])delete row[key];
+ removeWriteConsistencySchema(f.store.db);
  for(const column of ['model','reasoningEffort','binary','settingsRecorded','newConversation','executionSettingsJson','contextJson','sourceRunId','sourceTargetJson','continuedFromRunId','requestSignature'])f.store.db.exec(`ALTER TABLE agent_requests DROP COLUMN ${column}`);
  f.store.db.exec('PRAGMA user_version=9;');f.reopen();
  assert.equal(f.store.db.prepare('PRAGMA user_version').get().user_version,SCHEMA_VERSION);

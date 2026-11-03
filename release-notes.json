@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "improvements",
+      "title": "Persist review revisions and retry results for internal writes",
+      "description": "Add an internal status command with persisted review revisions and immutable retry receipts. Apply new commands only when the dataset epoch, revision and current project access match; identical retries return their original result. Logical imports rotate the epoch atomically. UI, IPC, MCP and remote writers are not connected to this command.",
+      "commits": [
+        "4db8a0e6d8c0a62f0f46b787a66cce3b42788b8b"
+      ]
+    },
+    {
+      "category": "improvements",
       "title": "Keep local shared-data queries within their project window",
       "description": "Add project and review read APIs for trusted local app windows. Recheck the current window and project after queued work, return only approved fields, and reject cross-project reads. Cross-PC connections and remote writes remain unavailable.",
       "commits": [

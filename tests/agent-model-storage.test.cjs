@@ -1,4 +1,5 @@
 'use strict';
+const {removeWriteConsistencySchema} = require('./helpers/legacy-store-schema.cjs');
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const {createStore,SCHEMA_VERSION}=require('../electron/store.cjs');
 const models=[{id:'fixture-code',label:'Fixture Code',reasoning:['low','high'],defaultReasoningEffort:'high'}];
@@ -37,6 +38,7 @@ test('version 6 databases and backups receive empty model lists while preserving
  const f=fixture(t),before=f.store.exportData(),legacy=structuredClone(before);legacy.version=6;
  for(const s of legacy.services)delete s.agentModels;
  for(const p of legacy.projects)if(p.connection)delete p.connection.agentModels;
+ removeWriteConsistencySchema(f.store.db);
  f.store.db.exec('ALTER TABLE services DROP COLUMN agentModels; PRAGMA user_version=6;');f.store.close();
  const migrated=f.open();assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version,SCHEMA_VERSION);
  assert.deepEqual(migrated.exportData(),before);migrated.importData(legacy);assert.deepEqual(migrated.exportData(),before);
