@@ -73,7 +73,26 @@ def source_guard(root):
     return source, pins
 
 
-def bounded_get(url, hosts, limit, seconds, destination=None):
+def owned_mount_device(attachment, mountpoint):
+    """Select only the device from this original attach's exact private mountpoint."""
+    require(isinstance(mountpoint, str) and mountpoint.startswith('/'), 'Expected an absolute owned mountpoint')
+    require(isinstance(attachment, dict) and isinstance(attachment.get('system-entities'), list), 'Unknown original attach metadata')
+    owners = [row for row in attachment['system-entities'] if isinstance(row, dict) and row.get('mount-point') == mountpoint]
+    require(len(owners) == 1, 'Unknown owned mount identity')
+    device = owners[0].get('dev-entry')
+    require(isinstance(device, str) and re.fullmatch('/dev/disk[0-9]+s[0-9]+', device), 'Unknown owned mount device')
+    return device
+
+
+def validate_readonly_mount(info, mountpoint, device):
+    """Require the actual disk-image identity and explicit Boolean nonwritability."""
+    require(isinstance(mountpoint, str) and mountpoint.startswith('/') and isinstance(device, str) and re.fullmatch('/dev/disk[0-9]+s[0-9]+', device), 'Expected the original owned mount identity')
+    require(isinstance(info, dict) and info.get('MountPoint') == mountpoint and info.get('DeviceNode') == device and info.get('BusProtocol') == 'Disk Image', 'Owned disk-image identity changed')
+    require(all(info.get(key) is False for key in ('Writable', 'WritableMedia', 'WritableVolume')), 'Owned mount is not explicitly non-writable')
+    require('ReadOnlyVolume' not in info or info['ReadOnlyVolume'] is True, 'Conflicting read-only metadata')
+
+
+def bounded_get(url, hosts, limit, seconds, destination=None, response_metadata=None):
     """One request chain; consume at most limit+1 bytes, retaining at most limit."""
     deadline = time.monotonic() + seconds
     hops = []
@@ -111,6 +130,15 @@ def bounded_get(url, hosts, limit, seconds, destination=None):
                 continue  # Do not consume an unbounded redirect body.
             require(response.status == 200 and response.getheader('Content-Encoding') in (None, 'identity'), 'Unexpected official response')
             length = response.getheader('Content-Length')
+            if response_metadata is not None:
+                write(response_metadata, {
+                    'status': response.status,
+                    'declaredContentLength': int(length) if length is not None and length.isdigit() else length,
+                    'ETag': response.getheader('ETag'),
+                    'LastModified': response.getheader('Last-Modified'),
+                    'maximumRetainedBytes': limit,
+                    'EOF': False,
+                })
             if length is not None:
                 require(length.isdigit() and int(length) <= limit, 'Official response exceeds byte cap')
             observed = 0
@@ -191,6 +219,7 @@ def main():
     (code / 'config.toml').write_text('cli_auth_credentials_store = "file"\n')
     (code / 'config.toml').chmod(0o600)
     env = {'HOME': str(home), 'CODEX_HOME': str(code), 'TMPDIR': str(private), 'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TZ': 'UTC'}
+    require(set(env) == {'HOME', 'CODEX_HOME', 'TMPDIR', 'PATH', 'LANG', 'TZ'}, 'Unexpected supplied metadata environment names')
     tools, held, mounted = [], [], None
     mount_attempted = mount_detached = detach_attempted = False
     result = {'ok': False, 'source': source, 'productionSource': BASE, 'startedAt': stamp(), 'DMGDownloadAttempts': 0, 'versionLaunchMaximum': 1, 'actualDesktopAppStarts': 0, 'authModelLoginAppServerStarts': 0}
@@ -242,10 +271,11 @@ def main():
         return stdout_file.read_bytes(), stderr_file.read_bytes()
 
     try:
-        host, _ = tool('native-node-preflight', [str(node), '-e', 'if(process.platform!=="darwin"||process.arch!=="arm64"||process.versions.node!=="24.22.2"||process.versions.electron)throw new Error("Native pinned Node required");console.log(JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node,executable:process.execPath,home:require("node:os").homedir()}));'])
+        host, _ = tool('native-node-preflight', [str(node), '-e', 'if(process.platform!=="darwin"||process.arch!=="arm64"||process.versions.node!=="24.22.2"||process.versions.electron)throw new Error("Native pinned Node required");console.log(JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node,executable:process.execPath,home:require("node:os").homedir(),environmentNames:Object.keys(process.env).sort().slice(0,32).map(key=>key.slice(0,128)),environmentNamesTruncated:Object.keys(process.env).length>32||Object.keys(process.env).some(key=>key.length>128),environmentValuesRecorded:false}));'])
         host = json.loads(host)
         require(Path(host['executable']).resolve() == node and host['home'] == str(home), 'Unexpected native Node identity')
         write(output / 'native-node.json', {**host, 'sha256': digest(node)})
+        require(host['environmentNamesTruncated'] is False and host['environmentValuesRecorded'] is False and set(host['environmentNames']) <= set(env) | {'__CF_USER_TEXT_ENCODING'}, 'Unexpected native Node environment names; values are not recorded')
         page, page_receipt = bounded_get('https://learn.chatgpt.com/docs/app', {'learn.chatgpt.com', 'developers.openai.com'}, 4 * 1024 ** 2, 30)
         links = set()
         for href, content in re.findall(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page.decode('utf-8'), re.S | re.I):
@@ -259,9 +289,9 @@ def main():
         write(output / 'official-page.json', {**page_receipt, 'AppleSiliconDownload': url})
         dmg = private / 'official.dmg'
         result['DMGDownloadAttempts'] = 1
-        write(output / 'official-DMG-request.json', {'url': url, 'maximumBytes': 768 * 1024 ** 2, 'seconds': 180, 'attempt': 1})
+        write(output / 'official-DMG-request.json', {'url': url, 'maximumBytes': 1024 ** 3, 'seconds': 180, 'attempt': 1})
         try:
-            _, download = bounded_get(url, {'persistent.oaistatic.com'}, 768 * 1024 ** 2, 180, dmg)
+            _, download = bounded_get(url, {'persistent.oaistatic.com'}, 1024 ** 3, 180, dmg, output / 'official-DMG-response.json')
         except Exception:
             write(output / 'official-DMG-failure.json', {'EOF': False, 'attempts': 1, 'partialBytes': dmg.stat().st_size if dmg.exists() else 0, 'partialSHA256': digest(dmg) if dmg.exists() else None})
             raise
@@ -270,13 +300,11 @@ def main():
         mount.mkdir(mode=0o700)
         mount_attempted = True
         attach, _ = tool('mount-readonly', ['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', '-mountpoint', str(mount), str(dmg)])
-        entities = plistlib.loads(attach)['system-entities']
-        owners = [row for row in entities if row.get('mount-point') == str(mount)]
-        require(len(owners) == 1 and re.fullmatch('/dev/disk[0-9]+s[0-9]+', owners[0].get('dev-entry', '')), 'Unknown owned mount identity')
+        mounted = owned_mount_device(plistlib.loads(attach), str(mount))
+        write(output / 'owned-mount-identity.json', {'device': mounted, 'mountPoint': str(mount), 'originalAttachIdentityConfirmed': True})
         info, _ = tool('mount-readonly-info', ['/usr/sbin/diskutil', 'info', '-plist', str(mount)])
         info = plistlib.loads(info)
-        require(info.get('MountPoint') == str(mount) and info.get('DeviceNode') == owners[0]['dev-entry'] and info.get('ReadOnlyVolume') is True, 'Owned mount is not read-only')
-        mounted = owners[0]['dev-entry']
+        validate_readonly_mount(info, str(mount), mounted)
         apps = [file for file in mount.iterdir() if file.name.endswith('.app')]
         require(len(apps) == 1 and apps[0].name in ('Codex.app', 'ChatGPT.app') and apps[0].is_dir() and not apps[0].is_symlink(), 'Unknown original app layout')
         app = home / 'Applications' / apps[0].name
@@ -302,7 +330,7 @@ def main():
         require('arm64' in architecture.decode().split(), 'Actual CLI lacks arm64')
         signatures = []
         for label, file in [('app', app), ('cli', cli)]:
-            tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', 'anchor apple generic', str(file)])
+            tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', '=anchor apple generic', str(file)])
             _, metadata = tool(label + '-signature-metadata', ['/usr/bin/codesign', '-d', '--verbose=4', str(file)])
             text = metadata.decode('utf-8')
             team = re.search(r'^TeamIdentifier=([A-Z0-9]{10})$', text, re.M)
