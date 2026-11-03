@@ -22,8 +22,12 @@ assert.equal(process.resourcesPath, undefined);
 assert.equal(binding.maximumVersionLaunches, 1);
 assert.equal(fs.existsSync(path.join(binding.codeHome, 'auth.json')), false);
 assert.equal(fs.readFileSync(path.join(binding.codeHome, 'config.toml'), 'utf8'), 'cli_auth_credentials_store = "file"\n');
-const allowedEnv = new Set(['HOME', 'CODEX_HOME', 'TMPDIR', 'PATH', 'LANG', 'TZ']);
-assert.ok(Object.keys(process.env).every(key => allowedEnv.has(key)));
+const environmentNames = Object.keys(process.env).sort();
+const environmentNamesTruncated = environmentNames.length > 32 || environmentNames.some(key => key.length > 128);
+fs.writeFileSync(path.join(binding.output, 'probe-environment-names.json'), JSON.stringify({environmentNames: environmentNames.slice(0, 32).map(key => key.slice(0, 128)), environmentNamesTruncated, environmentValuesRecorded: false}, null, 2) + '\n', {flag: 'wx'});
+const allowedEnv = new Set(['HOME', 'CODEX_HOME', 'TMPDIR', 'PATH', 'LANG', 'TZ', '__CF_USER_TEXT_ENCODING']);
+assert.equal(environmentNamesTruncated, false);
+assert.ok(environmentNames.every(key => allowedEnv.has(key)));
 const hash = file => {
   const digest = crypto.createHash('sha256'), buffer = Buffer.alloc(64 * 1024), fd = fs.openSync(file, 'r');
   try {for (;;) {const bytes = fs.readSync(fd, buffer, 0, buffer.length, null); if (!bytes) break; digest.update(buffer.subarray(0, bytes));}}

@@ -219,6 +219,7 @@ def main():
     (code / 'config.toml').write_text('cli_auth_credentials_store = "file"\n')
     (code / 'config.toml').chmod(0o600)
     env = {'HOME': str(home), 'CODEX_HOME': str(code), 'TMPDIR': str(private), 'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TZ': 'UTC'}
+    require(set(env) == {'HOME', 'CODEX_HOME', 'TMPDIR', 'PATH', 'LANG', 'TZ'}, 'Unexpected supplied metadata environment names')
     tools, held, mounted = [], [], None
     mount_attempted = mount_detached = detach_attempted = False
     result = {'ok': False, 'source': source, 'productionSource': BASE, 'startedAt': stamp(), 'DMGDownloadAttempts': 0, 'versionLaunchMaximum': 1, 'actualDesktopAppStarts': 0, 'authModelLoginAppServerStarts': 0}
@@ -270,10 +271,11 @@ def main():
         return stdout_file.read_bytes(), stderr_file.read_bytes()
 
     try:
-        host, _ = tool('native-node-preflight', [str(node), '-e', 'if(process.platform!=="darwin"||process.arch!=="arm64"||process.versions.node!=="24.22.2"||process.versions.electron)throw new Error("Native pinned Node required");console.log(JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node,executable:process.execPath,home:require("node:os").homedir()}));'])
+        host, _ = tool('native-node-preflight', [str(node), '-e', 'if(process.platform!=="darwin"||process.arch!=="arm64"||process.versions.node!=="24.22.2"||process.versions.electron)throw new Error("Native pinned Node required");console.log(JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node,executable:process.execPath,home:require("node:os").homedir(),environmentNames:Object.keys(process.env).sort().slice(0,32).map(key=>key.slice(0,128)),environmentNamesTruncated:Object.keys(process.env).length>32||Object.keys(process.env).some(key=>key.length>128),environmentValuesRecorded:false}));'])
         host = json.loads(host)
         require(Path(host['executable']).resolve() == node and host['home'] == str(home), 'Unexpected native Node identity')
         write(output / 'native-node.json', {**host, 'sha256': digest(node)})
+        require(host['environmentNamesTruncated'] is False and host['environmentValuesRecorded'] is False and set(host['environmentNames']) <= set(env) | {'__CF_USER_TEXT_ENCODING'}, 'Unexpected native Node environment names; values are not recorded')
         page, page_receipt = bounded_get('https://learn.chatgpt.com/docs/app', {'learn.chatgpt.com', 'developers.openai.com'}, 4 * 1024 ** 2, 30)
         links = set()
         for href, content in re.findall(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page.decode('utf-8'), re.S | re.I):
