@@ -328,7 +328,7 @@ def main():
         require('arm64' in architecture.decode().split(), 'Actual CLI lacks arm64')
         signatures = []
         for label, file in [('app', app), ('cli', cli)]:
-            tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', 'anchor apple generic', str(file)])
+            tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', '=anchor apple generic', str(file)])
             _, metadata = tool(label + '-signature-metadata', ['/usr/bin/codesign', '-d', '--verbose=4', str(file)])
             text = metadata.decode('utf-8')
             team = re.search(r'^TeamIdentifier=([A-Z0-9]{10})$', text, re.M)
