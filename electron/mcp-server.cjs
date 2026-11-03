@@ -7,7 +7,7 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 const { dataTools, validate, schema, ID, string } = require('./automation-api.cjs');
 
-const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024;
+const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024, MAX_CONNECTION_INFO = 16 * 1024;
 const versions = ['2025-11-25','2025-06-18','2025-03-26','2024-11-05'];
 const binding = { sessionId: ID, projectId: ID, windowId: ID };
 const surface = { ...binding, browserId: ID };
@@ -27,8 +27,51 @@ const qaTools = [
   ['navigate', 'Navigate the selected native browser to an HTTP or HTTPS URL. Requires browserId from qa_state.', schema({ ...surface, url: { ...string(8192), minLength: 1 } }, [...required,'browserId','url'])]
 ].map(([action, description, inputSchema]) => ({ name: 'reviewops_qa_' + action, action: 'automation.qa.' + action, description, inputSchema,
   annotations: { readOnlyHint: ['state','capture'].includes(action), destructiveHint: ['close','reload'].includes(action), openWorldHint: ['navigate','click','key','type'].includes(action) } }));
-const tools = [...dataTools, ...qaTools];
+const connectionTool = { name: 'reviewops_connection_info', action: 'connection.info', description: 'Read the connected running app identity, reported QA capabilities and selected connection location without opening, focusing or controlling a project. This does not discover unknown data roots or grant QA ownership.', inputSchema: schema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
+const tools = [...dataTools, ...qaTools, connectionTool];
 const error = (message, code = 'CLIENT_ERROR') => Object.assign(new Error(message), { code });
+function connectionInfoResult(value, selection, projectId) {
+  const invalid = () => { throw error('Running app connection information is unavailable or invalid.', 'INVALID_CONNECTION_INFO'); };
+  const text = max => ({ type: 'string', minLength: 1, maxLength: max });
+  const actions = ['open','state','click','type','key','scroll','capture','navigate','reload','close','release'];
+  const keys = ['sessionId','projectId','windowId'];
+  try {
+    validate(schema({ schema: { type: 'integer', enum: [1] }, instanceId: { ...text(36), pattern: '^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$' },
+      app: schema({ version: text(128), displayVersion: text(256), isPackaged: { type: 'boolean' }, platform: text(32), arch: text(32),
+        build: schema({ channel: { type: 'string', enum: ['test','stable'] }, version: text(128), buildNumber: {}, developmentNumber: {}, commit: {}, builtAt: {} }, ['channel','version','buildNumber','developmentNumber','commit','builtAt']) }, ['version','displayVersion','isPackaged','platform','arch','build']),
+      location: schema({ dataRootSource: { type: 'string', enum: ['environment','platform-default'] }, dataPath: text(4096), appPath: text(4096), executablePath: text(4096), homeRedacted: { type: 'boolean', enum: [true] } }, ['dataRootSource','dataPath','appPath','executablePath','homeRedacted']),
+      qa: schema({ protocolVersion: { type: 'integer', enum: [1] }, actions: { type: 'array', maxItems: 11, items: { type: 'string', enum: actions } }, bindingFields: { type: 'array', maxItems: 3, items: { type: 'string', enum: keys } }, optionalBrowserId: { type: 'boolean', enum: [true] }, documentGeneration: { type: 'boolean', enum: [false] } }, ['protocolVersion','actions','bindingFields','optionalBrowserId','documentGeneration']) }, ['schema','instanceId','app','location','qa']), value);
+  } catch { invalid(); }
+  const scalar = (item, bytes) => { if (typeof item !== 'string' || /[\x00-\x1f\x7f]/.test(item) || Buffer.byteLength(item) > bytes) invalid(); };
+  for (const key of ['version','displayVersion','platform','arch']) scalar(value.app[key], key === 'displayVersion' ? 256 : key === 'version' ? 128 : 32);
+  const build = value.app.build;
+  if (build.version !== value.app.version) invalid();
+  if (build.channel === 'test') {
+    if (!/^\d+\.\d+\.\d+$/.test(build.version) || !Number.isSafeInteger(build.buildNumber) || build.buildNumber < 1 || build.developmentNumber !== null && (!Number.isSafeInteger(build.developmentNumber) || build.developmentNumber < 1) ||
+        !/^[a-f0-9]{40}$/.test(build.commit || '') || typeof build.builtAt !== 'string' || !Number.isFinite(Date.parse(build.builtAt)) || new Date(build.builtAt).toISOString() !== build.builtAt) invalid();
+  } else if (['buildNumber','developmentNumber','commit','builtAt'].some(key => build[key] !== null)) invalid();
+  const displayVersion = build.channel === 'test' ? build.developmentNumber ? `${build.version}-dev-${build.developmentNumber}` : `${build.version}-test.${build.buildNumber}` : build.version;
+  if (value.app.displayVersion !== displayVersion || JSON.stringify(value.qa.actions) !== JSON.stringify(actions) || JSON.stringify(value.qa.bindingFields) !== JSON.stringify(keys)) invalid();
+  const serverPaths = value.app.platform === 'win32' ? path.win32 : path;
+  for (const key of ['dataPath','appPath','executablePath']) {
+    const item = value.location[key];scalar(item, 4096);
+    if (item !== '$HOME' && !item.startsWith('$HOME' + serverPaths.sep) && !serverPaths.isAbsolute(item)) invalid();
+  }
+  if (!selection || !['connection-argument','data-path-argument','environment','platform-default'].includes(selection.selection)) invalid();
+  scalar(selection.platform, 32);
+  const clientPaths = selection.platform === 'win32' ? path.win32 : path;
+  scalar(selection.connectionPath, 4096);scalar(selection.homePath, 4096);
+  if (!clientPaths.isAbsolute(selection.connectionPath) || !clientPaths.isAbsolute(selection.homePath)) invalid();
+  if (projectId !== undefined) { try { validate(ID, projectId); } catch { invalid(); } }
+  const relative = clientPaths.relative(selection.homePath, selection.connectionPath);
+  const connectionPath = !relative ? '$HOME' : relative !== '..' && !relative.startsWith('..' + clientPaths.sep) && !clientPaths.isAbsolute(relative) ? '$HOME' + clientPaths.sep + relative : selection.connectionPath;
+  scalar(connectionPath, 4096);
+  // Server JSON has passed the exact nested allowlist; retain no private extras.
+  const result = JSON.parse(JSON.stringify(value));
+  result.client = { selection: selection.selection, connectionPath, boundProjectId: projectId ?? null };
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_CONNECTION_INFO) invalid();
+  return result;
+}
 function defaultDataPath(env = process.env) {
   if (env.REVIEWOPS_DATA_DIR) return path.resolve(env.REVIEWOPS_DATA_DIR);
   if (process.platform === 'darwin') return path.join(os.homedir(), 'Library', 'Application Support', 'ReviewOps Local');
@@ -47,7 +90,7 @@ async function invokeSocket(connectionPath, action, payload, { timeoutMs = 40000
     if (!stat.isFile() || stat.size > 8192 || process.platform !== 'win32' && (stat.mode & 0o077 || typeof process.getuid === 'function' && stat.uid !== process.getuid())) throw error('Invalid connection file permissions.');
     connection = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
   } catch { throw error('ReviewOps connection is unavailable. Start ReviewOps and check the data folder.', 'APP_UNAVAILABLE'); }
-  if (connection.version !== 1 || connection.socketPath !== expectedSocket(dataPath) || !/^[a-f0-9]{64}$/.test(connection.token || '') || !Number.isSafeInteger(connection.pid) || connection.pid <= 0) throw error('Invalid ReviewOps connection. Restart the app.', 'INVALID_CONNECTION');
+  if (connection.version !== 1 || connection.socketPath !== expectedSocket(dataPath) || !/^[a-f0-9]{64}$/.test(connection.token || '') || !Number.isSafeInteger(connection.pid) || connection.pid <= 0) throw error('Invalid ReviewOps connection record. Check the selected data folder and connection configuration before retrying.', 'INVALID_CONNECTION');
   const request = JSON.stringify({ token: connection.token, action, payload }) + '\n';
   if (Buffer.byteLength(request) > MAX_INPUT) throw error('Request exceeds 512 KiB.', 'REQUEST_TOO_LARGE');
   return new Promise((resolve, reject) => {
@@ -59,7 +102,8 @@ async function invokeSocket(connectionPath, action, payload, { timeoutMs = 40000
     socket.on('connect', () => socket.write(request));
     socket.on('data', chunk => {
       input += chunk;
-      if (Buffer.byteLength(input) > MAX_RESPONSE) return finish(error('ReviewOps response exceeds 32 MiB.', 'RESPONSE_TOO_LARGE'));
+      const limit = action === 'connection.info' ? MAX_CONNECTION_INFO + 128 : MAX_RESPONSE;
+      if (Buffer.byteLength(input) > limit) return finish(error(action === 'connection.info' ? 'ReviewOps connection information exceeds the allowed size.' : 'ReviewOps response exceeds 32 MiB.', 'RESPONSE_TOO_LARGE'));
       const end = input.indexOf('\n'); if (end < 0) return;
       let response; try { response = JSON.parse(input.slice(0,end)); } catch { return finish(error('Invalid ReviewOps response.', 'INVALID_RESPONSE')); }
       if (!response || typeof response.ok !== 'boolean') return finish(error('Invalid ReviewOps response.', 'INVALID_RESPONSE'));
@@ -78,7 +122,7 @@ function toolResult(value, protocolVersion) {
   content.unshift({ type: 'text', text: JSON.stringify(metadata ?? null) });
   return { content, ...(versions.indexOf(protocolVersion) <= 1 ? { structuredContent: metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : { result: metadata ?? null } } : {}), isError: false };
 }
-function createMcpServer({ invoke, projectId, input = process.stdin, output = process.stdout } = {}) {
+function createMcpServer({ invoke, projectId, connectionSelection, input = process.stdin, output = process.stdout } = {}) {
   if (typeof invoke !== 'function') throw new TypeError('invoke is required');
   if (projectId) validate(ID, projectId, 'projectId');
   let initialized = false, protocolVersion = versions[0], buffer = '', closing = false, closePromise;
@@ -114,7 +158,13 @@ function createMcpServer({ invoke, projectId, input = process.stdin, output = pr
           const args = params.arguments === undefined ? {} : params.arguments;
           validate(tool.inputSchema,args);
           if (projectId && args.projectId !== undefined && args.projectId !== projectId) throw error('This MCP connection is bound to another project.', 'TARGET_MISMATCH');
-          let value = await invoke(tool.action,args);
+          let value;
+          try { value = await invoke(tool.action,args); }
+          catch (failure) {
+            if (tool.action === 'connection.info' && failure.code === 'UNKNOWN_ACTION') throw error('The connected app does not report connection identity or capabilities. Check the configured app and MCP paths; no project connection was changed.', 'CONNECTION_INFO_UNSUPPORTED');
+            throw failure;
+          }
+          if (tool.action === 'connection.info') value = connectionInfoResult(value, connectionSelection, projectId);
           if (tool.action === 'automation.projects.list' && projectId) value = { ...value, projects: value.projects.filter(project => (project.projectId || project.id) === projectId) };
           if (tool.action === 'automation.qa.open' && value?.sessionId) {
             const binding = { sessionId: value.sessionId, projectId: value.projectId, windowId: value.windowId };
@@ -165,14 +215,16 @@ function options(args, env = process.env) {
     if (option === '--data-path') { if (connectionPath || dataPath) throw error('Specify only one connection location.'); dataPath = path.resolve(value); }
     if (option === '--project-id') { if (projectId) throw error('Specify project ID once.'); validate(ID,value,'projectId'); projectId = value; }
   }
-  return { connectionPath: connectionPath || path.join(dataPath || defaultDataPath(env),'integrations','tools.json'), projectId };
+  return { connectionPath: connectionPath || path.join(dataPath || defaultDataPath(env),'integrations','tools.json'), projectId,
+    selection: connectionPath ? 'connection-argument' : dataPath ? 'data-path-argument' : env.REVIEWOPS_DATA_DIR ? 'environment' : 'platform-default' };
 }
 function main(args = process.argv.slice(2)) {
-  const config = options(args), server = createMcpServer({ invoke: (action,payload) => invokeSocket(config.connectionPath,action,payload), projectId: config.projectId });
+  const config = options(args), server = createMcpServer({ invoke: (action,payload) => invokeSocket(config.connectionPath,action,payload), projectId: config.projectId,
+    connectionSelection: { selection: config.selection, connectionPath: config.connectionPath, homePath: os.homedir(), platform: process.platform } });
   const stop = () => { void server.close().finally(() => process.exit(0)); };
   process.once('SIGINT',stop); process.once('SIGTERM',stop);
   process.stdout.on('error',stop);
   return server;
 }
-module.exports = { createMcpServer, invokeSocket, options, toolResult, tools, qaTools, main };
+module.exports = { createMcpServer, invokeSocket, options, toolResult, tools, qaTools, connectionInfoResult, main };
 if (require.main === module) { try { main(); } catch (failure) { process.stderr.write(String(failure.message) + '\n'); process.exitCode = 1; } }

@@ -98,6 +98,8 @@ jobs:
           architecture: x64
           cache: false
       - run: npm ci
+      - name: Test MCP connection identity and QA contracts on every native target
+        run: node --test --test-concurrency=1 --test-timeout=90000 --test-reporter=tap tests/tool-integration.test.cjs tests/mcp-server.test.cjs tests/qa-automation.test.cjs
       - name: Test stable and existing publication contracts on every native platform
         run: node --test tests/stable-release.test.cjs tests/windows-release-upload.test.cjs tests/test-release.test.cjs tests/test-updates.test.cjs
       - name: Run the full existing suite on macOS arm64

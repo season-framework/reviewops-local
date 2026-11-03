@@ -28,7 +28,9 @@ const {createProjectServiceRuntime}=require('./project-service-runtime.cjs');
 // Keep browser cookie storage independent of macOS Keychain as requested.
 if (process.platform === 'darwin') app.commandLine.appendSwitch('use-mock-keychain');
 app.setName('ReviewOps');
-const dataPath = process.env.REVIEWOPS_DATA_DIR || path.join(app.getPath('appData'), 'ReviewOps Local');
+const configuredDataPath = process.env.REVIEWOPS_DATA_DIR;
+const dataPath = configuredDataPath || path.join(app.getPath('appData'), 'ReviewOps Local');
+const dataRootSource = configuredDataPath ? 'environment' : 'platform-default';
 app.setPath('userData', dataPath);
 const appLanguage=createAppLanguage({dataPath});
 const dialog=appLanguage.dialog(nativeDialog);
@@ -1255,7 +1257,7 @@ else {
   app.on('second-instance',()=>{const host=getRequestWindow();if(host){if(host.isMinimized())host.restore();host.show();host.focus();}});
   app.whenReady().then(async()=> {
     app.setName('ReviewOps');
-    const identity=getBuildInfo(app.getVersion());
+    const appVersion=app.getVersion(),identity=getBuildInfo(appVersion),appInstanceId=crypto.randomUUID();
     app.setAboutPanelOptions({applicationName:'ReviewOps',applicationVersion:displayBuildVersion(identity),...(identity.channel==='test'?{version:String(identity.buildNumber)}:{})});
     await fsp.mkdir(attachmentPath,{recursive:true,mode:0o700});
     store=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
@@ -1352,7 +1354,12 @@ else {
       nativeImage:require('electron').nativeImage
     });
     const automation=require(app.isPackaged?path.join(process.resourcesPath,'mcp','automation-api.cjs'):'./automation-api.cjs').createAutomationApi({dispatch:integrationDispatch,qa:(action,payload)=>qaAutomation.handle(action,payload)});
-    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle});}
+    let connectionInfo;
+    try{connectionInfo={instanceId:appInstanceId,version:appVersion,build:identity,isPackaged:app.isPackaged,platform:process.platform,arch:process.arch,
+        homePath:app.getPath('home'),appPath:app.getAppPath(),executablePath:app.getPath('exe'),dataPath,
+        dataRootSource,qa:qaAutomation.capabilities()};}
+    catch{console.warn('실행 앱의 연결 진단 정보를 준비하지 못했습니다.');}
+    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle,connectionInfo});}
     catch(error){console.warn('외부 도구 연결을 시작하지 못했습니다:',error.message);}
     if(process.platform!=='win32')try{seasonIntegration=await require('./season-integration.cjs').createSeasonIntegration({dataPath,workspaceRoot:path.join(app.getPath('appData'),'Season AI','reviewops-workspace'),showReview:showProjectReview,dispatch:integrationDispatch});}
     catch(error){console.warn('Season AI 연결을 시작하지 못했습니다:',error.message);}
