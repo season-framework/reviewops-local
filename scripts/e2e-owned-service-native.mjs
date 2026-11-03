@@ -660,6 +660,7 @@ try{
  const individualCloseCalls=(await app.evaluate(()=>global.__ownedDialogs.calls)).length;
  const handle=await app.browserWindow(a);await handle.evaluate(win=>win.close());
  await until(()=>app.evaluate(()=>global.__ownedDialogs.calls),v=>v.length>individualCloseCalls,'actual individual window beforeunload veto');
+ await until(()=>beforeUnloadEvents,count=>count>0,'actual beforeunload console observation delivered');
  assert.equal(a.isClosed(),false);assert.ok(beforeUnloadEvents>0);assert.equal((await runtime(pa,a)).instance.instanceId,cancelledInstance);
  const prior=(await app.evaluate(()=>global.__ownedDialogs.calls)).length;
  await app.evaluate(({app})=>{global.__ownedDialogs.answer=0;setImmediate(()=>app.quit())});
