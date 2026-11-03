@@ -41,7 +41,8 @@
       "description": "Inspect the selected app's version, data location and QA capabilities through MCP without opening or focusing projects or changing leases. Unknown build fields stay null. Finding unknown custom data roots, reconnecting controllers and refreshing external tool lists remain separate.",
       "commits": [
         "fdaabbb79528cf754ad4ac1a936d04029192c6fc",
-        "3b7157f8a5928f517e91f500b2d7b37450a9c5e6"
+        "3b7157f8a5928f517e91f500b2d7b37450a9c5e6",
+        "3ea215409267a8b93761e034ec7de56ba7f31bb5"
       ]
     },
     {

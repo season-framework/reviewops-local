@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {execFileSync} from 'node:child_process';
-import {sourceIdentity} from '../scripts/native-adapters.mjs';
+import {sourceIdentity,verifyOriginalMainProcess,verifyOriginalConnectionPID} from '../scripts/native-adapters.mjs';
 import {verifyReviewedGitFiles} from '../scripts/native-packet.mjs';
 
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
@@ -50,4 +50,41 @@ test('reviewed Git bytes and CRLF checkout bytes retain separate exact hashes',t
  assert.throws(()=>verifyReviewedGitFiles({...options,files:[{path:'component.jsx',sha256:hash(checkout)}]}),/reviewed Git blob/);
  assert.throws(()=>verifyReviewedGitFiles({...options,expectedFiles:[{path:'component.jsx',sha256:hash(canonical)}]}),/actual checkout bytes/);
  fs.appendFileSync(file,'// unreviewed\r\n');assert.throws(()=>verifyReviewedGitFiles(options));
+});
+
+
+test('original main identity keeps the direct non-Windows child and immutable captured getters',()=>{
+ for(const platform of ['darwin','linux']){
+  const captured={platform,expectedPlatform:platform,pid:41,ppid:40,childPID:41},before={...captured};
+  const identity=verifyOriginalMainProcess(captured);
+  assert.deepEqual(identity,before);assert.deepEqual(captured,before);assert.ok(Object.isFrozen(identity));
+  assert.deepEqual(verifyOriginalConnectionPID(identity,41),identity);
+  assert.throws(()=>verifyOriginalMainProcess({...captured,pid:42}),{code:'ERR_ASSERTION'});
+ }
+});
+
+test('Windows main identity keeps the original shell owner separate and requires its exact parent',()=>{
+ const identity=verifyOriginalMainProcess({platform:'win32',expectedPlatform:'win32',pid:52,ppid:51,childPID:51});
+ assert.equal(identity.pid,52);assert.equal(identity.childPID,51);
+ assert.deepEqual(verifyOriginalConnectionPID(identity,52),identity);
+ assert.throws(()=>verifyOriginalMainProcess({...identity,ppid:50}),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess({...identity,pid:51}),{code:'ERR_ASSERTION'});
+});
+
+test('original connection identity rejects foreign descriptors and platform substitution',()=>{
+ const identity={platform:'win32',expectedPlatform:'win32',pid:52,ppid:51,childPID:51};
+ for(const descriptorPID of [51,53])assert.throws(()=>verifyOriginalConnectionPID(identity,descriptorPID),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess({...identity,platform:'darwin'}),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess({...identity,expectedPlatform:'darwin'}),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess({...identity,platform:'unknown',expectedPlatform:'unknown'}),{code:'ERR_ASSERTION'});
+});
+
+test('original main and descriptor identity reject missing or invalid process IDs',()=>{
+ const valid={platform:'win32',expectedPlatform:'win32',pid:52,ppid:51,childPID:51};
+ const invalid=[undefined,null,0,-1,1.5,NaN,Infinity,'52',Number.MAX_SAFE_INTEGER+1];
+ for(const key of ['pid','ppid','childPID'])for(const value of invalid)
+  assert.throws(()=>verifyOriginalMainProcess({...valid,[key]:value}),{code:'ERR_ASSERTION'});
+ for(const value of invalid)assert.throws(()=>verifyOriginalConnectionPID(valid,value),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess(null),{code:'ERR_ASSERTION'});
+ assert.throws(()=>verifyOriginalMainProcess({...valid,ppid:52}),{code:'ERR_ASSERTION'});
 });

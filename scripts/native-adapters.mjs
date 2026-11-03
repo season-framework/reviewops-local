@@ -19,6 +19,29 @@ export function requireNativeHost(target) {
   assert.equal(`${process.platform}-${process.arch}`, target, 'No emulated target/unsupported skip');
   assert.equal(process.versions.electron, undefined, 'Driver/service Node must be standalone');
 }
+// Bind the main process through the original Electron handle, never from a descriptor PID.
+export function verifyOriginalMainProcess(identity) {
+  assert.ok(identity && typeof identity === 'object' && !Array.isArray(identity), 'Original main identity is required');
+  const {platform, expectedPlatform, pid, ppid, childPID} = identity;
+  assert.ok(['darwin', 'win32', 'linux'].includes(expectedPlatform), 'Expected native platform is required');
+  assert.equal(platform, expectedPlatform, 'Original main platform differs from the driver');
+  for (const value of [pid, ppid, childPID])
+    assert.ok(Number.isSafeInteger(value) && value > 0, 'Original process IDs must be positive safe integers');
+  assert.notEqual(pid, ppid, 'A process cannot be its own parent');
+  if (platform === 'win32') {
+    // Pinned Playwright launches both source and packaged Electron through a Windows shell.
+    assert.notEqual(pid, childPID, 'Windows main must be distinct from its retained shell');
+    assert.equal(ppid, childPID, 'Windows main parent differs from the original retained shell');
+  } else assert.equal(pid, childPID, 'Main differs from the original retained direct child');
+  return Object.freeze({platform, expectedPlatform, pid, ppid, childPID});
+}
+export function verifyOriginalConnectionPID(identity, descriptorPID) {
+  const original = verifyOriginalMainProcess(identity);
+  assert.ok(Number.isSafeInteger(descriptorPID) && descriptorPID > 0, 'Descriptor PID must be a positive safe integer');
+  assert.equal(descriptorPID, original.pid, 'Owned descriptor PID differs from the original main process');
+  return original;
+}
+
 export function privatePaths(privateRoot) {
   const root = fs.realpathSync(privateRoot);
   assert.match(path.basename(root), /^(?:rv-on-|ro-owned-ui-)/, 'Use a short, fresh owned native fixture root');
