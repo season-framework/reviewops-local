@@ -1,110 +1,78 @@
-# ARM packaged first-run CLI discovery
+# ARM packaged first-run CLI guidance
 
-This manual diagnostic checks one remaining condition from issue #52: a fresh
-ARM installation finds an authentic desktop-app CLI and shows its path and
-version in account management without choosing an executable. The public
-ReviewOps package and the future diagnostic checkout have separate identities.
-The fixed package is stable 1.4.0, source `84042d8`, with its ZIP, executable,
-ASAR and runtime hashes in `arm-first-run-ui-package.json`.
+The `missing-cli-first-run` scenario checks the distinct issue #52 condition in
+which a fresh ARM installation has no available Codex CLI. It opens the accepted
+public ReviewOps 1.4.0 package once and checks installation/file-selection
+guidance in Accounts. It does not repeat the accepted positive first-run UI run
+41726405285 or alter production discovery/startup.
 
-This is a positive-only lane. It does not log in, submit an account-add form,
-generate a model response, create a project or install an update. Normal startup
-still performs automatic `--version`, `login status`, app-server initialization,
-`config/read` and `model/list` metadata work. The updater can check the stable
-release as usual. Empty credentials do not prove zero external traffic.
+The package identity remains source `84042d8bb8d7d6f758d936d63f41fc325349550e`,
+independent of the new reviewed harness commit. Its ZIP, executable, ASAR and
+runtime hashes remain in `arm-first-run-ui-package.json`. The prior positive
+workflow/source at `83f3804a2f73d75961202f069ba47330dada1746` and its eight inert
+guard definitions are retained. This branch changes only the six diagnostic
+paths; all 419 package-source files must retain their modes and Git blob IDs.
 
-## Preparation boundary
+## One explicitly admitted missing-CLI lane
 
-The `arm-first-run-ui.py` preparation driver and the separate manual
-workflow own acquisition, native metadata tools and ordinary mount detachment.
-The JavaScript UI harness never downloads or mounts a package. Preparation must:
+The manual workflow dispatches only `codex/issue52-arm-missing-cli-ui` at the
+exact supplied `reviewed_commit`, first attempt, on genuine ARM macOS. It sets
+`DIAGNOSTIC_SCENARIO=missing-cli-first-run`. The Python driver acquires only the
+fixed public ReviewOps ZIP, checks its size/SHA and real ARM executable/ASAR,
+and prepares a fresh private HOME, CODEX_HOME, empty SSH configuration and data
+directory. `Applications` is empty; `.codex` contains only the fixed file-auth
+`config.toml`. It does not download, copy, mount, remove or modify a vendor app,
+CLI or user installation. No known user authentication is adopted.
 
-1. Verify the reviewed diagnostic checkout against base source `84042d8`: all
-   419 old tracked files remain unchanged, and every added path is one of this
-   diagnostic's reviewed files. Record the actual added-path count rather than
-   assuming a fixed total. Do not change the old ARM diagnostic's admitted-ref
-   gate or either release workflow.
-2. Acquire the fixed public ARM ZIP once and verify its actual size/SHA. Extract
-   it into a fresh private installation and bind the actual executable/ASAR.
-   Source `84042d8` belongs to these installed bytes, not to the future harness
-   commit. Stable build metadata remains absent/null.
-3. Acquire an authentic current vendor bundle with bounded original transfers.
-   Record its actual bundle version/build instead of copying a historical
-   version. Verify ARM CLI architecture and deep/strict Apple-anchor/OpenAI
-   signatures on the app and CLI, both with Team ID `2DC432GLL2`. Preserve
-   original tool receipts and the exact `bundle_inventory` list. Detach only
-   the original owned read-only mount normally before any CLI/app launch.
-4. Prepare a fresh private HOME containing only `Applications`, `.codex` and
-   `.ssh`; put the vendor app under the supported `Applications/ChatGPT.app`
-   or `Applications/Codex.app` location. `.codex` contains only `config.toml`
-   with `cli_auth_credentials_store = "file"` and a final newline. The SSH
-   config is empty. The ReviewOps data directory is absent or empty. No user
-   profiles, tokens, SSH agent, Node hooks or executable overrides are adopted.
+The UI binding requires `schema: 1`, `scenario: missing-cli-first-run`,
+`approvedForOneMissingCLIUILaunch: true` and `allowNormalStartupMetadata: true`.
+The positive-only approval flag, `vendorApp`, `CLI`, `CLISHA256`, vendor identity
+and vendor inventory pins are forbidden in this lane. Common inputs remain
+`root`, `source`, `harnessSource`, the original Git-backed `sourceGuard`,
+`privateRoot`, `home`, `codeHome`, `dataDir`, `sshConfig`, `packageApp`, the actual
+`packageZipPin`, `expectedASARPin`, `actualNodeIdentity` and fresh UI `output`.
+No supplied flag or fabricated positive vendor record can substitute for an
+actual all-missing inventory.
 
-The separate workflow must first be reviewed and landed on the default branch
-so `workflow_dispatch` is available. Then dispatch the exact
-reviewed diagnostic branch/commit. This document and the existing old ARM
-workflow do not authorize a new dispatch. No rerun or custom-path fallback
-substitutes for a missing input or failed first attempt.
+The ASAR's exact runtime module and native-architecture companion are extracted
+to an outside-app observer directory, checked against accepted bytes and source,
+and used only for `defaultCandidates`/`platformTarget`. The packaged app's finder
+is neither injected nor called by the observer. The inventory uses the actual
+future app environment, private Node HOME and packaged resources directory.
+Every actual default candidate must be missing. A present file, directory or
+dangling candidate symlink blocks launch; permission and unknown errors also
+block it. The diagnostic never removes an existing installation, filters a
+candidate or supplies a custom path to manufacture the condition. Candidate
+count is observed rather than fixed to the prior positive run's 63 rows.
 
-## Binding consumed by the UI harness
+The inventory is recorded before launch and checked again synchronously after
+loading Playwright, immediately before its single launch request. An actual
+host with a present candidate stops before the app is requested. No automatic
+retry or fallback follows a failed preparation or UI stage. Source preparation
+and inert guard results do not authorize a dispatch.
 
-The preparation driver writes one bounded JSON binding. All paths are absolute and
-canonical; files referenced by pins are regular files with exact bytes/SHA256.
+## Actual UI observation contract
 
-- `schema: 1`, `approvedForOnePositiveUILaunch: true`,
-  `allowNormalStartupMetadata: true`, `root`, `source`, `harnessSource`.
-- `sourceGuard`: `baseSource`, `harnessSource`, `baselineFiles: 419`,
-  `oldFilesUnchanged: true`, and actual `addedPaths`. The preparation wrapper
-  proves these with original Git commands; the UI harness checks the bound
-  identity and allowed path set without importing production startup.
-- `privateRoot`, `home`, `codeHome`, `dataDir`, `sshConfig`, `packageApp`,
-  `vendorApp`, canonical `CLI`, `CLISHA256`, and fresh UI-only `output` below
-  `root/test-results/arm-first-run-ui/`. The driver evidence directory is
-  separate from the fresh UI output.
-- `packageZipPin`, `expectedASARPin`, `vendorIdentityPin`, `vendorInventoryPin`:
-  `{path, bytes, sha256}`. The vendor inventory is the existing Python helper's
-  sorted row list, including permission bits through `0o7777`.
-- `actualNodeIdentity`: `{path, bytes, sha256, version, platform, arch}` for the
-  actual standalone Node 24 ARM interpreter. Local x64 inert tests are not ARM
-  runtime evidence.
+Through the original app handle, the harness checks packaged ARM identity,
+version 1.4.0, accepted executable/ASAR/resources paths, private Node HOME,
+CODEX_HOME/data path and absent sensitive input environment names. The macOS OS
+home may remain the runner's home; it is recorded separately, not presented as
+an isolated OS account. Ordinary Accounts navigation waits for the mounted tab.
 
-The vendor identity record has `appPath`, `CLI`, `bundleId: com.openai.codex`,
-actual `appVersion`/`appBuild`, `appTeamID`, `CLITeamID`,
-`CLIArchitecture: arm64`, and true `appDeepStrictAppleOpenAIVerified`,
-`CLIDeepStrictAppleOpenAIVerified`, `originalToolsClosed`,
-`ownedMountOrdinarilyDetached` flags backed by the original preparation records.
-These are authenticated preparation facts, not renderer-supplied grants.
+An initial `available: false` snapshot is insufficient. The harness waits for a
+settled `runtime.errorKind: missing`, null path/version and actual missing
+records, then checks the visible installation/file-selection notice, zero
+accounts, absent `.runtime-summary`, visible Recheck/Choose executable buttons
+and no login dialog. It does not click Recheck, Choose executable, Add account
+or any login control. No `runtime.json` selection file may appear. A whole host
+PNG and the separate state/visible-value JSON retain the actual result.
 
-## One actual UI run
-
-After reviewing the exact diagnostic commit, the preparation driver invokes:
-
-```sh
-node scripts/diagnostics/arm-first-run-ui.mjs --run /absolute/prepared-binding.json
-```
-
-The harness verifies the package, vendor seal and fresh profile before loading
-Playwright. It extracts byte-identical `runtime.cjs` and its
-`native-architecture.cjs` companion from the accepted ASAR into an outside-app
-observer directory. It calls only `defaultCandidates`/`platformTarget` there;
-it never calls that copy's finder. The inventory uses the actual future app
-environment, private Node HOME and actual packaged resources directory. Any
-earlier real candidate or unknown inventory error stops the lane before launch.
-The packaged finder/startup are never patched or injected.
-
-One original Electron application is launched. Through the same returned handle,
-the harness checks native ARM main identity, packaged paths, version, private
-data/HOME/CODEX_HOME and absent sensitive environment names. Ordinary navigation
-opens Accounts. The actual read-only account state must have zero accounts and
-the same real CLI path/version shown by `.runtime-summary`. `runtime.json` must
-remain absent; no manual runtime selection is saved. A whole host-content PNG
-records the actual UI without overlays, cropping or fabricated version text.
-
-`modelCache.state` is observed read-only; neither refresh nor configuration is
-called. This captures ordinary metadata status without treating its models as
-a generation result. The product may still be draining metadata when quit is
-requested, so ordinary quit exercises the existing internal close path.
+Normal automatic startup metadata (`--version`, `login status`, app-server
+initialization/configuration/model-list reads) and updater checks are not
+suppressed. Missing default inputs do not establish globally zero external
+traffic or independently prove zero internal child launches. This lane does
+not request OAuth submission, a model turn, account addition, a project or an
+update installation. It makes no separate authentication claim.
 
 ## Ownership and limitations
 
@@ -122,29 +90,32 @@ must keep and drain its original driver too. Product-internal metadata controls
 have their own existing cancellation policy; wrapper signals 0 is not a claim
 that all internal children received no signals.
 
+The original closure implementation is shared with the positive lane. After
+cleanup the same actual default paths must still be missing; all three inventory
+snapshots are retained. These are bounded observations, not a claim that every
+system path remained absent between snapshots. Package members and the empty
+private Applications directory must remain unchanged, with no private auth file.
+
 The public ZIP transfer has a 45-second socket timeout, not a hard overall
-deadline. The official documentation and vendor DMG use the existing helper's
-30/180-second soft network budgets and fixed byte caps. The workflow has a
-20-minute outer limit. Cancellation at that limit is external termination;
-it does not establish app, stream or mount closure. A failed stage remains
-failed even if its original owner later drains and closes normally.
+network deadline. This lane has no vendor documentation/DMG transfer or mount.
+The workflow's 20-minute outer limit can externally terminate the job; that
+does not establish original app/driver/stream closure. A failed stage remains
+failed after a late drain. Internal CLI/app-server handles are not exposed by
+the public harness API, so their individual stdio/global process absence is not
+claimed. No old C2 closure uncertainty is resolved by this lane.
 
-Internal CLI/app-server ChildProcess handles are not exposed by the public
-harness API. The result therefore proves the retained app/launcher closure and
-sanitized runtime/UI evidence, not every internal child's stdout, exit code or
-global process absence. Vendor inventory must remain byte/mode identical.
+## Inert admission checks
 
-Passing this lane complements the earlier ARM Node-only finder diagnostic.
-It does not prove the reporter's exact historical app version, actual OAuth,
-authenticated model generation, user-app update recovery or all of issue #52.
-The old C4 environment-name cause and C2 mount-closure uncertainty remain
-historical limitations; a new ordinary detach does not resolve them.
+The original eight controlled positive definitions remain unchanged. Additional
+pure definitions check scenario-specific authority and package/private/source
+boundaries, actual all-missing input, rejection of present/unknown/dangling
+candidates, and rejection of transient unavailable, permission/login or stale
+summary states as a missing-CLI UI success. These tests import only diagnostic
+pure guards and its compact reference JSON. Fake lstat results exercise guards;
+no filesystem fixture, production import, app, CLI or network is executed.
 
-## Inert checks
-
-`tests/arm-first-run-ui.test.mjs` imports only the diagnostic's pure admission
-functions and compact package JSON. Its eight controlled definitions reject
-wrong hosts/package seals/source changes, unsafe profile paths, earlier or
-unknown candidates, mismatched visible state and incomplete original closure.
-They never import production modules, acquire fixtures or launch a vendor/app.
-They are not additional native QA IDs or evidence that this ARM UI run occurred.
+A later actual ARM run can complement the missing-CLI guidance condition only.
+It cannot complete actual OAuth, authenticated local model use, historical
+reporter installation, user-app update recovery or all of issue #52. This
+source-only diagnostic adds no formal native QA ID and does not change release
+workflows or the older bundled-CLI diagnostic's admitted branch.
