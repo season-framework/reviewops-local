@@ -3,6 +3,14 @@
   "version": "1.4.0",
   "entries": [
     {
+      "category": "features",
+      "title": "Check QA availability before opening a project",
+      "description": "Read point-in-time QA availability for the selected project without opening a window or changing a lease. Use only this MCP server's recorded binding when unambiguous. This query does not reconnect controllers or transfer ownership.",
+      "commits": [
+        "7f60c506ecd3781f7c36f4a2254ee0ef73574531"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Reject queued edits after restoring a backup",
       "description": "Reject local edits that were already queued before a successful backup restore, even when project and review IDs are reused. The app captures the original dataset epoch before queueing and rechecks it with the current window and project scope at dispatch. Cancelled or failed restores leave the original admission valid. This covers dispatch entry only; asynchronous final commits and renderer revisions remain separate work, and remote writes are not activated.",

@@ -55,6 +55,23 @@ function identifier(value, name) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value) || ['__proto__', 'constructor', 'prototype'].includes(value)) fail(`${name}이 올바르지 않습니다.`);
   return value;
 }
+function queryQaConnectionStatus(connectionInfo, status, payload={}) {
+  const unavailable=()=>fail('QA connection status is unavailable for the selected app.','QA_CONNECTION_STATUS_UNAVAILABLE');
+  object(payload);
+  if(Object.keys(payload).some(key=>!['projectId','binding'].includes(key)))fail('Invalid QA connection status request.');
+  const projectId=identifier(payload.projectId,'projectId'),request={projectId};
+  if(Object.hasOwn(payload,'binding')){
+    object(payload.binding);
+    if(Object.keys(payload.binding).length!==3||Object.keys(payload.binding).some(key=>!['sessionId','projectId','windowId'].includes(key)))fail('Invalid recorded QA binding.');
+    request.binding=Object.fromEntries(['sessionId','projectId','windowId'].map(key=>[key,identifier(payload.binding[key],key)]));
+    if(request.binding.projectId!==projectId)fail('Recorded QA binding belongs to another project.','TARGET_MISMATCH');
+  }
+  if(!connectionInfo||typeof status!=='function'||!/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(connectionInfo.instanceId||''))unavailable();
+  let value;try{value=status(request);}catch{unavailable();}
+  if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).length!==3||Object.keys(value).some(key=>!['projectId','availability','bindingState'].includes(key))||value.projectId!==projectId||
+    !['available','busy','quarantined','unavailable'].includes(value.availability)||!['not_supplied','attached','expired','target_closed','timed_out','unavailable'].includes(value.bindingState)||!request.binding&&value.bindingState!=='not_supplied')unavailable();
+  return {schema:1,instanceId:connectionInfo.instanceId,projectId,availability:value.availability,bindingState:value.bindingState};
+}
 function text(value, name, limit, required = false) {
   if (typeof value !== 'string' || value.length > limit || value.includes('\0') || required && !value.trim()) fail(`${name}이 올바르지 않습니다.`);
   return value;
@@ -101,7 +118,7 @@ const publicRecord = record => ({ requestId: record.payload.requestId, status: r
   projectId: record.projectId || null, serviceId: record.serviceId || null, reviewId: record.reviewId || null,
   windowId: record.windowId ?? null, shown: record.status === 'shown', message: record.message || '', createdAt: record.createdAt, updatedAt: record.updatedAt });
 
-async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler, connectionInfo } = {}) {
+async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler, connectionInfo, qaConnectionStatus } = {}) {
   if (!path.isAbsolute(dataPath || '') || typeof dispatch !== 'function' || typeof showReview !== 'function') fail('외부 도구 연결 설정이 올바르지 않습니다.');
   // Capture only public startup scalars. Queries cannot invoke a window or Store.
   let describedConnection = null;
@@ -244,6 +261,7 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
       if (!describedConnection) fail('실행 앱이 연결 정보 조회를 제공하지 않습니다.', 'CONNECTION_INFO_UNAVAILABLE');
       return JSON.parse(JSON.stringify(describedConnection));
     }
+    if(action==='connection.qa.status')return queryQaConnectionStatus(describedConnection,qaConnectionStatus,payload);
     if (typeof action === 'string' && action.startsWith('automation.') && typeof automationHandler === 'function') return automationHandler(action, payload);
     if (action === 'projects.list') return exclusive(async () => {
       const snapshot = await dispatch('snapshot');
@@ -309,4 +327,4 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
     await fs.rm(connectionPath, { force: true }); if (platform !== 'win32') await fs.rm(socketPath, { force: true });
   } };
 }
-module.exports = { createToolIntegration, toolSocketPath, publicConnectionInfo };
+module.exports = { createToolIntegration, toolSocketPath, publicConnectionInfo, queryQaConnectionStatus };

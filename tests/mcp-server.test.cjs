@@ -25,7 +25,7 @@ test('MCP initializes, advertises schemas and rejects calls before initializatio
     const init=await c.initialize('2025-06-18');assert.equal(init.result.protocolVersion,'2025-06-18');assert.deepEqual(init.result.capabilities,{tools:{listChanged:false}});
     const listed=await c.read(c.send('tools/list'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_review_create'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_qa_capture'));
     const categories=listed.result.tools.find(t=>t.name==='reviewops_review_categories_list');assert.ok(categories.annotations.readOnlyHint);assert.deepEqual(categories.inputSchema.required,['projectId']);
-    assert.equal(listed.result.tools.length,26);
+    assert.equal(listed.result.tools.length,27);
     const info=listed.result.tools.find(t=>t.name==='reviewops_connection_info');assert.deepEqual(info.inputSchema,{type:'object',properties:{},required:[],additionalProperties:false});assert.deepEqual(info.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
     for(const suffix of ['create','list','get','cancel']){
       const tool=listed.result.tools.find(t=>t.name==='reviewops_followup_'+suffix);assert.ok(tool);assert.equal(tool.annotations.readOnlyHint,['list','get'].includes(suffix));assert.equal(tool.annotations.openWorldHint,false);
