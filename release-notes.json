@@ -34,6 +34,14 @@
       "commits": [
         "7635d746af728cc90c9ca44bfdc278020625f268"
       ]
+    },
+    {
+      "category": "fixes",
+      "title": "Protect reviews from outdated background results",
+      "description": "Background agent updates and saved requests verify their original review and execution before saving. Older results cannot overwrite a replaced target, and service deletion keeps the original run’s confirmed final status. File operations and renderer edits remain separate.",
+      "commits": [
+        "a4209117a28ee74745837a239d0aeb76bd4cb762"
+      ]
     }
   ]
 }
