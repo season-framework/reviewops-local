@@ -3,6 +3,14 @@
   "version": "1.4.0",
   "entries": [
     {
+      "category": "fixes",
+      "title": "Reject queued edits after restoring a backup",
+      "description": "Reject local edits that were already queued before a successful backup restore, even when project and review IDs are reused. The app captures the original dataset epoch before queueing and rechecks it with the current window and project scope at dispatch. Cancelled or failed restores leave the original admission valid. This covers dispatch entry only; asynchronous final commits and renderer revisions remain separate work, and remote writes are not activated.",
+      "commits": [
+        "f0f6c3017ca42763c1af4af39df3d7435142b657"
+      ]
+    },
+    {
       "category": "improvements",
       "title": "Persist review revisions and retry results for internal writes",
       "description": "Add an internal status command with persisted review revisions and immutable retry receipts. Apply new commands only when the dataset epoch, revision and current project access match; identical retries return their original result. Logical imports rotate the epoch atomically. UI, IPC, MCP and remote writers are not connected to this command.",
