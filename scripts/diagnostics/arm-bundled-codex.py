@@ -73,7 +73,7 @@ def source_guard(root):
     return source, pins
 
 
-def bounded_get(url, hosts, limit, seconds, destination=None):
+def bounded_get(url, hosts, limit, seconds, destination=None, response_metadata=None):
     """One request chain; consume at most limit+1 bytes, retaining at most limit."""
     deadline = time.monotonic() + seconds
     hops = []
@@ -111,6 +111,15 @@ def bounded_get(url, hosts, limit, seconds, destination=None):
                 continue  # Do not consume an unbounded redirect body.
             require(response.status == 200 and response.getheader('Content-Encoding') in (None, 'identity'), 'Unexpected official response')
             length = response.getheader('Content-Length')
+            if response_metadata is not None:
+                write(response_metadata, {
+                    'status': response.status,
+                    'declaredContentLength': int(length) if length is not None and length.isdigit() else length,
+                    'ETag': response.getheader('ETag'),
+                    'LastModified': response.getheader('Last-Modified'),
+                    'maximumRetainedBytes': limit,
+                    'EOF': False,
+                })
             if length is not None:
                 require(length.isdigit() and int(length) <= limit, 'Official response exceeds byte cap')
             observed = 0
@@ -259,9 +268,9 @@ def main():
         write(output / 'official-page.json', {**page_receipt, 'AppleSiliconDownload': url})
         dmg = private / 'official.dmg'
         result['DMGDownloadAttempts'] = 1
-        write(output / 'official-DMG-request.json', {'url': url, 'maximumBytes': 768 * 1024 ** 2, 'seconds': 180, 'attempt': 1})
+        write(output / 'official-DMG-request.json', {'url': url, 'maximumBytes': 1024 ** 3, 'seconds': 180, 'attempt': 1})
         try:
-            _, download = bounded_get(url, {'persistent.oaistatic.com'}, 768 * 1024 ** 2, 180, dmg)
+            _, download = bounded_get(url, {'persistent.oaistatic.com'}, 1024 ** 3, 180, dmg, output / 'official-DMG-response.json')
         except Exception:
             write(output / 'official-DMG-failure.json', {'EOF': False, 'attempts': 1, 'partialBytes': dmg.stat().st_size if dmg.exists() else 0, 'partialSHA256': digest(dmg) if dmg.exists() else None})
             raise
