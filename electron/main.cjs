@@ -1216,7 +1216,7 @@ async function dispatch(action, payload = {}, originalFrame) {
     } finally {for(const token of tokens)stagedAttachments.delete(token);}
   }
   if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
-  if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment);
+  if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment,originalFrame);
   if (action === 'review.version.target') return changeReviewTarget(store,payload);
   if (action === 'review.save') {payload=withCaptureEvidence(payload);const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
   if (action === 'service.save') {

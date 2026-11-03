@@ -34,22 +34,54 @@ function changeReviewTarget(store, input) {
   const review = store.get('reviews', input.reviewId), previous = versionsOf(review);
   return saveState(store, review, {...previous,currentTarget:targetValue(input.target)});
 }
-async function saveReviewVersion(store, input, readAttachment) {
-  const review = store.get('reviews', input.reviewId), previous = versionsOf(review), target = targetValue(input.target);
-  if (previous.entries.length >= MAX_VERSIONS) throw new Error('검토 버전은 리뷰마다 100개까지 저장할 수 있습니다.');
-  const ids = input.attachmentIds;
-  if (!Array.isArray(ids) || !ids.length || ids.length > MAX_FILES || ids.some(id => typeof id !== 'string') || new Set(ids).size !== ids.length) throw new Error('저장할 첨부 자료를 1개에서 20개까지 선택하십시오.');
-  const source = text(input.source, '자료 출처', 1000), attachments = [];
-  for (const id of ids) {
-    const file = store.get('attachments', id);
-    if (file.reviewId !== review.id) throw new Error('이 리뷰에 속한 첨부 자료만 선택할 수 있습니다.');
+async function saveReviewVersion(store, input, readAttachment, operation) {
+ try {
+  const assertOperation=()=>{
+    if(!operation||typeof operation.assertScope!=='function')throw Object.assign(new Error('An original write operation is required.'),{code:'INVALID_WRITE_ADMISSION'});
+    operation.assertScope();store.assertWriteAdmission(operation.admission);
+  };
+  // Capture one original snapshot before the first byte read. Payload fields
+  // cannot supply or refresh the process-local admission after an await.
+  const {review,previous,target,source,files,admission}=store.transaction(()=>{
+    assertOperation();
+    const review=store.get('reviews',input.reviewId),previous=versionsOf(review),target=targetValue(input.target);
+    if(previous.entries.length>=MAX_VERSIONS)throw new Error('검토 버전은 리뷰마다 100개까지 저장할 수 있습니다.');
+    const ids=input.attachmentIds;
+    if(!Array.isArray(ids)||!ids.length||ids.length>MAX_FILES||ids.some(id=>typeof id!=='string')||new Set(ids).size!==ids.length)throw new Error('저장할 첨부 자료를 1개에서 20개까지 선택하십시오.');
+    const files=ids.map(id=>{
+      const file=store.get('attachments',id);
+      if(file.reviewId!==review.id)throw new Error('이 리뷰에 속한 첨부 자료만 선택할 수 있습니다.');
+      return Object.freeze(file);
+    });
+    const scope=Object.assign(Object.create(null),{reviewId:review.id,projectId:review.projectId,serviceId:review.serviceId});
+    return {review,previous,target,source:text(input.source,'자료 출처',1000),files,admission:store.captureReviewSnapshotAdmission(operation.admission,scope)};
+  });
+  const assertSnapshot=()=>store.transaction(()=>{
+    assertOperation();store.assertReviewSnapshotAdmission(admission);
+    for(const file of files){
+      const current=store.get('attachments',file.id),keys=Object.keys(file);
+      if(keys.length!==Object.keys(current).length||keys.some(key=>current[key]!==file[key]))
+        throw Object.assign(new Error('The review changed. Reconcile before writing.'),{code:'REVISION_CONFLICT'});
+    }
+  });
+  const attachments=[];
+  for (const file of files) {
     const bytes = await readAttachment(file);
+    assertSnapshot();
     if (digest(bytes) !== file.sha256) throw new Error('첨부 사본이 변경되었거나 손상되었습니다.');
     attachments.push({id:file.id,name:file.name,mimeType:file.mimeType,size:file.size,sha256:file.sha256,createdAt:file.createdAt});
   }
   const entry = {id:crypto.randomUUID(),createdAt:new Date().toISOString(),target,source,attachments};
-  saveState(store,review,{...previous,currentTarget:target,entries:[...previous.entries,entry]});
-  return entry;
+  return store.transaction(()=>{
+    assertSnapshot();
+    saveState(store,review,{...previous,currentTarget:target,entries:[...previous.entries,entry]});
+    return entry;
+  });
+ } catch(error) {
+  if(['STALE_EPOCH','STALE_REVIEW','REVISION_CONFLICT'].includes(error.code))
+   throw Object.assign(new Error('리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.'),{code:error.code});
+  throw error;
+ }
 }
 async function listReviewVersions(store, reviewId, readAttachment) {
   const review = store.get('reviews', reviewId), state = versionsOf(review), files = new Map(store.snapshot().attachments.filter(file => file.reviewId === reviewId).map(file => [file.id,file]));
