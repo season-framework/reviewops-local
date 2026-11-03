@@ -1,0 +1,41 @@
+name: Linux SSH permission diagnostic
+run-name: Linux folder permission from ${{ inputs.reviewed_commit }}
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Full reviewed SHA of the selected branch containing this harness
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: reviewops-linux-ssh-permission
+  cancel-in-progress: false
+jobs:
+  permission:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+      - run: npm ci
+      - name: Test pure admission and result guards
+        run: node --test tests/linux-ssh-permission.test.cjs
+      - name: Check actual Linux permission denial through production SSH diagnostics
+        env:
+          REVIEWOPS_REVIEWED_COMMIT: ${{ inputs.reviewed_commit }}
+        run: node scripts/diagnostics/linux-ssh-permission.mjs --run --source "$REVIEWOPS_REVIEWED_COMMIT"
+      - name: Preserve original diagnostic observations
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-linux-ssh-permission-${{ github.run_id }}-${{ github.run_attempt }}
+          path: test-results/linux-ssh-permission/
+          if-no-files-found: warn
+          retention-days: 7
