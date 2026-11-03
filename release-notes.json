@@ -1,65 +1,13 @@
 {
   "schema": 1,
-  "version": "1.4.0",
+  "version": "1.4.1",
   "entries": [
     {
-      "category": "features",
-      "title": "Check QA availability before opening a project",
-      "description": "Read point-in-time QA availability for the selected project without opening a window or changing a lease. Use only this MCP server's recorded binding when unambiguous. This query does not reconnect controllers or transfer ownership.",
-      "commits": [
-        "7f60c506ecd3781f7c36f4a2254ee0ef73574531"
-      ]
-    },
-    {
       "category": "fixes",
-      "title": "Reject queued edits after restoring a backup",
-      "description": "Reject local edits that were already queued before a successful backup restore, even when project and review IDs are reused. The app captures the original dataset epoch before queueing and rechecks it with the current window and project scope at dispatch. Cancelled or failed restores leave the original admission valid. This covers dispatch entry only; asynchronous final commits and renderer revisions remain separate work, and remote writes are not activated.",
+      "title": "Protect review versions from outdated saves",
+      "description": "If a review or its selected attachments change while files are being read, the save stops and asks you to recheck the copies. Newer saved records are preserved.",
       "commits": [
-        "f0f6c3017ca42763c1af4af39df3d7435142b657"
-      ]
-    },
-    {
-      "category": "improvements",
-      "title": "Persist review revisions and retry results for internal writes",
-      "description": "Add an internal status command with persisted review revisions and immutable retry receipts. Apply new commands only when the dataset epoch, revision and current project access match; identical retries return their original result. Logical imports rotate the epoch atomically. UI, IPC, MCP and remote writers are not connected to this command.",
-      "commits": [
-        "4db8a0e6d8c0a62f0f46b787a66cce3b42788b8b"
-      ]
-    },
-    {
-      "category": "improvements",
-      "title": "Keep local shared-data queries within their project window",
-      "description": "Add project and review read APIs for trusted local app windows. Recheck the current window and project after queued work, return only approved fields, and reject cross-project reads. Cross-PC connections and remote writes remain unavailable.",
-      "commits": [
-        "4afa3015265b76a027a935c874d1876a9b124607",
-        "ec2d29f50e9309d7628b123a92365f2b8822dafc"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Show clear errors when selecting Codex CLI",
-      "description": "Show the original CLI-selection failure reason without Electron's internal method prefix. Keep existing executable settings and diagnostic details available when a new selection fails.",
-      "commits": [
-        "7635d746af728cc90c9ca44bfdc278020625f268"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Inspect the app selected by your MCP connection",
-      "description": "Inspect the selected app's version, data location and QA capabilities through MCP without opening or focusing projects or changing leases. Unknown build fields stay null. Finding unknown custom data roots, reconnecting controllers and refreshing external tool lists remain separate.",
-      "commits": [
-        "fdaabbb79528cf754ad4ac1a936d04029192c6fc",
-        "3b7157f8a5928f517e91f500b2d7b37450a9c5e6",
-        "3ea215409267a8b93761e034ec7de56ba7f31bb5"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Protect reviews from outdated background results",
-      "description": "Old agent or saved-request results are rejected after a dataset restore or replacement of their original review or execution. Accepted runs retain their own history when the next service selection changes and their original project link remains. Service deletion preserves confirmed final status. File operations and renderer edits remain separate.",
-      "commits": [
-        "a4209117a28ee74745837a239d0aeb76bd4cb762",
-        "e30acf21bbd8000ccf7fa00710957cb1b8f75c55"
+        "8abc3f66461cd6dff5b98b8f5df75a1453f73459"
       ]
     }
   ]
