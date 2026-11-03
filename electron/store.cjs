@@ -503,6 +503,8 @@ class LocalStore {
 
   reviewWriteState(input, callerProvider) { return sharedWrites.readState(this, input, callerProvider); }
   setReviewStatusCommand(input, callerProvider) { return sharedWrites.setStatus(this, input, callerProvider); }
+  captureWriteAdmission() { return sharedWrites.captureWriteAdmission(this); }
+  assertWriteAdmission(admission) { return sharedWrites.assertWriteAdmission(this, admission); }
 
   get(table, itemId) {
     if (!TABLES.includes(table) || ['project_services', 'settings'].includes(table)) fail('항목 종류가 올바르지 않습니다.');

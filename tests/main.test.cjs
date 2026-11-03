@@ -2428,3 +2428,93 @@ test('local shared read remains project-bound when QA is released before queued 
   assert.deepEqual((await client.success('shared.projects.list')).projects.map(row=>row.id),[a.project.id]);
  }finally{unblock();await probe;if(!released)await h.state.toolIntegration.automationHandler('automation.qa.release',qa);}
 });
+
+
+async function holdWriteAdmissionQueue(t, h, serviceId) {
+  let release; h.state.environmentGate = new Promise(resolve => { release = resolve; });
+  const blocker = h.forWindow(h.state.primaryWindow).invoke('agent.environment', {serviceId});
+  t.after(async () => { release(); await blocker; });
+  await waitForValue(() => h.state.environmentCheck, 'Owned action queue blocker did not start');
+  return async () => { release(); assert.equal((await blocker).ok, true); };
+}
+function sameIDAdmissionBackup(h, reviewId) {
+  const data = h.state.liveStore.exportData();
+  data.reviews.find(row => row.id === reviewId).title = 'Restored same-ID title';
+  const backup = path.join(h.root, 'same-id-admission.reviewops.json');
+  fs.writeFileSync(backup, JSON.stringify({format:'reviewops-local-backup', version:1, data, files:{}}));
+  return backup;
+}
+
+test('queued Store writes keep their original epoch across a same-ID restore', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  const activity = await main.success('activity.add', {reviewId:a.review.id, body:'Original activity'});
+  h.state.openResult = {canceled:false, filePaths:[sameIDAdmissionBackup(h, a.review.id)]};
+  const release = await holdWriteAdmissionQueue(t, h, a.service.id);
+  const messages = h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length;
+  const restore = main.invoke('backup.import');
+  const edits = [
+    main.invoke('review.save', {id:a.review.id, title:'Queued obsolete title', epoch:'renderer-upgrade', admission:{}}),
+    main.invoke('activity.update', {id:activity.id, body:'Queued obsolete activity'}),
+    main.invoke('settings.save', {theme:'dark'})
+  ];
+  await release(); assert.equal((await restore).ok, true);
+  for (const result of await Promise.all(edits)) { assert.equal(result.ok, false); assert.equal(result.error.code, 'STALE_EPOCH'); }
+  assert.equal(h.state.liveStore.get('reviews', a.review.id).title, 'Restored same-ID title');
+  assert.equal(h.state.liveStore.get('activities', activity.id).body, 'Original activity');
+  assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, messages + 1, 'Only the committed restore notifies');
+  assert.equal((await main.success('review.save', {id:a.review.id, title:'Fresh intended title'})).title, 'Fresh intended title');
+});
+
+for (const outcome of ['cancelled', 'invalid']) {
+  test(`a ${outcome} queued import leaves an earlier write admission usable`, async t => {
+    const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+    if (outcome === 'cancelled') h.state.openResult = {canceled:true, filePaths:[]};
+    else {
+      const file = path.join(h.root, 'invalid-admission-backup.json'); fs.writeFileSync(file, '{');
+      h.state.openResult = {canceled:false, filePaths:[file]};
+    }
+    const release = await holdWriteAdmissionQueue(t, h, a.service.id);
+    const restore = main.invoke('backup.import'), edit = main.invoke('review.save', {id:a.review.id, title:'Same-epoch queued edit'});
+    await release(); const result = await restore;
+    assert.equal(result.ok, outcome === 'cancelled');
+    if (outcome === 'cancelled') assert.equal(result.data.cancelled, true);
+    assert.equal((await edit).ok, true);
+    assert.equal(h.state.liveStore.get('reviews', a.review.id).title, 'Same-epoch queued edit');
+  });
+}
+
+test('a queued Store write rechecks its original main-frame owner before execution', async t => {
+  const h = await harness(t), a = await seed(h), host = h.state.primaryWindow, main = h.forWindow(host);
+  const release = await holdWriteAdmissionQueue(t, h, a.service.id);
+  const edit = main.invoke('review.save', {id:a.review.id, title:'Untrusted queued edit'}), url = host.webContents.mainFrame.url;
+  host.webContents.mainFrame.url = 'https://foreign.invalid/';
+  try {
+    await release(); const result = await edit;
+    assert.equal(result.ok, false); assert.equal(result.error.code, 'ACCESS_DENIED');
+    assert.notEqual(h.state.liveStore.get('reviews', a.review.id).title, 'Untrusted queued edit');
+  } finally { host.webContents.mainFrame.url = url; }
+});
+
+test('queued Store writes cannot retain a released QA scope as an upgraded grant', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  await main.success('window.openProject', {projectId:a.project.id});
+  const client = h.forWindow(await projectHost(h, a.project.id));
+  const qa = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:a.project.id, clientId:'write-admission-scope'});
+  const release = await holdWriteAdmissionQueue(t, h, a.service.id);
+  const edit = client.invoke('review.save', {id:a.review.id, title:'Obsolete QA admission'});
+  await h.state.toolIntegration.automationHandler('automation.qa.release', qa);
+  await release(); const result = await edit;
+  assert.equal(result.ok, false); assert.equal(result.error.code, 'TARGET_MISMATCH');
+  assert.notEqual(h.state.liveStore.get('reviews', a.review.id).title, 'Obsolete QA admission');
+});
+
+test('one integration dispatch keeps its original queue admission across restore', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  h.state.openResult = {canceled:false, filePaths:[sameIDAdmissionBackup(h, a.review.id)]};
+  const release = await holdWriteAdmissionQueue(t, h, a.service.id), restore = main.invoke('backup.import');
+  const pending = h.state.toolIntegration.dispatch('review.save', {id:a.review.id, title:'Obsolete integration dispatch'})
+    .then(data => ({ok:true, data}), error => ({ok:false, error}));
+  await release(); assert.equal((await restore).ok, true); const result = await pending;
+  assert.equal(result.ok, false); assert.equal(result.error.code, 'STALE_EPOCH');
+  assert.equal(h.state.liveStore.get('reviews', a.review.id).title, 'Restored same-ID title');
+});
