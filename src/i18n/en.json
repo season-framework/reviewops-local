@@ -1360,6 +1360,7 @@
   "산출물 버전": "Output version",
   "데이터베이스 버전": "Database version",
   "검토자료 버전 저장 완료": "Review material version saved",
+  "리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.": "The review or selected attachments changed. Recheck the saved copies before saving.",
   "대상 버전 변경 완료": "Target version changed",
   "사본 다시 검사": "Check copies again",
   "버전을 직접 입력하고 이 리뷰의 첨부 사본을 선택합니다. 원본 파일이 바뀌어도 보관된 사본은 바뀌지 않습니다.": "Enter version names and select copies attached to this review. Later changes to the original files do not change the stored copies.",

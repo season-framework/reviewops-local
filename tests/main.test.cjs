@@ -160,6 +160,10 @@ async function harness(t, options = {}) {
       return require('../electron/automation-api.cjs');
     }
     if(name==='./project-service-runtime.cjs'){const runtime=require('../electron/project-service-runtime.cjs');return {...runtime,createProjectServiceRuntime(options){state.managedServices=runtime.createProjectServiceRuntime(options);return state.managedServices;}};}
+    if(name==='./review-versions.cjs'&&options.versionReadGate){
+      const versions=require('../electron/review-versions.cjs');
+      return {...versions,saveReviewVersion(store,input,read,operation){return versions.saveReviewVersion(store,input,async file=>{await options.versionReadGate({file,store});return read(file);},operation);}};
+    }
     if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
@@ -707,6 +711,38 @@ test('review.copy preserves selected attachment bytes in a separate file owned b
   assert.equal(copied.evidence.copiedFrom.reviewId,source.review.id);assert.equal(copied.evidence.copiedFrom.attachments[0].sha256,original.sha256);
   assert.deepEqual(await sourceClient.success('agent.list',{reviewId:copied.id}),[]);assert.equal(h.state.agentStarts.length,0);
 });
+
+test('version save uses its original main frame and sends one notice after its commit',async t=>{
+ const h=await harness(t),a=await seed(h),file=await addFile(h,a.review.id,'Retained version bytes');
+ const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,before=notices();
+ const entry=await h.success('review.version.save',{reviewId:a.review.id,target:{code:'owned-version'},attachmentIds:[file.id]});
+ assert.equal(h.state.liveStore.get('reviews',a.review.id).evidence.review_versions.entries[0].id,entry.id);
+ assert.equal(notices(),before+1);assert.equal((await h.success('review.version.list',{reviewId:a.review.id})).entries[0].attachments[0].status,'available');
+});
+for(const change of ['revision','closed window','released QA scope','restored epoch']) {
+ test(`version save rejects its ${change} race without a data-change notice`,async t=>{
+  let entered,release;const reading=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+  const h=await harness(t,{versionReadGate:()=>{entered();return gate;}}),a=await seed(h),file=await addFile(h,a.review.id,'Retained version bytes');
+  await h.state.seasonIntegration.showReview({reviewId:a.review.id,fullscreen:false});
+  const host=await projectHost(h,a.project.id),client=h.forWindow(host);
+  const qa=change==='released QA scope'?await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:a.project.id,clientId:'version-original-scope'}):null;
+  const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,beforeNotices=notices();
+  const input={reviewId:a.review.id,target:{code:'Keep this draft'},source:'Keep this source',attachmentIds:[file.id]},beforeInput=structuredClone(input);
+  const pending=client.invoke('review.version.save',input);await reading;let expected,result,expectedNotices;
+  try{
+   if(change==='revision')h.state.liveStore.addActivity({reviewId:a.review.id,body:'A legitimate concurrent edit'});
+   if(change==='closed window'){host.destroy();h.state.focusedWindow=h.state.primaryWindow;}
+   if(change==='released QA scope')assert.equal((await h.state.toolIntegration.automationHandler('automation.qa.release',qa)).released,true);
+   if(change==='restored epoch')h.state.liveStore.importData(h.state.liveStore.exportData());
+   expected=h.state.liveStore.exportData();expectedNotices=notices();
+  }finally{release();result=await pending;}
+  const code=change==='revision'?'REVISION_CONFLICT':change==='closed window'?'ACCESS_DENIED':change==='released QA scope'?'TARGET_MISMATCH':'STALE_EPOCH';
+  assert.equal(result.ok,false);assert.equal(result.error.code,code);assert.deepEqual(h.state.liveStore.exportData(),expected);
+  assert.equal(expectedNotices,beforeNotices+(change==='released QA scope'?1:0),'Only the explicit QA release sends its existing scope notification');
+  assert.equal(notices(),expectedNotices);assert.deepEqual(input,beforeInput);
+  if(['revision','restored epoch'].includes(change))assert.equal(result.error.message,'리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.');
+ });
+}
 
 function importBundle(h) {
   const source = createStore({ dbPath: path.join(h.root, 'import-source.sqlite') });

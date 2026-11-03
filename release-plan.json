@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.3.0",
-  "version": "1.4.0",
-  "bump": "minor",
-  "reason": "Add compatible project-scoped local shared-data read APIs while keeping cross-PC connections and remote writes unavailable.",
-  "baseCommit": "4341d9a3f9a58554275374c18caef8655fff7832"
+  "previousVersion": "1.4.0",
+  "version": "1.4.1",
+  "bump": "patch",
+  "reason": "Prevent stale review material version saves from overwriting newer review data.",
+  "baseCommit": "724f1ef94a454454c7ea3f5c6c56dbe424b01c1d"
 }

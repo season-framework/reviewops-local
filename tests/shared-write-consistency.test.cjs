@@ -353,6 +353,21 @@ test('detached cancellation admission is private Store-bound original ownership 
  const before=unchanged(store);store.assertDetachedReviewCancellation(token);assert.deepEqual(unchanged(store),before);assert.throws(()=>store.assertReviewWriteAdmission(token),code('STALE_REVIEW'));
 });
 
+test('snapshot admissions retain revision without changing ordinary callback admissions or control state',t=>{
+ const {store}=setup(t),f=fixture(store),other=setup(t).store,scope={reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id};
+ const admission=store.captureWriteAdmission(),ordinary=store.captureReviewWriteAdmission(admission,scope),before=unchanged(store);
+ const snapshot=store.captureReviewSnapshotAdmission(admission,scope);
+ assert.deepEqual(Reflect.ownKeys(snapshot),[]);assert.equal(Object.isFrozen(snapshot),true);
+ store.assertReviewSnapshotAdmission(snapshot);assert.deepEqual(unchanged(store),before);
+ for(const token of [{},JSON.parse(JSON.stringify(snapshot)),ordinary])assert.throws(()=>store.assertReviewSnapshotAdmission(token),code('INVALID_REVIEW_ADMISSION'));
+ assert.throws(()=>other.assertReviewSnapshotAdmission(snapshot),code('INVALID_REVIEW_ADMISSION'));
+ store.addActivity({reviewId:f.other.id,body:'Unrelated review'});store.assertReviewSnapshotAdmission(snapshot);
+ store.addActivity({reviewId:f.review.id,body:'Legitimate same-review history'});
+ store.assertReviewWriteAdmission(ordinary);assert.throws(()=>store.assertReviewSnapshotAdmission(snapshot),code('REVISION_CONFLICT'));
+ const after=unchanged(store);assert.throws(()=>store.transaction(()=>{store.saveReview({id:f.review.id,title:'Must roll back'});store.assertReviewSnapshotAdmission(snapshot);}),code('REVISION_CONFLICT'));
+ assert.deepEqual(unchanged(store),after);
+});
+
 test('detached cancellation cannot upgrade an old epoch or review generation',t=>{
  for(const change of ['import','review-birth']) {
   const {store}=setup(t),f=fixture(store),token=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id});store.setProjectServices(f.a.id,[]);

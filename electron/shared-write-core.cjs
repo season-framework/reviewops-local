@@ -6,6 +6,7 @@ const MAX_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_RECEIPTS = 100000;
 const writeAdmissions = new WeakMap();
 const reviewWriteAdmissions = new WeakMap();
+const reviewSnapshotRevisions = new WeakMap();
 const OPERATION = 'review.status.set';
 const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -203,6 +204,23 @@ function assertReviewWriteAdmission(store, token) {
     if(reviewBinding(store,original)!==original.generation)fail('STALE_REVIEW');
   });
 }
+// Snapshot saves retain an original aggregate revision as well as its birth and
+// epoch. Ordinary running callbacks deliberately keep the less restrictive token.
+function captureReviewSnapshotAdmission(store, admission, input) {
+  return store.transaction(()=>{
+    const token=captureReviewWriteAdmission(store,admission,input);
+    reviewSnapshotRevisions.set(token,currentRevision(store.db,input.reviewId));
+    return token;
+  });
+}
+function assertReviewSnapshotAdmission(store, token) {
+  return store.transaction(()=>{
+    if(!reviewSnapshotRevisions.has(token))fail('INVALID_REVIEW_ADMISSION');
+    assertReviewWriteAdmission(store,token);
+    const original=reviewWriteAdmissions.get(token);
+    if(currentRevision(store.db,original.reviewId)!==reviewSnapshotRevisions.get(token))fail('REVISION_CONFLICT');
+  });
+}
 // An accepted callback may save only its original run/history after the next
 // selected service changes. The original review birth/project and service link
 // must still exist; this never grants a new launch or detached persistence.
@@ -270,4 +288,4 @@ function setStatus(store, input, provider) {
   });
 }
 
-module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, assertRunningReviewCallback, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
+module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, captureReviewSnapshotAdmission, assertReviewSnapshotAdmission, assertRunningReviewCallback, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
