@@ -6,14 +6,14 @@ const {finished}=require('node:stream/promises');
 const {spawn,spawnSync}=require('node:child_process');
 const fs=require('node:fs/promises');
 const path=require('node:path');
-const {createToolIntegration}=require('../electron/tool-integration.cjs');
-const {createMcpServer,invokeSocket,options}=require('../electron/mcp-server.cjs');
+const {createToolIntegration,publicConnectionInfo}=require('../electron/tool-integration.cjs');
+const {createMcpServer,invokeSocket,options,connectionInfoResult}=require('../electron/mcp-server.cjs');
 
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
-function client({invoke=async()=>({}),projectId}={}){
+function client({invoke=async()=>({}),projectId,connectionSelection}={}){
   const input=new PassThrough(),output=new PassThrough(),responses=[],waiters=[];
   let buffer='';output.setEncoding('utf8');output.on('data',chunk=>{buffer+=chunk;while(buffer.includes('\n')){const end=buffer.indexOf('\n'),line=buffer.slice(0,end);buffer=buffer.slice(end+1);responses.push(JSON.parse(line));for(const waiter of waiters.splice(0))waiter();}});
-  const server=createMcpServer({input,output,invoke,projectId});let sequence=0;
+  const server=createMcpServer({input,output,invoke,projectId,connectionSelection});let sequence=0;
   const send=(method,params={},id=++sequence)=>{input.write(JSON.stringify({jsonrpc:'2.0',id,method,params})+'\n');return id;};
   const read=async id=>{for(let i=0;i<100;i++){const result=responses.find(r=>r.id===id);if(result)return result;await Promise.race([new Promise(r=>waiters.push(r)),new Promise(r=>setTimeout(r,10))]);}throw new Error('Missing response '+id);};
   const initialize=async version=>read(send('initialize',{protocolVersion:version||'2025-11-25',capabilities:{},clientInfo:{name:'test',version:'1'}}));
@@ -25,7 +25,8 @@ test('MCP initializes, advertises schemas and rejects calls before initializatio
     const init=await c.initialize('2025-06-18');assert.equal(init.result.protocolVersion,'2025-06-18');assert.deepEqual(init.result.capabilities,{tools:{listChanged:false}});
     const listed=await c.read(c.send('tools/list'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_review_create'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_qa_capture'));
     const categories=listed.result.tools.find(t=>t.name==='reviewops_review_categories_list');assert.ok(categories.annotations.readOnlyHint);assert.deepEqual(categories.inputSchema.required,['projectId']);
-    assert.equal(listed.result.tools.length,25);
+    assert.equal(listed.result.tools.length,26);
+    const info=listed.result.tools.find(t=>t.name==='reviewops_connection_info');assert.deepEqual(info.inputSchema,{type:'object',properties:{},required:[],additionalProperties:false});assert.deepEqual(info.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
     for(const suffix of ['create','list','get','cancel']){
       const tool=listed.result.tools.find(t=>t.name==='reviewops_followup_'+suffix);assert.ok(tool);assert.equal(tool.annotations.readOnlyHint,['list','get'].includes(suffix));assert.equal(tool.annotations.openWorldHint,false);
       assert.ok(tool.inputSchema.required.includes('projectId'));assert.ok(tool.inputSchema.required.includes('reviewId'));
@@ -65,6 +66,7 @@ test('packaged MCP resources include category definitions and load without the s
     assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
     const responses=result.stdout.trim().split('\n').map(line=>JSON.parse(line));
     assert.ok(responses.find(value=>value.id===2).result.tools.some(tool=>tool.name==='reviewops_review_categories_list'));
+    assert.ok(responses.find(value=>value.id===2).result.tools.some(tool=>tool.name==='reviewops_connection_info'));
     assert.deepEqual(responses.find(value=>value.id===2).result.tools.filter(tool=>tool.name.startsWith('reviewops_followup_')).map(tool=>tool.name),['reviewops_followup_create','reviewops_followup_list','reviewops_followup_get','reviewops_followup_cancel']);
   }finally{await fs.rm(directory,{recursive:true,force:true});}
 });
@@ -132,4 +134,65 @@ test('malformed JSON values at the in-flight limit do not crash the MCP stream',
     assert.equal((await c.read(excess)).error.code,-32000);
     hold.resolve();await c.read(ids.at(-1));assert.deepEqual((await c.read(c.send('ping'))).result,{});
   }finally{hold.resolve();await c.close();}
+});
+
+function appConnectionFixture(dataPath){
+  return {instanceId:'22222222-2222-4222-8222-222222222222',version:'1.4.0',build:{channel:'stable',version:'1.4.0'},isPackaged:true,platform:process.platform,arch:process.arch,
+    dataPath,homePath:path.dirname(dataPath),appPath:path.join(dataPath,'app.asar'),executablePath:path.join(dataPath,'ReviewOps'),dataRootSource:'environment',
+    qa:{protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false}};
+}
+const selectionFor=(dataPath)=>({selection:'data-path-argument',connectionPath:path.join(dataPath,'integrations','tools.json'),homePath:path.dirname(dataPath),platform:process.platform});
+
+test('connection tool reaches only the exact read-only action from a project-bound client',async()=>{
+  const data=path.resolve('/tmp/connection-info'),reported=publicConnectionInfo(appConnectionFixture(data),data),calls=[];
+  const c=client({projectId:'A',connectionSelection:selectionFor(data),invoke:async(action,args)=>{calls.push({action,args});return reported;}});
+  try{
+    await c.initialize();const response=(await c.call('reviewops_connection_info',{})).result;
+    assert.equal(response.isError,false);assert.equal(response.structuredContent.client.boundProjectId,'A');assert.equal(response.structuredContent.app.build.commit,null);
+    assert.equal(response.structuredContent.client.selection,'data-path-argument');assert.deepEqual(calls,[{action:'connection.info',args:{}}]);
+    assert.equal((await c.call('reviewops_connection_info',{projectId:'B'})).result.isError,true);assert.equal(calls.length,1);
+    assert.equal((await c.call('reviewops_connection_info',{force:true})).result.isError,true);assert.equal(calls.length,1);
+    await c.close();assert.equal(calls.length,1,'Information query must not register or release a QA lease');
+  }finally{await c.close();}
+});
+
+test('an old app reports unsupported information without fallback, retry or disabling legacy tools',async()=>{
+  const calls=[],data=path.resolve('/tmp/connection-info'),c=client({connectionSelection:selectionFor(data),invoke:async(action)=>{calls.push(action);if(action==='connection.info')throw Object.assign(new Error('old server'),{code:'UNKNOWN_ACTION'});return {projects:[]};}});
+  try{
+    await c.initialize();const response=(await c.call('reviewops_connection_info',{})).result;
+    assert.equal(response.isError,true);const detail=JSON.parse(response.content[0].text);assert.equal(detail.code,'CONNECTION_INFO_UNSUPPORTED');assert.doesNotMatch(detail.message,/restart/i);
+    assert.deepEqual(calls,['connection.info']);assert.equal((await c.call('reviewops_projects_list',{})).result.isError,false);assert.deepEqual(calls,['connection.info','automation.projects.list']);
+  }finally{await c.close();}
+});
+
+test('connection selection keeps explicit, environment and default precedence without searching',()=>{
+  const env={REVIEWOPS_DATA_DIR:path.resolve('/tmp/environment-root')};
+  const direct=options(['--connection','./selected.json'],env),folder=options(['--data-path','./selected'],env),environment=options([],env);
+  assert.equal(direct.selection,'connection-argument');assert.equal(direct.connectionPath,path.resolve('selected.json'));
+  assert.equal(folder.selection,'data-path-argument');assert.equal(folder.connectionPath,path.resolve('selected/integrations/tools.json'));
+  assert.equal(environment.selection,'environment');assert.equal(environment.connectionPath,path.join(env.REVIEWOPS_DATA_DIR,'integrations','tools.json'));
+  const fallback=options([],{APPDATA:path.resolve('/tmp/roaming')});assert.equal(fallback.selection,'platform-default');assert.ok(path.isAbsolute(fallback.connectionPath));
+  assert.throws(()=>options(['--connection','a','--data-path','b'],env));
+});
+
+test('connection result refuses private extras, fabricated build identity and aggregate UTF-8 overflow',()=>{
+  const data=path.resolve('/tmp/connection-info'),selection=selectionFor(data),value=publicConnectionInfo(appConnectionFixture(data),data);
+  const first=connectionInfoResult(value,selection);first.qa.actions.length=0;assert.equal(connectionInfoResult(value,selection).qa.actions.length,11);
+  const changed=callback=>{const copy=JSON.parse(JSON.stringify(value));callback(copy);return copy;};
+  for(const invalid of [changed(v=>{v.token='private';}),changed(v=>{v.app.build.commit='a'.repeat(40);}),changed(v=>{v.app.displayVersion='guessed';}),changed(v=>{v.qa.documentGeneration=true;}),changed(v=>{v.location.appPath='relative';}),changed(v=>{v.location.appPath=path.parse(data).root+'한'.repeat(1400);})])
+    assert.throws(()=>connectionInfoResult(invalid,selection),{code:'INVALID_CONNECTION_INFO'});
+  assert.throws(()=>connectionInfoResult(value,undefined),{code:'INVALID_CONNECTION_INFO'});
+  const long=path.parse(data).root+'x'.repeat(4000),large=changed(v=>{for(const k of ['dataPath','appPath','executablePath'])v.location[k]=long;});
+  assert.throws(()=>connectionInfoResult(large,{...selection,connectionPath:long}),{code:'INVALID_CONNECTION_INFO'});
+});
+
+test('MCP connection information round-trips through the authenticated owned socket without Store or window calls',async()=>{
+  const data=await fs.mkdtemp(path.join(process.platform==='win32'?require('node:os').tmpdir():'/tmp','rops-info-'));let integration,c;const calls=[];
+  try{
+    integration=await createToolIntegration({dataPath:data,connectionInfo:appConnectionFixture(data),dispatch:()=>{calls.push('dispatch');throw new Error('No Store access');},showReview:()=>{calls.push('show');throw new Error('No window access');},automationHandler:()=>{calls.push('automation');throw new Error('No QA operation');}});
+    c=client({projectId:'A',connectionSelection:selectionFor(data),invoke:(action,args)=>invokeSocket(integration.connectionPath,action,args)});
+    await c.initialize();const response=(await c.call('reviewops_connection_info',{})).result;
+    assert.equal(response.isError,false);assert.equal(response.structuredContent.instanceId,'22222222-2222-4222-8222-222222222222');assert.equal(response.structuredContent.client.boundProjectId,'A');assert.deepEqual(calls,[]);
+    const record=JSON.parse(await fs.readFile(integration.connectionPath,'utf8'));assert.deepEqual(Object.keys(record),['version','socketPath','token','pid']);assert.equal(JSON.stringify(response).includes(record.token),false);
+  }finally{await c?.close();await integration?.close();await fs.rm(data,{recursive:true,force:true});}
 });

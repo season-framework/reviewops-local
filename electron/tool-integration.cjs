@@ -3,12 +3,54 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
+const { validateBuildInfo, displayBuildVersion } = require('./build-info.cjs');
 
 const MAX_BYTES = 512 * 1024;
 const REQUEST_FIELDS = new Set(['requestId', 'projectId', 'workspacePath', 'serviceId', 'reviewId', 'title', 'body', 'tool']);
 const STATES = new Set(['pending', 'needs_project', 'opening', 'shown', 'display_failed']);
 const fail = (message, code = 'INVALID_REQUEST') => { throw Object.assign(new Error(message), { code }); };
 const object = value => { if (!value || typeof value !== 'object' || Array.isArray(value)) fail('JSON 객체로 요청하십시오.'); };
+const MAX_CONNECTION_INFO_BYTES = 16 * 1024;
+
+function publicConnectionInfo(metadata, dataPath) {
+  const invalid = () => fail('실행 앱의 연결 정보를 확인할 수 없습니다.', 'CONNECTION_INFO_UNAVAILABLE');
+  const scalar = (value, limit) => {
+    if (typeof value !== 'string' || !value || /[\x00-\x1f\x7f]/.test(value) || Buffer.byteLength(value) > limit) invalid();
+    return value;
+  };
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) invalid();
+  const platform = scalar(metadata.platform, 32), version = scalar(metadata.version, 128);
+  if (typeof metadata.instanceId !== 'string' || !/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(metadata.instanceId) || typeof metadata.isPackaged !== 'boolean') invalid();
+  const paths = platform === 'win32' ? path.win32 : path;
+  const home = scalar(metadata.homePath, 4096);
+  if (!paths.isAbsolute(home) || metadata.dataPath !== dataPath) invalid();
+  const redact = value => {
+    scalar(value, 4096);
+    if (!paths.isAbsolute(value)) invalid();
+    const relative = paths.relative(home, value);
+    const result = !relative ? '$HOME' : relative !== '..' && !relative.startsWith('..' + paths.sep) && !paths.isAbsolute(relative) ? '$HOME' + paths.sep + relative : value;
+    scalar(result, 4096);return result;
+  };
+  if (!['environment', 'platform-default'].includes(metadata.dataRootSource)) invalid();
+  let build;
+  if (metadata.build?.channel === 'test') {
+    try { build = validateBuildInfo(metadata.build, version); } catch { invalid(); }
+  } else {
+    if (metadata.build?.channel !== 'stable' || metadata.build.version !== version || ['buildNumber','developmentNumber','commit','builtAt'].some(key => metadata.build[key] != null)) invalid();
+    build = { channel: 'stable', version };
+  }
+  const qa = metadata.qa;
+  const actions = ['open','state','click','type','key','scroll','capture','navigate','reload','close','release'];
+  if (!qa || qa.protocolVersion !== 1 || !Array.isArray(qa.actions) || qa.actions.length !== actions.length || qa.actions.some((value, index) => value !== actions[index]) ||
+      !Array.isArray(qa.bindingFields) || qa.bindingFields.length !== 3 || qa.bindingFields.some((value, index) => value !== ['sessionId','projectId','windowId'][index]) || qa.optionalBrowserId !== true || qa.documentGeneration !== false) invalid();
+  const result = { schema: 1, instanceId: metadata.instanceId,
+    app: { version, displayVersion: displayBuildVersion(build, version), isPackaged: metadata.isPackaged, platform, arch: scalar(metadata.arch, 32),
+      build: { channel: build.channel, version: build.version, buildNumber: build.buildNumber ?? null, developmentNumber: build.developmentNumber ?? null, commit: build.commit ?? null, builtAt: build.builtAt ?? null } },
+    location: { dataRootSource: metadata.dataRootSource, dataPath: redact(dataPath), appPath: redact(metadata.appPath), executablePath: redact(metadata.executablePath), homeRedacted: true },
+    qa: { protocolVersion: 1, actions: [...qa.actions], bindingFields: [...qa.bindingFields], optionalBrowserId: true, documentGeneration: false } };
+  if (Buffer.byteLength(JSON.stringify(result)) > MAX_CONNECTION_INFO_BYTES) invalid();
+  return result;
+}
 function identifier(value, name) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(value) || ['__proto__', 'constructor', 'prototype'].includes(value)) fail(`${name}이 올바르지 않습니다.`);
   return value;
@@ -59,8 +101,14 @@ const publicRecord = record => ({ requestId: record.payload.requestId, status: r
   projectId: record.projectId || null, serviceId: record.serviceId || null, reviewId: record.reviewId || null,
   windowId: record.windowId ?? null, shown: record.status === 'shown', message: record.message || '', createdAt: record.createdAt, updatedAt: record.updatedAt });
 
-async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler } = {}) {
+async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler, connectionInfo } = {}) {
   if (!path.isAbsolute(dataPath || '') || typeof dispatch !== 'function' || typeof showReview !== 'function') fail('외부 도구 연결 설정이 올바르지 않습니다.');
+  // Capture only public startup scalars. Queries cannot invoke a window or Store.
+  let describedConnection = null;
+  if (connectionInfo !== undefined && typeof automationHandler === 'function') {
+    try { describedConnection = publicConnectionInfo(connectionInfo, dataPath); }
+    catch { /* Invalid diagnostics must not disable the existing bridge actions. */ }
+  }
   const directory = path.join(dataPath, 'integrations');
   await fs.mkdir(directory, { recursive: true, mode: 0o700 }); await fs.chmod(directory, 0o700);
   const socketPath = toolSocketPath(dataPath, platform), connectionPath = path.join(directory, 'tools.json'), statePath = path.join(directory, 'tools-state.json');
@@ -191,6 +239,11 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
   function handle(action, payload = {}) {
     if (closed) return Promise.reject(Object.assign(new Error('외부 도구 연결이 종료되었습니다.'), { code: 'CLOSED' }));
     object(payload);
+    if (action === 'connection.info') {
+      if (Object.keys(payload).length) fail('연결 정보 조회는 인수를 받지 않습니다.');
+      if (!describedConnection) fail('실행 앱이 연결 정보 조회를 제공하지 않습니다.', 'CONNECTION_INFO_UNAVAILABLE');
+      return JSON.parse(JSON.stringify(describedConnection));
+    }
     if (typeof action === 'string' && action.startsWith('automation.') && typeof automationHandler === 'function') return automationHandler(action, payload);
     if (action === 'projects.list') return exclusive(async () => {
       const snapshot = await dispatch('snapshot');
@@ -236,7 +289,8 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
         request = JSON.parse(input.slice(0, end));
         if (!request || !/^[a-f0-9]{64}$/.test(request.token || '') || !crypto.timingSafeEqual(Buffer.from(request.token), Buffer.from(token))) throw new Error();
       } catch { reply({ ok: false, error: { code: 'UNAUTHORIZED', message: '허용되지 않은 연결입니다.' } }); return; }
-      Promise.resolve().then(() => handle(request.action, request.payload || {})).then(data => reply({ ok: true, data }), error => reply({ ok: false, error: { code: error.code || 'REQUEST_FAILED', message: String(error.message).slice(0, 1000) } }));
+      const payload = request.action === 'connection.info' && Object.hasOwn(request, 'payload') ? request.payload : request.payload || {};
+      Promise.resolve().then(() => handle(request.action, payload)).then(data => reply({ ok: true, data }), error => reply({ ok: false, error: { code: error.code || 'REQUEST_FAILED', message: String(error.message).slice(0, 1000) } }));
     });
   });
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve); });
@@ -255,4 +309,4 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
     await fs.rm(connectionPath, { force: true }); if (platform !== 'win32') await fs.rm(socketPath, { force: true });
   } };
 }
-module.exports = { createToolIntegration, toolSocketPath };
+module.exports = { createToolIntegration, toolSocketPath, publicConnectionInfo };

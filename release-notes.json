@@ -36,6 +36,14 @@
       ]
     },
     {
+      "category": "features",
+      "title": "Inspect the app selected by your MCP connection",
+      "description": "Inspect the selected app's version, data location and QA capabilities through MCP without opening or focusing projects or changing leases. Unknown build fields stay null. Finding unknown custom data roots, reconnecting controllers and refreshing external tool lists remain separate.",
+      "commits": [
+        "fdaabbb79528cf754ad4ac1a936d04029192c6fc"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Protect reviews from outdated background results",
       "description": "Background agent updates and saved requests verify their original review and execution before saving. Older results cannot overwrite a replaced target, and service deletion keeps the original run’s confirmed final status. File operations and renderer edits remain separate.",
