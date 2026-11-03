@@ -175,6 +175,26 @@ test('connection selection keeps explicit, environment and default precedence wi
   assert.throws(()=>options(['--connection','a','--data-path','b'],env));
 });
 
+test('connection information uses the reported server and client path dialects on every host',()=>{
+  for(const serverPlatform of ['darwin','win32']){
+    const serverPaths=serverPlatform==='win32'?path.win32:path.posix,serverHome=serverPlatform==='win32'?'C:\\Users\\app':'/Users/app',data=serverPaths.join(serverHome,'data');
+    const reported=publicConnectionInfo({...appConnectionFixture(data),platform:serverPlatform,homePath:serverHome,appPath:serverPaths.join(serverHome+'-other','ReviewOps.app'),executablePath:serverPaths.join(serverHome,'bin','ReviewOps')},data);
+    assert.deepEqual(reported.location,{dataRootSource:'environment',dataPath:'$HOME'+serverPaths.sep+'data',appPath:serverPaths.join(serverHome+'-other','ReviewOps.app'),executablePath:'$HOME'+serverPaths.sep+'bin'+serverPaths.sep+'ReviewOps',homeRedacted:true});
+    for(const clientPlatform of ['darwin','win32']){
+      const clientPaths=clientPlatform==='win32'?path.win32:path.posix,clientHome=clientPlatform==='win32'?'C:\\Users\\client':'/Users/client';
+      const selection={selection:'data-path-argument',connectionPath:clientPaths.join(clientHome,'data','integrations','tools.json'),homePath:clientHome,platform:clientPlatform};
+      const result=connectionInfoResult(reported,selection,'A');
+      assert.deepEqual(result.location,reported.location);
+      assert.deepEqual(result.client,{selection:'data-path-argument',connectionPath:'$HOME'+clientPaths.sep+['data','integrations','tools.json'].join(clientPaths.sep),boundProjectId:'A'});
+      assert.equal(connectionInfoResult(reported,{...selection,connectionPath:clientHome}).client.connectionPath,'$HOME');
+      const sibling=clientPaths.join(clientHome+'-other','tools.json');
+      assert.equal(connectionInfoResult(reported,{...selection,connectionPath:sibling}).client.connectionPath,sibling);
+      assert.throws(()=>connectionInfoResult({...reported,location:{...reported.location,dataPath:'relative'}},selection),{code:'INVALID_CONNECTION_INFO'});
+      assert.throws(()=>connectionInfoResult(reported,{...selection,connectionPath:'relative'}),{code:'INVALID_CONNECTION_INFO'});
+    }
+  }
+});
+
 test('connection result refuses private extras, fabricated build identity and aggregate UTF-8 overflow',()=>{
   const data=path.resolve('/tmp/connection-info'),selection=selectionFor(data),value=publicConnectionInfo(appConnectionFixture(data),data);
   const first=connectionInfoResult(value,selection);first.qa.actions.length=0;assert.equal(connectionInfoResult(value,selection).qa.actions.length,11);

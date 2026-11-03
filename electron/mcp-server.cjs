@@ -52,14 +52,14 @@ function connectionInfoResult(value, selection, projectId) {
   } else if (['buildNumber','developmentNumber','commit','builtAt'].some(key => build[key] !== null)) invalid();
   const displayVersion = build.channel === 'test' ? build.developmentNumber ? `${build.version}-dev-${build.developmentNumber}` : `${build.version}-test.${build.buildNumber}` : build.version;
   if (value.app.displayVersion !== displayVersion || JSON.stringify(value.qa.actions) !== JSON.stringify(actions) || JSON.stringify(value.qa.bindingFields) !== JSON.stringify(keys)) invalid();
-  const serverPaths = value.app.platform === 'win32' ? path.win32 : path;
+  const serverPaths = value.app.platform === 'win32' ? path.win32 : path.posix;
   for (const key of ['dataPath','appPath','executablePath']) {
     const item = value.location[key];scalar(item, 4096);
     if (item !== '$HOME' && !item.startsWith('$HOME' + serverPaths.sep) && !serverPaths.isAbsolute(item)) invalid();
   }
   if (!selection || !['connection-argument','data-path-argument','environment','platform-default'].includes(selection.selection)) invalid();
   scalar(selection.platform, 32);
-  const clientPaths = selection.platform === 'win32' ? path.win32 : path;
+  const clientPaths = selection.platform === 'win32' ? path.win32 : path.posix;
   scalar(selection.connectionPath, 4096);scalar(selection.homePath, 4096);
   if (!clientPaths.isAbsolute(selection.connectionPath) || !clientPaths.isAbsolute(selection.homePath)) invalid();
   if (projectId !== undefined) { try { validate(ID, projectId); } catch { invalid(); } }
