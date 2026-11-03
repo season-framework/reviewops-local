@@ -18,6 +18,16 @@ Start the app first. The MCP server reads `integrations/tools.json` in the app d
 
 Adjust Node.js and app paths in these commands for your installation. An absolute Node.js path avoids dependence on the external agent's PATH.
 
+## Read the connected app identity
+
+After registering the MCP server, call `reviewops_connection_info` with `{}` to inspect the selected connection without opening or focusing a project. The response reports a per-process app instance ID, actual package/display version, available build metadata, packaged/source flag, app/executable/data paths and the running app's declared QA contract. The separate `client` object records whether the MCP connection used `--connection`, `--data-path`, `REVIEWOPS_DATA_DIR` or the platform default, plus its configured project restriction. These are diagnostic fields, not a project grant or a controller lease. The MCP wrapper's static `serverInfo.version` is not the app version. A stable app can report null build/source fields; they are not guessed from a repository or release pointer.
+
+Home prefixes are replaced with `$HOME` at path boundaries, and the complete information DTO is limited to 16 KiB. This is path redaction, not a scan for secrets embedded in arbitrary folder names. The connection token, account/SSH credentials, environment, user content and other projects' controllers are excluded. Redacted paths and PIDs must not be used to infer ownership or to adopt a process. The query does not attach a debugger, acquire/release a QA session, restart an app or change a window.
+
+An invalid connection record retains `INVALID_CONNECTION` and asks you to check the chosen data folder/configuration. An older app can return `CONNECTION_INFO_UNSUPPORTED`; missing or malformed startup information returns an unavailable/invalid information error. None establishes that an old app caused a reported QA problem. Do not fall back to the active window, another data root, system input or an app-wide restart. This query verifies only the explicitly selected, environment-selected or default location; it does not find an unknown custom data folder. Keep the existing connection-file/socket checks, including their treatment of path aliases.
+
+The advertised QA protocol label `1` describes the current session/project/window and optional browser-ID contract. It does not include document-generation fencing or transport reconnection. Existing QA ownership, input and timeout rules below still apply. An external chat host may require its own tool-list refresh or configuration change before exposing a newly registered tool; this app does not control that behavior. Installing an app update and reconnecting an agent to an already capable app are separate operations.
+
 ## Connect Codex
 
 Use the stdio connection supported by [Codex MCP configuration](https://developers.openai.com/codex/mcp).

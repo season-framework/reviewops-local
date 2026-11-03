@@ -185,6 +185,6 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

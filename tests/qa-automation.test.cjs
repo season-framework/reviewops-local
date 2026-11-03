@@ -78,3 +78,17 @@ test('idle expiry removes the project UI scope without requiring another client 
   assert.equal(record.qaActive,false);assert.deepEqual(changed,[true,false]);
  }finally{api.close();}
 });
+
+test('capability descriptions do not open, touch or release a project session',async()=>{
+ const f=fixture();try{
+  const expected={protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};
+  const first=f.api.capabilities();assert.deepEqual(first,expected);assert.equal(f.records.size,0);assert.equal(f.commands.length,0);
+  first.actions.push('focus');first.bindingFields.length=0;assert.deepEqual(f.api.capabilities(),expected);
+  const a=only(await f.api.handle('open',{projectId:'a',clientId:'owner'}));
+  f.setTime(80);assert.deepEqual(f.api.capabilities(),expected);
+  await assert.rejects(f.api.handle('open',{projectId:'a',clientId:'other'}),{code:'PROJECT_BUSY'});
+  f.setTime(102);f.api.capabilities();
+  assert.throws(()=>f.api.handle('type',{...a,text:'expired'}),{code:'SESSION_EXPIRED'});
+  assert.equal(f.commands.length,0);
+ }finally{f.api.close();}
+});

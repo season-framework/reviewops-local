@@ -7,10 +7,16 @@ const os = require('node:os');
 const net = require('node:net');
 const { spawn } = require('node:child_process');
 const { createStore } = require('../electron/store.cjs');
-const { createToolIntegration, toolSocketPath } = require('../electron/tool-integration.cjs');
+const { createToolIntegration, toolSocketPath, publicConnectionInfo } = require('../electron/tool-integration.cjs');
+
+function connectionMetadata(dataPath, overrides={}) {
+  return {instanceId:'11111111-1111-4111-8111-111111111111',version:'1.4.0',build:{channel:'stable',version:'1.4.0'},isPackaged:true,platform:process.platform,arch:process.arch,
+    dataPath,homePath:path.dirname(dataPath),appPath:path.join(dataPath,'ReviewOps.app','Contents','Resources','app.asar'),executablePath:path.join(dataPath,'ReviewOps.app','Contents','MacOS','ReviewOps'),dataRootSource:'environment',
+    qa:{protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false},...overrides};
+}
 
 const deferred = () => { let resolve; const promise = new Promise(value => { resolve = value; }); return { promise, resolve }; };
-async function fixture() {
+async function fixture(withConnectionInfo=false) {
   const directory = await fs.mkdtemp(path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', 'reviewops-tools-'));
   const dbPath = path.join(directory, 'reviews.sqlite');
   let store = createStore({ dbPath }), bridge, connection, display = async value => ({ ...value, windowId: 'window-' + (100 + shown.length), shown: true }), beforeDispatch;
@@ -29,7 +35,8 @@ async function fixture() {
       if (action === 'snapshot') return store.snapshot();
       if (action === 'review.save') return store.saveReview(payload);
       throw new Error(`Unexpected action: ${action}`);
-    }, showReview: async value => { shown.push(value); return display(value); }, displayTimeoutMs: 1000 });
+    }, showReview: async value => { shown.push(value); return display(value); }, displayTimeoutMs: 1000,connectionInfo:withConnectionInfo?connectionMetadata(directory,typeof withConnectionInfo==='object'?withConnectionInfo:{}):undefined,
+      automationHandler:withConnectionInfo?()=>{throw new Error('Connection information must not invoke QA');}:undefined });
     connection = JSON.parse(await fs.readFile(bridge.connectionPath, 'utf8'));
   }
   await start();
@@ -55,6 +62,59 @@ async function fixture() {
     async close() { await bridge.close(); store.close(); await fs.rm(directory, { recursive: true, force: true }); }
   };
 }
+
+test('connection information is a fresh scalar allowlist with home-boundary redaction',()=>{
+  for(const platform of ['darwin','win32']){
+    const paths=platform==='win32'?path.win32:path.posix,home=platform==='win32'?'C:\\Users\\sample':'/Users/sample',data=paths.join(home,'data');
+    const metadata=connectionMetadata(data,{platform,homePath:home,appPath:paths.join(home+'-other','ReviewOps.app'),executablePath:paths.join(home,'bin','ReviewOps')});
+    Object.defineProperty(metadata,'credentials',{get(){throw new Error('Private extras must not be traversed');}});
+    const result=publicConnectionInfo(metadata,data);
+    assert.deepEqual(Object.keys(result),['schema','instanceId','app','location','qa']);
+    assert.deepEqual(Object.keys(result.app),['version','displayVersion','isPackaged','platform','arch','build']);
+    assert.deepEqual(result.location,{dataRootSource:'environment',dataPath:'$HOME'+paths.sep+'data',appPath:paths.join(home+'-other','ReviewOps.app'),executablePath:'$HOME'+paths.sep+'bin'+paths.sep+'ReviewOps',homeRedacted:true});
+    assert.deepEqual(result.app.build,{channel:'stable',version:'1.4.0',buildNumber:null,developmentNumber:null,commit:null,builtAt:null});
+    result.qa.actions.push('focus');result.app.build.commit='fabricated';assert.equal(publicConnectionInfo(metadata,data).qa.actions.length,11);assert.equal(publicConnectionInfo(metadata,data).app.build.commit,null);
+    assert.ok(Buffer.byteLength(JSON.stringify(result))<16*1024);
+  }
+});
+
+test('connection information preserves actual test build identity without inventing stable source metadata',()=>{
+  const data=path.resolve('/tmp/connection-info'),build={channel:'test',version:'1.4.0',buildNumber:12345,developmentNumber:7,commit:'a'.repeat(40),builtAt:'2026-11-03T00:00:00.000Z'};
+  const result=publicConnectionInfo(connectionMetadata(data,{isPackaged:false,build}),data);
+  assert.equal(result.app.displayVersion,'1.4.0-dev-7');assert.equal(result.app.isPackaged,false);assert.deepEqual(result.app.build,build);
+  assert.throws(()=>publicConnectionInfo(connectionMetadata(data,{build:{...build,version:'1.3.0'}}),data),{code:'CONNECTION_INFO_UNAVAILABLE'});
+  assert.throws(()=>publicConnectionInfo(connectionMetadata(data,{build:{channel:'stable',version:'1.4.0',commit:'a'.repeat(40)}}),data),{code:'CONNECTION_INFO_UNAVAILABLE'});
+});
+
+test('connection metadata rejects malformed identities and UTF-8 path overflow without truncation',()=>{
+  const data=path.resolve('/tmp/connection-info'),metadata=connectionMetadata(data);
+  for(const patch of [{instanceId:'pid-123'},{isPackaged:null},{homePath:'relative'},{dataPath:data+'-other'},{dataRootSource:'guessed'},{appPath:'/tmp/invalid\npath'},{appPath:path.parse(data).root+'한'.repeat(1400)},{qa:{...metadata.qa,documentGeneration:true}},{qa:{...metadata.qa,actions:['open','open']}}])
+    assert.throws(()=>publicConnectionInfo({...metadata,...patch},data),{code:'CONNECTION_INFO_UNAVAILABLE'});
+});
+
+test('authenticated connection.info never dispatches data or windows and rejects every supplied field',async()=>{
+  const f=await fixture(true);try{
+    f.beforeDispatch(()=>{throw new Error('Connection metadata must not dispatch');});
+    const before=await fs.readFile(f.bridge.connectionPath),listed=await f.invoke('connection.info');
+    assert.equal(listed.ok,true);assert.equal(listed.data.app.version,'1.4.0');assert.equal(listed.data.location.dataPath,'$HOME'+path.sep+path.basename(f.directory));
+    assert.equal(JSON.stringify(listed).includes(f.connection.token),false);
+    assert.deepEqual(Object.keys(f.connection),['version','socketPath','token','pid']);
+    const again=await f.invoke('connection.info');assert.deepEqual(again,listed);assert.deepEqual(await fs.readFile(f.bridge.connectionPath),before);
+    for(const payload of [{projectId:f.first.project.id},{action:'snapshot'},{force:true},{dataPath:f.directory}])assert.equal((await f.invoke('connection.info',payload)).error.code,'INVALID_REQUEST');
+    for(const payload of [null,false,0,'',[]])assert.equal((await f.invoke('connection.info',payload)).error.code,'INVALID_REQUEST');
+    assert.equal((await f.invoke('connection.info',{}, {token:'0'.repeat(64)})).error.code,'UNAUTHORIZED');
+    assert.deepEqual(f.calls,[]);assert.deepEqual(f.shown,[]);
+  }finally{await f.close();}
+});
+
+test('legacy bridge factories retain their operations with absent or malformed connection metadata',async()=>{
+  for(const input of [false,{instanceId:'invalid'}]){
+    const f=await fixture(input);try{
+      assert.equal((await f.invoke('connection.info')).error.code,'CONNECTION_INFO_UNAVAILABLE');
+      assert.equal((await f.invoke('projects.list')).ok,true);
+    }finally{await f.close();}
+  }
+});
 
 test('local socket lists only project connection labels and creates a review without starting an agent', async () => {
   const f = await fixture();

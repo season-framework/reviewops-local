@@ -18,7 +18,7 @@ const MAIN_SOURCE = fs.readFileSync(MAIN_PATH, 'utf8');
 // production store and vault on temporary files, including real SQL rollback.
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync('/tmp/reviewops-main-test-');
-  const dataPath = path.join(root, 'data');
+  const dataPath = path.join(root, options.defaultDataRoot ? 'ReviewOps Local' : 'data');
   const resourcesPath = path.join(root, 'resources');
   fs.mkdirSync(path.join(resourcesPath,'owned-services'),{recursive:true});
   fs.copyFileSync(path.join(__dirname,'../electron/owned-node-bootstrap.cjs'),path.join(resourcesPath,'owned-services','owned-node-bootstrap.cjs'));
@@ -30,7 +30,8 @@ async function harness(t, options = {}) {
     commandLine: {appendSwitch(...args) {state.switches.push(args);}},
     isPackaged: options.isPackaged !== false,
     setName() {}, setPath() {}, quit() {state.appQuitCalls++;},setAboutPanelOptions(value){state.aboutPanelOptions=value;},
-    getPath(name) { if (name === 'temp' || name === 'appData') return root; throw new Error(`Unexpected getPath: ${name}`); },
+    getPath(name) { if (name === 'temp' || name === 'appData') return root;if(name==='home')return path.join(root,'home');if(name==='exe')return path.join(resourcesPath,'ReviewOps');throw new Error(`Unexpected getPath: ${name}`); },
+    getAppPath() {if(options.appPathError)throw new Error('Synthetic app path unavailable');return path.join(resourcesPath,'app.asar');},
     getVersion() { return options.version||'0.0.0-test'; },
     requestSingleInstanceLock() { return true; },
     whenReady() { return { then(callback) { state.startup = callback(); return state.startup; } }; }
@@ -190,7 +191,7 @@ async function harness(t, options = {}) {
   state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
+    process: { env: options.defaultDataRoot ? {} : { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
     URL, Response, Buffer, Date:options.quitClock?class extends Date{static now(){return options.quitClock.now;}}:Date, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate,
     setTimeout(callback,delay,...args){
       if((delay===10000||callback.name==='quitCloseExpired')&&options.captureQuitCloseTimers)state.quitCloseTimers.push(callback);
@@ -251,6 +252,37 @@ test('detailed test identity agrees across app information, native About and cop
  await h.success('update.copyInfo');assert.match(h.state.clipboardText,/1\.2\.11-dev-10/);assert.match(h.state.clipboardText,/11001/);assert.match(h.state.clipboardText,/UTC/);
  const {project,review}=await seed(h),snapshot=await h.success('snapshot');
  assert.ok(snapshot.projects.some(item=>item.id===project.id));assert.ok(snapshot.reviews.some(item=>item.id===review.id));
+});
+
+test('bridge connection metadata captures actual startup identity independently of later focus and closed windows',async t=>{
+ const buildInfo={channel:'test',version:'1.4.0',buildNumber:12345,developmentNumber:7,commit:'a'.repeat(40),builtAt:'2026-11-03T00:00:00.000Z'};
+ const h=await harness(t,{version:'1.4.0',buildInfo,isPackaged:false}),metadata=h.state.toolIntegration.connectionInfo;
+ const {publicConnectionInfo}=require('../electron/tool-integration.cjs');
+ const first=publicConnectionInfo(metadata,h.dataPath);
+ assert.equal(first.app.version,'1.4.0');assert.equal(first.app.displayVersion,'1.4.0-dev-7');assert.deepEqual(first.app.build,buildInfo);assert.equal(first.app.isPackaged,false);
+ assert.equal(metadata.dataPath,h.dataPath);assert.equal(metadata.homePath,path.join(h.root,'home'));assert.equal(metadata.appPath,path.join(h.root,'resources','app.asar'));assert.equal(metadata.executablePath,path.join(h.root,'resources','ReviewOps'));assert.equal(first.location.dataRootSource,'environment');
+ assert.match(first.instanceId,/^[a-f0-9-]{36}$/);assert.ok(Object.values(metadata).every(value=>typeof value!=='function'));
+ const getPath=h.appEvents.getPath,getAppPath=h.appEvents.getAppPath;
+ try{
+  h.appEvents.getPath=()=>{throw new Error('Metadata must not requery paths');};h.appEvents.getAppPath=()=>{throw new Error('Metadata must not requery app path');};
+  h.state.focusedWindow={focus(){throw new Error('Metadata must not use native focus');}};
+  h.state.window.close();
+  assert.deepEqual(publicConnectionInfo(metadata,h.dataPath),first);
+ }finally{h.appEvents.getPath=getPath;h.appEvents.getAppPath=getAppPath;}
+});
+
+test('default-data-root bridge metadata retains unknown stable source as null',async t=>{
+ const h=await harness(t,{version:'1.4.0',defaultDataRoot:true}),metadata=h.state.toolIntegration.connectionInfo;
+ const result=require('../electron/tool-integration.cjs').publicConnectionInfo(metadata,h.dataPath);
+ assert.equal(metadata.dataPath,path.join(h.root,'ReviewOps Local'));assert.equal(result.location.dataRootSource,'platform-default');
+ assert.equal(result.app.displayVersion,'1.4.0');assert.deepEqual(result.app.build,{channel:'stable',version:'1.4.0',buildNumber:null,developmentNumber:null,commit:null,builtAt:null});
+});
+
+test('a missing actual app path leaves diagnostics unavailable without inventing identity or disabling the bridge',async t=>{
+ const h=await harness(t,{appPathError:true});
+ assert.equal(h.state.toolIntegration.connectionInfo,undefined);
+ const result=await h.state.toolIntegration.automationHandler('automation.projects.list',{});
+ assert.deepEqual(result,{projects:[]});assert.equal(h.state.startupErrors.length,0);
 });
 
 async function waitForValue(read, message) {
