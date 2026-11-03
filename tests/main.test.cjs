@@ -2818,3 +2818,63 @@ test('a service credential deletion failure preserves the confirmed original can
  assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);const history=await h.success('agent.read',{id:run.id});assert.equal(history.status,'cancelled');assert.equal(history.serviceId,a.service.id);
  assert.equal(h.state.realVault.get(a.service.id).password,'synthetic-old-password');assert.equal((await h.success('snapshot')).agentRunning,0);
 });
+
+
+test('an accepted original run keeps its own completion when the next selected service and notes change',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Next selected target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'original-service-completion')),callback=h.state.agentCallbacks.get(run.id);
+ await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Current reviewer notes for the next execution'});const current={...h.state.liveStore.get('reviews',a.review.id)};
+ callback({id:run.id,kind:'agent',status:'completed',response:'Original linked service completed',finishedAt:new Date().toISOString()});
+ const latest=h.state.liveStore.get('reviews',a.review.id),{updatedAt:beforeUpdatedAt,...beforeFields}=current,{updatedAt:afterUpdatedAt,...afterFields}=latest;
+ assert.deepEqual(afterFields,beforeFields);assert.equal(current.serviceId,next.id);
+ const saved=h.state.liveStore.get('agent_runs',run.id);assert.equal(afterUpdatedAt,saved.updatedAt);assert.equal(saved.serviceId,a.service.id);assert.equal(saved.response,'Original linked service completed');assert.equal(saved.status,'completed');
+ assert.equal(h.state.liveStore.snapshot().activities.filter(row=>row.agentRunId===run.id&&row.role==='agent').length,1);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('a selected-service change never lets an original callback write after its project service is unlinked',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Remaining selected target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const run=await h.success('agent.start',ownedAgentInput(a.review,'unlinked-original-completion')),callback=h.state.agentCallbacks.get(run.id);
+ await h.success('review.save',{id:a.review.id,serviceId:next.id});h.state.liveStore.setProjectServices(a.project.id,[next.id]);const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;
+ callback({id:run.id,kind:'agent',status:'completed',response:'Must not persist after unlink',finishedAt:new Date().toISOString()});
+ assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+
+test('detached original service deletion preserves the next selected service and its running owner',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+ const next=await h.success('service.save',{groupId:a.group.id,name:'Next still-running target',kind:'local',rootPath:h.root,agentEnabled:1});
+ await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+ const original=await h.success('agent.start',{...ownedAgentInput(a.review,'delete-original-P'),newConversation:true,independentExecution:true});
+ await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Notes for the next selected service'});
+ const active=await h.success('agent.start',{...ownedAgentInput(a.review,'retain-current-A'),newConversation:true,independentExecution:true}),callback=h.state.agentCallbacks.get(active.id);
+ await h.success('project.save',{id:a.project.id,serviceIds:[next.id]});const current={...h.state.liveStore.get('reviews',a.review.id)};
+ h.state.agentCancelFinal={status:'completed',response:'Confirmed original P outcome'};
+ assert.equal((await h.success('service.delete',{id:a.service.id})).deleted,true);
+ const history=await h.success('agent.read',{id:original.id});assert.equal(history.status,'completed');assert.equal(history.response,'Confirmed original P outcome');assert.equal(history.serviceId,null);
+ const {updatedAt:beforeUpdatedAt,...beforeFields}=current,{updatedAt:afterUpdatedAt,...afterFields}=h.state.liveStore.get('reviews',a.review.id);assert.deepEqual(afterFields,beforeFields);assert.equal(afterUpdatedAt,history.updatedAt);
+ assert.deepEqual(h.state.agentCancelled,[original.id]);assert.equal(h.state.agentStarts.length,2);assert.equal(h.state.agentCallbacks.get(active.id),callback);assert.equal((await h.success('snapshot')).agentRunning,1);
+ assert.equal((await h.success('agent.read',{id:active.id})).status,'running');
+ callback({id:active.id,kind:'agent',status:'running',response:'Original A owner still accepts progress'});assert.equal(h.state.liveStore.get('agent_runs',active.id).response,'Original A owner still accepts progress');
+ callback({id:active.id,kind:'agent',status:'completed',response:'A original final',finishedAt:new Date().toISOString()});assert.equal((await h.success('snapshot')).agentRunning,0);
+});
+
+test('a different next selection cannot upgrade stale detached cancellation ownership',async t=>{
+ for(const kind of ['restore','review-birth','run-replacement','project-move']){
+  const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,agentEnabled:1});
+  const next=await h.success('service.save',{groupId:a.group.id,name:'Next selected target',kind:'local',rootPath:h.root,agentEnabled:1});await h.success('project.save',{id:a.project.id,serviceIds:[a.service.id,next.id]});
+  const original=await h.success('agent.start',ownedAgentInput(a.review,'detached-next-'+kind));await h.success('review.save',{id:a.review.id,serviceId:next.id,body:'Current next-service notes'});await h.success('project.save',{id:a.project.id,serviceIds:[next.id]});
+  let release;const gate=new Promise(resolve=>{release=resolve;});h.state.agentCancelGate=()=>gate;const pending=h.invoke('service.delete',{id:a.service.id});
+  try{
+   await waitForValue(()=>h.state.agentCancelled.includes(original.id),'Original P cancellation did not begin');
+   if(kind==='restore')h.state.liveStore.importData(h.state.liveStore.exportData());
+   else if(kind==='review-birth')recreateOwnedReview(h.state.liveStore,a.review.id);
+   else if(kind==='project-move'){const other=h.state.liveStore.saveProject({groupId:a.group.id,name:'Different project',serviceIds:[next.id]});h.state.liveStore.db.prepare('UPDATE reviews SET projectId=? WHERE id=?').run(other.id,a.review.id);}
+   else {const raw={...h.state.liveStore.db.prepare('SELECT * FROM agent_runs WHERE id=?').get(original.id)};h.state.liveStore.db.prepare('DELETE FROM agent_runs WHERE id=?').run(original.id);h.state.liveStore.upsert('agent_runs',{...raw,prompt:'Distinct replacement execution',createdAt:'2026-11-03T00:00:00.000Z'});}
+   const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;release();const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,kind==='restore'?'STALE_EPOCH':kind==='run-replacement'?'STALE_AGENT':'STALE_REVIEW');assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);
+  }finally{release();await pending;}
+ }
+});

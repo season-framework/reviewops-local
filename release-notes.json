@@ -46,7 +46,7 @@
     {
       "category": "fixes",
       "title": "Protect reviews from outdated background results",
-      "description": "Background agent updates and saved requests verify their original review and execution before saving. Older results cannot overwrite a replaced target, and service deletion keeps the original run’s confirmed final status. File operations and renderer edits remain separate.",
+      "description": "Old agent or saved-request results are rejected after a dataset restore or replacement of their original review or execution. Accepted runs retain their own history when the next service selection changes and their original project link remains. Service deletion preserves confirmed final status. File operations and renderer edits remain separate.",
       "commits": [
         "a4209117a28ee74745837a239d0aeb76bd4cb762"
       ]

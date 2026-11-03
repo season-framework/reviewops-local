@@ -203,6 +203,20 @@ function assertReviewWriteAdmission(store, token) {
     if(reviewBinding(store,original)!==original.generation)fail('STALE_REVIEW');
   });
 }
+// An accepted callback may save only its original run/history after the next
+// selected service changes. The original review birth/project and service link
+// must still exist; this never grants a new launch or detached persistence.
+function assertRunningReviewCallback(store, token) {
+  return store.transaction(()=>{
+    const original=reviewWriteAdmissions.get(token);
+    if(!original||original.store!==store)fail('INVALID_REVIEW_ADMISSION');
+    assertWriteAdmission(store,original.admission);
+    const row=store.db.prepare('SELECT r.projectId,v.generation,v.deleted FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?').get(original.reviewId);
+    if(original.serviceId===null||!row||row.deleted!==0||row.projectId!==original.projectId||row.generation!==original.generation)fail('STALE_REVIEW');
+    currentRevision(store.db,original.reviewId);
+    if(!store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(original.projectId,original.serviceId))fail('STALE_REVIEW');
+  });
+}
 // Only explicit cancellation maintenance may use an originally linked token
 // after that project detached its service. Normal callback admission stays strict.
 function assertDetachedReviewCancellation(store, token) {
@@ -211,9 +225,11 @@ function assertDetachedReviewCancellation(store, token) {
     if(!original||original.store!==store)fail('INVALID_REVIEW_ADMISSION');
     assertWriteAdmission(store,original.admission);
     const row=store.db.prepare('SELECT r.projectId,r.serviceId,v.generation,v.deleted FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?').get(original.reviewId);
-    if(original.serviceId===null||!row||row.deleted!==0||row.projectId!==original.projectId||row.serviceId!==null||row.generation!==original.generation)fail('STALE_REVIEW');
+    if(original.serviceId===null||!row||row.deleted!==0||row.projectId!==original.projectId||row.generation!==original.generation)fail('STALE_REVIEW');
     currentRevision(store.db,original.reviewId);
     if(store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(original.projectId,original.serviceId))fail('STALE_REVIEW');
+    // A different next selection is valid only while it remains in this project.
+    if(row.serviceId!==null&&!store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(original.projectId,row.serviceId))fail('STALE_REVIEW');
   });
 }
 function readState(store, input, provider) {
@@ -254,4 +270,4 @@ function setStatus(store, input, provider) {
   });
 }
 
-module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
+module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, assertRunningReviewCallback, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};

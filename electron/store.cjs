@@ -507,6 +507,7 @@ class LocalStore {
   assertWriteAdmission(admission) { return sharedWrites.assertWriteAdmission(this, admission); }
   captureReviewWriteAdmission(admission, input) { return sharedWrites.captureReviewWriteAdmission(this, admission, input); }
   assertReviewWriteAdmission(token) { return sharedWrites.assertReviewWriteAdmission(this, token); }
+  assertRunningReviewCallback(token) { return sharedWrites.assertRunningReviewCallback(this, token); }
   assertDetachedReviewCancellation(token) { return sharedWrites.assertDetachedReviewCancellation(this, token); }
 
   get(table, itemId) {

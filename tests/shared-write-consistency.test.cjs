@@ -367,3 +367,49 @@ test('detached cancellation rejects a remaining original project link and an ori
  store.setProjectServices(f.a.id,[]);const detached=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:null});
  assert.throws(()=>store.assertDetachedReviewCancellation(detached),code('STALE_REVIEW'));store.assertDetachedReviewCancellation(token);
 });
+
+
+test('accepted callback admission keeps original project membership when only the next selected service changes',t=>{
+ const {store}=setup(t),f=fixture(store),next=store.saveService({groupId:f.group.id,name:'Next selected service',kind:'local',rootPath:os.tmpdir()});
+ store.setProjectServices(f.a.id,[f.service.id,next.id]);
+ const token=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id});
+ store.saveReview({id:f.review.id,serviceId:next.id,body:'Current reviewer notes'});const before=unchanged(store);
+ assert.throws(()=>store.assertReviewWriteAdmission(token),code('STALE_REVIEW'));
+ store.assertRunningReviewCallback(token);assert.deepEqual(unchanged(store),before);
+ store.setProjectServices(f.a.id,[next.id]);const detached=unchanged(store);
+ assert.throws(()=>store.assertRunningReviewCallback(token),code('STALE_REVIEW'));assert.deepEqual(unchanged(store),detached);
+});
+
+test('running callback assertion rejects forged foreign and originally service-free admissions',t=>{
+ const {store}=setup(t),f=fixture(store),other=setup(t).store,token=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id});
+ assert.throws(()=>store.assertRunningReviewCallback({}),code('INVALID_REVIEW_ADMISSION'));assert.throws(()=>other.assertRunningReviewCallback(token),code('INVALID_REVIEW_ADMISSION'));
+ store.saveReview({id:f.review.id,serviceId:null});const empty=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:null}),before=unchanged(store);
+ assert.throws(()=>store.assertRunningReviewCallback(empty),code('STALE_REVIEW'));assert.deepEqual(unchanged(store),before);
+});
+
+test('running callback assertion cannot cross restore project move or review rebirth',t=>{
+ for(const kind of ['restore','project-move','review-birth']){
+  const {store}=setup(t),f=fixture(store),token=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id});
+  if(kind==='restore')store.importData(store.exportData());
+  else if(kind==='project-move'){
+   // Keep the destination's existing review numbers and membership constraints.
+   const number=store.db.prepare('SELECT COALESCE(MAX(number),0)+1 AS number FROM reviews WHERE projectId=?').get(f.b.id).number;
+   store.db.prepare('UPDATE reviews SET projectId=?,number=? WHERE id=?').run(f.b.id,number,f.review.id);
+   assert.equal(store.get('reviews',f.review.id).projectId,f.b.id);assert.equal(store.get('reviews',f.review.id).number,number);
+  }
+  else {const original={...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(f.review.id)};store.deleteReview(f.review.id);insert(store.db,'reviews',original);}
+  const before=unchanged(store);assert.throws(()=>store.assertRunningReviewCallback(token),code(kind==='restore'?'STALE_EPOCH':'STALE_REVIEW'));assert.deepEqual(unchanged(store),before);
+ }
+});
+
+
+test('detached cancellation permits a different linked next selection without admitting normal callbacks or dangling selections',t=>{
+ const {store}=setup(t),f=fixture(store),next=store.saveService({groupId:f.group.id,name:'Next selection',kind:'local',rootPath:os.tmpdir()}),dangling=store.saveService({groupId:f.group.id,name:'Not linked',kind:'local',rootPath:os.tmpdir()});
+ store.setProjectServices(f.a.id,[f.service.id,next.id]);const token=store.captureReviewWriteAdmission(store.captureWriteAdmission(),{reviewId:f.review.id,projectId:f.a.id,serviceId:f.service.id});store.saveReview({id:f.review.id,serviceId:next.id,body:'Current notes'});store.setProjectServices(f.a.id,[next.id]);const before=unchanged(store);
+ store.assertDetachedReviewCancellation(token);assert.deepEqual(unchanged(store),before);assert.throws(()=>store.assertRunningReviewCallback(token),code('STALE_REVIEW'));assert.throws(()=>store.assertReviewWriteAdmission(token),code('STALE_REVIEW'));
+ // DELETE would null the selected service through project_service_delete.
+ // This raw same-group link update leaves the existing next selection unlinked.
+ const changedLink=store.db.prepare('UPDATE project_services SET serviceId=? WHERE projectId=? AND serviceId=?').run(dangling.id,f.a.id,next.id);
+ assert.equal(changedLink.changes,1);assert.equal(store.get('reviews',f.review.id).serviceId,next.id);assert.equal(Boolean(store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(f.a.id,next.id)),false);
+ const bad=unchanged(store);assert.throws(()=>store.assertDetachedReviewCancellation(token),code('STALE_REVIEW'));assert.deepEqual(unchanged(store),bad);
+});

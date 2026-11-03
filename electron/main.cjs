@@ -227,6 +227,10 @@ function assertOwnedAgentRow(owner) {
   store.assertReviewWriteAdmission(owner.target);
   return assertAgentRecordIdentity(owner);
 }
+function assertOwnedRunningAgentRow(owner) {
+  store.assertRunningReviewCallback(owner.target);
+  return assertAgentRecordIdentity(owner);
+}
 function assertAgentRecordIdentity(owner) {
   const current=store.get('agent_runs',owner.id),original=owner.sourceJob;
   const identity=['reviewId','serviceId','createdAt','prompt','model','reasoningEffort','workPath','sessionScope','context','requestId','requestSignature','newConversation','retryOf','independentExecution','sourceRunId','executionTarget','executionSettings','continuedFromRunId'];
@@ -320,9 +324,9 @@ function updateOwnedAgent(owner, job) {
     const previous=agentJobs.get(owner.id);
     const merged={...previous,...job,...(previous?.prompt?{prompt:previous.prompt}:{}),...(previous?.sessionScope?{sessionScope:previous.sessionScope,workPath:previous.workPath}:{})};
     const persisted=store.transaction(()=>{
-      assertOwnedAgentRow(owner);
+      assertOwnedRunningAgentRow(owner);
       const review=store.get('reviews',owner.reviewId);
-      if(merged.id!==owner.id||merged.kind!=='agent'||merged.reviewId!==owner.reviewId||merged.serviceId!==owner.serviceId||review.projectId!==owner.projectId||review.serviceId!==owner.serviceId)
+      if(merged.id!==owner.id||merged.kind!=='agent'||merged.reviewId!==owner.reviewId||merged.serviceId!==owner.serviceId||review.projectId!==owner.projectId)
         throw Object.assign(new Error('The original agent target is no longer current.'),{code:'TARGET_MISMATCH'});
       store.get('projects',owner.projectId);return store.saveAgentRun(merged);
     });
