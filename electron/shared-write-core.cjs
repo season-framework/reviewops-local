@@ -5,6 +5,7 @@ const {randomUUID, createHash} = require('node:crypto');
 const MAX_REVISION = Number.MAX_SAFE_INTEGER;
 const MAX_RECEIPTS = 100000;
 const writeAdmissions = new WeakMap();
+const reviewWriteAdmissions = new WeakMap();
 const OPERATION = 'review.status.set';
 const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -18,7 +19,9 @@ const MESSAGES = Object.freeze({
   IDEMPOTENCY_CONFLICT: 'The command identity already has a different intent.',
   RECEIPT_LIMIT: 'The active dataset command receipt limit was reached.',
   INVALID_CONSISTENCY_STATE: 'Durable review consistency state is unavailable.',
-  INVALID_WRITE_ADMISSION: 'An original application-owned write admission is required.'
+  INVALID_WRITE_ADMISSION: 'An original application-owned write admission is required.',
+  INVALID_REVIEW_ADMISSION: 'An original application-owned review admission is required.',
+  STALE_REVIEW: 'The original review was replaced or moved. Resynchronize before writing.'
 });
 function fail(code, extra) { throw Object.assign(new Error(MESSAGES[code]), {code, ...extra}); }
 function closed(value, keys, code) {
@@ -173,6 +176,46 @@ function assertWriteAdmission(store, admission) {
     if (original.epoch !== currentEpoch(store.db)) fail('STALE_EPOCH');
   });
 }
+// A process-local incarnation token is not a renderer revision or a write grant.
+function reviewBinding(store, scope) {
+  const row=store.db.prepare('SELECT r.projectId,r.serviceId,v.generation,v.deleted FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?').get(scope.reviewId);
+  if(!row||row.deleted!==0||row.projectId!==scope.projectId||row.serviceId!==scope.serviceId)fail('STALE_REVIEW');
+  currentRevision(store.db,scope.reviewId);
+  if(scope.serviceId!==null&&!store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(scope.projectId,scope.serviceId))fail('STALE_REVIEW');
+  return row.generation;
+}
+function captureReviewWriteAdmission(store, admission, input) {
+  const scope=closed(input,['reviewId','projectId','serviceId'],'INVALID_REVIEW_ADMISSION');
+  identifier(scope.reviewId,'INVALID_REVIEW_ADMISSION');identifier(scope.projectId,'INVALID_REVIEW_ADMISSION');
+  if(scope.serviceId!==null)identifier(scope.serviceId,'INVALID_REVIEW_ADMISSION');
+  return store.transaction(()=>{
+    assertWriteAdmission(store,admission);
+    const original={store,admission,reviewId:scope.reviewId,projectId:scope.projectId,serviceId:scope.serviceId};
+    original.generation=reviewBinding(store,original);
+    const token=Object.freeze(Object.create(null));reviewWriteAdmissions.set(token,original);return token;
+  });
+}
+function assertReviewWriteAdmission(store, token) {
+  return store.transaction(()=>{
+    const original=reviewWriteAdmissions.get(token);
+    if(!original||original.store!==store)fail('INVALID_REVIEW_ADMISSION');
+    assertWriteAdmission(store,original.admission);
+    if(reviewBinding(store,original)!==original.generation)fail('STALE_REVIEW');
+  });
+}
+// Only explicit cancellation maintenance may use an originally linked token
+// after that project detached its service. Normal callback admission stays strict.
+function assertDetachedReviewCancellation(store, token) {
+  return store.transaction(()=>{
+    const original=reviewWriteAdmissions.get(token);
+    if(!original||original.store!==store)fail('INVALID_REVIEW_ADMISSION');
+    assertWriteAdmission(store,original.admission);
+    const row=store.db.prepare('SELECT r.projectId,r.serviceId,v.generation,v.deleted FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?').get(original.reviewId);
+    if(original.serviceId===null||!row||row.deleted!==0||row.projectId!==original.projectId||row.serviceId!==null||row.generation!==original.generation)fail('STALE_REVIEW');
+    currentRevision(store.db,original.reviewId);
+    if(store.db.prepare('SELECT 1 FROM project_services WHERE projectId=? AND serviceId=?').get(original.projectId,original.serviceId))fail('STALE_REVIEW');
+  });
+}
 function readState(store, input, provider) {
   const intent = target(input, false);
   return store.transaction(() => {
@@ -211,4 +254,4 @@ function setStatus(store, input, provider) {
   });
 }
 
-module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
+module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};

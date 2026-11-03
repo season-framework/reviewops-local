@@ -141,3 +141,83 @@ test('editing a pending request preserves settings and links while changing its 
  const otherProject=f.store.saveProject({groupId:f.group.id,name:'Other project',serviceIds:[f.service.id]}),otherReview=f.store.saveReview({projectId:otherProject.id,serviceId:f.service.id,title:'Other'}),otherRun=f.store.saveAgentRun({reviewId:otherReview.id,serviceId:f.service.id,prompt:'Other',status:'completed',workPath:f.directory});
  const before=f.current();assert.throws(()=>f.queue.update({id:request.id,predecessorId:otherRun.id,requiredResult:'Lost result'}),/같은 프로젝트/);assert.deepEqual(f.current(),before);
 });
+
+
+function controlledRequestStart(f) {
+ const calls=[];
+ const queue=createRequestQueue({store:f.store,targetForReview:row=>({serviceId:row.serviceId,key:'folder-a'}),targetForRun:()=> 'folder-a',start:(input,operation)=>new Promise(resolve=>calls.push({input,operation,resolve}))});
+ const entered=async count=>{for(let turn=0;turn<20&&calls.length<count;turn++)await Promise.resolve();assert.equal(calls.length,count);return calls[count-1];};
+ const finish=call=>{const job=f.store.saveAgentRun({id:call.input.requestId,reviewId:call.input.reviewId,serviceId:f.service.id,prompt:call.input.prompt,status:'running',workPath:f.directory});call.resolve(job);return job;};
+ return {queue,calls,entered,finish};
+}
+
+test('a queued request checks its original admission before invoking the start callback',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),backup=f.store.exportData(),pending=c.queue.start({id:'request-a'});
+ const rejected=assert.rejects(pending,{code:'STALE_EPOCH'});f.store.importData(backup);const before=f.store.exportData();await rejected;
+ assert.equal(c.calls.length,0);assert.deepEqual(f.store.exportData(),before);
+});
+
+test('an old pending request cannot recreate a row removed by import',async t=>{
+ const f=fixture(t),backup=f.store.exportData();f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1),rejected=assert.rejects(pending,{code:'STALE_EPOCH'});
+ f.store.importData(backup);const before=f.store.exportData();call.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;
+ assert.deepEqual(listSavedRequests(f.store.db),[]);assert.deepEqual(f.store.exportData(),before);
+});
+
+test('an old request finally cannot join or remove a new same-ID pending owner',async t=>{
+ const f=fixture(t);f.add();const backup=f.store.exportData(),c=controlledRequestStart(f),old=c.queue.start({id:'request-a'}),oldCall=await c.entered(1),rejected=assert.rejects(old,{code:'STALE_EPOCH'});
+ backup.agentRequests[0].prompt='Fresh restored request';f.store.importData(backup);
+ const operation=Object.freeze({applicationOwned:true}),fresh=c.queue.start({id:'request-a'},operation),freshCall=await c.entered(2);
+ assert.equal(freshCall.operation,operation);assert.equal(freshCall.input.prompt,'Fresh restored request');
+ oldCall.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;
+ assert.throws(()=>c.queue.cancel({id:'request-a'}),/시작된 요청/);
+ const joined=c.queue.start({id:'request-a'});await Promise.resolve();assert.equal(c.calls.length,2);
+ const job=c.finish(freshCall);assert.equal((await fresh).id,job.id);assert.equal((await joined).id,job.id);
+ const row=listSavedRequests(f.store.db)[0];assert.equal(row.prompt,'Fresh restored request');assert.equal(row.runId,job.id);
+});
+
+test('failed import leaves the original pending request joinable and completion usable',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1),invalid=f.store.exportData();invalid.reviews[0].projectId='missing';
+ assert.throws(()=>f.store.importData(invalid));const joined=c.queue.start({id:'request-a'});await Promise.resolve();assert.equal(c.calls.length,1);
+ const job=c.finish(call);assert.equal((await pending).id,job.id);assert.equal((await joined).id,job.id);assert.equal(listSavedRequests(f.store.db)[0].runId,job.id);
+});
+
+test('request completion patches the current row instead of upserting its captured contents',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1);
+ f.store.db.prepare('UPDATE agent_requests SET resultNote=? WHERE id=?').run('Retained concurrent metadata','request-a');
+ c.finish(call);await pending;assert.equal(listSavedRequests(f.store.db)[0].resultNote,'Retained concurrent metadata');
+});
+
+test('request completion rechecks the original review project before linking a run',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1),rejected=assert.rejects(pending,{code:'REQUEST_START_REPLACED'});
+ const other=f.store.saveProject({groupId:f.group.id,name:'Different owner',serviceIds:[f.service.id]});f.store.db.prepare('UPDATE reviews SET projectId=? WHERE id=?').run(other.id,f.nextReview.id);
+ const before=listSavedRequests(f.store.db);call.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;assert.deepEqual(listSavedRequests(f.store.db),before);
+});
+
+
+test('an application-owned original admission is checked before an existing-run fast return',async t=>{
+ const f=fixture(t);f.add();const admission=f.store.captureWriteAdmission(),backup=f.store.exportData();f.store.importData(backup);
+ const run=f.store.saveAgentRun({id:'request-a',reviewId:f.nextReview.id,serviceId:f.service.id,prompt:'Restored current run',status:'running',workPath:f.directory});let starts=0;
+ const queue=createRequestQueue({store:f.store,targetForReview:row=>({serviceId:row.serviceId,key:'folder-a'}),targetForRun:()=> 'folder-a',admitStart:()=>admission,start:()=>{starts++;return run;}});
+ const before=f.store.exportData();await assert.rejects(queue.start({id:'request-a'}),{code:'STALE_EPOCH'});assert.equal(starts,0);assert.deepEqual(f.store.exportData(),before);
+});
+
+
+test('an old completion cannot link a same-ID request replaced with new execution contents',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1),rejected=assert.rejects(pending,{code:'REQUEST_START_REPLACED'});
+ f.store.db.prepare('DELETE FROM agent_requests WHERE id=?').run('request-a');c.queue.add({requestId:'request-a',reviewId:f.nextReview.id,prompt:'Different original execution'});const before=f.store.exportData();
+ call.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;assert.deepEqual(f.store.exportData(),before);assert.equal(listSavedRequests(f.store.db)[0].runId,'');
+});
+
+test('a pending request cannot join changed same-epoch execution settings',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),pending=c.queue.start({id:'request-a'}),call=await c.entered(1),rejected=assert.rejects(pending,{code:'REQUEST_START_REPLACED'});
+ f.store.db.prepare('UPDATE agent_requests SET binary=? WHERE id=?').run('/different-original-executable','request-a');
+ await assert.rejects(c.queue.start({id:'request-a'}),{code:'REQUEST_START_REPLACED'});assert.equal(c.calls.length,1);const before=f.store.exportData();call.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;assert.deepEqual(f.store.exportData(),before);
+});
+
+test('a same-epoch recreated review gets a new pending owner that old finally cannot remove',async t=>{
+ const f=fixture(t);f.add();const c=controlledRequestStart(f),old=c.queue.start({id:'request-a'}),oldCall=await c.entered(1),rejected=assert.rejects(old,{code:'REQUEST_START_REPLACED'}),raw={...f.store.db.prepare('SELECT * FROM reviews WHERE id=?').get(f.nextReview.id)},generation=f.store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.nextReview.id).generation;
+ f.store.deleteReview(f.nextReview.id);f.store.upsert('reviews',raw);assert(f.store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.nextReview.id).generation>generation);
+ c.queue.add({requestId:'request-a',reviewId:f.nextReview.id,prompt:'New review birth intent'});const fresh=c.queue.start({id:'request-a'}),freshCall=await c.entered(2);
+ oldCall.resolve({id:'request-a',reviewId:f.nextReview.id});await rejected;assert.throws(()=>c.queue.cancel({id:'request-a'}),/시작된 요청/);
+ const joined=c.queue.start({id:'request-a'});await Promise.resolve();assert.equal(c.calls.length,2);c.finish(freshCall);assert.equal((await fresh).id,'request-a');assert.equal((await joined).id,'request-a');assert.equal(listSavedRequests(f.store.db)[0].prompt,'New review birth intent');
+});

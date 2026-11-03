@@ -129,8 +129,18 @@ function requestState(row,{runs,requests,review,target,runTarget}) {
   return {...row,state:'ready',reason:'실행할 수 있습니다. 실행 버튼을 누르면 시작합니다.',delivery:'not_sent'};
 }
 
-function createRequestQueue({store,targetForReview,targetForRun,start}) {
+// Deliberately exclude result notes/resolution and update timestamps. They do
+// not change the original submitted execution; direct identical SQL ABA is not supported.
+function executionIdentity(row) {
+  return JSON.stringify(['id','reviewId','serviceId','createdAt','requestSignature','prompt','predecessorId','targetKey','requiredResult','resultConfirmed','model','reasoningEffort','binary','settingsRecorded','newConversation','executionSettings','context','sourceRunId','sourceTarget','continuedFromRunId'].map(key=>row[key]??null));
+}
+function createRequestQueue({store,targetForReview,targetForRun,start,admitStart=()=>store.captureWriteAdmission()}) {
   const starting=new Map();
+  function pendingOwner(id) {
+    const owner=starting.get(id);if(!owner)return null;
+    try{store.assertReviewWriteAdmission(owner.target);return owner;}
+    catch(error){if(!['STALE_EPOCH','STALE_REVIEW'].includes(error.code))throw error;if(starting.get(id)===owner)starting.delete(id);return null;}
+  }
   const get=id=>{identifier(id,true);const row=readRow(store.db.prepare('SELECT * FROM agent_requests WHERE id=?').get(id));if(!row)fail('후속 요청을 찾을 수 없습니다.');return row;};
   const targetSafe=review=>{try{return targetForReview(review);}catch{return null;}};
   function state(row) {
@@ -163,7 +173,7 @@ function createRequestQueue({store,targetForReview,targetForRun,start}) {
     },
     update(input) {
       const row=get(input.id);
-      if(row.runId||row.cancelled||starting.has(row.id)||store.listAgentRuns().some(run=>run.id===row.id))fail('이미 시작하거나 취소한 후속 요청은 바꿀 수 없습니다.');
+      if(row.runId||row.cancelled||pendingOwner(row.id)||store.listAgentRuns().some(run=>run.id===row.id))fail('이미 시작하거나 취소한 후속 요청은 바꿀 수 없습니다.');
       const patch={...settings(input,targetForReview(store.get('reviews',row.reviewId)),row),...(input.prompt!==undefined?{prompt:text(input.prompt,'후속 요청',100000,true,true)}:{}),...(input.context!==undefined?{context:requestContext(input.context)}:{}),...(input.sourceRunId!==undefined?{sourceRunId:identifier(input.sourceRunId),sourceTarget:input.sourceTarget??null}:{}),...(input.continuedFromRunId!==undefined?{continuedFromRunId:identifier(input.continuedFromRunId)}:{})};
       if(input.predecessorId!==undefined) {
         patch.predecessorId=identifier(input.predecessorId);
@@ -186,15 +196,43 @@ function createRequestQueue({store,targetForReview,targetForRun,start}) {
       return state(update(row,{resultConfirmed:true}));
     },
     cancel(input) {
-      const row=get(input.id);if(starting.has(row.id)||row.runId||store.listAgentRuns().some(run=>run.id===row.id))fail('시작된 요청은 에이전트 실행에서 중지하십시오.');return state(update(row,{cancelled:true}));
+      const row=get(input.id);if(pendingOwner(row.id)||row.runId||store.listAgentRuns().some(run=>run.id===row.id))fail('시작된 요청은 에이전트 실행에서 중지하십시오.');return state(update(row,{cancelled:true}));
     },
-    async start(input) {
-      const row=get(input.id),existing=store.listAgentRuns().find(run=>run.id===(row.runId||row.id));
-      if(existing)return existing;
+    async start(input,operation) {
+      const {row,existing,admission,projectId,target,execution}=store.transaction(()=>{
+        const admission=admitStart(operation);store.assertWriteAdmission(admission);
+        const row=get(input.id);
+        const review=store.get('reviews',row.reviewId),target=store.captureReviewWriteAdmission(admission,{reviewId:review.id,projectId:review.projectId,serviceId:review.serviceId});
+        return {row,admission,projectId:review.projectId,target,execution:executionIdentity(row),existing:store.listAgentRuns().find(run=>run.id===(row.runId||row.id))};
+      });
+      if(existing){if(existing.reviewId!==row.reviewId||existing.prompt!==row.prompt)fail('후속 요청의 실행 내용이 변경되었습니다.','REQUEST_START_REPLACED');return existing;}
+      const previous=starting.get(row.id);
+      if(previous){
+        try{store.assertReviewWriteAdmission(previous.target);if(previous.execution!==execution)fail('후속 요청의 실행 내용이 변경되었습니다.','REQUEST_START_REPLACED');return previous.pending;}
+        catch(error){if(!['STALE_EPOCH','STALE_REVIEW'].includes(error.code))throw error;if(starting.get(row.id)===previous)starting.delete(row.id);}
+      }
       const current=state(row);if(current.state!=='ready')fail(current.reason);
-      if(starting.has(row.id))return starting.get(row.id);
-      const pending=Promise.resolve().then(()=>start({reviewId:row.reviewId,requestId:row.id,prompt:row.prompt,model:row.model,reasoningEffort:row.reasoningEffort,executionSettings:row.executionSettings,newConversation:row.newConversation,...(row.sourceRunId?{sourceRunId:row.sourceRunId,sourceTarget:row.sourceTarget}:{}),...(row.continuedFromRunId?{continuedFromRunId:row.continuedFromRunId}:{}),context:row.context||{instruction:true,attachmentIds:[],logIds:[]},independentExecution:false})).then(job=>{update(row,{runId:job.id});return job;}).finally(()=>starting.delete(row.id));
-      starting.set(row.id,pending);return pending;
+      const owner={admission,target,execution,pending:null};
+      owner.pending=Promise.resolve().then(()=>{
+        store.transaction(()=>{
+          store.assertWriteAdmission(admission);
+          const fresh=get(row.id);
+          if(starting.get(row.id)!==owner||fresh.reviewId!==row.reviewId||store.get('reviews',fresh.reviewId).projectId!==projectId)fail('후속 요청의 실행 소유자가 변경되었습니다.','REQUEST_START_REPLACED');
+          store.assertReviewWriteAdmission(target);
+          if(JSON.stringify(fresh)!==JSON.stringify(row))fail('후속 요청이 변경되었습니다. 저장된 요청을 다시 확인하십시오.','REQUEST_START_REPLACED');
+          const ready=state(fresh);if(ready.state!=='ready')fail(ready.reason);
+        });
+        return start({reviewId:row.reviewId,requestId:row.id,prompt:row.prompt,model:row.model,reasoningEffort:row.reasoningEffort,executionSettings:row.executionSettings,newConversation:row.newConversation,...(row.sourceRunId?{sourceRunId:row.sourceRunId,sourceTarget:row.sourceTarget}:{}),...(row.continuedFromRunId?{continuedFromRunId:row.continuedFromRunId}:{}),context:row.context||{instruction:true,attachmentIds:[],logIds:[]},independentExecution:false},operation);
+      }).then(job=>store.transaction(()=>{
+        store.assertWriteAdmission(admission);
+        const fresh=get(row.id);
+        if(starting.get(row.id)!==owner||fresh.reviewId!==row.reviewId||store.get('reviews',fresh.reviewId).projectId!==projectId)fail('후속 요청의 실행 소유자가 변경되었습니다.','REQUEST_START_REPLACED');
+        store.assertReviewWriteAdmission(target);
+        if(executionIdentity(fresh)!==execution)fail('후속 요청의 실행 내용이 변경되었습니다.','REQUEST_START_REPLACED');
+        if(job.id!==row.id||job.reviewId!==row.reviewId||fresh.cancelled||fresh.runId&&fresh.runId!==job.id)fail('후속 요청의 실행 연결이 변경되었습니다.','REQUEST_START_REPLACED');
+        update(fresh,{runId:job.id});return job;
+      })).finally(()=>{if(starting.get(row.id)===owner)starting.delete(row.id);});
+      starting.set(row.id,owner);return owner.pending;
     },
     resolve(input) {
       const row=get(input.id),run=store.listAgentRuns().find(run=>run.id===(row.runId||row.id));

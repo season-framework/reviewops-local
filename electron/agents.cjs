@@ -223,7 +223,7 @@ function createAgentManager(options = {}) {
   }
   function publish(job) {
     job.data.updatedAt = new Date().toISOString();
-    try { const result = notify(publicJob(job)); result?.catch?.(() => {}); } catch { /* Persistence errors are handled by the owner. */ }
+    try { const result = job.notify(publicJob(job)); result?.catch?.(() => {}); } catch { /* Persistence errors are handled by the owner. */ }
   }
   function finish(job, status, error = '') {
     if (FINAL.has(job.data.status)) return;
@@ -274,7 +274,7 @@ function createAgentManager(options = {}) {
     const config = input.config || {}, settings = normalize(input.settings, config);
     if (!['local','ssh'].includes(config.kind)) throw new SshError('AGENT_CONFIG_INVALID', '로컬 폴더 또는 SSH 호스트를 선택하십시오.');
     const data = {id, kind, reviewId:input.reviewId || '', serviceId:input.serviceId || config.id || '', status:'running', sessionId:input.sessionId || '', model:settings.model, reasoningEffort:settings.reasoningEffort, ...(kind==='agent'?{executionSettings:executionSettings(input.executionSettings,{model:settings.model,reasoningEffort:settings.reasoningEffort})}:{}),response:'', output:'', error:'', progress:[], progressOmitted:0,startedAt:new Date().toISOString(), finishedAt:null, cancelRequested:false};
-    const job = {data, settings, config, images:input.images || [], files:input.files || [], seen:new Map(), stdoutDecoder:new StringDecoder('utf8'), stderrDecoder:new StringDecoder('utf8'), pending:'', stderr:'', secrets:[config.password, config.passphrase]};
+    const job = {notify:typeof input.onUpdate==='function'?input.onUpdate:notify, data, settings, config, images:input.images || [], files:input.files || [], seen:new Map(), stdoutDecoder:new StringDecoder('utf8'), stderrDecoder:new StringDecoder('utf8'), pending:'', stderr:'', secrets:[config.password, config.passphrase]};
     job.done = new Promise(resolve => {job.resolveDone = resolve;});
     job.controlReady = new Promise(resolve => {job.resolveControlReady = resolve;});
     jobs.set(id, job);
@@ -806,11 +806,11 @@ function createAgentManager(options = {}) {
       const {settings,args,prompt,images,files}=prepareStart(input);
       const job=makeJob({...input,settings,images,files},'agent');queueMicrotask(()=>execute(job,prompt,args));return publicJob(job);
     },
-    restore({job:saved,config,settings={}}) {
+    restore({job:saved,config,settings={},onUpdate}) {
       if (!saved || saved.kind !== 'agent' || saved.status !== 'running' || saved.remoteExecution?.version !== 1 || !saved.remoteExecution.ready || config?.kind !== 'ssh') throw new SshError('AGENT_RESTORE_INVALID','다시 연결할 SSH 에이전트 작업 정보가 올바르지 않습니다.');
       validateConfig(config);
       saved=JSON.parse(JSON.stringify(saved));
-      const job = makeJob({id:saved.id,reviewId:saved.reviewId,serviceId:saved.serviceId,sessionId:saved.sessionId,config,settings},'agent',false);
+      const job = makeJob({id:saved.id,reviewId:saved.reviewId,serviceId:saved.serviceId,sessionId:saved.sessionId,config,settings,onUpdate},'agent',false);
       // Replay the remote files from the beginning. An app may have stopped
       // between bytes of a UTF-8 character or JSON event; the process is never run again.
       job.data = {...saved,status:'running',finishedAt:null,response:'',output:'',progress:[],progressOmitted:0,error:'',remoteExecution:{version:1,ready:true,stdoutOffset:0,stderrOffset:0}};
