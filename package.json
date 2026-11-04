@@ -1,7 +1,7 @@
 {
   "name": "reviewops-local",
   "productName": "ReviewOps",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Review websites, organize projects, and run Codex on your computer or SSH hosts.",
   "author": "SEASON",
   "license": "MIT",

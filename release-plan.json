@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.4.0",
-  "version": "1.4.1",
-  "bump": "patch",
-  "reason": "Prevent outdated review version and attachment saves, and avoid unnecessary refreshes when reading review versions.",
-  "baseCommit": "724f1ef94a454454c7ea3f5c6c56dbe424b01c1d"
+  "previousVersion": "1.4.1",
+  "version": "1.5.0",
+  "bump": "minor",
+  "reason": "Add private running-instance discovery so a fresh MCP process can connect to one running app without restarting it.",
+  "baseCommit": "209bb9fe7b090df578bca250c48da4d55ddcb341"
 }

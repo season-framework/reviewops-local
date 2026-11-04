@@ -1,61 +1,13 @@
 {
   "schema": 1,
-  "version": "1.4.1",
+  "version": "1.5.0",
   "entries": [
     {
-      "category": "fixes",
-      "title": "Keep copied attachment files and source details consistent",
-      "description": "ReviewOps stops a pending copy and asks you to recheck if a selected attachment is removed, moved to another review or replaced while its files are being read or saved. Current source files and other windows' staged attachments are preserved. Changes to unselected attachments, ordinary history and source-service selection remain compatible.",
+      "category": "features",
+      "title": "Connect a fresh MCP process to a running app",
+      "description": "On macOS and Linux, a fresh MCP process can find one privately registered running app using a custom data folder when no explicit connection is selected and the default connection file is absent. The session stays tied to that app instance. Multiple or stale records require explicit selection. Windows automatic discovery is unsupported.",
       "commits": [
-        "287710ae8e5769bd1b1b9115da05ac1a3985e36f"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Keep review copies tied to their original source review",
-      "description": "ReviewOps stops a pending copy if its original review is deleted and recreated with the same ID or moved to another project while attachments are being read. Current source data and existing files stay intact. Ordinary activity history and source-service changes continue.",
-      "commits": [
-        "faa2bbc78af4e9360e849108b2874216d2687fa5"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Protect pending review copies when window access changes",
-      "description": "ReviewOps stops a pending copy if its original window's QA access changes, the window closes, or its data is restored before saving. Releasing QA does not revive the old request; start a new copy when access is available again. Ordinary activity history and QA work in other windows remain compatible.",
-      "commits": [
-        "13b3a344440c11b8b2903d5b9203421a0aa56a67"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Show copy failures inside the copy dialog",
-      "description": "After a review copy is refused, the dialog shows the actual reason in the current interface language and re-enables Cancel. Successful copies continue to refresh the project.",
-      "commits": [
-        "c5e46b050932cc138803b8b293b188b9c9e3dc6f"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Reject attachment selections from outdated requests",
-      "description": "If QA disconnects or the selected review is restored, replaced, or now belongs to another project, ReviewOps rejects the pending attachment save. Existing files stay intact, and normal history and next-service changes continue.",
-      "commits": [
-        "5b47596ee7e21b7ca54950aacc61bb9ec7b0d3a7"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Avoid extra refreshes when opening review versions",
-      "description": "Opening a review's version list no longer triggers extra app refreshes. Saved versions and target changes still refresh the interface.",
-      "commits": [
-        "45e3e64776ec2a64d03b88860fd835dca805759b"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Protect review versions from outdated saves",
-      "description": "If a review or its selected attachments change while files are being read, the save stops and asks you to recheck the copies. Newer saved records are preserved.",
-      "commits": [
-        "8abc3f66461cd6dff5b98b8f5df75a1453f73459"
+        "209bb9fe7b090df578bca250c48da4d55ddcb341"
       ]
     }
   ]

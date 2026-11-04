@@ -53,7 +53,7 @@ test('packaged MCP resources include category definitions and load without the s
   try{
     const asar=require('@electron/asar'),source=path.join(directory,'app-source'),archive=path.join(directory,'app.asar');
     await fs.mkdir(path.join(source,'electron'),{recursive:true});
-    const canonical=[['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']];
+    const canonical=[['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']];
     for(const [file]of canonical)await fs.copyFile(path.resolve(__dirname,'../electron',file),path.join(source,'electron',file));
     await fs.copyFile(path.resolve(__dirname,'../electron/owned-node-bootstrap.cjs'),path.join(source,'electron/owned-node-bootstrap.cjs'));
     await finished(await asar.createPackage(source,archive));
@@ -215,4 +215,122 @@ test('MCP connection information round-trips through the authenticated owned soc
     assert.equal(response.isError,false);assert.equal(response.structuredContent.instanceId,'22222222-2222-4222-8222-222222222222');assert.equal(response.structuredContent.client.boundProjectId,'A');assert.deepEqual(calls,[]);
     const record=JSON.parse(await fs.readFile(integration.connectionPath,'utf8'));assert.deepEqual(Object.keys(record),['version','socketPath','token','pid']);assert.equal(JSON.stringify(response).includes(record.token),false);
   }finally{await c?.close();await integration?.close();await fs.rm(data,{recursive:true,force:true});}
+});
+
+test('explicit, environment and present-default routes never read the running-instance registry', async t => {
+  const { createConnectionInvoker } = require('../electron/mcp-server.cjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(require('node:os').tmpdir(), 'ro-route-')));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const route of ['connection-argument', 'data-path-argument', 'environment', 'platform-default']) {
+    const file = path.join(root, route, 'integrations', 'tools.json');
+    if (route === 'platform-default') { await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, 'invalid'); }
+    let reads = 0;
+    const invoke = createConnectionInvoker({ selection: route, connectionPath: file }, { directory: () => { reads++; throw new Error('Registry must not be read'); } });
+    await assert.rejects(invoke('automation.projects.list', {})); assert.equal(reads, 0, route);
+  }
+});
+
+async function discoveredFixture(t) {
+  const discovery = require('../electron/instance-discovery.cjs');
+  const root = await fs.realpath(await fs.mkdtemp(path.join(process.platform === 'win32' ? require('node:os').tmpdir() : '/tmp', 'ro-disc-')));
+  await fs.chmod(root, 0o700);
+  const data = path.join(root, 'custom'), registry = path.join(root, 'registry'); await fs.mkdir(data, { mode: 0o700 });
+  const calls = [], metadata = appConnectionFixture(data);
+  const bridge = await createToolIntegration({ dataPath: data, dispatch: async () => ({}), showReview: async () => ({}), connectionInfo: metadata,
+    discoveryDirectory: registry, automationHandler: async (action, payload) => { calls.push({ action, payload }); return { projects: [{ id: 'A' }] }; } });
+  const config = { selection: 'platform-default', connectionPath: path.join(root, 'absent', 'integrations', 'tools.json') };
+  const selection = { ...selectionFor(data), selection: 'platform-default', connectionPath: config.connectionPath };
+  const invoke = require('../electron/mcp-server.cjs').createConnectionInvoker(config, { selection, directory: () => registry });
+  t.after(async () => { await bridge.close(); await fs.rm(root, { recursive: true, force: true }); });
+  return { root, data, registry, calls, bridge, config, selection, invoke, metadata, discovery };
+}
+
+test('a single custom app is selected lazily and concurrent first calls share a frozen discovered session', { skip: process.platform === 'win32' }, async t => {
+  const f = await discoveredFixture(t);
+  const c = client({ invoke: f.invoke, connectionSelection: f.selection }); t.after(() => c.close());
+  await c.initialize(); await c.read(c.send('tools/list')); assert.equal(f.calls.length, 0); assert.equal(f.selection.selection, 'platform-default');
+  const [first, second] = await Promise.all([c.call('reviewops_projects_list', {}), c.call('reviewops_projects_list', {})]);
+  assert.equal(first.result.isError, false); assert.equal(second.result.isError, false); assert.equal(f.calls.length, 2);
+  const info = (await c.call('reviewops_connection_info', {})).result.structuredContent;
+  assert.equal(info.instanceId, f.metadata.instanceId); assert.equal(info.client.selection, 'running-instance-registry');
+  assert.equal(info.location.dataRootSource, 'environment'); assert.equal(f.calls.length, 2, 'No QA or Store mutation is needed to connect');
+});
+
+test('a discovered session refuses descriptor or registry replacement instead of adopting new credentials', { skip: process.platform === 'win32' }, async t => {
+  for (const target of ['descriptor', 'registry']) {
+    const f = await discoveredFixture(t); await f.invoke('automation.projects.list', {});
+    const file = target === 'descriptor' ? f.bridge.connectionPath : path.join(f.registry, f.metadata.instanceId + '.json');
+    const original = await fs.readFile(file); await fs.unlink(file); await fs.writeFile(file, original, { mode: 0o600 });
+    await assert.rejects(f.invoke('automation.projects.list', {}), { code: 'DISCOVERED_INSTANCE_CHANGED' }); assert.equal(f.calls.length, 1);
+    await assert.rejects(f.invoke('automation.projects.list', {}), { code: 'DISCOVERED_INSTANCE_CHANGED' }); assert.equal(f.calls.length, 1);
+  }
+});
+
+test('stale, multiple and mismatched discovered instances perform no requested action', { skip: process.platform === 'win32' }, async t => {
+  for (const kind of ['stale', 'multiple', 'mismatch']) {
+    const f = await discoveredFixture(t);
+    if (kind === 'stale') await fs.unlink(f.bridge.connectionPath);
+    if (kind === 'multiple') f.discovery.publishInstance({ directory: f.registry, connectionPath: path.join(f.root, 'other', 'integrations', 'tools.json'), instanceId: '33333333-3333-4333-8333-333333333333' });
+    if (kind === 'mismatch') {
+      const file = path.join(f.registry, f.metadata.instanceId + '.json'), replacementId = '33333333-3333-4333-8333-333333333333';
+      await fs.unlink(file); f.discovery.publishInstance({ directory: f.registry, connectionPath: f.bridge.connectionPath, instanceId: replacementId });
+    }
+    await assert.rejects(f.invoke('automation.projects.list', {})); assert.deepEqual(f.calls, []);
+  }
+});
+
+test('selection refuses a second app or a default descriptor appearing during its read-only handshake', { skip: process.platform === 'win32' }, async t => {
+  const net = require('node:net'), discovery = require('../electron/instance-discovery.cjs');
+  for (const mutation of ['second', 'default']) {
+    const root = await fs.realpath(await fs.mkdtemp('/tmp/ro-select-')); await fs.chmod(root, 0o700);
+    const data = path.join(root, 'app'), registry = path.join(root, 'registry'), socketPath = path.join(data, 'integrations', 'tools.sock');
+    await fs.mkdir(path.dirname(socketPath), { recursive: true, mode: 0o700 });
+    const connectionPath = path.join(path.dirname(socketPath), 'tools.json'), metadata = appConnectionFixture(data), started = deferred(), release = deferred(); let actions = 0;
+    const server = net.createServer(socket => { socket.setEncoding('utf8'); socket.on('error', () => {}); socket.once('data', async raw => {
+      const request = JSON.parse(raw); if (request.action === 'connection.info') { started.resolve(); await release.promise; socket.end(JSON.stringify({ ok: true, data: publicConnectionInfo(metadata, data) }) + '\n'); }
+      else { actions++; socket.end(JSON.stringify({ ok: true, data: {} }) + '\n'); }
+    }); });
+    await new Promise(resolve => server.listen(socketPath, resolve));
+    await fs.writeFile(connectionPath, JSON.stringify({ version: 1, socketPath, token: 'a'.repeat(64), pid: process.pid }), { mode: 0o600 });
+    discovery.publishInstance({ directory: registry, connectionPath, instanceId: metadata.instanceId });
+    const defaultPath = path.join(root, 'default', 'integrations', 'tools.json');
+    const invoke = require('../electron/mcp-server.cjs').createConnectionInvoker({ selection: 'platform-default', connectionPath: defaultPath }, { directory: () => registry });
+    const pending = invoke('automation.projects.list', {}); pending.catch(() => {});
+    try {
+      await started.promise;
+      if (mutation === 'second') discovery.publishInstance({ directory: registry, connectionPath, instanceId: '33333333-3333-4333-8333-333333333333' });
+      else { await fs.mkdir(path.dirname(defaultPath), { recursive: true }); await fs.writeFile(defaultPath, '{}'); }
+      release.resolve(); await assert.rejects(pending); assert.equal(actions, 0);
+    } finally { release.resolve(); await pending.catch(() => {}); await new Promise(resolve => server.close(resolve)); await fs.rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('a fresh stdio MCP process discovers a custom running app with the data-root environment removed', { skip: process.platform === 'win32' }, async t => {
+  const discovery = require('../electron/instance-discovery.cjs'), f = await discoveredFixture(t), home = path.join(f.root, 'home');
+  await fs.mkdir(home, { mode: 0o700 });
+  const env = { ...process.env, HOME: home, USERPROFILE: home, APPDATA: path.join(home, 'AppData', 'Roaming'), XDG_CONFIG_HOME: path.join(home, 'config') };
+  delete env.REVIEWOPS_DATA_DIR;
+  const publication = discovery.publishInstance({ directory: discovery.registryDirectory({ home, env }), instanceId: f.metadata.instanceId, connectionPath: f.bridge.connectionPath });
+  const input = [{ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'fresh-B', version: '1' } } },
+    { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'reviewops_connection_info', arguments: {} } }];
+  const child = spawn(process.execPath, [path.resolve(__dirname, '../electron/mcp-server.cjs')], { env, stdio: ['pipe','pipe','pipe'] });
+  const closed = new Promise((resolve, reject) => { child.once('error', reject); child.once('close', (code, signal) => resolve({ code, signal })); });
+  let stdout = '', stderr = ''; child.stdout.setEncoding('utf8'); child.stdout.on('data', chunk => stdout += chunk); child.stderr.on('data', chunk => stderr += chunk);
+  try {
+    for (const value of input) child.stdin.write(JSON.stringify(value) + '\n');
+    for (let i = 0; i < 200 && !stdout.includes('running-instance-registry'); i++) await new Promise(resolve => setTimeout(resolve, 10));
+    const response = stdout.trim().split('\n').map(line => JSON.parse(line)).find(row => row.id === 2);
+    assert.equal(response.result.structuredContent.instanceId, f.metadata.instanceId); assert.equal(response.result.structuredContent.client.selection, 'running-instance-registry');
+    assert.deepEqual(f.calls, []); assert.equal(stderr, ''); child.stdin.end(); assert.deepEqual(await closed, { code: 0, signal: null });
+  } finally { if (child.exitCode === null) { child.stdin.end(); await closed; } publication.removeSync(); }
+});
+
+test('every successful legacy route still calls its exact descriptor without inspecting the registry', { skip: process.platform === 'win32' }, async t => {
+  const f = await discoveredFixture(t);
+  for (const route of ['connection-argument', 'data-path-argument', 'environment', 'platform-default']) {
+    let reads = 0;
+    const invoke = require('../electron/mcp-server.cjs').createConnectionInvoker({ selection: route, connectionPath: f.bridge.connectionPath }, { directory: () => { reads++; throw new Error('Unexpected registry lookup'); } });
+    assert.deepEqual(await invoke('automation.projects.list', {}), { projects: [{ id: 'A' }] }); assert.equal(reads, 0, route);
+  }
+  assert.equal(f.calls.length, 4);
 });

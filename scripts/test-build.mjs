@@ -26,7 +26,7 @@ export function packagedBuildInfo(archive, expected) {
   const pkg = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   const actual = validateBuildInfo(JSON.parse(asar.extractFile(archive, 'electron/reviewops-build.json').toString('utf8')), expected.version);
   if (pkg.version !== expected.version || JSON.stringify(actual) !== JSON.stringify(validateBuildInfo(expected))) throw new Error('패키지의 빌드 정보가 생성한 빌드와 다릅니다.');
-  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']]){
     const bytes=asar.extractFile(archive,path.join('electron',source));
     if(!bytes.equals(readFileSync(path.join(path.dirname(archive),'mcp',target))))throw new Error('앱과 독립 MCP의 배포 자료가 다릅니다: '+target);
   }

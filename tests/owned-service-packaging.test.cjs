@@ -11,7 +11,7 @@ async function bundle(t,{overrides={},build}={}){
  t.after(async()=>{if(fixture.manager)await fixture.manager.close();await fs.rm(temporary,{recursive:true,force:true});});
  const input=path.join(temporary,'input'),resources=path.join(temporary,'Mock App.app','Contents','Resources');
  await fs.mkdir(path.join(input,'electron'),{recursive:true});await fs.mkdir(resources,{recursive:true});
- const canonical=['mcp-server.cjs','automation-api.cjs','review-categories.json','owned-node-bootstrap.cjs'],bytes={};
+ const canonical=['mcp-server.cjs','automation-api.cjs','review-categories.json','instance-discovery.cjs','owned-node-bootstrap.cjs'],bytes={};
  for(const name of canonical){bytes[name]=await fs.readFile(path.join(root,'electron',name));await fs.writeFile(path.join(input,'electron',name),overrides[name]??bytes[name]);}
  if(build!==undefined)await fs.writeFile(path.join(input,'electron','reviewops-build.json'),JSON.stringify(build));
  await finished(await asar.createPackage(input,path.join(resources,'app.asar')));
@@ -30,7 +30,7 @@ test('afterPack publishes the exact canonical owned bootstrap outside the archiv
  const f=await bundle(t);
  const physical=path.join(f.resources,'owned-services','owned-node-bootstrap.cjs');
  assert.equal(digest(await fs.readFile(physical)),digest(f.bytes['owned-node-bootstrap.cjs']));
- for(const [from,to]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']])assert.deepEqual(await fs.readFile(path.join(f.resources,'mcp',to)),f.bytes[from]);
+ for(const [from,to]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']])assert.deepEqual(await fs.readFile(path.join(f.resources,'mcp',to)),f.bytes[from]);
  const archived=path.join(f.resources,'app.asar','electron','owned-node-bootstrap.cjs');
  assert.deepEqual(asar.extractFile(path.join(f.resources,'app.asar'),'electron/owned-node-bootstrap.cjs'),f.bytes['owned-node-bootstrap.cjs']);
  const probe=spawnSync(process.execPath,[archived],{cwd:f.temporary,encoding:'utf8',timeout:3000,env:{PATH:path.dirname(process.execPath)}});
@@ -56,10 +56,10 @@ test('standalone Node starts and cooperatively stops an owned service through th
  const stopped=await manager.stop('project','connection',state.instance.instanceId);
  assert.equal(stopped.instance.status,'exited');assert.equal(stopped.instance.exit.code,0);assert.equal(stopped.instance.exit.signal,null);assert.equal(stopped.instance.exit.drainConfirmed,true);
 });
-test('native package verification rejects physical and archived MCP bytes outside the reviewed three-file closure',async t=>{
+test('native package verification rejects physical and archived MCP bytes outside the reviewed four-file closure',async t=>{
  const {verifyPackagedMcpResources}=await import('../scripts/packaged-bundle-guards.mjs'),f=await bundle(t),options=archiveOptions(f);
- const observed=verifyPackagedMcpResources(options);assert.equal(observed.files.length,3);assert.equal(observed.modulePath,path.join(f.resources,'mcp','reviewops-mcp.cjs'));
- for(const name of ['reviewops-mcp.cjs','automation-api.cjs','review-categories.json']){
+ const observed=verifyPackagedMcpResources(options);assert.equal(observed.files.length,4);assert.equal(observed.modulePath,path.join(f.resources,'mcp','reviewops-mcp.cjs'));
+ for(const name of ['reviewops-mcp.cjs','automation-api.cjs','review-categories.json','instance-discovery.cjs']){
   const file=path.join(f.resources,'mcp',name),original=await fs.readFile(file),changed=Buffer.from(original);changed[0]^=1;await fs.writeFile(file,changed);
   assert.throws(()=>verifyPackagedMcpResources(options));await fs.writeFile(file,original);
  }

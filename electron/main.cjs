@@ -1616,7 +1616,10 @@ else {
         homePath:app.getPath('home'),appPath:app.getAppPath(),executablePath:app.getPath('exe'),dataPath,
         dataRootSource,qa:qaAutomation.capabilities()};}
     catch{console.warn('실행 앱의 연결 진단 정보를 준비하지 못했습니다.');}
-    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle,connectionInfo,qaConnectionStatus:payload=>qaAutomation.connectionStatus(payload)});}
+    let discoveryDirectory;
+    if(connectionInfo&&process.platform!=='win32')try{discoveryDirectory=require('./instance-discovery.cjs').registryDirectory({env:process.env,platform:process.platform});}
+    catch{console.warn('Running-instance discovery is unavailable. Explicit connections remain available.');}
+    try{toolIntegration=await require('./tool-integration.cjs').createToolIntegration({dataPath,dispatch:integrationDispatch,showReview:showProjectReview,automationHandler:automation.handle,connectionInfo,discoveryDirectory,qaConnectionStatus:payload=>qaAutomation.connectionStatus(payload)});}
     catch(error){console.warn('외부 도구 연결을 시작하지 못했습니다:',error.message);}
     if(process.platform!=='win32')try{seasonIntegration=await require('./season-integration.cjs').createSeasonIntegration({dataPath,workspaceRoot:path.join(app.getPath('appData'),'Season AI','reviewops-workspace'),showReview:showProjectReview,dispatch:integrationDispatch});}
     catch(error){console.warn('Season AI 연결을 시작하지 못했습니다:',error.message);}
@@ -1637,5 +1640,5 @@ else {
     terminals.closeAll();
     Promise.all([managedServices?.close(),agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.()]).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{managedServices?.resume();quitting=false;updater?.cancelInstall();stoppingAgents=false;if(!liveWindows().length)createWindow();startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
-  app.on('will-quit',()=>{quitAttempt?.cleanup?.();quitAttempt=null;qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
+  app.on('will-quit',()=>{quitAttempt?.cleanup?.();quitAttempt=null;qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});toolIntegration?.unregisterForFinalQuitSync?.();codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();store?.close();});
 }

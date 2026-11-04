@@ -383,3 +383,46 @@ test('Windows server and client share a case-insensitive local named pipe while 
   assert.notEqual(toolSocketPath(directory, 'darwin'), toolSocketPath(directory.toUpperCase(), 'darwin'));
   assert.throws(() => toolSocketPath('/' + 'a'.repeat(110), 'darwin'), /경로가 너무 길어/);
 });
+
+test('optional discovery publishes only a capable explicit opt-in and final quit removes its own record synchronously', { skip: process.platform === 'win32' }, async t => {
+  const root = await fs.realpath(await fs.mkdtemp('/tmp/ro-publish-')); await fs.chmod(root, 0o700);
+  const bridges = []; t.after(async () => { for (const bridge of bridges) await bridge.close(); await fs.rm(root, { recursive: true, force: true }); });
+  async function start(name, options = {}) {
+    const dataPath = path.join(root, name); await fs.mkdir(dataPath, { mode: 0o700 });
+    const bridge = await createToolIntegration({ dataPath, dispatch: async () => ({}), showReview: async () => ({}), automationHandler: async () => ({}), connectionInfo: connectionMetadata(dataPath), ...options });
+    bridges.push(bridge); return bridge;
+  }
+  const registry = path.join(root, 'registry'), plain = await start('plain');
+  assert.equal(await fs.stat(registry).then(() => true, () => false), false, 'Legacy callers must not implicitly publish');
+  const invalid = await start('invalid', { discoveryDirectory: registry, connectionInfo: { instanceId: 'invalid' } });
+  assert.equal(await fs.stat(registry).then(() => true, () => false), false, 'Invalid capabilities must not publish');
+  const bridge = await start('capable', { discoveryDirectory: registry }), record = path.join(registry, '11111111-1111-4111-8111-111111111111.json');
+  assert.ok(await fs.stat(record)); bridge.unregisterForFinalQuitSync(); assert.ok(await fs.stat(record), 'A vetoable running bridge cannot unregister');
+  const closing = bridge.close(); bridge.unregisterForFinalQuitSync();
+  assert.equal(require('node:fs').existsSync(record), false, 'Do not rely on an Electron exit awaiting the close Promise');
+  await closing; await plain.close(); await invalid.close();
+});
+
+test('fresh discovered information preserves another client pending request and the current review draft', { skip: process.platform === 'win32' }, async t => {
+  const { createConnectionInvoker } = require('../electron/mcp-server.cjs');
+  const root = await fs.realpath(await fs.mkdtemp('/tmp/ro-active-')); await fs.chmod(root, 0o700);
+  const dataPath = path.join(root, 'data'); await fs.mkdir(dataPath, { mode: 0o700 });
+  const store = createStore({ dbPath: path.join(dataPath, 'reviews.sqlite') });
+  const group = store.saveGroup({ name: 'Active A' }), service = store.saveService({ groupId: group.id, name: 'Local', kind: 'local', rootPath: root });
+  const project = store.saveProject({ groupId: group.id, name: 'A project', serviceIds: [service.id] });
+  const draft = store.saveReview({ projectId: project.id, title: 'A retained draft', body: 'Keep this content' });
+  const entered = deferred(), release = deferred(), registry = path.join(root, 'registry'); let bridge, pending, requested = 0;
+  t.after(async () => { release.resolve(); await pending?.catch(() => {}); await bridge?.close(); store.close(); await fs.rm(root, { recursive: true, force: true }); });
+  bridge = await createToolIntegration({ dataPath, discoveryDirectory: registry, connectionInfo: connectionMetadata(dataPath),
+    showReview: async value => ({ ...value, shown: true, windowId: 'window-A' }), automationHandler: async () => { throw new Error('No QA grant or action is needed'); },
+    dispatch: async (action, payload) => { requested++; if (action === 'snapshot') return store.snapshot(); if (action === 'review.save') { entered.resolve(); await release.promise; return store.saveReview(payload); } throw new Error('Unexpected dispatch'); } });
+  pending = bridge.handle('review.open', { requestId: 'A-retained-request', projectId: project.id, title: 'A pending request', body: 'Original A content', tool: 'codex' });
+  await entered.promise;
+  const before = store.snapshot(), descriptor = await fs.readFile(bridge.connectionPath), calls = requested;
+  const invoke = createConnectionInvoker({ selection: 'platform-default', connectionPath: path.join(root, 'absent', 'integrations', 'tools.json') }, { directory: () => registry });
+  const info = await invoke('connection.info', {});
+  assert.equal(info.instanceId, connectionMetadata(dataPath).instanceId); assert.equal(requested, calls);
+  assert.deepEqual(store.snapshot(), before); assert.equal(store.get('reviews', draft.id).body, 'Keep this content');
+  assert.deepEqual(await fs.readFile(bridge.connectionPath), descriptor);
+  release.resolve(); assert.equal((await pending).status, 'shown');
+});

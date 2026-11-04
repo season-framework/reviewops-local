@@ -24,7 +24,7 @@ export function inventory(directory,base=directory,rows=[]){
 }
 export function verifyPackagedMcpResources({root,resources,archive,entries,asar}){
  const files=[];
- for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+ for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']]){
   const name='electron/'+source,row=entries.get(name),physical=path.join(resources,'mcp',target);
   assert.ok(row&&Number.isSafeInteger(row.bytes)&&row.bytes>=0&&row.bytes<=8*1024*1024,'Missing or oversized canonical MCP archive entry '+name);
   const archived=asar.extractFile(archive,path.join('electron',source)),local=fs.readFileSync(path.join(root,'electron',source));
