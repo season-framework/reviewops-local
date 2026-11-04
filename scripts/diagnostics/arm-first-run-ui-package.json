@@ -34,5 +34,63 @@
       "bytes": 3137,
       "sha256": "da9c58401e06c5ea2fb81ce3852303566f5d8fb7db10b77b3149fe06f928b3a0"
     }
-  ]
+  ],
+  "rescan": {
+    "schema": 1,
+    "scenario": "missing-cli-then-rescan",
+    "source": "2738216b9797312709775125d6cbe4983b96e226",
+    "tree": "5c5ffccac84f2b9d9c976cb3bb4af7c4ad45b0ae",
+    "sourceFiles": 429,
+    "version": "1.4.1",
+    "target": "darwin-arm64",
+    "build": {
+      "channel": "test",
+      "version": "1.4.1",
+      "buildNumber": 40001,
+      "commit": "2738216b9797312709775125d6cbe4983b96e226",
+      "builtAt": "2026-11-04T02:38:18.425Z",
+      "developmentNumber": 2
+    },
+    "package": {
+      "name": "ReviewOps-1.4.1-dev-2-arm64.zip",
+      "url": "https://github.com/season-framework/reviewops-local/releases/download/test-latest/ReviewOps-1.4.1-dev-2-arm64.zip",
+      "assetID": 707986017,
+      "bytes": 133832027,
+      "sha256": "ad415ccb5e02104ec313d830c5b6d1ec0cd2db9ae04206f628687a053cf3cd42"
+    },
+    "asar": {
+      "relativePath": "Contents/Resources/app.asar",
+      "bytes": 34912464,
+      "sha256": "40377d6e78eddc039635f9ca5c763884110f405579767a13ceb666a4c4f39b05"
+    },
+    "executable": {
+      "relativePath": "Contents/MacOS/ReviewOps",
+      "bytes": 53008,
+      "sha256": "b34c0c49bf8c6a6fa9bc7ad8e87848dc569885fb6dc963d3fe10c965bad8519d"
+    },
+    "embeddedBuild": {
+      "sourcePath": "electron/reviewops-build.json",
+      "bytes": 193,
+      "sha256": "64634738c9b2cff5ed41ee1288e667b688c480f2a9923a1bccfb159cc583bbab"
+    },
+    "runtime": {
+      "sourcePath": "electron/codex/runtime.cjs",
+      "bytes": 18643,
+      "sha256": "91e2a23e788ab3b004f52ed2438c8fd8ff1c24f4526cbb6f5da5c9d3f881ff93"
+    },
+    "runtimeDependencies": [
+      {
+        "sourcePath": "electron/codex/native-architecture.cjs",
+        "bytes": 3137,
+        "sha256": "da9c58401e06c5ea2fb81ce3852303566f5d8fb7db10b77b3149fe06f928b3a0"
+      }
+    ],
+    "controlledPackageSealPreparationRequired": false,
+    "packageSealProvenance": {
+      "scope": "Offline cached accepted public ZIP; selected-member CRC/read and inert ASAR header parsing only. No network, filesystem extraction, signature validation, application or product module execution.",
+      "bytes": 2819,
+      "sha256": "0e13ba9e64ca3e5d055fa95719d69365f8e9aab91f41631ed6e488a9c9f2dcc9",
+      "nativeOrSignatureAcceptanceClaimed": false
+    }
+  }
 }

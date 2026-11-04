@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {PACKAGE, assertBinding, assertDefaultInventory, assertRuntimeObservation, assertOriginalClosure,
+  RESCAN, scenarioKind, assertRescanReference, assertRescanBinding, assertRescanVendorIdentity, assertRescanStage, assertRescanObservation,
   ADDED_PATHS, assertMissingBinding, missingCandidateRow, assertAllMissingInventory, assertMissingRuntimeObservation} from '../scripts/diagnostics/arm-first-run-ui.mjs';
 
 const host = {platform: 'darwin', arch: 'arm64', node: '24.22.2', electron: undefined};
@@ -135,4 +136,60 @@ test('a login notice, stale runtime summary or hidden recovery buttons cannot st
     v => {v.chooseVisible = false;}, v => {v.recheckVisible = false;}, v => {v.loginDialogCount = 1;}]) {
     const next = missingObservation(); change(next.view); assert.throws(() => assertMissingRuntimeObservation(next.state, next.view));
   }
+});
+
+
+function rescanBinding() {
+  const b = missingBinding(); delete b.approvedForOneMissingCLIUILaunch;
+  const stageApp = b.privateRoot + '/vendor-stage/ChatGPT.app', vendorApp = b.home + '/Applications/ChatGPT.app';
+  return {...b,source:RESCAN.source,scenario:'missing-cli-then-rescan',approvedForOneRescanUILaunch:true,
+    sourceGuard:{baseSource:RESCAN.source,harnessSource:b.harnessSource,baselineFiles:429,unchangedOtherFiles:423,
+      otherBlobsAndModesUnchanged:true,modifiedPaths:[...ADDED_PATHS]},stageApp,vendorApp,
+    stagedCLI:stageApp+'/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',
+    CLI:vendorApp+'/Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex',CLISHA256:'b'.repeat(64),
+    packageZipPin:{path:b.privateRoot+'/current.zip',bytes:RESCAN.package.bytes,sha256:RESCAN.package.sha256},
+    expectedASARPin:{path:b.packageApp+'/Contents/Resources/app.asar',bytes:RESCAN.asar.bytes,sha256:RESCAN.asar.sha256},
+    vendorIdentityPin:binding().vendorIdentityPin,vendorInventoryPin:binding().vendorInventoryPin};
+}
+test('scenario dispatch is explicit and unknown named scenarios cannot inherit missing authority',()=>{
+  assert.equal(scenarioKind(binding()),'positive');assert.equal(scenarioKind(missingBinding()),'missing');
+  assert.equal(scenarioKind(rescanBinding()),'rescan');assert.throws(()=>scenarioKind({scenario:'not-reviewed'}));
+});
+test('rescan requires current observed member seals and its separate source429 authority',()=>{
+  assert.doesNotThrow(()=>assertRescanReference(RESCAN));assert.doesNotThrow(()=>assertRescanBinding(rescanBinding(),host));
+  for(const member of ['asar','executable','embeddedBuild']){
+    const reference=structuredClone(RESCAN);reference[member].sha256=null;
+    assert.throws(()=>assertRescanBinding(rescanBinding(),host,reference));
+  }
+  for(const change of [b=>{b.approvedForOneRescanUILaunch=false;},b=>{b.approvedForOneMissingCLIUILaunch=true;},
+    b=>{b.source=PACKAGE.source;},b=>{b.sourceGuard.baselineFiles=419;},b=>{b.sourceGuard.modifiedPaths[0]='electron/main.cjs';},
+    b=>{b.sourceGuard.otherBlobsAndModesUnchanged=false;},b=>{b.expectedASARPin.sha256=PACKAGE.asar.sha256;},
+    b=>{b.packageZipPin.sha256=PACKAGE.package.sha256;},b=>{b.home='/Users/runner';}]){
+    const b=rescanBinding();change(b);assert.throws(()=>assertRescanBinding(b,host));
+  }
+});
+function stagedIdentity(b){return {appPath:b.stageApp,CLI:b.stagedCLI,bundleId:'com.openai.codex',
+  appTeamID:'2DC432GLL2',CLITeamID:'2DC432GLL2',CLIArchitecture:'arm64',CLISHA256:b.CLISHA256,
+  appVersion:'guard-fixture-version',appBuild:'guard-fixture-build',minimumOS:'13.0',hostOS:'15.8.2',
+  appDeepStrictAppleOpenAIVerified:true,CLIDeepStrictAppleOpenAIVerified:true,originalToolsClosed:true,ownedMountOrdinarilyDetached:true};}
+test('guard-only vendor records cannot substitute a wrong path/team/hash or unclosed mount',()=>{
+  const b=rescanBinding(),identity=stagedIdentity(b);assert.doesNotThrow(()=>assertRescanVendorIdentity(identity,b));
+  for(const change of [{appPath:b.vendorApp},{CLITeamID:'OTHERTEAM'},{CLISHA256:'0'.repeat(64)},
+    {CLIDeepStrictAppleOpenAIVerified:false},{ownedMountOrdinarilyDetached:false},{CLIArchitecture:'x64'}])
+    assert.throws(()=>assertRescanVendorIdentity({...identity,...change},b));
+  assert.doesNotThrow(()=>assertRescanStage(b,[b.CLI,'/usr/bin/codex']));
+  assert.throws(()=>assertRescanStage(b,[b.stagedCLI]));
+  assert.throws(()=>assertRescanBinding({...b,stageApp:b.vendorApp},host));
+  assert.throws(()=>assertRescanBinding({...b,vendorApp:'/Applications/ChatGPT.app'},host));
+});
+function rescanObservation(){const b=rescanBinding();return {originalPID:31,finalPID:31,sameOriginalPage:true,appLaunchAttempts:1,
+  recheckClicks:1,chooseClicks:0,loginActions:0,authFileAbsent:true,customSelectionFileAbsent:true,vendorInventoryUnchanged:true,
+  state:{accounts:[],runtime:{available:true,path:b.CLI,version:'0.166.0-alpha.6'}},
+  summary:{path:b.CLI,version:'Codex CLI 0.166.0-alpha.6'},CLI:b.CLI};}
+test('rescan success needs one click and the same original app with no account or selection adoption',()=>{
+  assert.doesNotThrow(()=>assertRescanObservation(rescanObservation()));
+  for(const change of [{finalPID:32},{sameOriginalPage:false},{appLaunchAttempts:2},{recheckClicks:0},{recheckClicks:2},
+    {chooseClicks:1},{loginActions:1},{authFileAbsent:false},{customSelectionFileAbsent:false},{vendorInventoryUnchanged:false}])
+    assert.throws(()=>assertRescanObservation({...rescanObservation(),...change}));
+  const changed=rescanObservation();changed.state.accounts.push({id:'unexpected-account'});assert.throws(()=>assertRescanObservation(changed));
 });

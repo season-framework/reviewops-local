@@ -1,4 +1,12 @@
-# ARM packaged first-run CLI guidance
+# ARM packaged CLI diagnostics
+
+The current test-only successor prepares one same-app missing→rescan observation
+against the accepted R40 package. Its contract is described under “Same-app rescan
+successor” below. The earlier first-run contract is retained here as a historical
+reference; its source419/stable package assertions and its old branch admission
+are not the source429/current package admission for this successor.
+
+## Retained historical first-run CLI guidance
 
 The `missing-cli-first-run` scenario checks the distinct issue #52 condition in
 which a fresh ARM installation has no available Codex CLI. It opens the accepted
@@ -119,3 +127,69 @@ It cannot complete actual OAuth, authenticated local model use, historical
 reporter installation, user-app update recovery or all of issue #52. This
 source-only diagnostic adds no formal native QA ID and does not change release
 workflows or the older bundled-CLI diagnostic's admitted branch.
+
+
+## Same-app rescan successor (source-only preparation)
+
+The distinct `missing-cli-then-rescan` lane is prepared on
+`codex/issue52-arm-rescan-ui`. The registered manual workflow is reused at its
+exact reviewed branch commit, first attempt, with Node 24.22.2 and the existing
+read-only permissions and serialized concurrency group. It does not dispatch a
+release workflow, rebuild the product or change a version. A new genuine ARM
+run is required; historical runs cannot prove this transition retrospectively.
+The positive and negative exports and their stable package reference remain
+intact, and their original branches/commits remain available. The manual job on
+this successor is admitted only for the new branch/scenario.
+
+The current product is the actual R40 public ARM ZIP, source
+`2738216b9797312709775125d6cbe4983b96e226`, tree
+`5c5ffccac84f2b9d9c976cb3bb4af7c4ad45b0ae`, 1.4.1-dev-2/build 40001.
+Its size/SHA, selected ASAR and executable seals, embedded build, exact runtime
+and native-architecture module bytes are separate from the old stable reference
+under `rescan` in the package JSON. The current seals come from an accepted
+cached-only selected-member CRC/read and inert ASAR-header observation; that
+observation did not extract files, execute the app or validate signatures.
+Unbound member seals are rejected before acquisition. The original 419-plus-six
+source rule is not applied to the new lane: all 429 entries must exist, exactly
+the six declared diagnostic paths may differ and all other 423 Git blobs and
+modes must be unchanged. No production finder, account or startup code changes.
+
+Before launch the preparer obtains a genuine official ARM vendor bundle using
+the retained positive preparation's bounded official-page/DMG policy, exact
+owned read-only mount, ordinary detach, ARM/minimum-OS checks and deep strict
+Apple/OpenAI signatures. Actual future vendor version, hashes and receipts are
+recorded; the earlier alpha.6 cohort is not copied into a new result. The stage
+is outside HOME and every real default candidate, on the same private filesystem.
+No fake bundle, CLI wrapper, finder/candidate override, PATH injection or manual
+runtime selection is accepted.
+
+One original app opens with a fresh private HOME/CODEX_HOME/userData, file-based
+credential storage, empty SSH config and no accounts. All actual default paths
+must be absent before and immediately before launch. After Accounts has settled
+on the real missing state, the driver moves the verified stage once to the
+previously absent private HOME/Applications destination with a same-filesystem
+rename. It checks the unchanged inventory and first genuine candidate, confirms
+the app still reports missing before the click, and clicks the unique actual
+**Check CLI again** button once when enabled. The existing UI/server interval is
+not bypassed. The same original PID, public handle, main page and private paths
+must remain; actual state and visible summary must agree on the new canonical
+path/version. Accounts remain zero; no auth.json or manual runtime.json may be
+created. Two whole-window original PNGs retain the before/after observations.
+
+The rescan result has separate missing and recovered predicates. Its final
+candidate inventory deliberately contains the genuine vendor CLI; it cannot be
+reported as the historical all-missing lane. Source/package bytes and the vendor
+inventory remain unchanged apart from the declared private stage move. Private
+runtime diagnostics and normal metadata cache updates are expected. Ordinary
+metadata/version/login-status/app-server configuration/model-list reads are
+allowed; no account addition, login, model generation, project/agent action,
+executable chooser or vendor desktop launch is requested. Global zero traffic,
+raw internal CLI child closure, real OAuth, an authenticated model turn, a real
+user-app update and the reporter's exact historical installation are not proven.
+
+Cleanup reuses the original app/launcher receipt contract above: one ordinary
+quit, exit 0/null signal, application and child close, both EOF/closed streams,
+plus the original driver closure. Unknown pre-handle ownership or late drain
+stays UNKNOWN/HELD without adoption, signal, retry or a second app. No actual
+same-app run has been accepted merely by preparing this source, and no formal
+QA ID is added.

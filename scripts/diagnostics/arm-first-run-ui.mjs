@@ -14,6 +14,7 @@ export const ADDED_PATHS = new Set([
   'scripts/diagnostics/arm-first-run-ui.py', '.github/workflows/arm-first-run-ui.yml',
   'tests/arm-first-run-ui.test.mjs', 'docs/diagnostics/arm-first-run-ui.md',
 ]);
+export const RESCAN = PACKAGE.rescan;
 const FILE_AUTH_CONFIG = 'cli_auth_credentials_store = "file"\n';
 const SHA = /^[a-f0-9]{64}$/;
 const inside = (root, file) => file !== root && file.startsWith(root + '/');
@@ -106,6 +107,94 @@ export function assertMissingBinding(b, host) {
   assert.equal(b.actualNodeIdentity.version.replace(/^v/, ''), host.node);
 }
 
+export function scenarioKind(b) {
+  if (!Object.hasOwn(b, 'scenario')) return 'positive';
+  assert.ok(['missing-cli-first-run','missing-cli-then-rescan'].includes(b.scenario), 'Unknown diagnostic scenario');
+  return b.scenario === 'missing-cli-first-run' ? 'missing' : 'rescan';
+}
+
+export function assertRescanReference(reference) {
+  assert.equal(reference?.schema, 1); assert.equal(reference.scenario, 'missing-cli-then-rescan');
+  assert.equal(reference.source, '2738216b9797312709775125d6cbe4983b96e226');
+  assert.equal(reference.tree, '5c5ffccac84f2b9d9c976cb3bb4af7c4ad45b0ae');
+  assert.equal(reference.sourceFiles, 429); assert.equal(reference.version, '1.4.1');
+  assert.equal(reference.target, 'darwin-arm64');
+  assert.deepEqual(reference.build, {channel:'test', version:'1.4.1', buildNumber:40001,
+    commit:reference.source, builtAt:'2026-11-04T02:38:18.425Z', developmentNumber:2});
+  assert.equal(reference.package.name, 'ReviewOps-1.4.1-dev-2-arm64.zip');
+  assert.equal(reference.package.assetID, 707986017); assert.equal(reference.package.bytes, 133832027);
+  assert.equal(reference.package.sha256, 'ad415ccb5e02104ec313d830c5b6d1ec0cd2db9ae04206f628687a053cf3cd42');
+  assert.equal(reference.package.url, 'https://github.com/season-framework/reviewops-local/releases/download/test-latest/' + reference.package.name);
+  for (const name of ['asar','executable','embeddedBuild']) {
+    const row = reference[name];
+    assert.ok(row && Number.isSafeInteger(row.bytes) && row.bytes > 0 && SHA.test(row.sha256),
+      'Current package member seals must be bound by separately reviewed actual evidence: ' + name);
+  }
+  assert.equal(reference.asar.relativePath, 'Contents/Resources/app.asar');
+  assert.equal(reference.executable.relativePath, 'Contents/MacOS/ReviewOps');
+  assert.equal(reference.embeddedBuild.sourcePath, 'electron/reviewops-build.json');
+}
+
+export function assertRescanBinding(b, host, reference = RESCAN) {
+  assertRescanReference(reference);
+  assert.equal(b.schema, 1); assert.equal(b.scenario, 'missing-cli-then-rescan');
+  assert.equal(b.approvedForOneRescanUILaunch, true); assert.equal(b.allowNormalStartupMetadata, true);
+  for (const key of ['approvedForOnePositiveUILaunch','approvedForOneMissingCLIUILaunch']) assert.equal(Object.hasOwn(b,key), false);
+  assert.equal(host.platform, 'darwin'); assert.equal(host.arch, 'arm64');
+  assert.equal(host.electron, undefined); assert.equal(host.node, '24.22.2');
+  assert.equal(b.source, reference.source); assert.match(b.harnessSource, /^[a-f0-9]{40}$/);
+  const source = b.sourceGuard;
+  assert.equal(source.baseSource, reference.source); assert.equal(source.harnessSource, b.harnessSource);
+  assert.equal(source.baselineFiles, 429); assert.equal(source.unchangedOtherFiles, 423);
+  assert.equal(source.otherBlobsAndModesUnchanged, true);
+  assert.deepEqual([...source.modifiedPaths].sort(), [...ADDED_PATHS].sort());
+  for (const key of ['root','privateRoot','home','codeHome','dataDir','sshConfig','packageApp','stageApp','vendorApp','CLI','stagedCLI','output']) assert.ok(absolute(b[key]), key);
+  assert.equal(b.home, path.join(b.privateRoot,'home')); assert.equal(b.codeHome,path.join(b.home,'.codex'));
+  assert.equal(b.dataDir,path.join(b.privateRoot,'data')); assert.equal(b.sshConfig,path.join(b.home,'.ssh','config'));
+  assert.ok(inside(b.privateRoot,b.packageApp) && b.packageApp.endsWith('/ReviewOps.app'));
+  assert.ok(['ChatGPT.app','Codex.app'].some(name => b.vendorApp === path.join(b.home,'Applications',name)));
+  assert.equal(b.stageApp,path.join(b.privateRoot,'vendor-stage',path.basename(b.vendorApp)));
+  assert.equal(b.stagedCLI,path.join(b.stageApp,'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'));
+  assert.equal(b.CLI,path.join(b.vendorApp,'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'));
+  assert.ok(SHA.test(b.CLISHA256)); assert.ok(inside(path.join(b.root,'test-results','arm-first-run-ui'),b.output));
+  for (const key of ['packageZipPin','expectedASARPin','vendorIdentityPin','vendorInventoryPin','actualNodeIdentity']) {
+    const row = b[key]; assert.ok(row && absolute(row.path) && Number.isSafeInteger(row.bytes) && row.bytes > 0 && SHA.test(row.sha256), key);
+  }
+  assert.equal(b.packageZipPin.bytes,reference.package.bytes); assert.equal(b.packageZipPin.sha256,reference.package.sha256);
+  assert.equal(b.expectedASARPin.path,path.join(b.packageApp,reference.asar.relativePath));
+  assert.equal(b.expectedASARPin.bytes,reference.asar.bytes); assert.equal(b.expectedASARPin.sha256,reference.asar.sha256);
+  assert.equal(b.actualNodeIdentity.platform,'darwin'); assert.equal(b.actualNodeIdentity.arch,'arm64');
+  assert.equal(b.actualNodeIdentity.version.replace(/^v/,''),host.node);
+}
+
+export function assertRescanVendorIdentity(identity, b) {
+  assert.equal(identity.appPath,b.stageApp); assert.equal(identity.CLI,b.stagedCLI);
+  assert.equal(identity.bundleId,'com.openai.codex'); assert.equal(identity.appTeamID,'2DC432GLL2');
+  assert.equal(identity.CLITeamID,identity.appTeamID); assert.equal(identity.CLIArchitecture,'arm64');
+  assert.equal(identity.CLISHA256,b.CLISHA256);
+  for (const key of ['appVersion','appBuild','minimumOS','hostOS']) assert.ok(typeof identity[key] === 'string' && identity[key].length > 0 && identity[key].length <= 128);
+  for (const key of ['appDeepStrictAppleOpenAIVerified','CLIDeepStrictAppleOpenAIVerified','originalToolsClosed','ownedMountOrdinarilyDetached']) assert.equal(identity[key],true);
+}
+
+export function assertRescanStage(b, candidates) {
+  assert.ok(Array.isArray(candidates) && candidates.length > 0 && candidates.length <= 256);
+  assert.ok(!inside(b.home,b.stageApp) && b.stageApp !== b.home);
+  for (const candidate of candidates) {
+    assert.ok(absolute(candidate));
+    assert.ok(candidate !== b.stageApp && !inside(b.stageApp,candidate), 'Vendor stage must not be a default candidate');
+  }
+}
+
+export function assertRescanObservation(observed) {
+  assert.ok(Number.isSafeInteger(observed.originalPID) && observed.originalPID > 0);
+  assert.equal(observed.finalPID,observed.originalPID); assert.equal(observed.sameOriginalPage,true);
+  assert.equal(observed.appLaunchAttempts,1); assert.equal(observed.recheckClicks,1);
+  assert.equal(observed.chooseClicks,0); assert.equal(observed.loginActions,0);
+  assert.equal(observed.authFileAbsent,true); assert.equal(observed.customSelectionFileAbsent,true);
+  assert.equal(observed.vendorInventoryUnchanged,true);
+  assertRuntimeObservation(observed.state,observed.summary,observed.CLI);
+}
+
 export function missingCandidateRow(candidate, inspect = fs.lstatSync) {
   assert.ok(absolute(candidate));
   try { inspect(candidate); return {candidate, status: 'present'}; }
@@ -195,28 +284,36 @@ async function until(read, test, milliseconds, label) {
 
 export async function run(bindingFile) {
   const b = readJSON(bindingFile, 1024 ** 2);
-  const missing = Object.hasOwn(b, 'scenario');
+  const kind = scenarioKind(b), missing = kind === 'missing', rescan = kind === 'rescan';
+  const reference = rescan ? RESCAN : PACKAGE;
   const host = {platform: process.platform, arch: process.arch, node: process.versions.node, electron: process.versions.electron};
-  if (missing) assertMissingBinding(b, host); else assertBinding(b, host);
-  for (const name of ['root','privateRoot','home','codeHome','packageApp', ...(missing ? [] : ['vendorApp'])]) assert.equal(fs.realpathSync(b[name]), b[name]);
+  if (rescan) assertRescanBinding(b, host); else if (missing) assertMissingBinding(b, host); else assertBinding(b, host);
+  for (const name of ['root','privateRoot','home','codeHome','packageApp', ...(rescan ? ['stageApp'] : missing ? [] : ['vendorApp'])]) assert.equal(fs.realpathSync(b[name]), b[name]);
   const tempBases = [fs.realpathSync(os.tmpdir()), ...(process.env.RUNNER_TEMP ? [fs.realpathSync(process.env.RUNNER_TEMP)] : [])];
   assert.ok(tempBases.some(base => inside(base, b.privateRoot)), 'Root must prepare a fresh private temporary installation');
   assert.equal(fs.realpathSync(process.execPath), b.actualNodeIdentity.path); pin(b.actualNodeIdentity);
   pin(b.packageZipPin); pin(b.expectedASARPin);
-  const executable = path.join(b.packageApp, PACKAGE.executable.relativePath);
+  const executable = path.join(b.packageApp, reference.executable.relativePath);
   noSymlinkParents(executable, b.packageApp); noSymlinkParents(b.expectedASARPin.path, b.packageApp);
   assert.ok(fs.lstatSync(executable).isFile() && (fs.statSync(executable).mode & 0o111));
-  assert.equal(fs.statSync(executable).size, PACKAGE.executable.bytes); assert.equal(hash(executable), PACKAGE.executable.sha256);
+  assert.equal(fs.statSync(executable).size, reference.executable.bytes); assert.equal(hash(executable), reference.executable.sha256);
   noSymlinkParents(b.output, b.root); noSymlinkParents(b.dataDir, b.privateRoot);
   noSymlinkParents(b.sshConfig, b.home);
   assert.ok(!fs.existsSync(b.output)); assert.ok(!fs.existsSync(b.dataDir) || fs.readdirSync(b.dataDir).length === 0);
   assert.deepEqual(fs.readdirSync(b.home).sort(), ['.codex','.ssh','Applications']);
-  assert.deepEqual(fs.readdirSync(path.join(b.home, 'Applications')), missing ? [] : [path.basename(b.vendorApp)]);
+  assert.deepEqual(fs.readdirSync(path.join(b.home, 'Applications')), missing || rescan ? [] : [path.basename(b.vendorApp)]);
   assert.deepEqual(fs.readdirSync(b.codeHome), ['config.toml']);
   assert.equal(regularText(path.join(b.codeHome, 'config.toml'), 256), FILE_AUTH_CONFIG);
   assert.equal(regularText(b.sshConfig, 1), '');
   let vendorBefore;
-  if (!missing) {
+  if (rescan) {
+    noSymlinkParents(b.stageApp,b.privateRoot);
+    const identity = readJSON(pin(b.vendorIdentityPin)); assertRescanVendorIdentity(identity,b);
+    assert.equal(fs.realpathSync(b.stagedCLI),b.stagedCLI); assert.equal(hash(b.stagedCLI),b.CLISHA256);
+    vendorBefore = inventory(b.stageApp); assert.deepEqual(vendorBefore,readJSON(pin(b.vendorInventoryPin)));
+    assert.equal(missingCandidateRow(b.vendorApp).status,'missing');
+    assert.equal(fs.statSync(b.stageApp).dev,fs.statSync(path.dirname(b.vendorApp)).dev);
+  } else if (!missing) {
   const identity = readJSON(pin(b.vendorIdentityPin));
   assert.equal(identity.appPath, b.vendorApp); assert.equal(identity.CLI, b.CLI);
   assert.equal(identity.bundleId, 'com.openai.codex');
@@ -232,11 +329,18 @@ export async function run(bindingFile) {
   const note = row => fs.appendFileSync(path.join(b.output, 'original-app-events.jsonl'), JSON.stringify({at: new Date().toISOString(), ...row}) + '\n');
   const require = createRequire(path.join(b.root, 'package.json')), asar = require('@electron/asar');
   const observer = path.join(b.output, 'observer-runtime'); fs.mkdirSync(observer);
-  for (const row of [PACKAGE.runtime, ...PACKAGE.runtimeDependencies]) {
+  for (const row of [reference.runtime, ...reference.runtimeDependencies]) {
     const raw = asar.extractFile(b.expectedASARPin.path, row.sourcePath);
     assert.equal(raw.length, row.bytes); assert.equal(crypto.createHash('sha256').update(raw).digest('hex'), row.sha256);
     assert.deepEqual(raw, fs.readFileSync(path.join(b.root, row.sourcePath)));
     fs.writeFileSync(path.join(observer, path.basename(row.sourcePath)), raw, {flag: 'wx'});
+  }
+  if (rescan) {
+    const raw = asar.extractFile(b.expectedASARPin.path,reference.embeddedBuild.sourcePath);
+    assert.equal(raw.length,reference.embeddedBuild.bytes);
+    assert.equal(crypto.createHash('sha256').update(raw).digest('hex'),reference.embeddedBuild.sha256);
+    assert.deepEqual(JSON.parse(raw.toString('utf8')),reference.build);
+    write('actual-embedded-build.json',JSON.parse(raw.toString('utf8')));
   }
   const env = {HOME: b.home, USERPROFILE: b.home, CODEX_HOME: b.codeHome, REVIEWOPS_DATA_DIR: b.dataDir,
     REVIEWOPS_SSH_CONFIG: b.sshConfig, REVIEWOPS_CODEX_SSH_CONFIG: b.sshConfig,
@@ -251,20 +355,22 @@ export async function run(bindingFile) {
     try { return missingCandidateRow(candidate); }
     catch (error) { return {candidate, status: 'unknown', code: String(error.code || 'UNKNOWN')}; }
   });
-  const rows = missing ? missingInventory() : candidates.map(candidate => {
+  if (rescan) assertRescanStage(b,candidates);
+  const presentInventory = () => candidates.map(candidate => {
     try { const canonical = fs.realpathSync(candidate); return {candidate, status: 'present', canonical, file: fs.statSync(canonical).isFile()}; }
     catch (error) { if (!['ENOENT','ENOTDIR'].includes(error.code)) throw error; return {candidate, status: 'missing'}; }
   });
+  const rows = missing || rescan ? missingInventory() : presentInventory();
   let ownIndex;
   try {
-    if (missing) assertAllMissingInventory(rows); else ownIndex = assertDefaultInventory(rows, b.CLI);
-    write('default-candidate-inventory.json', {rows, ownIndex: ownIndex ?? null, admitted: true, launches: 0, customPath: false, ...(missing ? {scenario: b.scenario} : {})});
+    if (missing || rescan) assertAllMissingInventory(rows); else ownIndex = assertDefaultInventory(rows, b.CLI);
+    write('default-candidate-inventory.json', {rows, ownIndex: ownIndex ?? null, admitted: true, launches: 0, customPath: false, ...(missing || rescan ? {scenario: b.scenario} : {})});
   } catch (error) {
     write('default-candidate-inventory.json', {rows, ownIndex: null, admitted: false, launches: 0, customPath: false, reason: error.message});
     throw error;
   }
-  const result = {ok: false, source: b.source, harnessSource: b.harnessSource, package: PACKAGE.package,
-    ...(missing ? {scenario: b.scenario, vendorPrepared: false} : {positiveOnly: true}), appLaunchAttempts: 0, normalStartupMetadataAllowed: ['--version','login status','app-server initialize/config/read/model/list'],
+  const result = {ok: false, source: b.source, harnessSource: b.harnessSource, package: reference.package,
+    ...(rescan ? {scenario:b.scenario,vendorPrepared:true,vendorMoved:false,recheckClicks:0} : missing ? {scenario: b.scenario, vendorPrepared: false} : {positiveOnly: true}), appLaunchAttempts: 0, normalStartupMetadataAllowed: ['--version','login status','app-server initialize/config/read/model/list'],
     internalCLIHandlesObserved: false, externalTrafficAssertedZero: false, OAuthSubmitted: false, modelGenerationRequested: false,
     wrapperSignals: 0, automaticRetries: 0, frameworkPrehandleCleanupSignals: 'not-observed',
     stdioObservationScope: 'Starts after successful _electron.launch returns its public app/launcher handle; byte counts do not attest all earlier output.',
@@ -285,10 +391,10 @@ export async function run(bindingFile) {
     assertOriginalClosure(owner);
   }
   try {
-    if (!missing) assert.equal(hash(b.CLI), b.CLISHA256);
-    assert.equal(hash(b.expectedASARPin.path), PACKAGE.asar.sha256);
+    if (!missing && !rescan) assert.equal(hash(b.CLI), b.CLISHA256);
+    assert.equal(hash(b.expectedASARPin.path), reference.asar.sha256);
     const {_electron} = await import('@playwright/test');
-    if (missing) {
+    if (missing || rescan) {
       const immediate = missingInventory();
       write('immediate-before-launch-inventory.json', {rows: immediate, launches: 0});
       assertAllMissingInventory(immediate);
@@ -315,7 +421,7 @@ export async function run(bindingFile) {
       nodeHome: process.getBuiltinModule('os').homedir(), codeHome: process.env.CODEX_HOME,
       forbiddenEnvironmentNames: ['OPENAI_API_KEY','ANTHROPIC_API_KEY','GH_TOKEN','GITHUB_TOKEN','SSH_AUTH_SOCK','NODE_OPTIONS','NODE_PATH'].filter(k => Boolean(process.env[k]))}));
     assert.equal(actual.pid, child.pid); assert.equal(actual.platform, 'darwin'); assert.equal(actual.arch, 'arm64');
-    assert.equal(actual.isPackaged, true); assert.equal(actual.version, PACKAGE.version);
+    assert.equal(actual.isPackaged, true); assert.equal(actual.version, reference.version);
     assert.equal(actual.appPath, b.expectedASARPin.path); assert.equal(actual.executablePath, executable);
     assert.equal(actual.resourcesPath, resourcesPath); assert.equal(actual.dataPath, b.dataDir);
     assert.equal(actual.nodeHome, b.home); assert.equal(actual.codeHome, b.codeHome); assert.deepEqual(actual.forbiddenEnvironmentNames, []);
@@ -324,7 +430,7 @@ export async function run(bindingFile) {
     const accounts = page.locator('.main-nav button[aria-label="Accounts"], .main-nav button[aria-label="계정관리"]');
     await accounts.waitFor({state: 'visible', timeout: 10000});
     assert.equal(await accounts.count(), 1); await accounts.click();
-    if (missing) {
+    if (missing || rescan) {
       const state = await until(() => page.evaluate(() => window.accountManager.getState()),
         state => state.runtime?.errorKind === 'missing', 10000, 'Settled missing runtime');
       const notice = page.locator('.runtime-panel > .runtime-notice'); await notice.waitFor({state: 'visible', timeout: 10000});
@@ -339,6 +445,43 @@ export async function run(bindingFile) {
         customSelectionFileAbsent: true, recheckClicks: 0, chooseClicks: 0, loginActions: 0});
       await page.screenshot({path: path.join(b.output, '01-first-run-missing-cli-host.png'), type: 'png', fullPage: false});
       result.UIMissingCLIConfirmed = true;
+      if (rescan) {
+        assert.equal(hash(b.stagedCLI),b.CLISHA256); assert.deepEqual(inventory(b.stageApp),vendorBefore);
+        assert.equal(missingCandidateRow(b.vendorApp).status,'missing');
+        assertAllMissingInventory(missingInventory());
+        fs.renameSync(b.stageApp,b.vendorApp); result.vendorMoved = true;
+        assert.equal(fs.realpathSync(b.CLI),b.CLI); assert.equal(hash(b.CLI),b.CLISHA256);
+        assert.deepEqual(inventory(b.vendorApp),vendorBefore);
+        const installed = presentInventory(), selectedIndex = assertDefaultInventory(installed,b.CLI);
+        write('after-vendor-move-inventory.json',{rows:installed,ownIndex:selectedIndex,customPath:false});
+        const beforeRecheck = await page.evaluate(() => window.accountManager.getState());
+        const beforeRecheckView = {notice:(await notice.textContent()).trim(),summaryCount:await page.locator('.runtime-summary').count(),
+          recheckVisible:await page.getByRole('button',{name:/^(CLI 다시 검사|Check CLI again)$/}).isVisible(),
+          chooseVisible:await page.getByRole('button',{name:/^(실행 파일 선택|Choose executable)$/}).isVisible(),
+          loginDialogCount:await page.getByRole('dialog').count()};
+        assertMissingRuntimeObservation(beforeRecheck,beforeRecheckView);
+        write('before-recheck-observation.json',{runtime:beforeRecheck.runtime,view:beforeRecheckView,recheckClicks:0});
+        const recheck = page.getByRole('button',{name:/^(CLI 다시 검사|Check CLI again)$/});
+        assert.equal(await recheck.count(),1); assert.equal(await recheck.isEnabled(),true);
+        result.recheckClicks = 1; await recheck.click();
+        const finalState = await until(() => page.evaluate(() => window.accountManager.getState()),
+          value => value.runtime?.available === true && value.runtime.path === b.CLI,10000,'Rechecked genuine CLI');
+        await page.locator('.runtime-summary').waitFor({state:'visible',timeout:10000});
+        const summary = {path:(await page.locator('.runtime-summary code').textContent()).trim(),
+          version:(await page.locator('.runtime-summary strong').textContent()).trim()};
+        const finalPID = await app.evaluate(() => process.pid);
+        const livePages = app.windows().filter(value => !value.isClosed() && value.url() === 'reviewops://app/index.html');
+        const observation = {originalPID:actual.pid,finalPID,sameOriginalPage:livePages.length === 1 && livePages[0] === page,
+          appLaunchAttempts:result.appLaunchAttempts,recheckClicks:result.recheckClicks,chooseClicks:0,loginActions:0,
+          authFileAbsent:!fs.existsSync(path.join(b.codeHome,'auth.json')),
+          customSelectionFileAbsent:!fs.existsSync(path.join(b.dataDir,'codex-manager','runtime.json')),
+          vendorInventoryUnchanged:JSON.stringify(inventory(b.vendorApp)) === JSON.stringify(vendorBefore),
+          state:finalState,summary,CLI:b.CLI};
+        assertRescanObservation(observation); assert.equal(await page.getByRole('dialog').count(),0);
+        write('same-app-rescan-observation.json',observation);
+        await page.screenshot({path:path.join(b.output,'02-same-app-rechecked-cli-host.png'),type:'png',fullPage:false});
+        result.UIRescanConfirmed = true;
+      }
     } else {
     await page.locator('.runtime-summary').waitFor({state: 'visible', timeout: 10000});
     const state = await page.evaluate(() => window.accountManager.getState());
@@ -364,7 +507,18 @@ export async function run(bindingFile) {
     result.originalOwner = owner || null;
     result.originalAppHandleConfirmed = Boolean(app && owner);
     result.cleanupConfirmed = Boolean(owner && closed());
-    if (missing) {
+    if (rescan) {
+      try {
+        const actualVendor = result.vendorMoved ? b.vendorApp : b.stageApp;
+        assert.deepEqual(inventory(actualVendor),vendorBefore);
+        assert.equal(fs.existsSync(path.join(b.codeHome,'auth.json')),false);
+        assert.equal(fs.existsSync(path.join(b.dataDir,'codex-manager','runtime.json')),false);
+        if (result.vendorMoved) {
+          const after = presentInventory(); assertDefaultInventory(after,b.CLI); write('after-cleanup-inventory.json',{rows:after});
+        }
+        result.vendorInventoryUnchanged = true;
+      } catch (error) {failure ||= error; result.vendorInventoryUnchanged = false;}
+    } else if (missing) {
       try {
         const after = missingInventory(); write('after-cleanup-inventory.json', {rows: after});
         assertAllMissingInventory(after);
@@ -374,7 +528,9 @@ export async function run(bindingFile) {
       try {assert.deepEqual(inventory(b.vendorApp), vendorBefore); result.vendorInventoryUnchanged = true;}
       catch (error) {failure ||= error; result.vendorInventoryUnchanged = false;}
     }
-    result.ok = !failure && result.cleanupConfirmed && (missing
+    result.ok = !failure && result.cleanupConfirmed && (rescan
+      ? result.UIMissingCLIConfirmed === true && result.UIRescanConfirmed === true && result.recheckClicks === 1 && result.vendorInventoryUnchanged
+      : missing
       ? result.UIMissingCLIConfirmed === true && result.allCandidatesMissingAfterCleanup
       : result.UIPositive === true && result.vendorInventoryUnchanged);
     result.completedAt = new Date().toISOString(); write('result.json', result);

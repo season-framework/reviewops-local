@@ -4,6 +4,8 @@ from pathlib import Path
 import datetime
 import hashlib
 import json
+import importlib.util
+import plistlib
 import os
 import re
 import selectors
@@ -19,6 +21,9 @@ BASE = '84042d8bb8d7d6f758d936d63f41fc325349550e'
 REPOSITORY = 'season-framework/reviewops-local'
 BRANCH = 'refs/heads/codex/issue52-arm-missing-cli-ui'
 SCENARIO = 'missing-cli-first-run'
+RESCAN_BASE = '2738216b9797312709775125d6cbe4983b96e226'
+RESCAN_BRANCH = 'refs/heads/codex/issue52-arm-rescan-ui'
+RESCAN_SCENARIO = 'missing-cli-then-rescan'
 ADDITIONS = {
     '.github/workflows/arm-first-run-ui.yml',
     'scripts/diagnostics/arm-first-run-ui.py',
@@ -155,12 +160,14 @@ def reconcile_original(owner, output):
 def main():
     need(sys.platform == 'darwin' and os.uname().machine == 'arm64', 'A genuine ARM macOS runner is required')
     root = Path(__file__).resolve().parents[2]
+    rescan = os.environ.get('DIAGNOSTIC_SCENARIO') == RESCAN_SCENARIO
+    base, branch, scenario = (RESCAN_BASE, RESCAN_BRANCH, RESCAN_SCENARIO) if rescan else (BASE, BRANCH, SCENARIO)
     reviewed = os.environ.get('REVIEWED_COMMIT', '')
     need(re.fullmatch('[a-f0-9]{40}', reviewed) and reviewed == os.environ.get('GITHUB_SHA'), 'Exact reviewed harness commit required')
-    need(os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and os.environ.get('GITHUB_REF') == BRANCH
+    need(os.environ.get('GITHUB_EVENT_NAME') == 'workflow_dispatch' and os.environ.get('GITHUB_REF') == branch
          and os.environ.get('GITHUB_REPOSITORY') == REPOSITORY and os.environ.get('GITHUB_RUN_ATTEMPT') == '1', 'Reviewed manual branch, first attempt only')
-    need(os.environ.get('GITHUB_WORKFLOW_REF') == REPOSITORY + '/.github/workflows/arm-first-run-ui.yml@' + BRANCH, 'Unexpected workflow source')
-    need(os.environ.get('DIAGNOSTIC_SCENARIO') == SCENARIO, 'Explicit reviewed missing-CLI scenario required')
+    need(os.environ.get('GITHUB_WORKFLOW_REF') == REPOSITORY + '/.github/workflows/arm-first-run-ui.yml@' + branch, 'Unexpected workflow source')
+    need(os.environ.get('DIAGNOSTIC_SCENARIO') == scenario, 'Explicit reviewed missing-CLI scenario required')
     node = Path(os.environ['DIAGNOSTIC_NODE']).resolve(strict=True)
     runner_temp = Path(os.environ['RUNNER_TEMP']).resolve(strict=True)
     evidence = root / 'test-results/arm-first-run-ui'
@@ -181,8 +188,10 @@ def main():
            'RUNNER_TEMP': str(runner_temp),
            'PATH': str(node.parent) + ':/usr/bin:/bin:/usr/sbin:/sbin', 'LANG': 'en_US.UTF-8', 'TZ': 'UTC'}
     tools, held = [], []
-    result = {'ok': False, 'source': BASE, 'harnessSource': reviewed, 'startedAt': stamp(),
-              'scenario': SCENARIO, 'maximumAppLaunchRequests': 1, 'actualUIDriverInvocations': 0,
+    mounted = None
+    attach_attempted = detached = detach_attempted = False
+    result = {'ok': False, 'source': base, 'harnessSource': reviewed, 'startedAt': stamp(),
+              'scenario': scenario, 'maximumAppLaunchRequests': 1, 'actualUIDriverInvocations': 0,
               'vendorPrepared': False, 'vendorDownloadRequests': 0, 'harnessSignalsRequested': 0, 'retries': 0}
 
     def tool(label, argv, seconds=60):
@@ -237,15 +246,24 @@ def main():
         git = lambda label, *args: tool(label, ['/usr/bin/git', '-C', str(root), *args])[0]
         need(git('source-head', 'rev-parse', 'HEAD').decode().strip() == reviewed, 'Actual harness HEAD differs')
         need(not git('source-clean', 'status', '--porcelain=v1'), 'Harness checkout is not clean')
-        old_rows = git('source-base-tree', 'ls-tree', '-rz', BASE).split(b'\0')
+        old_rows = git('source-base-tree', 'ls-tree', '-rz', base).split(b'\0')
         new_rows = git('source-harness-tree', 'ls-tree', '-rz', 'HEAD').split(b'\0')
         table = lambda rows: {row.split(b'\t', 1)[1].decode(): row.split(b'\t', 1)[0] for row in rows if row}
         old, current = table(old_rows), table(new_rows)
         added = set(current) - set(old)
-        need(len(old) == 419 and all(current.get(name) == value for name, value in old.items())
-             and added == ADDITIONS, 'Only the declared diagnostic additions may differ from stable source419')
-        source_guard = {'baseSource': BASE, 'harnessSource': reviewed, 'baselineFiles': 419,
-                        'oldFilesUnchanged': True, 'addedPaths': sorted(added)}
+        if rescan:
+            changed = {name for name in old if current.get(name) != old[name]}
+            need(len(old) == 429 and set(current) == set(old) and changed == ADDITIONS
+                 and all(current[name] == old[name] for name in old if name not in ADDITIONS),
+                 'Only the six declared diagnostic paths may change from product source429')
+            source_guard = {'baseSource': base, 'harnessSource': reviewed, 'baselineFiles': 429,
+                            'unchangedOtherFiles': 423, 'otherBlobsAndModesUnchanged': True,
+                            'modifiedPaths': sorted(changed)}
+        else:
+            need(len(old) == 419 and all(current.get(name) == value for name, value in old.items())
+                 and added == ADDITIONS, 'Only the declared diagnostic additions may differ from stable source419')
+            source_guard = {'baseSource': BASE, 'harnessSource': reviewed, 'baselineFiles': 419,
+                            'oldFilesUnchanged': True, 'addedPaths': sorted(added)}
         write(output / 'source-guard.json', source_guard)
         native, _ = tool('native-node', [str(node), '-e', 'console.log(JSON.stringify({platform:process.platform,arch:process.arch,version:process.versions.node,executable:process.execPath,home:require("node:os").homedir()}))'])
         native = json.loads(native)
@@ -253,11 +271,26 @@ def main():
              and Path(native['executable']).resolve() == node and native['home'] == str(home), 'Actual native Node identity differs')
         native_identity = {**pin(node), 'version': native['version'], 'platform': native['platform'], 'arch': native['arch']}
         write(output / 'native-node.json', native_identity)
-        reference = json.loads((root / 'scripts/diagnostics/arm-first-run-ui-package.json').read_bytes())
-        need(reference['source'] == BASE and reference['sourceFiles'] == 419 and reference['version'] == '1.4.0', 'Accepted package source differs')
+        references = json.loads((root / 'scripts/diagnostics/arm-first-run-ui-package.json').read_bytes())
+        reference = references['rescan'] if rescan else references
         package = reference['package']
-        need(package['name'] == 'ReviewOps-1.4.0-arm64.zip' and package['url'] == 'https://github.com/season-framework/reviewops-local/releases/download/v1.4.0/' + package['name']
-             and package['bytes'] == 133829932 and package['sha256'] == '5e188c626666ff132dabc15143452138fc4fa6597a7423aba5ed07216ab03e0c', 'Accepted public package differs')
+        if rescan:
+            need(reference['source'] == RESCAN_BASE and reference['sourceFiles'] == 429
+                 and reference['version'] == '1.4.1' and reference['scenario'] == RESCAN_SCENARIO,
+                 'Current rescan package source differs')
+            need(package['name'] == 'ReviewOps-1.4.1-dev-2-arm64.zip' and package['assetID'] == 707986017
+                 and package['url'] == 'https://github.com/season-framework/reviewops-local/releases/download/test-latest/' + package['name']
+                 and package['bytes'] == 133832027 and package['sha256'] == 'ad415ccb5e02104ec313d830c5b6d1ec0cd2db9ae04206f628687a053cf3cd42',
+                 'Accepted current public package differs')
+            for name in ('asar', 'executable', 'embeddedBuild'):
+                member = reference[name]
+                need(type(member.get('bytes')) is int and member['bytes'] > 0
+                     and re.fullmatch('[a-f0-9]{64}', member.get('sha256') or ''),
+                     'Separately reviewed current package member seals required before acquisition: ' + name)
+        else:
+            need(reference['source'] == BASE and reference['sourceFiles'] == 419 and reference['version'] == '1.4.0', 'Accepted package source differs')
+            need(package['name'] == 'ReviewOps-1.4.0-arm64.zip' and package['url'] == 'https://github.com/season-framework/reviewops-local/releases/download/v1.4.0/' + package['name']
+                 and package['bytes'] == 133829932 and package['sha256'] == '5e188c626666ff132dabc15143452138fc4fa6597a7423aba5ed07216ab03e0c', 'Accepted public package differs')
         archive = private / package['name']
         write(output / 'public-package-download.json', public_zip(package['url'], archive, package))
         with zipfile.ZipFile(archive) as compressed:
@@ -276,27 +309,109 @@ def main():
             need(path.is_file() and not path.is_symlink() and path.stat().st_size == expected['bytes'] and sha(path) == expected['sha256'], 'Accepted package member differs')
         architecture, _ = tool('package-architecture', ['/usr/bin/lipo', '-archs', str(executable)])
         need(architecture.decode().split() == ['arm64'], 'Actual package executable is not native ARM')
-        # This lane prepares no vendor app, DMG, CLI, mount or credentials.
         need(not any((home / 'Applications').iterdir()), 'Private Applications must be empty')
-        binding = {'schema': 1, 'scenario': SCENARIO, 'approvedForOneMissingCLIUILaunch': True,
+        binding = {'schema': 1, 'scenario': scenario,
                    'allowNormalStartupMetadata': True,
-                   'root': str(root), 'source': BASE, 'harnessSource': reviewed, 'sourceGuard': source_guard,
+                   'root': str(root), 'source': base, 'harnessSource': reviewed, 'sourceGuard': source_guard,
                    'privateRoot': str(private), 'home': str(home), 'codeHome': str(code), 'dataDir': str(private / 'data'),
                    'sshConfig': str(ssh), 'packageApp': str(app), 'packageZipPin': pin(archive), 'expectedASARPin': pin(asar),
                    'output': str(evidence / 'ui'), 'actualNodeIdentity': native_identity}
+        if rescan:
+            spec = importlib.util.spec_from_file_location('_vendor_pure_helpers', root / 'scripts/diagnostics/arm-bundled-codex.py')
+            vendor = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(vendor)
+            page, page_receipt = vendor.bounded_get('https://learn.chatgpt.com/docs/app', {'learn.chatgpt.com', 'developers.openai.com'}, 4 * 1024**2, 30)
+            links = {href for href, content in re.findall(r'<a\b[^>]*href="([^"]+)"[^>]*>(.*?)</a>', page.decode('utf-8'), re.S | re.I)
+                     if ' '.join(re.sub('<[^>]+>', ' ', content).split()) == 'Download for macOS (Apple Silicon)'}
+            need(len(links) == 1, 'Unknown current official ARM link')
+            url = links.pop()
+            parsed = urlsplit(url)
+            need(parsed.hostname == 'persistent.oaistatic.com' and parsed.path.startswith('/codex-app-prod/') and parsed.path.endswith('.dmg') and not parsed.query,
+                 'Unknown official vendor location')
+            write(output / 'official-page.json', page_receipt)
+            dmg = private / 'official.dmg'
+            result['vendorDownloadRequests'] = 1
+            _, download = vendor.bounded_get(url, {'persistent.oaistatic.com'}, 1024**3, 180, dmg, output / 'official-DMG-response.json')
+            write(output / 'official-DMG.json', download)
+            mount = private / 'mount'
+            mount.mkdir(mode=0o700)
+            attach_attempted = True
+            raw, _ = tool('attach-vendor-readonly', ['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', '-mountpoint', str(mount), str(dmg)])
+            mounted = vendor.owned_mount_device(plistlib.loads(raw), str(mount))
+            write(output / 'owned-mount.json', {'device': mounted, 'mountpoint': str(mount)})
+            raw, _ = tool('verify-vendor-mount', ['/usr/sbin/diskutil', 'info', '-plist', str(mount)])
+            vendor.validate_readonly_mount(plistlib.loads(raw), str(mount), mounted)
+            apps = [entry for entry in mount.iterdir() if entry.name.endswith('.app')]
+            need(len(apps) == 1 and apps[0].name in ('Codex.app', 'ChatGPT.app') and not apps[0].is_symlink(), 'Unknown vendor app layout')
+            stage_parent = private / 'vendor-stage'
+            stage_parent.mkdir(mode=0o700)
+            stage = stage_parent / apps[0].name
+            tool('copy-vendor-stage', ['/usr/bin/ditto', '--rsrc', '--extattr', str(apps[0]), str(stage)])
+            before = vendor.bundle_inventory(stage)
+            need(before == vendor.bundle_inventory(apps[0]), 'Vendor stage differs from genuine original')
+            inventory_path = output / 'vendor-bundle-before.json'
+            write(inventory_path, before)
+            detach_attempted = True
+            tool('detach-vendor-mount', ['/usr/bin/hdiutil', 'detach', mounted])
+            mounted, detached = None, True
+            plist = plistlib.loads((stage / 'Contents/Info.plist').read_bytes())
+            need(plist.get('CFBundleIdentifier') == 'com.openai.codex', 'Unknown vendor bundle ID')
+            cli_relative = 'Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex'
+            staged_cli = (stage / cli_relative).resolve(strict=True)
+            need(stage in staged_cli.parents and staged_cli.is_file() and os.access(staged_cli, os.X_OK), 'Unknown genuine nested CLI')
+            minimum = plist.get('LSMinimumSystemVersion')
+            need(isinstance(minimum, str) and re.fullmatch(r'[0-9]+(?:\.[0-9]+){0,2}', minimum), 'Unknown minimum vendor macOS')
+            host_os, _ = tool('host-macos', ['/usr/bin/sw_vers', '-productVersion'])
+            version = lambda value: tuple((list(map(int, value.split('.'))) + [0, 0])[:3])
+            need(version(host_os.decode().strip()) >= version(minimum), 'Vendor minimum macOS is not met')
+            cli_arch, _ = tool('vendor-cli-architecture', ['/usr/bin/lipo', '-archs', str(staged_cli)])
+            need('arm64' in cli_arch.decode().split(), 'Genuine CLI lacks ARM')
+            for label, file in [('app', stage), ('cli', staged_cli)]:
+                tool(label + '-strict-signature', ['/usr/bin/codesign', '--verify', '--deep', '--strict', '-R', '=anchor apple generic', str(file)])
+                _, raw = tool(label + '-signature-metadata', ['/usr/bin/codesign', '-d', '--verbose=4', str(file)])
+                text = raw.decode('utf-8')
+                need(re.search(r'^TeamIdentifier=2DC432GLL2$', text, re.M) and re.search(r'^Authority=Developer ID Application: OpenAI(?:,|\s)', text, re.M)
+                     and 'Signature=adhoc' not in text, 'Actual vendor signing authority differs')
+            identity_path = output / 'vendor-stage-identity.json'
+            write(identity_path, {'appPath': str(stage), 'CLI': str(staged_cli), 'bundleId': plist['CFBundleIdentifier'],
+                  'appVersion': plist.get('CFBundleShortVersionString'), 'appBuild': plist.get('CFBundleVersion'),
+                  'appTeamID': '2DC432GLL2', 'CLITeamID': '2DC432GLL2', 'appDeepStrictAppleOpenAIVerified': True,
+                  'CLIDeepStrictAppleOpenAIVerified': True, 'CLIArchitecture': 'arm64', 'originalToolsClosed': True,
+                  'ownedMountOrdinarilyDetached': True, 'CLISHA256': sha(staged_cli), 'minimumOS': minimum,
+                  'hostOS': host_os.decode().strip(), 'currentMutableVendorCohort': True, 'exactReporterCohortConfirmed': False})
+            destination = home / 'Applications' / stage.name
+            binding.update(approvedForOneRescanUILaunch=True, stageApp=str(stage), stagedCLI=str(staged_cli),
+                           vendorApp=str(destination), CLI=str(destination / cli_relative), CLISHA256=sha(staged_cli),
+                           vendorIdentityPin=pin(identity_path), vendorInventoryPin=pin(inventory_path))
+            result['vendorPrepared'] = True
+        else:
+            # The historical missing lane prepares no vendor app or CLI.
+            binding['approvedForOneMissingCLIUILaunch'] = True
         binding_path = private / 'UI-binding.json'
         write(binding_path, binding)
         write(output / 'UI-binding.json', binding)
         result['actualUIDriverInvocations'] = 1
-        tool('missing-cli-packaged-ui', [str(node), str(root / 'scripts/diagnostics/arm-first-run-ui.mjs'), '--run', str(binding_path)], seconds=240)
-        need(not any((home / 'Applications').iterdir()) and not (code / 'auth.json').exists(),
-             'Unexpected private vendor app or authentication')
+        tool('same-app-rescan-ui' if rescan else 'missing-cli-packaged-ui', [str(node), str(root / 'scripts/diagnostics/arm-first-run-ui.mjs'), '--run', str(binding_path)], seconds=240)
+        if rescan:
+            need(vendor.bundle_inventory(destination) == before and not stage.exists(), 'Genuine vendor move or bytes differ')
+        else:
+            need(not any((home / 'Applications').iterdir()), 'Unexpected private vendor app')
+        need(not (code / 'auth.json').exists(), 'Unexpected private authentication')
         need(sha(asar) == reference['asar']['sha256'] and sha(executable) == reference['executable']['sha256'], 'ReviewOps package members changed')
         need(not git('source-final-clean', 'status', '--porcelain=v1'), 'Tracked source changed during diagnostic')
-        result.update(ok=True, packageSHA256=sha(archive), privateApplicationsStillEmpty=True, packageMembersUnchanged=True)
+        result.update(ok=True, packageSHA256=sha(archive), privateApplicationsStillEmpty=not rescan, packageMembersUnchanged=True,
+                      vendorBytesUnchanged=True if rescan else None)
     except Exception as error:
         result.update(errorType=type(error).__name__, error=str(error))
     finally:
+        if mounted and not held and not detach_attempted:
+            detach_attempted = True
+            try:
+                tool('failure-detach-vendor-mount', ['/usr/bin/hdiutil', 'detach', mounted])
+                mounted, detached = None, True
+            except Exception as error:
+                result['mountCleanupError'] = str(error)
+        result['mountClosureUnconfirmed'] = attach_attempted and not detached
         result.update(completedAt=stamp(), metadataTools=tools, heldOriginalOwners=[owner['child'].pid for owner in held],
                       vendorInternalChildClosureClaimed=False, externalTrafficAbsenceClaimed=False)
         write(output / 'driver-result.json', result)
