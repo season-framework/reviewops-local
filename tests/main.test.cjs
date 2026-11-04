@@ -993,6 +993,163 @@ async function heldReviewCopy(t) {
   };
 }
 
+test('review.copy refuses a new same-ID source incarnation after its selected attachment read',async t=>{
+  const plain=value=>JSON.parse(JSON.stringify(value));
+  const delta=(before,after)=>({
+    reviews:after.graph.reviews.length-before.graph.reviews.length,
+    activities:after.graph.activities.length-before.graph.activities.length,
+    attachments:after.graph.attachments.length-before.graph.attachments.length,
+    storedFiles:after.files.length-before.files.length,
+    notices:after.notices-before.notices
+  });
+  const normal=await heldReviewCopy(t);
+  let normalObservation;
+  try{
+    const sourceBefore=normal.h.state.liveStore.get('reviews',normal.source.review.id);
+    const attachmentBefore=normal.h.state.liveStore.get('attachments',normal.original.id);
+    const bytesBefore=fs.readFileSync(normal.originalPath);
+    await normal.hold();
+    const before=normal.observe(),result=plain(await normal.settle()),after=normal.observe();
+    assert.equal(result.ok,true);
+    const copied=after.graph.attachments.filter(row=>row.reviewId===result.data.id);
+    assert.equal(copied.length,1);
+    assert.deepEqual(normal.h.state.liveStore.get('reviews',normal.source.review.id),sourceBefore);
+    assert.deepEqual(normal.h.state.liveStore.get('attachments',normal.original.id),attachmentBefore);
+    assert.deepEqual(fs.readFileSync(normal.originalPath),bytesBefore);
+    assert.deepEqual(fs.readFileSync(path.join(normal.h.dataPath,'attachments',copied[0].storageName)),bytesBefore);
+    assert.equal(result.data.title,sourceBefore.title);assert.equal(result.data.body,sourceBefore.body);
+    assert.deepEqual(delta(before,after),{reviews:1,activities:3,attachments:1,storedFiles:1,notices:1});
+    normalObservation={result,before,after,deltas:delta(before,after),sourcePreserved:true,originalBytesPreserved:true};
+  }finally{await normal.close();}
+
+  const f=await heldReviewCopy(t),store=f.h.state.liveStore,originalRead=require('node:fs/promises').readFile;
+  const rawSource={...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(f.source.review.id)};
+  const rawAttachment={...store.db.prepare('SELECT * FROM attachments WHERE id=?').get(f.original.id)};
+  const originalBytes=fs.readFileSync(f.originalPath);
+  const epoch=()=>store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch;
+  const birth=()=>store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.source.review.id).generation;
+  const originalEpoch=epoch(),originalGeneration=birth(),admission=store.captureWriteAdmission();
+  const replacementTitle='Replacement review with the same public ID';
+  const replacementBody='This content belongs to a new source incarnation.';
+  let before,after,result,replacementGeneration,setupError,cleanupError;
+  try{
+    await f.hold();
+    // This controlled Store seam exercises the production review-birth trigger.
+    // It is not a claim that a queued UI deletion runs past the held copy.
+    store.transaction(()=>{
+      store.deleteReview(f.source.review.id);
+      store.upsert('reviews',{...rawSource,title:replacementTitle,body:replacementBody});
+      store.upsert('attachments',rawAttachment);
+    });
+    replacementGeneration=birth();
+    assert.ok(replacementGeneration>originalGeneration);
+    assert.equal(epoch(),originalEpoch);store.assertWriteAdmission(admission);
+    assert.deepEqual(store.get('attachments',f.original.id),f.original);
+    assert.deepEqual(fs.readFileSync(f.originalPath),originalBytes);
+    assert.deepEqual(plain(await f.client.success('window.context')),f.context);
+    before=f.observe();result=plain(await f.settle());after=f.observe();
+  }catch(error){setupError={name:error.name,message:error.message,code:error.code,stack:error.stack};}
+  finally{
+    try{await f.close();}catch(error){cleanupError={name:error.name,message:error.message,code:error.code,stack:error.stack};}
+  }
+  const copiedAttachments=result?.ok&&after?after.graph.attachments.filter(row=>row.reviewId===result.data.id):[];
+  const copiedFiles=copiedAttachments.map(row=>({metadata:row,bytesBase64:fs.readFileSync(path.join(f.h.dataPath,'attachments',row.storageName)).toString('base64')}));
+  const observation={normal:normalObservation,sourceReviewId:f.source.review.id,destinationProjectId:f.destination.project.id,
+    originalSource:rawSource,replacementTitle,replacementBody,originalEpoch,currentEpoch:epoch(),originalGeneration,replacementGeneration,
+    originalAttachment:rawAttachment,originalBytesBase64:originalBytes.toString('base64'),result:result||null,before:before||null,after:after||null,
+    deltas:before&&after?delta(before,after):null,copiedFiles,
+    replacementAdopted:Boolean(result?.ok&&result.data.title===replacementTitle&&result.data.body===replacementBody),
+    readFunctionRestored:require('node:fs/promises').readFile===originalRead,setupError:setupError||null,cleanupError:cleanupError||null,
+    scope:'Controlled production main/Store copy with one held attachment read and same-epoch review replacement; no GUI, native app, or remote writer'};
+  t.diagnostic('review-copy-source-incarnation-baseline '+JSON.stringify(observation));
+  assert.equal(setupError,undefined,'The same-epoch replacement and original read must settle before checking the product result');
+  assert.equal(cleanupError,undefined);
+  assert.ok(replacementGeneration>originalGeneration);assert.equal(epoch(),originalEpoch);
+  assert.equal(result.ok,false,'The original copy must not adopt a new source review merely because its public ID is unchanged');
+  assert.deepEqual(after,before);
+  assert.deepEqual(fs.readFileSync(f.originalPath),originalBytes);
+});
+
+test('review.copy refuses a source moved to another project during its selected attachment read',async t=>{
+  const f=await heldReviewCopy(t),store=f.h.state.liveStore;
+  const moved=store.saveProject({groupId:f.source.group.id,name:'Moved source project',serviceIds:[f.source.service.id]});
+  const epoch=store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch;
+  const generation=()=>store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.source.review.id).generation;
+  const originalGeneration=generation(),bytes=fs.readFileSync(f.originalPath);
+  try{
+    await f.hold();
+    store.db.prepare('UPDATE reviews SET projectId=?,number=1 WHERE id=?').run(moved.id,f.source.review.id);
+    assert.equal(generation(),originalGeneration);
+    assert.equal(store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch,epoch);
+    const before=f.observe(),result=await f.settle();
+    assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_REVIEW');
+    assert.deepEqual(f.observe(),before);assert.deepEqual(fs.readFileSync(f.originalPath),bytes);
+  }finally{await f.close();}
+});
+
+test('review.copy permits a changed source service and unlinked old service during its selected attachment read',async t=>{
+  const f=await heldReviewCopy(t),store=f.h.state.liveStore,bytes=fs.readFileSync(f.originalPath);
+  const generation=()=>store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.source.review.id).generation;
+  const originalGeneration=generation();
+  try{
+    await f.hold();
+    const next=store.saveService({groupId:f.source.group.id,name:'Next source service',kind:'local',rootPath:f.h.root});
+    store.setProjectServices(f.source.project.id,[f.source.service.id,next.id]);
+    store.saveReview({id:f.source.review.id,serviceId:next.id});
+    store.setProjectServices(f.source.project.id,[next.id]);
+    assert.equal(generation(),originalGeneration);assert.equal(store.listAgentRuns(f.source.review.id).length,0);
+    const currentSource=store.get('reviews',f.source.review.id),before=f.observe(),result=await f.settle(),after=f.observe();
+    assert.equal(result.ok,true);assert.equal(result.data.projectId,f.destination.project.id);
+    assert.deepEqual(store.get('reviews',f.source.review.id),currentSource);
+    assert.equal(store.get('reviews',f.source.review.id).serviceId,next.id);
+    assert.equal(store.project(f.source.project.id).serviceIds.includes(f.source.service.id),false);
+    assert.ok(before.graph.activities.every(row=>after.graph.activities.some(current=>current.id===row.id&&current.body===row.body)));
+    const copied=after.graph.attachments.filter(row=>row.reviewId===result.data.id);assert.equal(copied.length,1);
+    assert.equal(copied[0].sha256,f.original.sha256);assert.equal(after.notices,before.notices+1);
+    assert.deepEqual(fs.readFileSync(path.join(f.h.dataPath,'attachments',copied[0].storageName)),bytes);
+    assert.deepEqual(fs.readFileSync(f.originalPath),bytes);
+  }finally{await f.close();}
+});
+
+test('review.copy refuses source rebirth after physical publication and before SQL',async t=>{
+  let armed=false,published,expected,rawSource,rawAttachment,sourceReviewId,originalPath,originalBytes,generationBefore;
+  const h=await harness(t,{afterMainAtomicWrite({file,store}){
+    if(!armed||path.dirname(file)!==path.join(h.dataPath,'attachments'))return;
+    armed=false;published=file;assert.notEqual(file,originalPath);
+    assert.deepEqual(fs.readFileSync(file),originalBytes);
+    store.transaction(()=>{
+      store.deleteReview(sourceReviewId);
+      store.upsert('reviews',{...rawSource,title:'Replacement at the final copy commit',body:'Preserve this new source incarnation'});
+      store.upsert('attachments',rawAttachment);
+    });
+    assert.ok(store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(sourceReviewId).generation>generationBefore);
+    expected=store.exportData();
+  }}),source=await seed(h),destination=await seed(h),original=await addFile(h,source.review.id,'Original source-birth commit bytes');
+  const store=h.state.liveStore,epoch=store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch;
+  sourceReviewId=source.review.id;originalPath=path.join(h.dataPath,'attachments',original.storageName);originalBytes=fs.readFileSync(originalPath);
+  rawSource={...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(sourceReviewId)};
+  rawAttachment={...store.db.prepare('SELECT * FROM attachments WHERE id=?').get(original.id)};
+  generationBefore=store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(sourceReviewId).generation;
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});
+  const sourceClient=h.forWindow(await projectHost(h,source.project.id));
+  await h.state.seasonIntegration.showReview({reviewId:destination.review.id,fullscreen:false});
+  const other=h.forWindow(await projectHost(h,destination.project.id)),draft=path.join(h.root,'other-source-birth-draft.txt');
+  fs.writeFileSync(draft,'Keep this other window source-birth token');
+  const [token]=await other.success('attachment.stageFiles',{paths:[draft]});
+  const files=fs.readdirSync(path.join(h.dataPath,'attachments')).sort();
+  const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,beforeNotices=notices();
+  try{
+    armed=true;const result=await sourceClient.invoke('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+    assert.ok(published);assert.equal(armed,false);assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_REVIEW');
+    assert.equal(result.error.message,'리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.');
+    assert.equal(store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch,epoch);
+    assert.deepEqual(store.exportData(),expected);assert.equal(fs.existsSync(published),false);
+    assert.deepEqual(fs.readdirSync(path.join(h.dataPath,'attachments')).sort(),files);
+    assert.deepEqual(fs.readFileSync(originalPath),originalBytes);assert.equal(notices(),beforeNotices);
+    assert.equal((await other.success('attachment.stagePreview',{token:token.token})).content,'Keep this other window source-birth token');
+  }finally{armed=false;await other.success('attachment.discard',{tokens:[token.token]});}
+});
+
 for(const change of ['QA activation and release','restored epoch','closed sender']) {
   test(`review.copy refuses its original ${change} after a held attachment read`,async t=>{
     const f=await heldReviewCopy(t),originalBytes=fs.readFileSync(f.originalPath);
