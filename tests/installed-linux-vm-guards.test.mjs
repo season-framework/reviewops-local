@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {run as ownerRun, verifyPin, verifyEvidencePin, readLiveClosure} from '../scripts/diagnostics/installed-linux-permission-vm.mjs';
+import {run as ownerRun, verifyPin, verifyEvidencePin, readLiveClosure, materializeUIBinding} from '../scripts/diagnostics/installed-linux-permission-vm.mjs';
 import crypto from 'node:crypto';
 import {assertBinding as actualUIAdmission, BUILD as ACTUAL_UI_BUILD} from '../scripts/diagnostics/installed-linux-permission-ui.mjs';
 import {strictJSON, QMPFrames, QMPProtocol, OriginalVM, closure, uiCleanup, powerdownSafe, inspectSeedISO,
@@ -399,4 +399,59 @@ test('volume padding removal cannot hide leading or internal NULs or a different
     field.copy(bytes, (namespace === 'primary' ? 16 : 17) * 2048 + 40);
     assert.throws(() => inspectSeedISO(bytes, expected), /iso-cidata-label/, namespace + ':' + JSON.stringify(text));
   }
+});
+
+function strictOwnerUIProjection() {
+  const root = '/private/tmp/fixture-repo', privateRoot = '/private/tmp/r34v-fixture1234', head = 'b'.repeat(40);
+  const pin = filename => ({path: filename, bytes: 1, sha256: 'a'.repeat(64)});
+  const ui = {root, privateRoot, build: ACTUAL_UI_BUILD, packageApp: privateRoot + '/Applications/ReviewOps.app',
+    home: privateRoot + '/home', codeHome: privateRoot + '/home/.codex', dataDir: privateRoot + '/data',
+    sshConfig: privateRoot + '/home/.ssh/config', output: root + '/test-results/installed-linux-permission-ui/one',
+    claimPath: privateRoot + '/installed-linux-permission-ui-once.json', driverPin: pin(root + '/driver.mjs'),
+    packageZipPin: {path: privateRoot + '/app.zip', bytes: 133831763, sha256: '2e48f3aa200cf0d0a232d3e70508398105009a7e2ec08aeb928b05460646bead'},
+    expectedASARPin: pin(privateRoot + '/Applications/ReviewOps.app/Contents/Resources/app.asar'),
+    executablePin: pin(privateRoot + '/Applications/ReviewOps.app/Contents/MacOS/ReviewOps'),
+    dependencyPins: [pin(root + '/node_modules/playwright/index.js'), pin(root + '/node_modules/ssh2/index.js')]};
+  const b = strictJSON(JSON.stringify({ui, harnessSource: head,
+    inputPins: {preparedSupply: pin('/private/tmp/supply.json'), sourceRoot: pin('/private/tmp/source.json')},
+    tools: {node: {...pin('/private/tmp/node'), version: '24.22.2'}}}));
+  const guest = strictJSON(JSON.stringify({host: '127.0.0.1', port: 2222, username: 'rvqa',
+    privateKeyPin: pin(privateRoot + '/vm-secrets/client-key'), hostKeyFingerprint: 'SHA256:' + 'A'.repeat(43),
+    home: '/home/rvqa', codeHome: '/home/rvqa/.codex',
+    identity: {bootId: '11111111-2222-3333-4444-555555555555', uid: 1001, euid: 1001, kernel: 'fixture', machine: 'x86_64'},
+    leaf: {path: '/home/rvqa/owned-work', dev: 1, ino: 2, uid: 1001},
+    genuineCLI: {...pin('/home/rvqa/owned-bin/codex.real'), version: 'codex-cli 0.166.0'},
+    witness: {...pin('/home/rvqa/owned-bin/witness'), logPath: '/home/rvqa/observations/exec.jsonl'}}));
+  // Same owner projection, starting with the actual strict request/parser contract.
+  const projected = {...b.ui, schema: 1, phase: 'ui', scenario: 'installed-linux-permission', source: PRODUCT_SOURCE, harnessSource: b.harnessSource,
+    sourceGuard: {productSource: PRODUCT_SOURCE, harnessSource: b.harnessSource, baselineFiles: 429, existingFilesUnchanged: true},
+    preparedSupplyPin: b.inputPins.preparedSupply, preparedRootAcceptancePin: pin('/private/tmp/prepared-root.json'),
+    guestRootAcceptancePin: pin('/private/tmp/guest.json'), sourceGuardRootPin: b.inputPins.sourceRoot,
+    actualNodeIdentity: b.tools.node, guest, allowNormalMetadata: true, maximumAppLaunches: 1, newFormalQAIDs: 0,
+    vmLifecycleOwnedByOuterController: true};
+  const host = {platform: 'darwin', arch: 'arm64', node: process.versions.node, electron: undefined, uid: 501, euid: 501,
+    ci: 'true', actions: 'true', event: 'workflow_dispatch', attempt: 1, runId: 123, githubSHA: head};
+  return {b, projected, host};
+}
+
+test('strict request to owner UI projection uses the same JSON reader boundary as the unchanged child', () => {
+  const {b, projected, host} = strictOwnerUIProjection();
+  assert.equal(Object.getPrototypeOf(b.ui.build), null);
+  assert.throws(() => actualUIAdmission(projected, host), {name: 'AssertionError', operator: 'deepStrictEqual'});
+  const materialized = materializeUIBinding(projected);
+  assert.doesNotThrow(() => actualUIAdmission(materialized, host));
+  assert.equal(Object.getPrototypeOf(materialized.build), Object.prototype);
+  assert.equal(Object.getPrototypeOf(b.ui.build), null); // Original request/control objects were not normalized.
+  assert.equal(JSON.stringify(materialized, null, 2), JSON.stringify(projected, null, 2));
+  assert.equal(materialized.claimPath, projected.claimPath); assert.equal(materialized.maximumAppLaunches, 1);
+});
+
+test('UI materialization does not normalize authority, launder duplicate input or accept an altered build', () => {
+  const authority = strictJSON('{"approved":false,"scope":"original-vm-control"}');
+  assert.throws(() => materializeUIBinding(authority), /ui-materialization-scope/);
+  assert.equal(authority.approved, false); assert.equal(Object.getPrototypeOf(authority), null);
+  assert.throws(() => strictJSON('{"ui":{"build":{"version":"1.4.1","version":"foreign"}}}'), /json-duplicate-key/);
+  const {projected, host} = strictOwnerUIProjection();
+  projected.build.version = 'foreign';
+  assert.throws(() => actualUIAdmission(materializeUIBinding(projected), host), {name: 'AssertionError'});
 });

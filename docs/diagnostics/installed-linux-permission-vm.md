@@ -87,3 +87,8 @@ The v4 inert checks use owned synthetic trees below 64 KiB per fixture, includin
 ## Fixed-field ISO volume padding
 
 A separate Root-owned local nonsecret hdiutil fixture produced 32-byte volume identifiers with trailing NUL padding: primary CIDATA plus 26 zero bytes, and Joliet UCS-2BE cidata plus 20 zero bytes. This is a local Intel tool-format observation, not a reading of the failed R2 ARM seed or guest compatibility evidence. The parser removes only trailing U+0000 from each fixed 32-byte volume field before the existing whitespace trim and exact cidata/CIDATA check. Leading/internal NULs and other labels remain refused. Namespace extents, exact three names/contents and all other ISO guards are unchanged. Pure reads of that fixture do not invoke hdiutil, mount an image, generate keys or launch a guest/app.
+
+
+## UI binding reader boundary
+
+The owner's strict request parser deliberately returns null-prototype objects, including nested build and proof data. The unchanged UI child reads its binding with JSON.parse and compares the exact build with a plain-object constant. Before the identical in-process UI preflight, only the completed UI projection now crosses that same JSON serialization/read boundary. It preserves the exact serialized values, pins and one-use fields. External Root controls, the original strict request, QMP parsing and the UI driver remain unchanged. The regression starts at strictJSON(request), reproduces the original build-prototype rejection, and verifies the materialized projection with the unchanged actual UI admission function; duplicate input and an altered build remain refused. This pure contract check and the separate cached R3 metadata reproduction do not launch the app or repeat the closed guest.

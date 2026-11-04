@@ -28,6 +28,12 @@ export function verifyPin(record) { pinShape(record); need(same(filePin(record.p
 export function verifyEvidencePin(record, role) { evidencePinShape(record, role); need(same(filePin(record.path), {path: record.path, bytes: record.bytes, sha256: record.sha256}), 'file-pin'); return record.path; }
 function read(record, maximum = 2 * BLOCK) { const filename = verifyPin(record); need(record.bytes <= maximum, 'json-file-cap'); return strictJSON(fs.readFileSync(filename, 'utf8'), maximum); }
 
+export function materializeUIBinding(projected) {
+  need(projected?.schema === 1 && projected.phase === 'ui' && projected.scenario === 'installed-linux-permission', 'ui-materialization-scope');
+  // Match the unchanged child driver's JSON.parse read before its identical preflight.
+  return JSON.parse(JSON.stringify(projected));
+}
+
 // This is filesystem correspondence at an observation boundary, not a dyld/ABI/JIT attestation.
 export function readLiveClosure(capability, expectedRoot = null, io = fs) {
   privatePrefixShape(capability); pinShape(capability.installedInventoryPin);
@@ -428,11 +434,11 @@ export async function run(requestFile, authorityFile) {
     const guestProof = write(path.join(b.output, 'guest-acceptance.json'), {accepted: true, productSource: PRODUCT_SOURCE, preparedSupplyPin: b.inputPins.preparedSupply,
       guest, originalVMRetained: lifetime.matches(vm.child) && !vm.record.exitObserved, originalQEMUPID: vm.record.pid,
       conditionalParentAuthorityPin: parentPin, predicateContract: CONTRACT, runID: b.runID, seedPin: state.seedPin});
-    const ui = {...b.ui, schema: 1, phase: 'ui', scenario: 'installed-linux-permission', source: PRODUCT_SOURCE, harnessSource: b.harnessSource,
+    const ui = materializeUIBinding({...b.ui, schema: 1, phase: 'ui', scenario: 'installed-linux-permission', source: PRODUCT_SOURCE, harnessSource: b.harnessSource,
       sourceGuard: {productSource: PRODUCT_SOURCE, harnessSource: b.harnessSource, baselineFiles: 429, existingFilesUnchanged: true},
       preparedSupplyPin: b.inputPins.preparedSupply, preparedRootAcceptancePin: localPrepared, guestRootAcceptancePin: guestProof,
       sourceGuardRootPin: b.inputPins.sourceRoot, actualNodeIdentity: b.tools.node, guest,
-      allowNormalMetadata: true, maximumAppLaunches: 1, newFormalQAIDs: 0, vmLifecycleOwnedByOuterController: true};
+      allowNormalMetadata: true, maximumAppLaunches: 1, newFormalQAIDs: 0, vmLifecycleOwnedByOuterController: true});
     need(lifetime.matches(vm.child) && !vm.record.exitObserved && !vm.record.failedObservation && !qmp.error && !qmp.protocol.failure, 'live-original-before-ui');
     const driver = await import(pathToFileURL(verifyPin(b.ui.driverPin)).href);
     const uiEnvironment = uiChildEnvironment(context.env, admitted.admittedCI, b);
