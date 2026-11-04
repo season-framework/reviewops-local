@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import struct
 import runpy
+import tempfile
 import unittest
 from unittest import mock
 
@@ -324,7 +325,7 @@ class ConditionalOrchestration(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.c.admit(parent, env, 'darwin', 'x86_64')
 
-    def test_source_scope_is_six_exact_paths_and_pins_are_closed(self):
+    def test_source_scope_is_eleven_exact_paths_and_pins_are_closed(self):
         parent, env = self.parent()
         self.assertEqual(g.ADDITIONS, set(self.c.PATHS))
         pins = dict(parent['sourcePins'])
@@ -434,6 +435,136 @@ class ConditionalOrchestration(unittest.TestCase):
             namespace = runpy.run_path(str(ROOT / 'scripts/diagnostics/private-qemu-capability.py'),
                                       run_name='private_qemu_wrapper_import_smoke')
         self.assertTrue(callable(namespace['main']))
+
+
+class CombinedCoordinator(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location('combined_inert', ROOT / 'scripts/diagnostics/installed-linux-permission-combined.py')
+        cls.m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.m)
+
+    def fixture(self):
+        recipe = ConditionalOrchestration(); recipe.c = self.m.c
+        parent, env = recipe.parent()
+        m = self.m
+        parent.update({'scope': m.SCOPE, 'recipe': m.RECIPE, 'allowVM': True, 'allowSSH': True, 'allowApp': True,
+            'allowNodeDependencyAcquisition': True, 'nodeVersion': m.NODE_VERSION, 'nodeArchitecture': 'arm64',
+            'nodeSetupActionSHA': m.SETUP_NODE, 'npmLockSHA256': 'a' * 64, 'npmRegistry': 'https://registry.npmjs.org',
+            'allowConditionalRuntimeAcceptance': True, 'allowPrivateAppPreparation': True, 'allowOriginalVMAndGuest': True,
+            'allowConditionalUIApproval': True, 'maximumVMLaunches': 1, 'maximumAppLaunches': 1,
+            'maximumPowerdownRequests': 1, 'machineName': 'pc-i440fx-11.1', 'uiDriverSHA256': m.UI_SHA,
+            'r41PublicProofSHA256': m.PUBLIC_SHA})
+        env['CI'] = 'true'
+        return parent, env
+
+    def test_no_true_child_can_be_derived_from_false_or_incomplete_combined_parent(self):
+        m = self.m; parent, env = self.fixture()
+        child, identity = m.admit(parent, env, 'darwin', 'arm64')
+        self.assertTrue(child['approved']); self.assertFalse(child['allowVM']); self.assertFalse(child['allowSSH']); self.assertFalse(child['allowApp'])
+        self.assertEqual(len(child['sourcePins']), 11); self.assertEqual(identity['GITHUB_RUN_ID'], '100')
+        self.assertTrue(parent['allowVM'])  # Original parent is not rewritten.
+        for change in [{'approved': False}, {'expectedRunNumber': None}, {'expectedRunNumber': 8},
+            {'allowConditionalRuntimeAcceptance': False}, {'allowConditionalUIApproval': False},
+            {'allowNodeDependencyAcquisition': False}, {'nodeArchitecture': 'x64'}, {'machineName': 'pc'},
+            {'npmRegistry': 'https://foreign.invalid'}, {'extra': True}]:
+            with self.subTest(change=change), self.assertRaises(ValueError):
+                m.admit({**parent, **change}, env, 'darwin', 'arm64')
+        with self.assertRaises(ValueError): m.child_control({**parent, 'approved': False})
+
+    def test_actual_owner_environment_is_exact_five_setup_plus_six_admitted_ci_fields(self):
+        m = self.m; _, ci = self.fixture()
+        ci.update({'GH_TOKEN': 'never-copy', 'GITHUB_TOKEN': 'never-copy', 'SSH_AUTH_SOCK': '/foreign', 'NODE_OPTIONS': '--require foreign'})
+        env = m.minimal_env(Path('/private/tmp/home'), Path('/private/tmp/tmp'), ci)
+        self.assertEqual(set(env), {'HOME', 'TMPDIR', 'PATH', 'LANG', 'TZ', *m.CI_KEYS})
+        self.assertTrue(all(env[key] == ci[key] for key in m.CI_KEYS))
+        self.assertNotIn('REVIEWOPS_ARTIFACT_TOKEN', env)
+        npm = m.npm_environment(Path('/private/tmp/r34v-abcdefgh1234'), Path('/private/tmp/node/bin/node'))
+        self.assertEqual(npm['NPM_CONFIG_REGISTRY'], 'https://registry.npmjs.org')
+        self.assertEqual(npm['NPM_CONFIG_USERCONFIG'], '/private/tmp/r34v-abcdefgh1234/npm-userconfig')
+        self.assertEqual(npm['NPM_CONFIG_GLOBALCONFIG'], '/private/tmp/r34v-abcdefgh1234/npm-globalconfig')
+        self.assertEqual(npm['NPM_CONFIG_FETCH_RETRIES'], '0'); self.assertEqual(npm['NPM_CONFIG_IGNORE_SCRIPTS'], 'true')
+        self.assertNotIn('GITHUB_TOKEN', npm); self.assertEqual(npm['PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD'], '1')
+
+    def test_real_local_pin_hash_and_json_helpers_handle_small_files_without_missing_exports(self):
+        m = self.m
+        with tempfile.TemporaryDirectory(prefix='r34-combined-inert-') as temporary:
+            root = Path(temporary).resolve(); file = root / 'input.json'; file.write_bytes(b'{"owned":true}\n')
+            pin = {'path': str(file), 'bytes': file.stat().st_size, 'sha256': m.sha_file(file)}
+            self.assertEqual(m.checked_pin(pin, 65536), file); self.assertEqual(m.checked_json(pin), {'owned': True})
+            with self.assertRaises(ValueError): m.checked_pin({**pin, 'sha256': '0' * 64}, 65536)
+            with self.assertRaises(ValueError): m.checked_pin(pin, 1)
+            empty = root / 'empty'; empty.write_bytes(b''); zero = {'path': str(empty), 'bytes': 0, 'sha256': m.c.digest(b'')}
+            self.assertEqual(m.evidence_bytes(zero), b'')
+            with self.assertRaises(ValueError): m.checked_pin(zero, 65536)
+
+    def test_ui_base_produces_required_paths_and_exact_r41_build_without_source_fallback(self):
+        m = self.m; root, private = Path('/private/tmp/repo'), Path('/private/tmp/r34v-abcdefgh1234')
+        app = private / 'Applications/ReviewOps.app'; pin = lambda p: {'path': str(p), 'bytes': 1, 'sha256': 'a' * 64}
+        ui = m.ui_base(root, private, app, pin(root / 'driver'), {'path': '/zip', 'bytes': m.APP_BYTES, 'sha256': m.APP_SHA},
+            {'asar': pin(app / m.ASAR['path']), 'executable': pin(app / m.EXECUTABLE['path'])}, [])
+        self.assertEqual(ui['root'], str(root)); self.assertEqual(ui['output'], str(root / 'test-results/installed-linux-permission-ui/one'))
+        self.assertEqual(ui['claimPath'], str(private / 'installed-linux-permission-ui-once.json'))
+        self.assertEqual(ui['build'], m.BUILD); self.assertEqual(ui['build']['buildNumber'], 41001)
+        self.assertEqual(ui['build']['commit'], m.c.PRODUCT)
+
+    def test_public_asset_direct200_and_single302_close_originals_and_strip_blob_auth(self):
+        m = self.m; raw = b'owned synthetic public ZIP bytes'
+        class Response(io.BytesIO):
+            def __init__(self, status, headers, body=b''):
+                super().__init__(body); self.status, self.headers = status, headers
+        class Sink(io.BytesIO):
+            def close(self): self.retained = self.getvalue(); super().close()
+        for redirected in [False, True]:
+            sink = Sink(); body = Response(200, {'Content-Length': str(len(raw))}, raw)
+            first = Response(302, {'Location': 'https://' + m.APP_HOST + '/x?signature=never-retain'})
+            opener = mock.Mock(); opener.open.side_effect = [first, body] if redirected else [body]
+            receipts = []
+            with mock.patch.object(m, 'APP_BYTES', len(raw)), mock.patch.object(m, 'APP_SHA', m.c.digest(raw)), \
+                 mock.patch.object(m.urllib.request, 'build_opener', return_value=opener), \
+                 mock.patch.object(m.ssl, 'create_default_context', return_value=None), \
+                 mock.patch('pathlib.Path.open', return_value=sink), \
+                 mock.patch.object(m.c, 'write', side_effect=lambda path, value: receipts.append(value)):
+                m.acquire_app(Path('/not-written'), Path('/not-written'), 'dedicated')
+            self.assertEqual(sink.retained, raw); self.assertTrue(body.closed and sink.closed and receipts[0]['ok'])
+            self.assertEqual(opener.open.call_count, 2 if redirected else 1)
+            self.assertNotIn('never-retain', json.dumps(receipts))
+            if redirected:
+                self.assertTrue(first.closed)
+                self.assertFalse(any(k.lower() == 'authorization' for k in opener.open.call_args_list[1].args[0].headers))
+
+    def test_public_asset_extra_redirect_fails_without_body_file_or_retry(self):
+        m = self.m
+        class Response(io.BytesIO):
+            status = 302
+            headers = {'Location': 'https://' + m.APP_HOST + '/x?never=retain'}
+        first, second = Response(), Response(); opener = mock.Mock(); opener.open.side_effect = [first, second]
+        receipts = []
+        with mock.patch.object(m.urllib.request, 'build_opener', return_value=opener), \
+             mock.patch.object(m.ssl, 'create_default_context', return_value=None), \
+             mock.patch('pathlib.Path.open', side_effect=AssertionError('No data on another redirect')), \
+             mock.patch.object(m.c, 'write', side_effect=lambda path, value: receipts.append(value)):
+            with self.assertRaisesRegex(ValueError, '^public-app-acquisition-failed$'):
+                m.acquire_app(Path('/not-written'), Path('/not-written'), 'dedicated')
+        self.assertEqual(opener.open.call_count, 2); self.assertTrue(first.closed and second.closed)
+        self.assertFalse(receipts[0]['ok']); self.assertEqual(receipts[0]['automaticRetries'], 0)
+        for bad in ['https://other.invalid/x', 'http://' + m.APP_HOST + '/x', 'https://user@' + m.APP_HOST + '/x']:
+            with self.assertRaises(ValueError): m.app_redirect(bad)
+
+    def test_old_runtime_or_missing_delegation_cannot_be_promoted_to_conditional_acceptance(self):
+        m = self.m; parent, identity = self.fixture()
+        raw = {'ok': True, 'status': 'private-qemu-capability-observed', 'harnessSource': '0' * 40, 'productSource': m.c.PRODUCT}
+        with self.assertRaises(ValueError): m.runtime_primary(parent, {'GITHUB_RUN_ID': '100'}, raw, {}, {}, {})
+        raw['harnessSource'] = parent['expectedHarnessSource']
+        with self.assertRaises(ValueError): m.runtime_primary({**parent, 'allowConditionalRuntimeAcceptance': False}, {'GITHUB_RUN_ID': '100'}, raw, {}, {}, {})
+
+    def test_combined_isolated_import_has_no_transport_subprocess_archive_or_write_effect(self):
+        blocked = AssertionError('Definitions-only combined import')
+        with mock.patch('subprocess.Popen', side_effect=blocked), mock.patch('urllib.request.OpenerDirector.open', side_effect=blocked), \
+             mock.patch('zipfile.ZipFile', side_effect=blocked), mock.patch('pathlib.Path.mkdir', side_effect=blocked), \
+             mock.patch('pathlib.Path.write_text', side_effect=blocked), mock.patch.dict('os.environ', {}, clear=True):
+            namespace = runpy.run_path(str(ROOT / 'scripts/diagnostics/installed-linux-permission-combined.py'), run_name='combined_inert_smoke')
+        self.assertTrue(callable(namespace['run_combined']))
 
 
 if __name__ == '__main__':

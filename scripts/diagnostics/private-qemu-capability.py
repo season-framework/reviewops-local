@@ -24,7 +24,7 @@ PRODUCT = '2a1e9f166e61eb3a30148ea624b4bb921c8ebd6a'
 SCOPE = 'issue34-private-qemu-capability-orchestration'
 RECIPE = 'r3-capability-v1'
 REPOSITORY = 'season-framework/reviewops-local'
-REF = 'refs/heads/codex/issue34-private-qemu-capability'
+REF = 'refs/heads/codex/issue34-installed-linux-combined-qa'
 WORKFLOW = '.github/workflows/private-qemu-capability.yml'
 WORKFLOW_REF = REPOSITORY + '/' + WORKFLOW + '@' + REF
 ARTIFACT = 13310680337
@@ -40,7 +40,10 @@ REPORT_SHA = 'f445374990057f8c27c66716582c658014f44048c801e51b7eb6029ec0f37365'
 REPORT_MEMBER = 'installed-linux-supply/prepared-supply.json'
 PATHS = frozenset({WORKFLOW, 'scripts/diagnostics/private-qemu-capability.py',
     'scripts/diagnostics/private-qemu-runtime.py', 'scripts/diagnostics/private_qemu_runtime_guards.py',
-    'tests/private_qemu_runtime_test.py', 'docs/diagnostics/private-qemu-runtime.md'})
+    'tests/private_qemu_runtime_test.py', 'docs/diagnostics/private-qemu-runtime.md',
+    'scripts/diagnostics/installed-linux-permission-combined.py',
+    'scripts/diagnostics/installed-linux-permission-vm.mjs', 'scripts/diagnostics/installed-linux-vm-guards.mjs',
+    'tests/installed-linux-vm-guards.test.mjs', 'docs/diagnostics/installed-linux-permission-vm.md'})
 PARENT_KEYS = frozenset({'schema', 'approved', 'scope', 'recipe', 'controlID',
     'expectedRepository', 'expectedActorID', 'expectedRef', 'expectedHarnessSource',
     'expectedWorkflowSource', 'expectedWorkflowRef', 'expectedJob', 'expectedRunNumber',
@@ -92,7 +95,7 @@ def admit(parent, env, system, machine):
     need(isinstance(pins, dict) and set(pins) == PATHS and all(
          isinstance(p, dict) and set(p) == {'bytes', 'sha256'}
          and type(p['bytes']) is int and 0 < p['bytes'] <= 1024**2
-         and re.fullmatch('[a-f0-9]{64}', p['sha256'] or '') for p in pins.values()), 'six-source-pins')
+         and re.fullmatch('[a-f0-9]{64}', p['sha256'] or '') for p in pins.values()), 'eleven-source-pins')
     return {k: env[k] for k in expected} | {'GITHUB_RUN_ID': env['GITHUB_RUN_ID'],
              'GITHUB_TRIGGERING_ACTOR': env.get('GITHUB_TRIGGERING_ACTOR')}
 
@@ -201,7 +204,7 @@ def source_guard(source, parent, tools, git, label):
     old = table(run('-base', 'ls-tree', '-rz', BASE))
     current = table(run('-tree', 'ls-tree', '-rz', 'HEAD'))
     need(len(old) == 438 and all(current.get(n) == v for n, v in old.items())
-         and set(current) - set(old) == PATHS, 'old438-plus-exact-six')
+         and set(current) - set(old) == PATHS, 'old438-plus-exact-eleven')
     for name, entry in current.items():
         mode, kind, oid = entry.split(' ')
         path = source / name
