@@ -19,6 +19,11 @@ ADDITIONS = {
     'docs/diagnostics/private-qemu-runtime.md',
     'scripts/diagnostics/private-qemu-capability.py',
     '.github/workflows/private-qemu-capability.yml',
+    'scripts/diagnostics/installed-linux-permission-combined.py',
+    'scripts/diagnostics/installed-linux-permission-vm.mjs',
+    'scripts/diagnostics/installed-linux-vm-guards.mjs',
+    'tests/installed-linux-vm-guards.test.mjs',
+    'docs/diagnostics/installed-linux-permission-vm.md',
 }
 DYLIB = {0xc, 0xd, 0x80000018, 0x8000001f, 0x20, 0x80000023}
 RPATH = 0x8000001c

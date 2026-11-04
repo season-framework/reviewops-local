@@ -1,18 +1,22 @@
-name: Private QEMU capability observation
+name: Private QEMU and installed Linux permission QA
 
 on:
   workflow_dispatch:
     inputs:
       reviewed_commit:
-        description: Exact reviewed six-path harness commit and workflow source
+        description: Exact reviewed combined harness and workflow commit
         type: string
         required: true
       parent_control_json:
-        description: Root conditional authority with exact run number and six source pins
+        description: Root combined conditional authority with exact run allocation and eleven source pins
         type: string
         required: true
       whole_supply_proof_json:
-        description: Exact verbatim 3336-byte Root R3 whole-supply acceptance JSON
+        description: Verbatim Root R3 whole-supply acceptance JSON
+        type: string
+        required: true
+      r41_public_proof_json:
+        description: Verbatim Root R41 native/public-byte acceptance JSON
         type: string
         required: true
 
@@ -26,55 +30,90 @@ concurrency:
 
 jobs:
   capability:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/issue34-private-qemu-capability' && github.sha == inputs.reviewed_commit && github.actor_id == 351100875 && github.run_attempt == 1
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/issue34-installed-linux-combined-qa' && github.sha == inputs.reviewed_commit && github.actor_id == 351100875 && github.run_attempt == 1
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ inputs.reviewed_commit }}
-      - name: Retain exact conditional inputs without shell interpolation
+      - name: Retain raw external controls without shell interpolation
         env:
-          CAPABILITY_PARENT_JSON: ${{ inputs.parent_control_json }}
-          CAPABILITY_WHOLE_JSON: ${{ inputs.whole_supply_proof_json }}
+          COMBINED_PARENT_JSON: ${{ inputs.parent_control_json }}
+          COMBINED_WHOLE_JSON: ${{ inputs.whole_supply_proof_json }}
+          COMBINED_PUBLIC_JSON: ${{ inputs.r41_public_proof_json }}
         shell: bash
         run: |
           /usr/bin/python3 -I -B - <<'PY'
           import os
           from pathlib import Path
-          root = Path(os.environ['RUNNER_TEMP']) / 'r34-capability-control'
+          root = Path(os.environ['RUNNER_TEMP']) / 'r34-combined-controls'
           root.mkdir(mode=0o700)
-          for name, variable in [('parent.json', 'CAPABILITY_PARENT_JSON'),
-                                 ('whole-proof.original.json', 'CAPABILITY_WHOLE_JSON')]:
+          for name, variable in [('parent.json', 'COMBINED_PARENT_JSON'),
+                                 ('whole.original.json', 'COMBINED_WHOLE_JSON'),
+                                 ('public.original.json', 'COMBINED_PUBLIC_JSON')]:
               raw = os.environ[variable].encode('utf-8')
               if not 0 < len(raw) <= 65536:
-                  raise ValueError('Bounded control input required')
+                  raise ValueError('Bounded raw control required')
               with (root / name).open('xb') as stream:
                   stream.write(raw)
-          Path('test-results').mkdir()
           PY
-      - name: Observe one private derivative under the exact conditional authority
+      - name: Root preflight before Node or dependency acquisition
+        run: |
+          /usr/bin/python3 -I -B scripts/diagnostics/installed-linux-permission-combined.py --phase preflight \
+            --parent "$RUNNER_TEMP/r34-combined-controls/parent.json" \
+            --whole-proof "$RUNNER_TEMP/r34-combined-controls/whole.original.json" \
+            --public-proof "$RUNNER_TEMP/r34-combined-controls/public.original.json" \
+            --output "$GITHUB_WORKSPACE/test-results/installed-linux-combined"
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24.22.2'
+          architecture: arm64
+          check-latest: false
+          package-manager-cache: false
+      - name: Observe actual Node and prepare locked dependencies without lifecycle scripts
+        run: |
+          /usr/bin/python3 -I -B scripts/diagnostics/installed-linux-permission-combined.py --phase dependencies \
+            --parent "$RUNNER_TEMP/r34-combined-controls/parent.json" \
+            --whole-proof "$RUNNER_TEMP/r34-combined-controls/whole.original.json" \
+            --public-proof "$RUNNER_TEMP/r34-combined-controls/public.original.json" \
+            --output "$GITHUB_WORKSPACE/test-results/installed-linux-combined" --node "$(command -v node)"
+      - name: One current-run capability, original VM and installed-app observation
         env:
           REVIEWOPS_ARTIFACT_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
-          /usr/bin/python3 -I -B scripts/diagnostics/private-qemu-capability.py \
-            --parent "$RUNNER_TEMP/r34-capability-control/parent.json" \
-            --whole-proof "$RUNNER_TEMP/r34-capability-control/whole-proof.original.json" \
-            --output "$GITHUB_WORKSPACE/test-results/private-qemu-capability-orchestrator"
-      - name: Retain sanitized observations and original process receipts
+          /usr/bin/python3 -I -B scripts/diagnostics/installed-linux-permission-combined.py --phase run \
+            --parent "$RUNNER_TEMP/r34-combined-controls/parent.json" \
+            --whole-proof "$RUNNER_TEMP/r34-combined-controls/whole.original.json" \
+            --public-proof "$RUNNER_TEMP/r34-combined-controls/public.original.json" \
+            --output "$GITHUB_WORKSPACE/test-results/installed-linux-combined"
+      - name: Retain only explicit sanitized metadata and actual whole-app photos
         if: always()
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
-          name: reviewops-private-qemu-capability-${{ github.run_id }}-${{ github.run_attempt }}
+          name: reviewops-installed-linux-combined-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            test-results/installed-linux-combined/*.json
             test-results/private-qemu-capability-orchestrator/*.json
             test-results/private-qemu-capability-orchestrator/*.stdout
             test-results/private-qemu-capability-orchestrator/*.stderr
             test-results/private-qemu-runtime-*/*.json
             test-results/private-qemu-runtime-*/*.stdout
             test-results/private-qemu-runtime-*/*.stderr
+            test-results/installed-linux-combined/original-vm-owner-once.stdout
+            test-results/installed-linux-combined/original-vm-owner-once.stderr
+            test-results/installed-linux-combined/capability-once.stdout
+            test-results/installed-linux-combined/capability-once.stderr
+            test-results/installed-linux-combined/actual-node.stdout
+            test-results/installed-linux-combined/actual-module-entries.stdout
+            test-results/installed-linux-permission-vm/one/owner-result.json
+            test-results/installed-linux-permission-vm/one/guest-acceptance.json
+            test-results/installed-linux-permission-vm/one/local-prepared-acceptance.json
+            test-results/installed-linux-permission-vm/one/ui-binding.json
+            test-results/installed-linux-permission-vm/one/ui-approval.json
+            test-results/installed-linux-permission-ui/one/results.json
+            test-results/installed-linux-permission-ui/one/*.png
           if-no-files-found: warn
           retention-days: 14
