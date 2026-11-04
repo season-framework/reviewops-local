@@ -12,6 +12,14 @@
     },
     {
       "category": "fixes",
+      "title": "Show copy failures inside the copy dialog",
+      "description": "After a review copy is refused, the dialog shows the actual reason in the current interface language and re-enables Cancel. Successful copies continue to refresh the project.",
+      "commits": [
+        "c5e46b050932cc138803b8b293b188b9c9e3dc6f"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Reject attachment selections from outdated requests",
       "description": "If QA disconnects or the selected review is restored, replaced, or now belongs to another project, ReviewOps rejects the pending attachment save. Existing files stay intact, and normal history and next-service changes continue.",
       "commits": [
