@@ -82,3 +82,8 @@ Symlinks are never opened as regular files or followed by traversal. Their liter
 A mismatch or read error permanently fails the diagnostic and blocks wider setup/launch/remote work. Already-owned streams continue to drain, and the separately admitted ordinary cleanup remains available. Reader failure records retain only a controlled guard code or I/O error code; evidence persistence uses the existing nonthrowing permanent-failure saver. No post-read is manufactured while the original is HELD.
 
 The v4 inert checks use owned synthetic trees below 64 KiB per fixture, including healthy and empty data, changed bytes/mode/type, extra/missing entries, outside links/cycles, root recreation, a change during an opened read, and an injected EIO. An instrumented open seam proves the owned outside target is never opened. They do not extract real archives, invoke any private executable or launch a VM/SSH/app. Future runtime authority is still false.
+
+
+## Fixed-field ISO volume padding
+
+A separate Root-owned local nonsecret hdiutil fixture produced 32-byte volume identifiers with trailing NUL padding: primary CIDATA plus 26 zero bytes, and Joliet UCS-2BE cidata plus 20 zero bytes. This is a local Intel tool-format observation, not a reading of the failed R2 ARM seed or guest compatibility evidence. The parser removes only trailing U+0000 from each fixed 32-byte volume field before the existing whitespace trim and exact cidata/CIDATA check. Leading/internal NULs and other labels remain refused. Namespace extents, exact three names/contents and all other ISO guards are unchanged. Pure reads of that fixture do not invoke hdiutil, mount an image, generate keys or launch a guest/app.
