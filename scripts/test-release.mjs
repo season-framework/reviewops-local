@@ -69,7 +69,7 @@ export function assertPublicationCI(build, env = process.env) {
   if (build && (Math.floor(build.buildNumber / 1000) !== Number(env.GITHUB_RUN_NUMBER) ||
       build.buildNumber % 1000 < 1 || build.buildNumber > latestNumber || build.commit !== env.GITHUB_SHA)) throw new Error('현재 Actions 실행과 게시할 빌드 정보가 다릅니다.');
 }
-export async function prepareRelease(directory, build) {
+export async function prepareRelease(directory, build, { readHistoricalCatalog } = {}) {
   build = validateBuildInfo(build);
   let changes;
   try { changes = validateChangeNotes(JSON.parse(await fs.readFile(path.join(directory, 'change-notes.json'), 'utf8')), build.commit); }
@@ -116,7 +116,7 @@ export async function prepareRelease(directory, build) {
     history={name:historyName(build),size:bytes.length,sha256:hash(bytes)};
     assets.push({...history,bytes});
   }
-  const highlights=changes?await loadReleaseHighlights({version:build.version,changes}):[];
+  const highlights=changes?await loadReleaseHighlights({version:build.version,changes,readHistoricalCatalog}):[];
   return { build, manifest, pointer, assets, history, verification, highlights };
 }
 function describe(plan) { return { tag: TAG, releaseUrl: `https://github.com/${REPOSITORY}/releases/tag/${TAG}`, pointer: plan.pointer, files: plan.assets.map(({ name, size, sha256 }) => ({ name, size, sha256 })), build: plan.build }; }
