@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "features",
+      "title": "Tie opt-in QA input to the observed web document",
+      "description": "The new optional QA document tool lets agents observe an in-app web view or owned popup and send input with its app-issued document ID. Navigation, renderer loss and target replacement invalidate old observations. Stale requests are rejected before input starts; later failure warns that input may have applied and must not be replayed. Paired releases stay on the original contents, and failed cleanup quarantines the window. The eleven legacy QA tools remain unchanged.",
+      "commits": [
+        "b8eb6e1562aa93e0654f58f2fe37a5c963021a9b"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Connect a fresh MCP process to a running app",
       "description": "On macOS and Linux, a fresh MCP process can find one privately registered running app using a custom data folder when no explicit connection is selected and the default connection file is absent. The session stays tied to that app instance. Multiple or stale records require explicit selection. Windows automatic discovery is unsupported.",
       "commits": [

@@ -25,7 +25,7 @@ test('MCP initializes, advertises schemas and rejects calls before initializatio
     const init=await c.initialize('2025-06-18');assert.equal(init.result.protocolVersion,'2025-06-18');assert.deepEqual(init.result.capabilities,{tools:{listChanged:false}});
     const listed=await c.read(c.send('tools/list'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_review_create'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_qa_capture'));
     const categories=listed.result.tools.find(t=>t.name==='reviewops_review_categories_list');assert.ok(categories.annotations.readOnlyHint);assert.deepEqual(categories.inputSchema.required,['projectId']);
-    assert.equal(listed.result.tools.length,27);
+    assert.equal(listed.result.tools.length,28);
     const info=listed.result.tools.find(t=>t.name==='reviewops_connection_info');assert.deepEqual(info.inputSchema,{type:'object',properties:{},required:[],additionalProperties:false});assert.deepEqual(info.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
     for(const suffix of ['create','list','get','cancel']){
       const tool=listed.result.tools.find(t=>t.name==='reviewops_followup_'+suffix);assert.ok(tool);assert.equal(tool.annotations.readOnlyHint,['list','get'].includes(suffix));assert.equal(tool.annotations.openWorldHint,false);
@@ -333,4 +333,37 @@ test('every successful legacy route still calls its exact descriptor without ins
     assert.deepEqual(await invoke('automation.projects.list', {}), { projects: [{ id: 'A' }] }); assert.equal(reads, 0, route);
   }
   assert.equal(f.calls.length, 4);
+});
+
+test('the document tool is explicitly mixed, browser-scoped and validates operation fields before dispatch',async()=>{
+ const calls=[],doc='11111111-1111-4111-8111-111111111111',base={sessionId:'s',projectId:'A',windowId:'w',browserId:'b'},c=client({projectId:'A',invoke:async(action,args)=>{calls.push({action,args});return {...base,contract:'observed-web-document-v1',documentId:doc,text:'observed'};}});
+ try{
+  await c.initialize();const listed=(await c.read(c.send('tools/list'))).result.tools,tool=listed.find(value=>value.name==='reviewops_qa_document');
+  assert.equal(listed.length,28);assert.deepEqual(tool.annotations,{readOnlyHint:false,destructiveHint:false,openWorldHint:true});assert.ok(tool.inputSchema.required.includes('browserId'));
+  assert.equal((await c.call(tool.name,{...base,operation:'state'})).result.structuredContent.documentId,doc);assert.equal(calls[0].action,'automation.qa.document');
+  for(const args of [{...base,operation:'state',documentId:doc},{...base,operation:'type',text:'missing token'},{...base,operation:'capture',x:1},{...base,operation:'type',documentId:doc,text:'bad',unknown:true},{...base,projectId:'B',operation:'state'},{...base,browserId:undefined,operation:'state'}])assert.equal((await c.call(tool.name,args)).result.isError,true);
+  assert.equal(calls.length,1);assert.equal((await c.call(tool.name,{...base,operation:'type',documentId:doc,text:'explicit'})).result.isError,false);assert.equal(calls.length,2);
+ }finally{await c.close();}
+});
+
+test('unsupported or unconfirmed document contracts never fall back to a legacy action',async()=>{
+ for(const failure of ['old','unconfirmed']){
+  const calls=[],c=client({invoke:async(action,args)=>{calls.push({action,args});if(failure==='old')throw Object.assign(new Error('old app'),{code:'UNKNOWN_ACTION'});return{sessionId:'s',projectId:'A',windowId:'w',browserId:'b',documentId:'11111111-1111-4111-8111-111111111111'};}});
+  try{await c.initialize();const result=(await c.call('reviewops_qa_document',{sessionId:'s',projectId:'A',windowId:'w',browserId:'b',operation:'state'})).result;assert.equal(result.isError,true);assert.equal(JSON.parse(result.content[0].text).code,'QA_DOCUMENT_UNSUPPORTED');assert.deepEqual(calls.map(row=>row.action),['automation.qa.document']);}
+  finally{await c.close();}assert.equal(calls.length,1);
+ }
+});
+
+test('the actual MCP document route uses only an app-issued token and preserves stale-input refusal',async()=>{
+ const {EventEmitter}=require('node:events'),{createQaAutomation}=require('../electron/qa-automation.cjs'),contents=new EventEmitter(),commands=[];
+ Object.assign(contents,{isDestroyed:()=>false,isCrashed:()=>false,isLoadingMainFrame:()=>false,getZoomFactor:()=>1,executeJavaScript:async()=>({text:'observed'}),debugger:{isAttached:()=>true,sendCommand:async(method,args)=>commands.push({method,args})}});
+ const record={id:'window-A',projectId:'A',host:{isDestroyed:()=>false,webContents:contents},browsers:{automationTargets:()=>[{browserId:'browser-A',contents,inputScale:1,documentReady:true}]}};
+ const api=createQaAutomation({getProject:id=>id==='A',getWindow:id=>id===record.id?record:null,openWindow:async()=>record}),c=client({projectId:'A',invoke:(action,args)=>api.handle(action,args)});
+ try{
+  await c.initialize();const opened=(await c.call('reviewops_qa_open',{projectId:'A',clientId:'actual-mcp'})).result.structuredContent,base={sessionId:opened.sessionId,projectId:opened.projectId,windowId:opened.windowId,browserId:'browser-A'};
+  const state=(await c.call('reviewops_qa_document',{...base,operation:'state'})).result.structuredContent;assert.equal(state.contract,'observed-web-document-v1');
+  assert.equal((await c.call('reviewops_qa_document',{...base,operation:'type',documentId:state.documentId,text:'one'})).result.isError,false);assert.equal(commands.length,1);
+  contents.emit('did-start-navigation',{isMainFrame:true,isSameDocument:false});const refused=(await c.call('reviewops_qa_document',{...base,operation:'type',documentId:state.documentId,text:'stale'})).result;
+  assert.equal(refused.isError,true);assert.equal(JSON.parse(refused.content[0].text).code,'QA_DOCUMENT_STALE');assert.equal(commands.length,1);
+ }finally{await c.close();api.close();}
 });

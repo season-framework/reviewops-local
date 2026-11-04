@@ -239,3 +239,15 @@ test('a delayed navigation failure cannot change a closed browser item',async t=
  const h=harness(t);let item;const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
  let reject;contents.loadURL=()=>new Promise((_resolve,no)=>{reject=no;});await manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/old'});await manager.dispatch('browser.close',{id:opened.id});reject(new Error('late closed request'));await Promise.resolve();assert.equal(item.error,'');
 });
+
+test('automation targets retain web and popup crash readiness before a QA observer attaches',async t=>{
+ const h=harness(t),host=new h.Window();let item;const manager=h.manager(host,{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/readiness'}),contents=h.views[0].webContents;
+ assert.equal(manager.automationTargets().find(target=>target.browserId===opened.id).documentReady,true);
+ contents.emit('render-process-gone');assert.equal(contents.isCrashed(),false);assert.equal(manager.automationTargets().find(target=>target.browserId===opened.id).documentReady,false);
+ contents.emit('did-finish-load');await item.recovery;assert.equal(manager.automationTargets().find(target=>target.browserId===opened.id).documentReady,true);
+ const options=contents.openHandler({url:'https://fixture.invalid/popup'}),popup=new h.Window(options.overrideBrowserWindowOptions);contents.emit('did-create-window',popup);
+ const target=()=>manager.automationTargets().find(target=>target.browserId===popup.qaBrowserId);
+ assert.equal(target().documentReady,true);popup.webContents.emit('render-process-gone');assert.equal(popup.webContents.isCrashed(),false);assert.equal(target().documentReady,false);
+ popup.webContents.emit('did-finish-load');assert.equal(target().documentReady,true);popup.webContents.emit('did-start-navigation',{isMainFrame:true,isSameDocument:true});assert.equal(target().documentReady,true);
+ popup.destroy();assert.equal(popup.webContents.listeners('render-process-gone').some(listener=>listener.name==='documentCrashed'),false);assert.equal(popup.webContents.listeners('did-finish-load').some(listener=>listener.name==='documentLoaded'),false);
+});

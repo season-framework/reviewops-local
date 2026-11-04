@@ -27,7 +27,7 @@ function intersection(...rects) {
 }
 
 function createBrowserManager(window, {partition = PARTITION, backgroundPopups = () => false,onCreated=()=>{},onChanged=()=>{},onClosed=()=>{}} = {}) {
-  const views = new Map(), popups = new Set();let disposed=false;
+  const views = new Map(), popups = new Set(),unavailableContents=new WeakSet();let disposed=false;
   const recorder = createEvidenceRecorder();
   function bindContext(item,value,projectId){
     const next=typeof value==='string'?value.slice(0,120):'';
@@ -78,6 +78,11 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
   };
   function protect(contents, owner) {
     recorder.track(contents,owner);
+    // QA observers may attach after a crash, when isCrashed() already reports false.
+    const documentCrashed=()=>unavailableContents.add(contents);
+    const documentLoaded=()=>{if(!contents.isCrashed?.())unavailableContents.delete(contents);};
+    const documentDestroyed=()=>{contents.removeListener('render-process-gone',documentCrashed);contents.removeListener('did-finish-load',documentLoaded);unavailableContents.delete(contents);};
+    contents.on('render-process-gone',documentCrashed);contents.on('did-finish-load',documentLoaded);contents.once('destroyed',documentDestroyed);
     contents.setUserAgent(contents.getUserAgent().replace(/\sElectron\/\S+/g,'').replace(/\s(?:ReviewOps|reviewops-local|ReviewOps-Local)\/\S+/gi,''));
     contents.setZoomMode?.('isolated');
     const checkNavigation = (event, target) => {
@@ -185,10 +190,10 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
   return {
     automationTargets() {
       return [...views.values()].filter(item=>!item.view.webContents.isDestroyed()).map(item=>({
-        browserId:item.id,contents:item.view.webContents,inputScale:item.emulation?JSON.parse(item.emulation).scale:1,ready:item.emulationPromise,visible:item.visible,url:item.view.webContents.getURL(),title:item.view.webContents.getTitle(),
+        browserId:item.id,contents:item.view.webContents,inputScale:item.emulation?JSON.parse(item.emulation).scale:1,ready:item.emulationPromise,documentReady:!item.rendererGone&&!unavailableContents.has(item.view.webContents),visible:item.visible,url:item.view.webContents.getURL(),title:item.view.webContents.getTitle(),
         bounds:item.area?{x:item.area.x+item.view.getBounds().x,y:item.area.y+item.view.getBounds().y,width:item.view.getBounds().width,height:item.view.getBounds().height}:null,
         clip:item.area
-      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
+      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,documentReady:!unavailableContents.has(popup.webContents),visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
     },
     async dispatch(action, payload) {
       if(disposed&&action!=='browser.close')throw Object.assign(new Error('열린 화면을 찾을 수 없습니다.'),{code:'STALE_BROWSER_OWNER'});
