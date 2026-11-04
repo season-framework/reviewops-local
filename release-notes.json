@@ -12,6 +12,14 @@
     },
     {
       "category": "fixes",
+      "title": "Avoid extra refreshes when opening review versions",
+      "description": "Opening a review's version list no longer triggers extra app refreshes. Saved versions and target changes still refresh the interface.",
+      "commits": [
+        "45e3e64776ec2a64d03b88860fd835dca805759b"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Protect review versions from outdated saves",
       "description": "If a review or its selected attachments change while files are being read, the save stops and asks you to recheck the copies. Newer saved records are preserved.",
       "commits": [
