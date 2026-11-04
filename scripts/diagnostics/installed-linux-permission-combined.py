@@ -37,7 +37,7 @@ ASAR = {'path': 'Contents/Resources/app.asar', 'bytes': 34912856,
         'sha256': '4e54fe892916a60aebf90a507acf005dd368f4509beb13818960dd891c2665dd'}
 EXECUTABLE = {'path': 'Contents/MacOS/ReviewOps', 'bytes': 53008,
               'sha256': '1caceb099acff47d9fd896aebc15f9b0615e88f385ae1fa0f47ca6471d88fe78'}
-UI_SHA = '8bf13d42ec7254969703f397a41cfda7ff8f0cbd0d8e804ed9c3f3b0eb696a9c'
+UI_SHA = '9f520a671659ea69a78b8cc7656f83b6772c7292a946d9ca5212ba0508368a6d'
 BUILD = {'channel': 'test', 'version': '1.4.1', 'buildNumber': 41001, 'commit': c.PRODUCT,
          'builtAt': '2026-11-04T05:32:59.166Z', 'developmentNumber': 3}
 EXTRA_KEYS = {'allowNodeDependencyAcquisition', 'nodeVersion', 'nodeArchitecture', 'nodeSetupActionSHA',
