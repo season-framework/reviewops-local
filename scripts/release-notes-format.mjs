@@ -23,12 +23,47 @@ export function validateReleaseHighlights(value,version){
  });
 }
 
-export async function loadReleaseHighlights({version,changes,source,directory=sourceRoot,command=run}={}){
- let value;try{value=JSON.parse(await fs.readFile(path.join(directory,'release-notes.json'),'utf8'));}catch(error){if(error.code==='ENOENT')return [];throw error;}
- const entries=validateReleaseHighlights(value,version);
+async function readGitCatalog(commit,{directory,command,cache}){
+ // ls-tree distinguishes an absent path in a valid tree from a missing object.
+ // Read JSON blobs only; historical scripts are never imported or executed.
+ const {stdout:tree}=await command('git',['ls-tree','-z',commit,'--','release-notes.json'],{cwd:directory,maxBuffer:4096});
+ if(!tree)return null;
+ const match=/^100(?:644|755) blob ([a-f0-9]{40})\trelease-notes\.json\0$/.exec(tree);
+ if(!match)throw new Error('Historical release highlights must be one regular Git blob.');
+ if(cache.has(match[1]))return cache.get(match[1]);
+ const {stdout}=await command('git',['cat-file','blob',match[1]],{cwd:directory,maxBuffer:256*1024});
+ if(Buffer.byteLength(stdout)>256*1024)throw new Error('Historical release highlights exceed the size limit.');
+ let value;try{value=JSON.parse(stdout);}catch{throw new Error('Historical release highlights contain invalid JSON.');}
+ if(value===null)throw new Error('Historical release highlights must use schema 1 with a version and entries.');
+ cache.set(match[1],value);return value;
+}
+
+export async function loadReleaseHighlights({version,changes,source,directory=sourceRoot,command=run,readHistoricalCatalog=readGitCatalog}={}){
+ let value;try{value=JSON.parse(await fs.readFile(path.join(directory,'release-notes.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+ const entries=value===undefined?[]:validateReleaseHighlights(value,version);
  if(changes){
+  if(!Array.isArray(changes.commits)||changes.commits.length>100||changes.commits.some(item=>!item||!sha(item.commit))||new Set(changes.commits.map(item=>item.commit)).size!==changes.commits.length)throw new Error('Historical highlights require at most 100 distinct frozen source commits.');
   const included=new Set(changes.commits.map(item=>item.commit));
-  return entries.filter(entry=>entry.commits.every(commit=>included.has(commit)));
+  const selected=[],claimed=new Set(),cache=new Map(),versions=new Set(value?.version===version?[version]:[]);
+  const select=catalog=>{
+   const groups=new Map();
+   for(const entry of catalog.filter(entry=>entry.commits.every(commit=>included.has(commit)))){
+    const key=[...entry.commits].sort().join(',');
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push(entry);
+   }
+   // The current catalog, then newest frozen snapshot, owns each complete
+   // implementation-commit set. Preserve its explicitly separate highlights.
+   for(const [key,group]of groups)if(!claimed.has(key)){claimed.add(key);selected.push(...group);}
+  };
+  select(entries);
+  for(const {commit}of changes.commits){
+   const historical=await readHistoricalCatalog(commit,{directory,command,cache});
+   if(historical!==null){
+    const older=validateReleaseHighlights(historical,historical?.version);
+    if(!versions.has(historical.version)){versions.add(historical.version);select(older);}
+   }
+  }
+  return selected;
  }
  if(!entries.length)return [];
  if(!sha(source))throw new Error('A full reviewed source commit is required for stable release highlights.');

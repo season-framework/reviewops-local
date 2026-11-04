@@ -10,9 +10,10 @@ const entry={category:'fixes',title:'Keep previews reliable after reload',descri
 test('reviewed highlights are English, versioned and bound to complete actual commit ranges',async t=>{
  const {loadReleaseHighlights,validateReleaseHighlights}=await load(),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-release-copy-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
  const catalog={schema:1,version:'1.3.0',entries:[entry,{...entry,title:'Unreleased feature',commits:['d'.repeat(40)]}]};await fs.writeFile(path.join(directory,'release-notes.json'),JSON.stringify(catalog));
- assert.deepEqual(await loadReleaseHighlights({version:'1.3.0',changes,directory}),[entry]);
- assert.deepEqual(await loadReleaseHighlights({version:'1.2.11',changes,directory}),[]);
- assert.deepEqual(await loadReleaseHighlights({version:'1.3.0',changes:{...changes,commits:[]},directory}),[]);
+ const readHistoricalCatalog=async()=>null;
+ assert.deepEqual(await loadReleaseHighlights({version:'1.3.0',changes,directory,readHistoricalCatalog}),[entry]);
+ assert.deepEqual(await loadReleaseHighlights({version:'1.2.11',changes,directory,readHistoricalCatalog}),[]);
+ assert.deepEqual(await loadReleaseHighlights({version:'1.3.0',changes:{...changes,commits:[]},directory,readHistoricalCatalog}),[]);
  for(const patch of [{title:'한국어 제목'},{description:'line\nbreak'},{category:'unknown'},{commits:['short']}])assert.throws(()=>validateReleaseHighlights({schema:1,version:'1.3.0',entries:[{...entry,...patch}]},'1.3.0'));
  const calls=[];await loadReleaseHighlights({version:'1.3.0',source:other,directory,command:async(command,args,options)=>{calls.push({command,args,options});return {stdout:''};}});assert.equal(calls.length,2);assert.ok(calls.every(call=>call.command==='git'&&call.args.slice(0,2).join(' ')==='merge-base --is-ancestor'&&call.args.at(-1)===other));
  await assert.rejects(loadReleaseHighlights({version:'1.3.0',source:other,directory,command:async()=>{throw new Error('not an ancestor');}}),/not an ancestor/);
@@ -106,4 +107,70 @@ test('editorial highlights outside or incomplete in the range retain behavior fa
  assert.ok(body.includes('## New features'));assert.ok(body.includes('Add review filters'));
  assert.ok(body.includes('## Fixes'));assert.ok(body.includes('Retain manual selection'));
  assert.ok(body.includes('[PR #50]'));assert.equal(body.includes('Future feature'),false);assert.equal(body.includes('Incomplete reviewed fix'),false);
+});
+
+test('a test range crossing a stable catalog reset retains only its newly included reviewed behavior',async t=>{
+ const {loadReleaseHighlights,renderTestReleaseNotes}=await load(),{collectChangeNotes}=await import('../scripts/test-release-notes.mjs');
+ const {promisify}=require('node:util'),run=promisify(require('node:child_process').execFile);
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-catalog-history-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const git=async(...args)=>(await run('git',args,{cwd:directory})).stdout.trim();
+ await git('init','--quiet');await git('config','user.name','Release fixture');await git('config','user.email','release-fixture@example.invalid');await git('config','commit.gpgsign','false');await git('config','core.hooksPath',path.join(directory,'no-hooks'));
+ const save=async(label,catalog)=>{await fs.writeFile(path.join(directory,'change.txt'),label);if(catalog)await fs.writeFile(path.join(directory,'release-notes.json'),JSON.stringify(catalog));await git('add','.');await git('commit','--quiet','-m',label);return git('rev-parse','HEAD');};
+ const old=await save('fix: older already public behavior');
+ const oldEntry={...entry,title:'Older already public behavior',commits:[old]};
+ const base=await save('docs: describe previous test scope',{schema:1,version:'1.4.1',entries:[oldEntry]});
+ const fix=await save('Keep copied attachment files and source details consistent');
+ const fixed={...entry,title:'Keep copied attachment files and source details consistent',description:'Stop a pending copy if its selected source attachment changes.',commits:[fix]};
+ const stable=await save('docs: describe consistent attachment sources',{schema:1,version:'1.4.1',entries:[fixed,oldEntry]});
+ const feature=await save('feat: discover one privately registered running app');
+ const added={category:'features',title:'Connect a fresh MCP process to a running app',description:'Find one privately registered app without changing existing explicit connections.',commits:[feature]};
+ const source=await save('release: prepare the next minor version',{schema:1,version:'1.5.0',entries:[added]});
+ const build={channel:'test',version:'1.5.0',developmentNumber:1,buildNumber:43001,commit:source,builtAt:'2026-11-04T21:19:46.858Z'};
+ const notes=await collectChangeNotes({build,baseCommit:base,cwd:directory,resolveReferences:async item=>({...item,references:[{...ref,number:item.commit===fix?89:90,url:`https://github.com/season-framework/reviewops-local/pull/${item.commit===fix?89:90}`}],referenceStatus:'verified'})});
+ const frozen=JSON.stringify(notes),highlights=await loadReleaseHighlights({version:'1.5.0',changes:notes,directory});
+ assert.deepEqual(highlights,[added,fixed]);assert.equal(JSON.stringify(notes),frozen);
+ const body=renderTestReleaseNotes({build,versionLabel:'1.5.0-dev-1',pointer:{},changes:notes,highlights});
+ const summary=body.split('<details>')[0];assert.ok(summary.includes('## New features'));assert.ok(summary.includes('## Fixes'));
+ assert.equal((summary.match(/\*\*Keep copied attachment files and source details consistent:/g)||[]).length,1);assert.equal(summary.includes(oldEntry.title),false);
+ assert.ok(summary.includes('[PR #89]'));assert.ok(summary.includes('[PR #90]'));
+ assert.deepEqual(await loadReleaseHighlights({version:'1.5.0',source,directory,readHistoricalCatalog:async()=>{throw new Error('Stable drafts must not read historical catalogs');}}),[added]);
+ const afterStable=await collectChangeNotes({build,baseCommit:stable,cwd:directory});
+ assert.deepEqual(await loadReleaseHighlights({version:'1.5.0',changes:afterStable,directory}),[added]);
+});
+
+test('current and newest version snapshots win without resurrecting removed or incomplete highlights',async t=>{
+ const {loadReleaseHighlights}=await load(),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-catalog-precedence-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const feature={category:'features',title:'Current feature',description:'Keep the current reviewed description.',commits:[commit]},fix={...entry,title:'Latest historical fix',commits:[other]};
+ await fs.writeFile(path.join(directory,'release-notes.json'),JSON.stringify({schema:1,version:'2.0.0',entries:[feature]}));
+ const ordered={...changes,commits:[{commit,subject:'Newer source'},{commit:other,subject:'Older source'}]};
+ const calls=[],snapshots=new Map([[commit,{schema:1,version:'1.9.0',entries:[fix,{...entry,title:'Incomplete fix',commits:[other,'d'.repeat(40)]}]}],[other,{schema:1,version:'1.9.0',entries:[{...fix,title:'Older wording'},{...entry,title:'Removed entry',commits:[commit]}]}]]);
+ const actual=await loadReleaseHighlights({version:'2.0.0',changes:ordered,directory,readHistoricalCatalog:async id=>{calls.push(id);return snapshots.get(id);}});
+ assert.deepEqual(actual,[feature,fix]);assert.deepEqual(calls,ordered.commits.map(item=>item.commit));
+ snapshots.set(other,{schema:1,version:'2.0.0',entries:[{...feature,title:'Outdated current wording'}]});
+ assert.deepEqual(await loadReleaseHighlights({version:'2.0.0',changes:ordered,directory,readHistoricalCatalog:async id=>snapshots.get(id)}),[feature,fix]);
+});
+
+test('historical lookup is capped by the frozen identities and malformed present catalogs are not skipped',async t=>{
+ const {loadReleaseHighlights}=await load(),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-catalog-bounds-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ await fs.writeFile(path.join(directory,'release-notes.json'),JSON.stringify({schema:1,version:'1.3.0',entries:[]}));
+ let reads=0;const absent=async()=>{reads++;return null;};
+ const tooMany=Array.from({length:101},(_,i)=>({commit:(i+1).toString(16).padStart(40,'0')}));
+ for(const commits of [tooMany,[{commit:'not-a-commit'}],[{commit},{commit}]])await assert.rejects(loadReleaseHighlights({version:'1.3.0',changes:{...changes,commits},directory,readHistoricalCatalog:absent}),/100 distinct frozen/);
+ assert.equal(reads,0);
+ assert.deepEqual(await loadReleaseHighlights({version:'1.3.0',changes,directory,readHistoricalCatalog:absent}),[]);assert.equal(reads,2);
+ for(const value of [{schema:9,version:'1.2.0',entries:[]},{schema:1,version:'1.2.0',entries:[{...entry,title:'한국어'}]}])await assert.rejects(loadReleaseHighlights({version:'1.3.0',changes,directory,readHistoricalCatalog:async()=>value}),/schema 1|English/);
+});
+
+test('Git catalog reads distinguish an absent path, missing object, invalid mode, invalid JSON and oversized blob',async t=>{
+ const {loadReleaseHighlights}=await load(),directory=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-catalog-git-read-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const single={...changes,commits:[{commit,subject:'fix: selected behavior'}]},blob='d'.repeat(40),calls=[];
+ const options={version:'1.3.0',changes:single,directory};
+ assert.deepEqual(await loadReleaseHighlights({...options,command:async(...args)=>{calls.push(args);return {stdout:''};}}),[]);
+ assert.deepEqual(calls[0].slice(0,2),['git',['ls-tree','-z',commit,'--','release-notes.json']]);
+ await assert.rejects(loadReleaseHighlights({...options,command:async()=>{throw new Error('Missing immutable Git object');}}),/Missing immutable Git object/);
+ await assert.rejects(loadReleaseHighlights({...options,command:async()=>({stdout:`120000 blob ${blob}\trelease-notes.json\0`})}),/regular Git blob/);
+ for(const [text,message]of [['{broken',/invalid JSON/],['null',/schema 1/],[' '.repeat(256*1024+1),/size limit/]])await assert.rejects(loadReleaseHighlights({...options,command:async(_command,args)=>({stdout:args[0]==='ls-tree'?`100644 blob ${blob}\trelease-notes.json\0`:text})}),message);
+ let blobs=0;const catalog={schema:1,version:'1.2.0',entries:[entry]};
+ assert.deepEqual(await loadReleaseHighlights({...options,changes,command:async(_command,args)=>{if(args[0]==='ls-tree')return {stdout:`100644 blob ${blob}\trelease-notes.json\0`};blobs++;assert.deepEqual(args,['cat-file','blob',blob]);return {stdout:JSON.stringify(catalog)};}}),[entry]);
+ assert.equal(blobs,1,'Repeated immutable blob is read once');
 });
