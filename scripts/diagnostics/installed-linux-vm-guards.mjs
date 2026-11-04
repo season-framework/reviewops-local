@@ -286,7 +286,8 @@ export function inspectSeedISO(bytes, expected) {
     } else need(false, 'iso-unexpected-descriptor');
   }
   need(primary && joliet && ended, 'iso-descriptor-set');
-  const label = primary.subarray(40, 72).toString('ascii').trim(), secondary = ucs2(joliet.subarray(40, 72)).trim();
+  const label = primary.subarray(40, 72).toString('ascii').replace(/\0+$/, '').trim(),
+    secondary = ucs2(joliet.subarray(40, 72)).replace(/\0+$/, '').trim();
   need(['cidata', 'CIDATA'].includes(label) && ['cidata', 'CIDATA'].includes(secondary), 'iso-cidata-label');
   const p = directory(bytes, primary.subarray(156, 190), false), j = directory(bytes, joliet.subarray(156, 190), true);
   need(same(p.map(({offset, bytes, sha256}) => ({offset, bytes, sha256})).sort((a, b) => a.offset - b.offset),

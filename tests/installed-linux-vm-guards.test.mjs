@@ -377,3 +377,26 @@ test('a read EIO closes every opened descriptor and never repairs or writes the 
     assert.equal(fs.readFileSync(data, 'utf8'), 'owned library fixture\n'); assert.equal(fs.statSync(data).mode & 0o7777, 0o600);
   } finally { f.close(); }
 });
+
+test('fixed volume fields accept the observed local hdiutil trailing-NUL padding', () => {
+  const {bytes, expected} = isoFixture();
+  const primary = Buffer.from('4349444154410000000000000000000000000000000000000000000000000000', 'hex');
+  const joliet = Buffer.from('0063006900640061007400610000000000000000000000000000000000000000', 'hex');
+  assert.equal(primary.length, 32); assert.equal(joliet.length, 32);
+  primary.copy(bytes, 16 * 2048 + 40); joliet.copy(bytes, 17 * 2048 + 40);
+  Buffer.from('252f40', 'hex').copy(bytes, 17 * 2048 + 88);
+  const result = inspectSeedISO(bytes, expected);
+  assert.equal(result.primaryLabel, 'CIDATA'); assert.equal(result.jolietLabel, 'cidata');
+  assert.equal(result.files.length, 3);
+});
+
+test('volume padding removal cannot hide leading or internal NULs or a different label', () => {
+  for (const [namespace, text] of [['primary', '\0CIDATA'], ['primary', 'CI\0DATA'], ['primary', 'CIDATAX'],
+    ['joliet', '\0cidata'], ['joliet', 'ci\0data'], ['joliet', 'cidatb']]) {
+    const {bytes, expected} = isoFixture(), field = Buffer.alloc(32);
+    if (namespace === 'primary') field.write(text, 'ascii');
+    else [...text].forEach((character, index) => field.writeUInt16BE(character.charCodeAt(0), index * 2));
+    field.copy(bytes, (namespace === 'primary' ? 16 : 17) * 2048 + 40);
+    assert.throws(() => inspectSeedISO(bytes, expected), /iso-cidata-label/, namespace + ':' + JSON.stringify(text));
+  }
+});
