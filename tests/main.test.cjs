@@ -884,6 +884,215 @@ async function addFile(h, reviewId, content = 'synthetic attachment') {
   return added[0];
 }
 
+test('review.copy refuses its original request after same-window QA activation during attachment reading',async t=>{
+  const h=await harness(t),source=await seed(h),destination=await seed(h);
+  const original=await addFile(h,source.review.id,'Retain these original copy bytes');
+  const originalPath=path.join(h.dataPath,'attachments',original.storageName),originalBytes=fs.readFileSync(originalPath);
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});
+  const host=await projectHost(h,source.project.id),client=h.forWindow(host),originalContext=await client.success('window.context');
+  assert.equal(originalContext.qaProjectId,undefined);
+  const fsp=require('node:fs/promises'),readFile=fsp.readFile;
+  let entered,releaseRead,readCalls=0,pending,result,qa,before,after,activationContext,setupError;
+  let cleanupQAReleased=false;const cleanupErrors=[];
+  const reading=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{releaseRead=resolve;});
+  const notices=()=>host.messages.filter(row=>row.channel==='reviewops:data-change').length;
+  const storedFiles=()=>fs.readdirSync(path.join(h.dataPath,'attachments')).sort().map(name=>{
+    const file=path.join(h.dataPath,'attachments',name),stat=fs.lstatSync(file);
+    assert.ok(stat.isFile()&&!stat.isSymbolicLink()&&stat.size<=4096);
+    const bytes=fs.readFileSync(file);
+    return {name,bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex'),base64:bytes.toString('base64')};
+  });
+  const observe=()=>({graph:h.state.liveStore.exportData(),files:storedFiles(),notices:notices(),originalBytesBase64:fs.readFileSync(originalPath).toString('base64')});
+  const errorValue=error=>({name:error.name,message:error.message,code:error.code,stack:error.stack});
+  const noticesBeforeActivation=notices();
+  // Temporarily gate only this owned read and restore the shared-module method
+  // before cleanup. Production source and harness helpers remain unchanged.
+  fsp.readFile=async function(file,...args){
+    if(typeof file==='string'&&path.resolve(file)===originalPath){
+      readCalls++;assert.equal(readCalls,1);entered();await gate;
+    }
+    return readFile.call(fsp,file,...args);
+  };
+  try{
+    pending=client.invoke('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]})
+      .then(value=>({value}),error=>({error:errorValue(error)}));
+    await Promise.race([reading,pending.then(()=>{throw new Error('The original copy settled without entering its selected attachment read');})]);
+    qa=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId:source.project.id,clientId:'held-copy-scope-owner'});
+    assert.equal(qa.windowId,originalContext.windowId);assert.equal(qa.projectId,source.project.id);
+    activationContext=await client.success('window.context');assert.equal(activationContext.qaProjectId,source.project.id);
+    await waitForValue(()=>notices()===noticesBeforeActivation+1,'QA activation must settle exactly its own existing scope notice');
+    before=observe();releaseRead();result=await pending;after=observe();
+  }catch(error){setupError=errorValue(error);}
+  finally{
+    releaseRead();fsp.readFile=readFile;
+    if(pending){const settled=await pending;if(!result)result=settled;}
+    if(qa){
+      try{const released=await h.state.toolIntegration.automationHandler('automation.qa.release',qa);assert.equal(released.released,true);cleanupQAReleased=true;}
+      catch(error){cleanupErrors.push(errorValue(error));}
+    }
+  }
+  const graphKeys=['reviews','activities','attachments'];
+  const observed={sourceReviewId:source.review.id,destinationProjectId:destination.project.id,originalContext,activationContext,
+    actualQAWindowId:qa?.windowId,readCalls,readFunctionRestored:fsp.readFile===readFile,setupError:setupError||null,
+    settledResult:result?JSON.parse(JSON.stringify(result)):null,before:before||null,after:after||null,
+    originalBytesBase64:originalBytes.toString('base64'),cleanupQAReleased,cleanupErrors,
+    deltas:before&&after?{...Object.fromEntries(graphKeys.map(key=>[key,after.graph[key].length-before.graph[key].length])),
+      storedFiles:after.files.length-before.files.length,copyNotices:after.notices-before.notices,
+      activationNotices:before.notices-noticesBeforeActivation}:null,
+    scope:'Controlled production main/Store copy with a test-held file read and actual QA handler; no Electron GUI or native picker'};
+  t.diagnostic('review-copy-scope-baseline '+JSON.stringify(observed));
+  assert.equal(setupError,undefined,'The test-controlled read and actual same-window QA activation must complete before checking the product result');
+  assert.deepEqual(cleanupErrors,[]);assert.equal(cleanupQAReleased,true);assert.equal(readCalls,1);assert.equal(fsp.readFile,readFile);
+  assert.equal(result.error,undefined);assert.equal(result.value.ok,false,'The copy must refuse its original request after the same window gains a different QA scope');
+  assert.equal(result.value.error.code,'TARGET_MISMATCH');
+  assert.deepEqual(after.graph,before.graph);assert.deepEqual(after.files,before.files);assert.equal(after.notices,before.notices);
+  assert.equal(after.originalBytesBase64,originalBytes.toString('base64'));
+});
+
+async function heldReviewCopy(t) {
+  const h=await harness(t),source=await seed(h),destination=await seed(h);
+  const original=await addFile(h,source.review.id,'Original held copy attachment');
+  const originalPath=path.join(h.dataPath,'attachments',original.storageName);
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});
+  const host=await projectHost(h,source.project.id),client=h.forWindow(host),context=await client.success('window.context');
+  const fsp=require('node:fs/promises'),readFile=fsp.readFile,qaHandles=new Set();
+  let pending,releaseRead,installed=false,readCalls=0;
+  const restoreRead=()=>{if(installed){fsp.readFile=readFile;installed=false;}};
+  const files=()=>fs.readdirSync(path.join(h.dataPath,'attachments')).sort().map(name=>{
+    const bytes=fs.readFileSync(path.join(h.dataPath,'attachments',name));
+    return {name,bytes:bytes.length,sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+  });
+  const observe=()=>({graph:h.state.liveStore.exportData(),files:files(),notices:host.messages.filter(row=>row.channel==='reviewops:data-change').length});
+  const input=()=>({reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+  const settle=async()=>{releaseRead?.();restoreRead();if(!pending)return;const settled=await pending;if(settled.error)throw settled.error;return settled.value;};
+  const releaseQA=async handle=>{
+    assert.ok(qaHandles.has(handle));const result=await h.state.toolIntegration.automationHandler('automation.qa.release',handle);
+    assert.equal(result.released,true);qaHandles.delete(handle);
+  };
+  return {h,source,destination,original,originalPath,host,client,context,files,observe,input,
+    async hold(payload=input()) {
+      assert.equal(pending,undefined);
+      let entered;const reading=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{releaseRead=resolve;});
+      fsp.readFile=async function(file,...args){
+        if(typeof file==='string'&&path.resolve(file)===originalPath){readCalls++;assert.equal(readCalls,1);entered();await gate;}
+        return readFile.call(fsp,file,...args);
+      };installed=true;
+      pending=client.invoke('review.copy',payload).then(value=>({value}),error=>({error}));
+      await Promise.race([reading,pending.then(()=>{throw new Error('Copy did not reach the owned selected read');})]);
+    },
+    settle,releaseQA,
+    async openQA(projectId=source.project.id) {
+      const handle=await h.state.toolIntegration.automationHandler('automation.qa.open',{projectId,clientId:'copy-regression-'+crypto.randomUUID()});
+      qaHandles.add(handle);return handle;
+    },
+    async close() {
+      releaseRead?.();restoreRead();
+      try{if(pending)await pending;}finally{for(const handle of [...qaHandles])await releaseQA(handle);}
+      assert.equal(fsp.readFile,readFile);
+    }
+  };
+}
+
+for(const change of ['QA activation and release','restored epoch','closed sender']) {
+  test(`review.copy refuses its original ${change} after a held attachment read`,async t=>{
+    const f=await heldReviewCopy(t),originalBytes=fs.readFileSync(f.originalPath);
+    try{
+      await f.hold();
+      if(change==='QA activation and release'){
+        const qa=await f.openQA();assert.equal(qa.windowId,f.context.windowId);await f.releaseQA(qa);
+        assert.equal((await f.client.success('window.context')).qaProjectId,undefined);
+      }
+      if(change==='restored epoch')f.h.state.liveStore.importData(f.h.state.liveStore.exportData());
+      if(change==='closed sender')f.host.destroy();
+      const before=f.observe(),result=await f.settle(),after=f.observe();
+      assert.equal(result.ok,false);assert.equal(result.error.code,change==='restored epoch'?'STALE_EPOCH':change==='closed sender'?'ACCESS_DENIED':'TARGET_MISMATCH');
+      assert.deepEqual(after,before);assert.deepEqual(fs.readFileSync(f.originalPath),originalBytes);
+    }finally{await f.close();}
+  });
+}
+
+for(const change of ['ordinary activity history','another window QA activation']) {
+  test(`review.copy allows ${change} while retaining its original request`,async t=>{
+    const f=await heldReviewCopy(t),other=change==='another window QA activation'?await seed(f.h):null;
+    let history;
+    try{
+      await f.hold();
+      if(change==='ordinary activity history')history=f.h.state.liveStore.addActivity({reviewId:f.source.review.id,body:'A legitimate ordinary history entry'});
+      if(other){const qa=await f.openQA(other.project.id);assert.notEqual(qa.windowId,f.context.windowId);}
+      assert.equal(f.h.state.liveStore.listAgentRuns(f.source.review.id).length,0);
+      assert.equal(f.h.state.liveStore.exportData().agentRequests.filter(row=>row.reviewId===f.source.review.id).length,0);
+      const before=f.observe(),result=await f.settle(),after=f.observe();
+      assert.equal(result.ok,true);assert.equal(result.data.projectId,f.destination.project.id);
+      const copied=after.graph.attachments.filter(row=>row.reviewId===result.data.id);assert.equal(copied.length,1);
+      assert.equal(copied[0].sha256,f.original.sha256);assert.equal(after.notices,before.notices+1);
+      if(history)assert.ok(after.graph.activities.some(row=>row.id===history.id&&row.body===history.body));
+      assert.deepEqual(fs.readFileSync(path.join(f.h.dataPath,'attachments',copied[0].storageName)),fs.readFileSync(f.originalPath));
+    }finally{await f.close();}
+  });
+}
+
+test('review.copy retains primitive request IDs when the caller object changes during its read',async t=>{
+  const f=await heldReviewCopy(t),other=await seed(f.h),foreign=await addFile(f.h,other.review.id,'Foreign copy material');
+  const input=f.input();
+  try{
+    await f.hold(input);input.reviewId=other.review.id;input.projectId=f.source.project.id;input.attachmentIds[0]=foreign.id;
+    const result=await f.settle();assert.equal(result.ok,true);assert.equal(result.data.projectId,f.destination.project.id);
+    assert.equal(result.data.evidence.copiedFrom.reviewId,f.source.review.id);
+    assert.deepEqual(Array.from(result.data.evidence.copiedFrom.attachments,row=>row.id),[f.original.id]);
+    const copied=f.h.state.liveStore.snapshot().attachments.filter(row=>row.reviewId===result.data.id);assert.equal(copied.length,1);
+    assert.equal(copied[0].sha256,f.original.sha256);assert.deepEqual(fs.readFileSync(path.join(f.h.dataPath,'attachments',copied[0].storageName)),fs.readFileSync(f.originalPath));
+  }finally{await f.close();}
+});
+
+test('review.copy is denied before reading in QA scope and a fresh request works after release',async t=>{
+  const f=await heldReviewCopy(t);
+  try{
+    const qa=await f.openQA();assert.equal(qa.windowId,f.context.windowId);
+    const before=f.observe(),fsp=require('node:fs/promises'),readFile=fsp.readFile;let reads=0,denied;
+    fsp.readFile=async function(file,...args){if(file===f.originalPath)reads++;return readFile.call(fsp,file,...args);};
+    try{denied=await f.client.invoke('review.copy',f.input());}finally{fsp.readFile=readFile;}
+    assert.equal(reads,0);
+    assert.equal(denied.ok,false);assert.equal(denied.error.code,'TARGET_MISMATCH');assert.deepEqual(f.observe(),before);
+    await f.releaseQA(qa);await f.hold();const current=f.observe(),result=await f.settle();
+    assert.equal(result.ok,true);assert.equal(result.data.projectId,f.destination.project.id);assert.equal(f.observe().notices,current.notices+1);
+  }finally{await f.close();}
+});
+
+test('review.copy rechecks its epoch after physical publication and before SQL',async t=>{
+  let armed=false,published,expected;
+  const h=await harness(t,{afterMainAtomicWrite({file,store}){
+    if(!armed||path.dirname(file)!==path.join(h.dataPath,'attachments'))return;
+    armed=false;published=file;assert.equal(fs.readFileSync(file,'utf8'),'Original copy commit material');
+    store.importData(store.exportData());expected=store.exportData();
+  }}),source=await seed(h),destination=await seed(h),original=await addFile(h,source.review.id,'Original copy commit material');
+  const originalPath=path.join(h.dataPath,'attachments',original.storageName),bytes=fs.readFileSync(originalPath),files=fs.readdirSync(path.join(h.dataPath,'attachments')).sort();
+  const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,beforeNotices=notices();
+  armed=true;const result=await h.invoke('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+  assert.ok(published);assert.notEqual(published,originalPath);assert.equal(result.ok,false);assert.equal(result.error.code,'STALE_EPOCH');
+  assert.deepEqual(h.state.liveStore.exportData(),expected);assert.equal(fs.existsSync(published),false);
+  assert.deepEqual(fs.readdirSync(path.join(h.dataPath,'attachments')).sort(),files);assert.deepEqual(fs.readFileSync(originalPath),bytes);assert.equal(notices(),beforeNotices);
+});
+
+test('review.copy SQL failure removes only its new files and preserves another window staging token',async t=>{
+  const h=await harness(t),source=await seed(h),destination=await seed(h),original=await addFile(h,source.review.id,'Keep the original copy bytes');
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});const sourceClient=h.forWindow(await projectHost(h,source.project.id));
+  await h.state.seasonIntegration.showReview({reviewId:destination.review.id,fullscreen:false});const other=h.forWindow(await projectHost(h,destination.project.id));
+  const draft=path.join(h.root,'other-copy-draft.txt');fs.writeFileSync(draft,'Keep this unrelated staged token');
+  const [token]=await other.success('attachment.stageFiles',{paths:[draft]});
+  const before=h.state.liveStore.exportData(),files=fs.readdirSync(path.join(h.dataPath,'attachments')).sort(),originalPath=path.join(h.dataPath,'attachments',original.storageName),bytes=fs.readFileSync(originalPath);
+  const notices=h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,add=h.state.liveStore.addAttachment;
+  h.state.liveStore.addAttachment=function(input){add.call(this,input);throw new Error('Deliberate copy attachment SQL failure');};
+  try{
+    const result=await sourceClient.invoke('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+    assert.equal(result.ok,false);assert.equal(result.error.message,'Deliberate copy attachment SQL failure');
+    assert.deepEqual(h.state.liveStore.exportData(),before);assert.deepEqual(fs.readdirSync(path.join(h.dataPath,'attachments')).sort(),files);
+    assert.deepEqual(fs.readFileSync(originalPath),bytes);assert.equal(h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,notices);
+    assert.equal((await other.success('attachment.stagePreview',{token:token.token})).content,'Keep this unrelated staged token');
+  }finally{
+    h.state.liveStore.addAttachment=add;await other.success('attachment.discard',{tokens:[token.token]});
+  }
+});
+
 test('review.copy preserves selected attachment bytes in a separate file owned by the requesting window',async t=>{
   const h=await harness(t),source=await seed(h),destination=await seed(h);
   const original=await addFile(h,source.review.id,'Selected source attachment to copy');

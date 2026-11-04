@@ -72,7 +72,17 @@ Only this attachment-add path maps stale epoch and review-birth/project refusals
 
 The pre-change controlled main test held the mocked picker boundary, released the actual QA session through its normal handler and then completed selection. The old operation returned success when the test required refusal. This is a genuine main/Store test counterexample, not an actual Electron dialog or GUI reproduction. The focused regressions cover that scope loss, replaced main frames, imported epochs, moved or recreated reviews, accepted agent history, service-independent attachment membership, retained targets and rollback of a failed attachment commit. Review replacement and import schedules use controlled Store seams; normal queued UI operations are not claimed to interleave that way.
 
-This boundary applies only to direct `attachment.add`. General staging tokens, screenshots, copy preparation, other attachment-save callers, deletion staging and file rollback remain separate work. Existing rollback is not promoted to joint filesystem/SQLite crash atomicity. No schema, backup, renderer edit token, IPC payload or remote writer is added.
+This boundary applies only to direct `attachment.add`. General staging tokens, screenshots, copy source consistency, other attachment-save callers, deletion staging and file rollback remain separate work. Existing rollback is not promoted to joint filesystem/SQLite crash atomicity. No schema, backup, renderer edit token, IPC payload or remote writer is added.
+
+## Original review-copy scope
+
+The existing `review.copy` command retains its supplied main-owned frame and a private frozen copy of the validated source review, destination project and selected attachment IDs before reading attachment bytes. It rechecks that same frame after each awaited read, before publishing new physical files and inside the final attachment-save transaction through `commitWriteFrame`. The generic attachment saver and its nested Store transaction/rollback behavior remain unchanged. No SQLite transaction spans a byte-read await.
+
+A QA activation in the originating window invalidates the old request, including activation followed by release before the read completes. Releasing QA does not renew that request, while a newly submitted request after release can use the ordinary unscoped copy path. A closed sender or changed dataset epoch also refuses the original copy. Another window's QA activation and ordinary activity history do not invalidate it: this slice adds no aggregate-revision or service-execution binding. Existing refusals for a source with agent-run history or an uncancelled pending agent request remain intact.
+
+The controlled regressions distinguish post-read refusal from a final SQL refusal after an actual new-file write, and preserve existing file bytes, database rows, notifications and another window's staging token when copy persistence fails. The original held-read counterexample uses the production main/Store path with a test-controlled file-read boundary and the actual QA handler; it is not an Electron GUI race or native-package observation.
+
+Frozen request IDs do not establish an immutable source snapshot. The copy helper still re-reads current source/destination fields and attachment metadata before creating the new review. Same-epoch source deletion/recreation and mixed metadata/byte observations need separate contracts and regressions; the original frame alone does not reject them. Existing file cleanup is not a joint filesystem/SQLite crash-atomic commit. This slice adds no public payload, command, schema, transport or remote-write activation.
 
 ## Validation and activation gates
 
