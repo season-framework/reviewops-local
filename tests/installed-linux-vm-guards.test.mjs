@@ -6,7 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import {run as ownerRun, verifyPin, verifyEvidencePin, readLiveClosure, materializeUIBinding} from '../scripts/diagnostics/installed-linux-permission-vm.mjs';
 import crypto from 'node:crypto';
-import {assertBinding as actualUIAdmission, BUILD as ACTUAL_UI_BUILD} from '../scripts/diagnostics/installed-linux-permission-ui.mjs';
+import {assertBinding as actualUIAdmission, BUILD as ACTUAL_UI_BUILD, FAILURE_TEXT_CAP, boundedFailureSummary,
+  readOwnedUIState, captureFailureEvidence} from '../scripts/diagnostics/installed-linux-permission-ui-v2.mjs';
 import {strictJSON, QMPFrames, QMPProtocol, OriginalVM, closure, uiCleanup, powerdownSafe, inspectSeedISO,
   publicKey, seedFiles, bootstrapMarker, witnessSource, materialized, assertParentAuthority, unboundRequest,
   hashBytes, CONTRACT, PRODUCT_SOURCE, R3_ROOT_SHA256, UI_SHA256, UI_CI_KEYS, uiChildEnvironment,
@@ -454,4 +455,62 @@ test('UI materialization does not normalize authority, launder duplicate input o
   const {projected, host} = strictOwnerUIProjection();
   projected.build.version = 'foreign';
   assert.throws(() => actualUIAdmission(materializeUIBinding(projected), host), {name: 'AssertionError'});
+});
+
+test('failure summary has a closed public-field shape and an 8 KiB UTF-8 cap', () => {
+  const large = {phase: 'agent-tab', lang: 'ko', fixtureProjectID: 'fixture-project', visiblePaneCount: 1,
+    settingsCount: 1, visibleSettingsCount: 1, agentFieldsCount: 1, visibleAgentFieldsCount: 1,
+    visibleProjectIDs: ['fixture-project'], selectedTabs: Array.from({length: 8}, () => ({name: '가'.repeat(128)})),
+    visibleButtons: Array.from({length: 100}, () => ({name: '😀'.repeat(128), disabled: true})),
+    connectionSaveHint: false, inputValue: 'must-not-copy', modelRPC: {secret: 'must-not-copy'}};
+  const summary = boundedFailureSummary(large), raw = JSON.stringify(summary);
+  assert.ok(Buffer.byteLength(raw) <= FAILURE_TEXT_CAP); assert.equal(summary.truncated, true);
+  assert.equal(summary.visiblePaneCount, 1); assert.equal(summary.fixtureProjectID, 'fixture-project');
+  assert.ok(summary.visibleButtons.length < 32); assert.equal(raw.includes('must-not-copy'), false);
+  assert.deepEqual(Object.keys(summary).sort(), ['phase', 'lang', 'fixtureProjectID', 'visiblePaneCount', 'settingsCount',
+    'visibleSettingsCount', 'agentFieldsCount', 'visibleAgentFieldsCount', 'visibleProjectIDs', 'selectedTabs',
+    'visibleButtons', 'connectionSaveHint', 'truncated'].sort());
+});
+
+test('owned-page collector reads structural visibility and labels without reading input values', () => {
+  const element = (name, shown = true) => Object.defineProperty({disabled: false, getClientRects: () => shown ? [1] : [],
+    getAttribute: key => key === 'aria-label' ? name : key === 'data-project-id' ? 'fixture-project' : null,
+    innerText: name, textContent: name}, 'value', {get() { throw new Error('Input values are forbidden'); }});
+  const button = element('실행 환경 검사'), tab = element('에이전트'), field = element('fields'), hiddenField = element('hidden', false),
+    hint = element('프로젝트 연결을 저장한 뒤 에이전트를 설정할 수 있습니다.'), project = element('project');
+  const settings = {...element('settings'), querySelectorAll: selector => ({'.agent-settings-fields': [field, hiddenField],
+    button: [button], '.original-setting-body>p': [hint]})[selector] || []};
+  const pane = {...element('pane'), querySelectorAll: selector => selector === '.original-project-settings' ? [settings]
+    : selector === '.original-project[data-project-id]' ? [project] : [tab]};
+  const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document'), oldStyle = Object.getOwnPropertyDescriptor(globalThis, 'getComputedStyle');
+  try {
+    Object.defineProperty(globalThis, 'document', {configurable: true, value: {documentElement: {lang: 'ko'},
+      querySelectorAll: selector => {assert.equal(selector, '.workspace-pane:not([hidden])'); return [pane];}}});
+    Object.defineProperty(globalThis, 'getComputedStyle', {configurable: true, value: () => ({visibility: 'visible'})});
+    const actual = boundedFailureSummary(readOwnedUIState({phase: 'initial-environment-inspect', fixtureProjectID: 'fixture-project'}));
+    assert.equal(actual.visiblePaneCount, 1); assert.equal(actual.agentFieldsCount, 2); assert.equal(actual.visibleAgentFieldsCount, 1);
+    assert.deepEqual(actual.visibleButtons, [{name: '실행 환경 검사', disabled: false}]);
+    assert.deepEqual(actual.selectedTabs, [{name: '에이전트', disabled: false}]); assert.equal(actual.connectionSaveHint, true);
+  } finally {
+    if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument); else delete globalThis.document;
+    if (oldStyle) Object.defineProperty(globalThis, 'getComputedStyle', oldStyle); else delete globalThis.getComputedStyle;
+  }
+});
+
+test('secondary evidence failures preserve the original error and scenario verdict before cleanup', async () => {
+  const original = {name: 'AssertionError', message: 'original locator failed'}, result = {error: original, conditions: [], photos: [], failurePhotos: [], fixture: {projectId: 'fixture'}};
+  let cleanupReached = false;
+  try {
+    await captureFailureEvidence(result, {evaluate: async () => {throw new TypeError('unretained arbitrary DOM error');}},
+      'initial-environment-inspect', async () => {throw new RangeError('unretained screenshot error');}, () => {throw new Error('unretained persistence error');});
+  } finally { cleanupReached = true; }
+  assert.equal(cleanupReached, true); assert.equal(result.error, original); assert.deepEqual(result.conditions, []);
+  assert.deepEqual(result.photos, []); assert.deepEqual(result.failurePhotos, []);
+  assert.deepEqual(result.failureEvidence.errors, [{operation: 'dom', name: 'TypeError'}, {operation: 'whole-app-photo', name: 'RangeError'}, {operation: 'persist', name: 'Error'}]);
+  assert.equal(JSON.stringify(result.failureEvidence).includes('unretained'), false);
+  const calls = [], accepted = {error: original, conditions: [], photos: [], failurePhotos: [], fixture: {projectId: 'fixture'}};
+  await captureFailureEvidence(accepted, {evaluate: async (collector, input) => {assert.equal(collector, readOwnedUIState); calls.push('dom'); return {...input, lang: 'ko', visiblePaneCount: 1};}},
+    'agent-tab', async () => {calls.push('failure-photo'); return {file: 'INERT-FIXTURE-NOT-A-PNG', sha256: 'a'.repeat(64)};}, () => calls.push('persist'));
+  assert.deepEqual(calls, ['dom', 'failure-photo', 'persist']); assert.equal(accepted.error, original);
+  assert.equal(accepted.failurePhotos.length, 1); assert.deepEqual(accepted.photos, []); assert.deepEqual(accepted.conditions, []);
 });

@@ -42,6 +42,7 @@ PATHS = frozenset({WORKFLOW, 'scripts/diagnostics/private-qemu-capability.py',
     'scripts/diagnostics/private-qemu-runtime.py', 'scripts/diagnostics/private_qemu_runtime_guards.py',
     'tests/private_qemu_runtime_test.py', 'docs/diagnostics/private-qemu-runtime.md',
     'scripts/diagnostics/installed-linux-permission-combined.py',
+    'scripts/diagnostics/installed-linux-permission-ui-v2.mjs',
     'scripts/diagnostics/installed-linux-permission-vm.mjs', 'scripts/diagnostics/installed-linux-vm-guards.mjs',
     'tests/installed-linux-vm-guards.test.mjs', 'docs/diagnostics/installed-linux-permission-vm.md'})
 PARENT_KEYS = frozenset({'schema', 'approved', 'scope', 'recipe', 'controlID',
@@ -95,7 +96,7 @@ def admit(parent, env, system, machine):
     need(isinstance(pins, dict) and set(pins) == PATHS and all(
          isinstance(p, dict) and set(p) == {'bytes', 'sha256'}
          and type(p['bytes']) is int and 0 < p['bytes'] <= 1024**2
-         and re.fullmatch('[a-f0-9]{64}', p['sha256'] or '') for p in pins.values()), 'eleven-source-pins')
+         and re.fullmatch('[a-f0-9]{64}', p['sha256'] or '') for p in pins.values()), 'twelve-source-pins')
     return {k: env[k] for k in expected} | {'GITHUB_RUN_ID': env['GITHUB_RUN_ID'],
              'GITHUB_TRIGGERING_ACTOR': env.get('GITHUB_TRIGGERING_ACTOR')}
 
@@ -204,7 +205,7 @@ def source_guard(source, parent, tools, git, label):
     old = table(run('-base', 'ls-tree', '-rz', BASE))
     current = table(run('-tree', 'ls-tree', '-rz', 'HEAD'))
     need(len(old) == 438 and all(current.get(n) == v for n, v in old.items())
-         and set(current) - set(old) == PATHS, 'old438-plus-exact-eleven')
+         and set(current) - set(old) == PATHS, 'old438-plus-exact-twelve')
     for name, entry in current.items():
         mode, kind, oid = entry.split(' ')
         path = source / name

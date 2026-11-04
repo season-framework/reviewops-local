@@ -37,7 +37,7 @@ ASAR = {'path': 'Contents/Resources/app.asar', 'bytes': 34912856,
         'sha256': '4e54fe892916a60aebf90a507acf005dd368f4509beb13818960dd891c2665dd'}
 EXECUTABLE = {'path': 'Contents/MacOS/ReviewOps', 'bytes': 53008,
               'sha256': '1caceb099acff47d9fd896aebc15f9b0615e88f385ae1fa0f47ca6471d88fe78'}
-UI_SHA = '2fbf69b3535296aa3d89699641fc4284dec21fc98d55f1fe84df321e1d8f55b2'
+UI_SHA = '8bf13d42ec7254969703f397a41cfda7ff8f0cbd0d8e804ed9c3f3b0eb696a9c'
 BUILD = {'channel': 'test', 'version': '1.4.1', 'buildNumber': 41001, 'commit': c.PRODUCT,
          'builtAt': '2026-11-04T05:32:59.166Z', 'developmentNumber': 3}
 EXTRA_KEYS = {'allowNodeDependencyAcquisition', 'nodeVersion', 'nodeArchitecture', 'nodeSetupActionSHA',
@@ -161,7 +161,7 @@ def source_context(args, creating=False):
     c.need(os.environ.get('GITHUB_WORKSPACE') == str(source), 'reviewed-checkout-root')
     for name, expected in parent['sourcePins'].items():
         actual = c.read_regular(source / name, 1024**2)
-        c.need(len(actual) == expected['bytes'] and c.digest(actual) == expected['sha256'], 'reviewed-eleven-source-pins')
+        c.need(len(actual) == expected['bytes'] and c.digest(actual) == expected['sha256'], 'reviewed-twelve-source-pins')
     whole = c.read_regular(args.whole_proof, c.WHOLE_BYTES)
     public = c.read_regular(args.public_proof, PUBLIC_BYTES)
     c.need(len(whole) == c.WHOLE_BYTES and c.digest(whole) == c.WHOLE_SHA
@@ -221,7 +221,7 @@ def preflight(ctx):
         'coordinatorPin': c.file_pin(Path(__file__).resolve()), 'privateRoot': str(private),
         'privateRootIdentity': private_identity(private),
         'preflightGitPin': c.file_pin(Path('/usr/bin/git')),
-        'sourceProfile': 'old438-plus-exact11', 'NodeDependencyAcquisitionConditionallyAuthorized': True,
+        'sourceProfile': 'old438-plus-exact12', 'NodeDependencyAcquisitionConditionallyAuthorized': True,
         'VMOrAppStarted': False})
     c.need(isinstance(os.environ.get('GITHUB_ENV'), str), 'github-env-handoff')
     values = {'HOME': str(private / 'home'), 'CODEX_HOME': str(private / 'home/.codex'),
@@ -451,10 +451,10 @@ def run_combined(ctx):
     source_primary = {'accepted': True, 'productSource': c.PRODUCT, 'harnessSource': p['expectedHarnessSource'],
         'baselineFiles': 429, 'existingFilesUnchanged': True, 'baseSource': c.BASE, 'baseFiles': 438,
         'baseFilesUnchanged': True, 'baseInventoryPin': c.file_pin(out / 'base438-inventory.json'),
-        'actualSourceFiles': 449, 'exactAdditions': sorted(c.PATHS), 'conditionalParentAuthorityPin': ctx['parentPin'], 'predicateContract': RECIPE}
+        'actualSourceFiles': 450, 'exactAdditions': sorted(c.PATHS), 'conditionalParentAuthorityPin': ctx['parentPin'], 'predicateContract': RECIPE}
     c.write(out / 'source-conditional-primary.json', source_primary)
-    ui_driver = c.file_pin(source / 'scripts/diagnostics/installed-linux-permission-ui.mjs')
-    c.need(ui_driver['sha256'] == UI_SHA, 'unchanged-ui-driver')
+    ui_driver = c.file_pin(source / 'scripts/diagnostics/installed-linux-permission-ui-v2.mjs')
+    c.need(ui_driver['sha256'] == UI_SHA, 'reviewed-ui-v2-driver')
     owner, guards = source / 'scripts/diagnostics/installed-linux-permission-vm.mjs', source / 'scripts/diagnostics/installed-linux-vm-guards.mjs'
     pins = {'r3Root': whole_pin, 'preparedSupply': prepared_pin, 'materialization': c.file_pin(out / 'vm-materialization.json'),
         'runtimeRoot': c.file_pin(out / 'runtime-conditional-primary.json'), 'runtimeResult': runtime_pin,
