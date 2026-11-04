@@ -7,12 +7,13 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import re
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -26,8 +27,10 @@ sys.modules[_spec.name] = _guards
 _spec.loader.exec_module(_guards)
 from installed_linux_supply_guards import (
     ALLOWED_ADDITIONS, BASE, FORMULA_COMMIT, IMAGE_DIR, IMAGE_KEY, IMAGE_SHA,
-    MAX_DOWNLOAD, Ownership, QEMU_BOTTLE, admit_request, archive_name, arm64_macho, bottle,
-    checksum_row, elf_x86_64, initial_url, need, qcow_base,
+    MAX_DOWNLOAD, FailureStage, Ownership, QEMU_BOTTLE, SupplyGuardFailure,
+    admit_request, archive_name, arm64_macho, elf_x86_64, initial_url,
+    gpgv_status, need, oci_manifest, oci_request, oci_runtime_set, qcow_base,
+    remove_empty_gpg_home, short_gpg_home, signed_image_checksum,
 )
 
 
@@ -157,12 +160,14 @@ class OriginalTools:
 
 class Transport:
     """One explicit request chain per resource; no retry and no retained signed URLs."""
-    def __init__(self, output):
+    def __init__(self, output, stage):
         self.output, self.total = output, 0
+        self.stage = stage
         self.deadline = time.monotonic() + 1800
         self.records = []
 
-    def get(self, label, url, hosts, cap, expected_sha=None, expected_bytes=None, bearer=None, secret=False):
+    def get(self, label, url, hosts, cap, expected_sha=None, expected_bytes=None, bearer=None, secret=False,
+            manifest=False):
         # Queries are limited to this fixed public key lookup and an anonymous registry token.
         if secret:
             parsed = urlsplit(url)
@@ -208,6 +213,8 @@ class Transport:
                 raise RuntimeError('Supply HTTP status ' + str(code))
 
         headers = {'User-Agent': 'ReviewOps-issue34-supply/1', 'Accept-Encoding': 'identity'}
+        if manifest:
+            headers['Accept'] = 'application/vnd.oci.image.manifest.v1+json'
         if bearer is not None:
             need(urlsplit(url).hostname == 'ghcr.io' and not secret, 'Registry token destination differs')
             headers['Authorization'] = 'Bearer ' + bearer
@@ -221,6 +228,10 @@ class Transport:
             with opener.open(urllib.request.Request(url, headers=headers), timeout=45) as response:
                 need(response.status == 200 and response.headers.get('Content-Encoding') in (None, 'identity'),
                      'Unexpected supply response')
+                if manifest:
+                    need(response.headers.get('Docker-Content-Digest') == 'sha256:' + expected_sha
+                         and response.headers.get_content_type() == 'application/vnd.oci.image.manifest.v1+json',
+                         'oci-response-identity')
                 declared = response.headers.get('Content-Length')
                 need(declared is None or declared.isdigit() and int(declared) <= cap, 'Supply declared-size cap')
                 while True:
@@ -248,7 +259,8 @@ class Transport:
         finally:
             if sink is not None:
                 sink.close()
-            receipt = {'label': label, 'startedAt': started, 'completedAt': stamp(), 'hops': hops,
+            receipt = {'label': label, 'preparationStage': self.stage.name,
+                       'startedAt': started, 'completedAt': stamp(), 'hops': hops,
                        'bytes': observed, 'sha256': None if secret else h.hexdigest(), 'EOF': eof,
                        'responseObtained': response is not None,
                        'responseClosed': response.closed if response is not None else None,
@@ -302,103 +314,145 @@ def bottle_inventory(path, prefix, firmware=False):
             'executables': executables, 'extracted': False, 'linksFollowed': False}
 
 
-def collect_bottles(request, transport, output):
+def collect_bottles(request, transport, output, stage):
+    stage.enter('qemu-formula-source')
     source_url = 'https://raw.githubusercontent.com/Homebrew/homebrew-core/' + FORMULA_COMMIT + '/Formula/q/qemu.rb'
     source = transport.get('qemu-formula.rb', source_url, {'raw.githubusercontent.com'}, 32768)
     text = source.read_text()
     need('qemu-11.1.3.tar.xz' in text and QEMU_BOTTLE in text, 'Pinned formula does not declare the reviewed bottle')
-    qemu_path = transport.get('formula-qemu.json', 'https://formulae.brew.sh/api/formula/qemu.json',
-                              {'formulae.brew.sh'}, 2 * 1024**2)
-    qemu = json.loads(qemu_path.read_bytes())
-    need(qemu.get('name') == 'qemu', 'Formula identity differs')
-    first = bottle(qemu, 'arm64_sequoia', '11.1.3', QEMU_BOTTLE)
-    dependencies = qemu.get('runtime_dependencies')
-    need(isinstance(dependencies, list) and 0 < len(dependencies) <= 48, 'Finite bottle runtime closure is missing')
-    rows, names = [(first, qemu)], {'qemu'}
-    for index, dependency in enumerate(dependencies):
-        name = dependency.get('full_name', '')
-        need(re.fullmatch('[a-z0-9+@._-]+', name) and name not in names, 'Unexpected runtime dependency')
-        names.add(name)
-        path = transport.get('formula-dependency-' + str(index) + '.json',
-                             'https://formulae.brew.sh/api/formula/' + name + '.json', {'formulae.brew.sh'}, 2 * 1024**2)
-        formula = json.loads(path.read_bytes())
-        need(formula.get('name') == name and formula.get('versions', {}).get('stable') == dependency.get('version')
-             and formula.get('revision', 0) == dependency.get('revision', 0), 'Dependency metadata version drift')
-        available = formula.get('bottle', {}).get('stable', {}).get('files', {})
-        tag = next((tag for tag in request['qemu']['dependencyBottleTags'] if tag in available), None)
-        need(tag is not None, 'No explicitly admitted ARM dependency bottle; no source-build fallback')
-        rows.append((bottle(formula, tag), formula))
-    closure = []
-    sealed_versions = {item['name']: (item['version'], item['revision']) for item, _ in rows}
-    for index, (item, formula) in enumerate(rows):
-        for dependency in formula.get('runtime_dependencies', []):
-            need(sealed_versions.get(dependency.get('full_name')) ==
-                 (dependency.get('version'), dependency.get('revision', 0)),
-                 'Runtime dependency version/revision does not match the sealed closure')
-        repository = 'homebrew/core/' + item['name'].replace('@', '/')
+    stage.enter('qemu-manifests')
+    rows = oci_request(request['qemu'])
+    manifests, tabs, tab_paths, bearers = [], [], [], []
+    # Admit every fixed child and the complete selected set before any bottle GET.
+    for index, item in enumerate(rows):
+        repository = 'homebrew/core/' + item['name'].replace('@', '/').replace('+', 'x')
         token_url = 'https://ghcr.io/token?' + urlencode({'service': 'ghcr.io', 'scope': 'repository:' + repository + ':pull'})
         token = json.loads(transport.get('registry-token-' + str(index), token_url, {'ghcr.io'}, 32768, secret=True))
         bearer = token.get('token')
         need(isinstance(bearer, str) and 0 < len(bearer) <= 16384, 'Anonymous registry token absent')
-        archive = transport.get('bottle-' + str(index) + '.tar.gz', item['url'],
-                                {'ghcr.io', 'pkg-containers.githubusercontent.com'}, 512 * 1024**2,
-                                expected_sha=item['sha256'], bearer=bearer)
+        url = 'https://ghcr.io/v2/' + repository + '/manifests/sha256:' + item['manifestSHA256']
+        path = transport.get('bottle-' + str(index) + '.manifest.json', url, {'ghcr.io'}, 512 * 1024,
+                             item['manifestSHA256'], item['manifestBytes'], bearer=bearer, manifest=True)
+        tab, literal = oci_manifest(path.read_bytes(), item)
+        tab_path = output / ('bottle-' + str(index) + '.tab.json')
+        with tab_path.open('xb') as destination:
+            destination.write(literal.encode())
+        manifests.append(path)
+        tabs.append(tab)
+        tab_paths.append(tab_path)
+        bearers.append(bearer)
         del bearer, token
-        pkg_version = item['version'] + ('_' + str(item['revision']) if item['revision'] else '')
-        inventory = bottle_inventory(archive, item['name'] + '/' + pkg_version, firmware=index == 0)
+    runtime = oci_runtime_set(rows, tabs)
+    runtime_path = output / 'selected-runtime-and-build-histories.json'
+    write(runtime_path, runtime)
+    stage.enter('qemu-bottle-archives')
+    closure = []
+    for index, item in enumerate(rows):
+        repository = 'homebrew/core/' + item['name'].replace('@', '/').replace('+', 'x')
+        url = 'https://ghcr.io/v2/' + repository + '/blobs/sha256:' + item['bottleSHA256']
+        archive = transport.get('bottle-' + str(index) + '.tar.gz', url,
+                                {'ghcr.io', 'pkg-containers.githubusercontent.com'}, 512 * 1024**2,
+                                item['bottleSHA256'], item['bottleBytes'], bearer=bearers[index])
+        bearers[index] = None
+        inventory = bottle_inventory(archive, item['name'] + '/' + item['pkgVersion'], firmware=index == 0)
         inventory_path = output / ('bottle-' + str(index) + '.inventory.json')
         write(inventory_path, inventory)
-        closure.append({**item, 'archivePin': pin(archive), 'inventoryPin': pin(inventory_path),
+        closure.append({**item, 'url': url, 'sha256': item['bottleSHA256'],
+                        'manifestPin': pin(manifests[index]), 'literalTabPin': pin(tab_paths[index]),
+                        'archivePin': pin(archive), 'inventoryPin': pin(inventory_path),
                         'firmware': inventory['firmware'], 'executables': inventory['executables']})
-    return {'formulaSourcePin': pin(source), 'formulaMetadataPin': pin(qemu_path), 'bottles': closure,
+    return {'formulaSourcePin': pin(source), 'bottles': closure, 'runtimeSelectionPin': pin(runtime_path),
+            'selectedRuntimeDependencyCount': 29, 'immutableChildManifestGETs': 30,
+            'mutableIndexGETs': 0, 'currentFormulaAPIGETs': 0,
+            'nestedBuildHistoriesAreExactVersionLock': False,
+            'nestedBuildDifferenceCount': len(runtime['nestedBuildDifferences']),
+            'nestedOmittedFieldCount': len(runtime['nestedOmittedFields']),
             'archiveBytesVerified': True, 'installed': False, 'executableInvoked': False,
-            'relocationAndCapabilityAcceptance': None, 'sourceBuilds': 0}
+            'nonSystemMachOLoaderAcceptance': None, 'relocationAndCapabilityAcceptance': None, 'sourceBuilds': 0}
 
 
-def collect_image(request, transport, tools, output, gpg):
-    sums = transport.get('SHA256SUMS', IMAGE_DIR + 'SHA256SUMS', {'cloud-images.ubuntu.com'}, 32768)
-    signature = transport.get('SHA256SUMS.gpg', IMAGE_DIR + 'SHA256SUMS.gpg', {'cloud-images.ubuntu.com'}, 8192)
+def collect_ubuntu_signature(request, transport, tools, output, gpg, gpgv, stage):
+    """Small public-data verification before any large supply transfer."""
+    stage.enter('ubuntu-signature')
+    expected = request['ubuntu']['signatureInputs']
+    sums = transport.get('SHA256SUMS', IMAGE_DIR + 'SHA256SUMS', {'cloud-images.ubuntu.com'},
+                         expected['sums']['bytes'], expected['sums']['sha256'], expected['sums']['bytes'])
+    signature = transport.get('SHA256SUMS.gpg', IMAGE_DIR + 'SHA256SUMS.gpg', {'cloud-images.ubuntu.com'},
+                              expected['signature']['bytes'], expected['signature']['sha256'], expected['signature']['bytes'])
     # A fixed key lookup, not a GPG network fetch. The fingerprint is checked locally.
     key_url = 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x' + IMAGE_KEY
-    key = transport.get('ubuntu-image-key.asc', key_url, {'keyserver.ubuntu.com'}, 65536, secret=False)
+    key = transport.get('ubuntu-image-key.asc', key_url, {'keyserver.ubuntu.com'},
+                        expected['key']['bytes'], expected['key']['sha256'], expected['key']['bytes'])
     key_bytes = key.read_bytes()
     need(key_bytes.startswith(b'-----BEGIN PGP PUBLIC KEY BLOCK-----') and b'PRIVATE KEY' not in key_bytes,
          'Only a public Ubuntu signing key is admitted')
-    gpg_home = output / 'gnupg'
-    gpg_home.mkdir(mode=0o700)
-    options = [str(gpg), '--no-options', '--homedir', str(gpg_home), '--batch', '--no-autostart',
-               '--no-auto-key-retrieve', '--no-auto-key-import']
-    tools.run('gpg-import-public-key', options + ['--import', str(key)])
-    listed = tools.run('gpg-public-fingerprint', options + ['--with-colons', '--fingerprint', '--list-keys'])
-    primary = []
-    want_fingerprint = False
-    for line in listed.decode('utf-8').splitlines():
-        fields = line.split(':')
-        if fields[0] == 'pub':
-            want_fingerprint = True
-        elif fields[0] == 'fpr' and want_fingerprint:
-            primary.append(fields[9])
-            want_fingerprint = False
-    need(primary == [IMAGE_KEY], 'Ubuntu primary key fingerprint differs')
-    status = tools.run('gpg-verify-checksums', options + ['--status-fd', '1', '--verify', str(signature), str(sums)])
-    valid = [line.split()[2] for line in status.decode('utf-8').splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
-    need(valid == [IMAGE_KEY] and checksum_row(sums.read_text(), request['ubuntu']['name']) == IMAGE_SHA,
-         'Signed Ubuntu checksum differs')
+    gpg_home = Path(tempfile.mkdtemp(prefix='r34g-', dir='/private/tmp')).resolve(strict=True)
+    observation_path = output / 'gpg-home-observation.json'
+    info = gpg_home.lstat()
+    short_gpg_home(str(gpg_home), info.st_uid, stat.S_IMODE(info.st_mode), stat.S_ISDIR(info.st_mode),
+                   stat.S_ISLNK(info.st_mode), os.getuid())
+    home_identity = (info.st_dev, info.st_ino)
+    keyring = output / 'ubuntu-image-public-keyring.gpg'
+    need(not keyring.exists() and not keyring.is_symlink(), 'gpg-keyring')
+    attempted, verified = False, None
+    try:
+        stage.enter('ubuntu-key-dearmor')
+        attempted = True
+        tools.run('gpg-dearmor-public-key', [str(gpg), '--no-options', '--homedir', str(gpg_home),
+                  '--batch', '--no-autostart', '--no-auto-key-retrieve', '--no-auto-key-import',
+                  '--no-random-seed-file',
+                  '--dearmor', '--output', str(keyring), str(key)])
+        info = keyring.lstat()
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and 0 < info.st_size <= 65536,
+             'gpg-keyring')
+        stage.enter('ubuntu-signature-verify')
+        status = tools.run('gpgv-verify-checksums', [str(gpgv), '--homedir', str(gpg_home),
+                           '--keyring', str(keyring), '--status-fd', '1', str(signature), str(sums)])
+        verified = gpgv_status(status, tools.receipts[-1]['wait'])
+        signed_image_checksum(sums.read_text(), request['ubuntu']['name'])
+    finally:
+        # No agent cleanup command: retain an unknown lifetime or unexpected socket.
+        closed = not attempted or bool(tools.ownership.current and tools.ownership.current['closed'])
+        current_home = gpg_home.lstat()
+        same_home = (current_home.st_dev, current_home.st_ino) == home_identity and stat.S_ISDIR(current_home.st_mode)
+        same_home = same_home and current_home.st_uid == os.getuid() and stat.S_IMODE(current_home.st_mode) == 0o700
+        entries = []
+        for path in sorted(gpg_home.iterdir()) if same_home else []:
+            info = path.lstat()
+            entries.append({'name': path.name, 'mode': stat.S_IMODE(info.st_mode),
+                            'type': stat.S_IFMT(info.st_mode), 'ownerUID': info.st_uid})
+        removed, cleanup_error = remove_empty_gpg_home(closed, same_home, entries, gpg_home.rmdir)
+        write(observation_path, {'path': str(gpg_home), 'createdFresh': True, 'ownerUID': os.getuid(),
+              'mode': 0o700, 'sameOwnedDirectoryAfterOriginals': same_home,
+              'entriesAfterOriginals': entries, 'originalAttemptClosed': closed,
+              'removedOwnedHome': removed, 'atomicRmdirError': cleanup_error,
+              'unrelatedAgentsOrInternalChildrenClaim': False})
+        need(closed and removed, 'gpg-home')
+    return {**verified, 'checksumPin': pin(sums), 'signaturePin': pin(signature), 'keyPin': pin(key),
+            'publicKeyringPin': pin(keyring), 'gpgExecutablePin': pin(gpg), 'gpgvExecutablePin': pin(gpgv),
+            'homeObservationPin': pin(observation_path), 'signatureVerified': True,
+            'signatureBeforeLargeArchives': True, 'explicitAgentLaunchCommandInvoked': False}
+
+
+def collect_image(request, transport, output, stage, verified):
+    need(verified.get('signatureVerified') is True and verified.get('primaryFingerprint') == IMAGE_KEY,
+         'ubuntu-checksum')
+    stage.enter('ubuntu-image')
     image = transport.get('ubuntu-amd64.img', IMAGE_DIR + request['ubuntu']['name'],
                           {'cloud-images.ubuntu.com'}, 1024**3, expected_sha=IMAGE_SHA)
     with image.open('rb') as stream:
         header = stream.read(104)
     qcow_base(header)
-    return {'imagePin': pin(image), 'checksumPin': pin(sums), 'signaturePin': pin(signature),
-            'keyPin': pin(key), 'signingFingerprint': IMAGE_KEY, 'gpgExecutablePin': pin(gpg),
-            'signatureVerified': True, 'guestBooted': False}
+    return {**verified, 'imagePin': pin(image), 'guestBooted': False}
 
 
-def collect_vendor(request, transport, output):
+def collect_vendor(request, transport, output, stage):
+    stage.enter('vendor-archive')
     vendor = request['vendor']
     archive = transport.get('official-linux-cli.tar.gz', vendor['url'],
                             {'github.com', 'release-assets.githubusercontent.com'}, vendor['bytes'],
                             vendor['sha256'], vendor['bytes'])
+    stage.enter('vendor-elf')
     elf = output / 'genuine-codex-x86_64-linux'
     members = []
     with tarfile.open(archive, mode='r:gz') as source:
@@ -440,14 +494,19 @@ def main():
     output = args.output.absolute()
     need(not output.exists() and output.parent.resolve(strict=True) == root / 'test-results', 'Fresh diagnostic output required')
     gpg_value = shutil.which('gpg', path='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')
-    need(gpg_value is not None, 'A preinstalled GPG verifier is required; no package install fallback')
+    need(gpg_value is not None, 'gpg-availability')
     gpg = Path(gpg_value).resolve(strict=True)
+    gpgv_candidate = gpg.with_name('gpgv')
+    need(gpgv_candidate.is_file() and os.access(gpgv_candidate, os.X_OK), 'gpg-availability')
+    gpgv = gpgv_candidate.resolve(strict=True)
+    need(gpgv.parent == gpg.parent, 'gpg-availability')
     output.mkdir(mode=0o700)
     private = output / 'private'
     private.mkdir(mode=0o700)
     env = {'HOME': str(private), 'TMPDIR': str(runner_temp), 'PATH': '/usr/bin:/bin:/usr/sbin:/sbin',
            'LANG': 'en_US.UTF-8', 'TZ': 'UTC'}
-    tools, transport = OriginalTools(output, env, root), Transport(output)
+    stage = FailureStage()
+    tools, transport = OriginalTools(output, env, root), Transport(output, stage)
     result = {'schema': 1, 'phase': 'prepare-supply', 'status': 'preparation-in-progress', 'ok': False, 'startedAt': stamp(),
               'source': BASE, 'harnessSource': reviewed, 'requestPin': pin(args.request),
               'approvalPin': pin(args.approval), 'archivesOnly': True, 'executableInstalled': False,
@@ -455,6 +514,7 @@ def main():
               'nativeQAAccepted': False, 'VMExecutionAuthority': None, 'guestRootAcceptancePin': None,
               'host': {'platform': sys.platform, 'machine': os.uname().machine, 'release': os.uname().release}}
     try:
+        stage.enter('source-guard')
         git = lambda label, *values: tools.run(label, ['/usr/bin/git', '-C', str(root), *values])
         need(git('source-head', 'rev-parse', 'HEAD').decode().strip() == reviewed
              and not git('source-clean', 'status', '--porcelain=v1'), 'Reviewed clean harness HEAD required')
@@ -466,13 +526,16 @@ def main():
              and set(current) - set(old) == set(request['allowedAdditions']),
              'Only the exact declared diagnostic additions are allowed')
         result['sourceGuard'] = {'baseFiles': 429, 'oldFilesUnchanged': True, 'addedPaths': request['allowedAdditions']}
-        result['qemu'] = collect_bottles(request, transport, output)
-        result['ubuntu'] = collect_image(request, transport, tools, output, gpg)
-        result['vendor'] = collect_vendor(request, transport, output)
+        result['ubuntuSignature'] = collect_ubuntu_signature(request, transport, tools, output, gpg, gpgv, stage)
+        result['qemu'] = collect_bottles(request, transport, output, stage)
+        result['ubuntu'] = collect_image(request, transport, output, stage, result['ubuntuSignature'])
+        result['vendor'] = collect_vendor(request, transport, output, stage)
+        stage.enter('complete')
         result['ok'] = True
         result['status'] = 'prepared-supply-only'
     except Exception as error:
         result['failedStageType'] = type(error).__name__
+        result['failure'] = stage.failure(error)
         result['status'] = 'preparation-failed'
         # Exceptions from HTTP libraries can contain signed URLs; never serialize them.
         result['failureDetails'] = 'Preparation stopped; inspect retained originals. No automatic retry or runtime fallback.'
@@ -491,5 +554,7 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print('Issue34 supply preparation stopped (' + type(error).__name__ + '); no runtime fallback.', file=sys.stderr)
+        reason = error.reason if isinstance(error, SupplyGuardFailure) else 'unclassified'
+        print('Issue34 supply preparation stopped (' + type(error).__name__ + '/' + reason +
+              '); no runtime fallback.', file=sys.stderr)
         sys.exit(1)
