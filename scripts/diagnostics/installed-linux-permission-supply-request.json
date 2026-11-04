@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "phase": "prepare-supply",
+  "scenario": "installed-linux-permission",
+  "harnessSource": null,
+  "source": "2a1e9f166e61eb3a30148ea624b4bb921c8ebd6a",
+  "tree": "f8e5ce991cf927d8064b1f7d7fe0604a48959303",
+  "sourceFiles": 429,
+  "app": {
+    "target": "darwin-arm64",
+    "version": "1.4.1",
+    "buildNumber": 41001,
+    "developmentNumber": 3,
+    "zipBytes": 133831763,
+    "zipSHA256": "2e48f3aa200cf0d0a232d3e70508398105009a7e2ec08aeb928b05460646bead"
+  },
+  "qemu": {
+    "version": "11.1.3",
+    "formulaCommit": "6f3d127080e96f5192e5280fc94babd809e231ac",
+    "bottleTag": "arm64_sequoia",
+    "bottleSHA256": "a99cca4450c91f471e8e546b8fb48780e0cb2104ffbe15d394c1b431d44df620",
+    "dependencyBottleTags": ["arm64_sequoia"]
+  },
+  "ubuntu": {
+    "directory": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/",
+    "name": "ubuntu-24.04-server-cloudimg-amd64.img",
+    "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+    "signingFingerprint": "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
+  },
+  "vendor": {
+    "tag": "rust-v0.166.0",
+    "url": "https://github.com/openai/codex/releases/download/rust-v0.166.0/codex-x86_64-unknown-linux-musl.tar.gz",
+    "bytes": 121764138,
+    "sha256": "a0bf572d2f93f056c6712a6da348e96078dc84f3885fd7be67807ef389cb3978",
+    "releaseID": 428320524,
+    "assetID": 689712643,
+    "officialReleaseMetadataSHA256": "21eefb68cd956cedec06809daa38fb8f7e18893730241ace6cf58cfa754814d2",
+    "elfSHA256": null,
+    "elfMember": "codex-x86_64-unknown-linux-musl"
+  },
+  "maximumDownloadBytes": 3221225472,
+  "allowedAdditions": [
+    ".github/workflows/installed-linux-permission-ui.yml",
+    "docs/diagnostics/installed-linux-permission-supply.md",
+    "scripts/diagnostics/installed-linux-permission-supply-request.json",
+    "scripts/diagnostics/installed-linux-permission-supply.py",
+    "scripts/diagnostics/installed_linux_supply_guards.py",
+    "tests/installed_linux_supply_test.py"
+  ]
+}

@@ -1,0 +1,71 @@
+name: Installed Mac to Linux permission supply preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_commit:
+        description: Full reviewed diagnostic branch commit
+        type: string
+        required: true
+      request_json:
+        description: Exact reviewed prepare-supply request JSON with this harness commit
+        type: string
+        required: true
+      approval_json:
+        description: Root preparation-only authority bound to the exact request SHA256
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: reviewops-installed-linux-permission-supply
+  cancel-in-progress: false
+
+jobs:
+  prepare-supply:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/issue34-installed-linux-ssh-ui' && github.sha == inputs.reviewed_commit && github.run_attempt == 1
+    runs-on: macos-15
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ inputs.reviewed_commit }}
+      - name: Run inert supply admission and original-owner guards
+        run: /usr/bin/python3 -I -B tests/installed_linux_supply_test.py
+      - name: Retain the exact request and external preparation authority
+        env:
+          SUPPLY_REQUEST_JSON: ${{ inputs.request_json }}
+          SUPPLY_APPROVAL_JSON: ${{ inputs.approval_json }}
+        shell: bash
+        run: |
+          /usr/bin/python3 -I -B - <<'PY'
+          import os
+          from pathlib import Path
+          root = Path('test-results')
+          root.mkdir(exist_ok=True)
+          for name, variable in [('installed-linux-supply-request.json', 'SUPPLY_REQUEST_JSON'),
+                                 ('installed-linux-supply-approval.json', 'SUPPLY_APPROVAL_JSON')]:
+              with (root / name).open('x', encoding='utf-8') as stream:
+                  stream.write(os.environ[variable])
+          PY
+      - name: Acquire and seal supply only; no emulator, CLI, VM or app execution
+        run: |
+          /usr/bin/python3 -I -B scripts/diagnostics/installed-linux-permission-supply.py \
+            --request test-results/installed-linux-supply-request.json \
+            --approval test-results/installed-linux-supply-approval.json \
+            --output test-results/installed-linux-supply
+      - name: Retain original preparation records and exact supply archives
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-installed-linux-supply-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            test-results/installed-linux-supply/
+            test-results/installed-linux-supply-request.json
+            test-results/installed-linux-supply-approval.json
+          if-no-files-found: warn
+          retention-days: 14
