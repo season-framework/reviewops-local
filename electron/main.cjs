@@ -41,6 +41,7 @@ let window, store, vault, agents, codexManager, updater, modelCache;
 let seasonIntegration, toolIntegration, qaAutomation;
 let managedServices;
 const windowContexts = new Map(), projectWindows = new Map(), terminalOwners = new Map();
+const qaScopeIncarnations = new WeakMap();
 const requestWindowContext = new AsyncLocalStorage();
 let quitAttempt = null;
 const QUIT_CLOSE_TIMEOUT_MS = 10000;
@@ -90,8 +91,13 @@ function currentWindowRecord() {
 }
 function sendToWindows(channel,value) { for(const host of liveWindows())if(channel!=='reviewops:model-cache-state'||!qaProjectId(windowContexts.get(host)))host.webContents.send(channel,value); }
 function requestQaProjectId(){const context=requestWindowContext.getStore();return context?.qaProjectId||qaProjectId(context&&windowContexts.get(context.host));}
+function qaScopeIncarnation(record) {
+  if(!qaScopeIncarnations.has(record))qaScopeIncarnations.set(record,Object.freeze(Object.create(null)));
+  return qaScopeIncarnations.get(record);
+}
 function setQaScope(record,active){
   if(record.qaActive===active)return;
+  qaScopeIncarnations.set(record,Object.freeze(Object.create(null)));
   record.qaActive=active;
   record.qaScopeReady=false;
   if(!active)record.pendingQaScope?.reject(new Error('프로젝트 QA 연결이 해제되었습니다.'));
@@ -116,7 +122,7 @@ function closeWindowResources(host,discardStaged=true) {
 function closeAllBrowsers() { for(const record of windowContexts.values()){record.browsers?.closeAll();record.browsers=null;} }
 function ownedTerminal(id) { if(terminalOwners.get(id)!==getRequestWindow())throw new Error('이 창의 터미널만 사용할 수 있습니다.');return id; }
 function ownedStaged(token) { const item=stagedAttachments.get(token);if(item&&item.ownerWindow!==getRequestWindow())throw new Error('이 창에서 추가한 첨부파일만 사용할 수 있습니다.');return item; }
-function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|update|start|cancel|confirmResult|resolve)$|^review\.(version|target)\.|^backup\.import$/.test(action); }
+function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|update|start|cancel|confirmResult|resolve)$|^review\.version\.(save|target)$|^backup\.import$/.test(action); }
 
 
 function screenshotBytes(payload) {
@@ -1272,11 +1278,27 @@ async function dispatch(action, payload = {}, originalFrame) {
     return {discarded:true};
   }
   if (action === 'attachment.add') {
-    if (!store.snapshot().reviews.some(item => item.id === payload.reviewId)) throw new Error('리뷰를 찾을 수 없습니다.');
+    try {
+    const original=store.transaction(()=>{
+      assertWriteFrame(originalFrame);
+      const review=store.get('reviews',payload.reviewId),activity=payload.activityId?store.get('activities',payload.activityId):null;
+      if(activity&&activity.reviewId!==review.id)throw new Error('같은 리뷰의 댓글에만 첨부할 수 있습니다.');
+      const scope=Object.assign(Object.create(null),{reviewId:review.id,projectId:review.projectId});
+      return {reviewId:review.id,activityId:activity?.id||null,target:store.captureAttachmentWriteAdmission(originalFrame.admission,scope)};
+    });
+    const assertOriginal=()=>{
+      assertWriteFrame(originalFrame);store.assertAttachmentWriteAdmission(original.target);
+      if(original.activityId&&store.get('activities',original.activityId).reviewId!==original.reviewId)throw new Error('같은 리뷰의 댓글에만 첨부할 수 있습니다.');
+    };
     const staged = await stageAttachments();
     try {
-      return (await saveWithAttachments(staged.map(item=>item.token),()=>null,()=>({reviewId:payload.reviewId,activityId:payload.activityId}))).attachments;
+      assertOriginal(); // Refuse before publishing any physical attachment bytes.
+      return (await saveWithAttachments(staged.map(item=>item.token),()=>store.transaction(()=>{assertOriginal();return null;}),()=>({reviewId:original.reviewId,activityId:original.activityId}))).attachments;
     } finally { for (const item of staged) stagedAttachments.delete(item.token); }
+    } catch(error) {
+      if(['STALE_EPOCH','STALE_REVIEW'].includes(error.code))throw Object.assign(new Error('리뷰가 변경되었습니다. 파일을 다시 선택하십시오.',{cause:error}),{code:error.code});
+      throw error;
+    }
   }
   if (action === 'attachment.read') { const item=attachmentById(payload.id); return describeBytes(await readAttachment(item),item.name); }
   if (action === 'attachment.delete') {
@@ -1483,13 +1505,14 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       const admittedRecord=windowContexts.get(host);
       const admittedProjectId=admittedRecord.projectId,admittedQaProjectId=qaProjectId(admittedRecord);
+      const admittedQaIncarnation=storeWriteActions.has(action)?qaScopeIncarnation(admittedRecord):null;
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
         const frame=storeWriteActions.has(action)?writeFrame(store.captureWriteAdmission(),()=>{
           const record=windowContexts.get(host);
           if(senderWindow(event)!==host||record!==admittedRecord)
             throw Object.assign(new Error('허용되지 않은 요청입니다.'),{code:'ACCESS_DENIED'});
-          if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId)
+          if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId||qaScopeIncarnation(record)!==admittedQaIncarnation)
             throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
         }):null;
         const execute=()=>{

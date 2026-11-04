@@ -38,6 +38,53 @@ const receipts = store => store.db.prepare('SELECT * FROM command_receipts ORDER
 const controls = store => ({meta: {...store.db.prepare('SELECT * FROM dataset_meta').get()}, revisions: store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all().map(row => ({...row})), receipts: receipts(store)});
 const unchanged = store => ({business: store.exportData(), controls: controls(store)});
 const code = expected => error => error.code === expected;
+
+test('attachment admissions are opaque Store-bound capabilities distinct from agent admissions', t => {
+  const {store} = setup(t), f = fixture(store), other = setup(t).store;
+  const admission = store.captureWriteAdmission(), before = unchanged(store);
+  const token = store.captureAttachmentWriteAdmission(admission, {reviewId:f.review.id, projectId:f.a.id});
+  const agent = store.captureReviewWriteAdmission(admission, {reviewId:f.review.id, projectId:f.a.id, serviceId:f.service.id});
+  assert(Object.isFrozen(token)); assert.equal(Object.getPrototypeOf(token), null);
+  assert.deepEqual(Reflect.ownKeys(token), []); assert.equal(JSON.stringify(token), '{}');
+  for (const forged of [null, {}, JSON.parse(JSON.stringify(token)), agent])
+    assert.throws(() => store.assertAttachmentWriteAdmission(forged), code('INVALID_REVIEW_ADMISSION'));
+  assert.throws(() => other.assertAttachmentWriteAdmission(token), code('INVALID_REVIEW_ADMISSION'));
+  assert.throws(() => store.assertReviewWriteAdmission(token), code('INVALID_REVIEW_ADMISSION'));
+  assert.throws(() => store.assertReviewSnapshotAdmission(token), code('INVALID_REVIEW_ADMISSION'));
+  assert.throws(() => store.captureAttachmentWriteAdmission(admission, {reviewId:f.review.id, projectId:f.a.id, serviceId:f.service.id}), code('INVALID_REVIEW_ADMISSION'));
+  assert.deepEqual(unchanged(store), before);
+});
+
+test('attachment admissions survive history, selected-service changes and a rolled-back import', t => {
+  const {store} = setup(t), f = fixture(store);
+  const token = store.captureAttachmentWriteAdmission(store.captureWriteAdmission(), {reviewId:f.review.id, projectId:f.a.id});
+  store.addActivity({reviewId:f.review.id, body:'A legitimate concurrent history entry'});
+  const next = store.saveService({groupId:f.group.id, name:'Next selected service', kind:'local', rootPath:os.tmpdir()});
+  store.setProjectServices(f.a.id, [f.service.id, next.id]);
+  store.saveReview({...store.get('reviews', f.review.id), serviceId:next.id});
+  store.setProjectServices(f.a.id, [next.id]);
+  store.assertAttachmentWriteAdmission(token);
+  const before = unchanged(store);
+  assert.throws(() => store.transaction(() => { store.importData(store.exportData()); throw new Error('Owned attachment import rollback'); }), /Owned attachment import rollback/);
+  assert.deepEqual(unchanged(store), before);
+  store.assertAttachmentWriteAdmission(token);
+});
+
+test('attachment admissions refuse restored, moved and recreated reviews and poison failed transactions', t => {
+  for (const change of ['restore', 'move', 'rebirth']) {
+    const {store} = setup(t), f = fixture(store);
+    const token = store.captureAttachmentWriteAdmission(store.captureWriteAdmission(), {reviewId:f.review.id, projectId:f.a.id});
+    if (change === 'restore') store.importData(store.exportData());
+    else if (change === 'move') store.db.prepare('UPDATE reviews SET projectId=?,number=(SELECT COALESCE(MAX(number),0)+1 FROM reviews WHERE projectId=?) WHERE id=?').run(f.b.id, f.b.id, f.review.id);
+    else { const raw = {...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(f.review.id)}; store.deleteReview(f.review.id); insert(store.db, 'reviews', raw); }
+    const before = unchanged(store), expected = change === 'restore' ? 'STALE_EPOCH' : 'STALE_REVIEW';
+    assert.throws(() => store.transaction(() => {
+      store.addActivity({reviewId:f.review.id, body:'This attempted write must roll back'});
+      try { store.assertAttachmentWriteAdmission(token); } catch {}
+    }), code(expected));
+    assert.deepEqual(unchanged(store), before);
+  }
+});
 function insert(db, table, row) {
   const keys = Object.keys(row);
   db.prepare(`INSERT INTO ${table}(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`).run(...keys.map(key => row[key]));

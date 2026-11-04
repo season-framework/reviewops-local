@@ -3,6 +3,6 @@
   "previousVersion": "1.4.0",
   "version": "1.4.1",
   "bump": "patch",
-  "reason": "Prevent stale review material version saves from overwriting newer review data.",
+  "reason": "Prevent outdated review version and attachment saves, and avoid unnecessary refreshes when reading review versions.",
   "baseCommit": "724f1ef94a454454c7ea3f5c6c56dbe424b01c1d"
 }

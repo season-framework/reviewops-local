@@ -7,6 +7,7 @@ const MAX_RECEIPTS = 100000;
 const writeAdmissions = new WeakMap();
 const reviewWriteAdmissions = new WeakMap();
 const reviewSnapshotRevisions = new WeakMap();
+const attachmentWriteAdmissions = new WeakMap();
 const OPERATION = 'review.status.set';
 const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -204,6 +205,32 @@ function assertReviewWriteAdmission(store, token) {
     if(reviewBinding(store,original)!==original.generation)fail('STALE_REVIEW');
   });
 }
+// An attachment belongs to its original review/project, not a selected service
+// or a fixed history revision. Keep this capability separate from agent tokens.
+function attachmentReviewGeneration(store, original) {
+  const row=store.db.prepare('SELECT r.projectId,v.generation,v.deleted FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?').get(original.reviewId);
+  if(!row||row.deleted!==0||row.projectId!==original.projectId)fail('STALE_REVIEW');
+  currentRevision(store.db,original.reviewId);
+  return row.generation;
+}
+function captureAttachmentWriteAdmission(store, admission, input) {
+  const scope=closed(input,['reviewId','projectId'],'INVALID_REVIEW_ADMISSION');
+  identifier(scope.reviewId,'INVALID_REVIEW_ADMISSION');identifier(scope.projectId,'INVALID_REVIEW_ADMISSION');
+  return store.transaction(()=>{
+    assertWriteAdmission(store,admission);
+    const original={store,admission,reviewId:scope.reviewId,projectId:scope.projectId};
+    original.generation=attachmentReviewGeneration(store,original);
+    const token=Object.freeze(Object.create(null));attachmentWriteAdmissions.set(token,original);return token;
+  });
+}
+function assertAttachmentWriteAdmission(store, token) {
+  return store.transaction(()=>{
+    const original=attachmentWriteAdmissions.get(token);
+    if(!original||original.store!==store)fail('INVALID_REVIEW_ADMISSION');
+    assertWriteAdmission(store,original.admission);
+    if(attachmentReviewGeneration(store,original)!==original.generation)fail('STALE_REVIEW');
+  });
+}
 // Snapshot saves retain an original aggregate revision as well as its birth and
 // epoch. Ordinary running callbacks deliberately keep the less restrictive token.
 function captureReviewSnapshotAdmission(store, admission, input) {
@@ -288,4 +315,4 @@ function setStatus(store, input, provider) {
   });
 }
 
-module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, captureReviewSnapshotAdmission, assertReviewSnapshotAdmission, assertRunningReviewCallback, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
+module.exports = {migrate, beginLogicalImport, finishLogicalImport, captureWriteAdmission, assertWriteAdmission, captureReviewWriteAdmission, assertReviewWriteAdmission, captureAttachmentWriteAdmission, assertAttachmentWriteAdmission, captureReviewSnapshotAdmission, assertReviewSnapshotAdmission, assertRunningReviewCallback, assertDetachedReviewCancellation, readState, setStatus, MAX_REVISION, MAX_RECEIPTS};
