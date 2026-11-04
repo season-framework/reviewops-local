@@ -102,6 +102,34 @@ export function assertDeniedObservation(value){
  assert.ok(value.UIText.includes('Codex 설치 미확인')&&value.UIText.includes('로그인 미확인')&&value.UIText.includes('Permission denied')&&value.UIText.includes(folderMessage));
  assert.ok(!value.UIText.includes('Codex 설치 필요')&&!value.UIText.includes('작업 환경에 Codex CLI를 설치'));assert.equal(value.extraCLIEntries,0);assert.equal(value.buttonEnabled,true);
 }
+const fullFolderMessage=folderMessage+' 폴더 경로와 접근 권한을 확인하십시오.';
+// Fixed R41 producer shape: the original environment --version command, not
+// arbitrary failing CLI output that happens to contain a folder message.
+export function assertOwnedFolderGuardCommand(command,g){
+ assert.ok(typeof command==='string'&&command.length<=16384&&command.startsWith("bash -lc '")&&command.endsWith("'"));
+ const quote=value=>"'"+String(value).replaceAll("'",`'"'"'`)+"'";
+ const encoded=command.slice('bash -lc '.length),script=encoded.slice(1,-1).replaceAll(`'"'"'`,"'");
+ assert.equal(quote(script),encoded,'Canonical original login-shell quoting');
+ const directory=/^mkdir '(\/tmp\/reviewops-agent-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})'$/.exec(script.split('\n')[4]);
+ assert.ok(directory,'Original owned control directory');const d=directory[1];
+ const child=`printf '%s\\n' "$$" > ${quote(d+'/pid')}\nexec ${quote(g.witness.path)} ${quote('--version')}`;
+ const expected=`export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"\nexport NO_COLOR=1 TERM=dumb\nset -e\numask 077\nmkdir ${quote(d)}\ncleanup() { if [ -s ${quote(d+'/pid')} ]; then p=$(cat ${quote(d+'/pid')}); kill -TERM -- "-$p" 2>/dev/null || true; fi; rm -f ${quote(d+'/pid')}; rmdir ${quote(d)} 2>/dev/null || true; }\ntrap cleanup EXIT\ntrap 'exit 143' HUP INT TERM\ncd -- ${quote(g.leaf.path)} || { printf '%s\\n' ${quote(fullFolderMessage)} >&2; exit 125; }\ncommand -v ${quote(g.witness.path)} >/dev/null 2>&1 || { printf '%s\\n' 'SSH 로그인 환경에서 Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다. 프로젝트의 실행 파일 경로와 서버 파일 권한을 확인하십시오.' >&2; exit 127; }\ncommand -v setsid >/dev/null 2>&1 || { printf '%s\\n' 'SSH 서버에 setsid 명령이 필요합니다.' >&2; exit 124; }\nset +e\nsetsid --wait bash -c ${quote(child)}\nresult=$?\nexit "$result"`;
+ assert.equal(command,'bash -lc '+quote(expected),'Exact original owned-leaf folder guard and metadata command');
+}
+export function assertObservedFolderDenial(value,before,after,g){
+ assertCheckpoint(before,g,0);assertCheckpoint(after,g,0);assert.deepEqual(after.entries,before.entries,'No CLI entry may be added during denial');
+ assertOwnedFolderGuardCommand(value.command,g);
+ assert.ok(value.code===1||value.code===125,'Only actually observed raw folder-denial statuses');
+ assert.equal(value.closed,true);assert.equal(value.signal,null);assert.equal(value.stdoutEOF,true);assert.equal(value.stderrEOF,true);assert.equal(value.overflow,false);assert.equal(value.error,undefined);
+ assert.equal(typeof value.exitObserved,'boolean');assert.equal(value.exitCount,value.exitObserved?1:0);
+ if(value.exitObserved){assert.equal(value.exitCode,value.code);assert.equal(value.exitSignal,value.signal);}
+ else{assert.equal(value.exitCode,null);assert.equal(value.exitSignal,null);}
+ assert.ok(value.stderr.split('\n').some(line=>/^bash: line [1-9][0-9]*: cd: /.test(line)&&line.endsWith(': cd: '+g.leaf.path+': Permission denied')));
+ assert.ok(value.stderr.includes(fullFolderMessage));
+ assert.ok(value.UIText.includes('Codex 설치 미확인')&&value.UIText.includes('로그인 미확인')&&value.UIText.includes('Permission denied')&&value.UIText.includes(fullFolderMessage));
+ assert.ok(!value.UIText.includes('Codex 설치 필요')&&!value.UIText.includes('작업 환경에 Codex CLI를 설치'));assert.equal(value.extraCLIEntries,0);assert.equal(value.buttonEnabled,true);
+ return value; // Preserve the actual exit/close values; never relabel raw 1 as 125.
+}
 export function assertOriginalClosure(owner){
  assert.ok(Number.isSafeInteger(owner.pid)&&owner.pid>0);assert.equal(owner.applicationClosed,true);assert.equal(owner.exitObserved,true);assert.equal(owner.childClosed,true);assert.deepEqual(owner.exit,{code:0,signal:null});
  for(const name of ['stdoutEOF','stderrEOF','stdoutClosed','stderrClosed'])assert.equal(owner[name],true);
@@ -162,7 +190,7 @@ function pin(row){pinShape(row);assert.equal(regular(row.path,2*1024**3).size,ro
 async function until(readValue,test,label,ms=20000){const end=Date.now()+ms;while(Date.now()<end){const v=await readValue();if(test(v))return v;await new Promise(r=>setTimeout(r,50));}throw new Error(label+' deadline; original resources are retained');}
 
 // Passive observer: real selected ssh2 clients/channels and unchanged callbacks.
-function installSSHObserver(_electron,target){
+export function installSSHObserver(_electron,target){
  const {Client}=process.mainModule.require('ssh2'),{StringDecoder}=process.getBuiltinModule('string_decoder'),originalConnect=Client.prototype.connect,originalExec=Client.prototype.exec,selected=new WeakMap();
  const state={clients:[],commands:[]};globalThis.__reviewopsLinuxPermission=state;
  Client.prototype.connect=function(options){
@@ -172,8 +200,8 @@ function installSSHObserver(_electron,target){
  Client.prototype.exec=function(command,options,callback){
   if(!selected.has(this))return Reflect.apply(originalExec,this,arguments);
   if(typeof options==='function'){callback=options;options=undefined;}
-  const r={ordinal:state.commands.length+1,command,closed:false,code:null,signal:null,stdout:'',stderr:'',stdoutEOF:false,stderrEOF:false,overflow:false};state.commands.push(r);
-  const done=(error,channel)=>{if(error){r.error=error.code||error.name;return callback(error,channel);}let n=0;const decoders={stdout:new StringDecoder('utf8'),stderr:new StringDecoder('utf8')};const collect=(key,chunk)=>{n+=chunk.length;if(n<=262144)r[key]+=decoders[key].write(chunk);else r.overflow=true;};channel.on('data',chunk=>collect('stdout',chunk));channel.stderr.on('data',chunk=>collect('stderr',chunk));channel.once('end',()=>{r.stdout+=decoders.stdout.end();r.stdoutEOF=true;});channel.stderr.once('end',()=>{r.stderr+=decoders.stderr.end();r.stderrEOF=true;});channel.once('close',(code,signal)=>{r.closed=true;r.code=code;r.signal=signal||null;});return callback(error,channel);};
+  const r={ordinal:state.commands.length+1,command,closed:false,code:null,signal:null,exitObserved:false,exitCount:0,exitCode:null,exitSignal:null,stdout:'',stderr:'',stdoutEOF:false,stderrEOF:false,overflow:false};state.commands.push(r);
+  const done=(error,channel)=>{if(error){r.error=error.code||error.name;return callback(error,channel);}let n=0;const decoders={stdout:new StringDecoder('utf8'),stderr:new StringDecoder('utf8')};const collect=(key,chunk)=>{n+=chunk.length;if(n<=262144)r[key]+=decoders[key].write(chunk);else r.overflow=true;};channel.on('data',chunk=>collect('stdout',chunk));channel.stderr.on('data',chunk=>collect('stderr',chunk));channel.once('end',()=>{r.stdout+=decoders.stdout.end();r.stdoutEOF=true;});channel.stderr.once('end',()=>{r.stderr+=decoders.stderr.end();r.stderrEOF=true;});channel.on('exit',(code,signal)=>{r.exitObserved=true;r.exitCount++;r.exitCode=code;r.exitSignal=signal||null;});channel.once('close',(code,signal)=>{r.closed=true;r.code=code;r.signal=signal||null;});return callback(error,channel);};
   return options===undefined?originalExec.call(this,command,done):originalExec.call(this,command,options,done);
  };
  return {installed:true,selectedEndpoint:{host:target.host,port:target.port,username:target.username}};
@@ -235,7 +263,7 @@ export async function run(bindingFile,approvalFile){
   const beforeTrust=await observe();mark('trust:before-snapshot');mark('trust:click-attempted');await trust.getByRole('button',{name:'이 호스트 신뢰',exact:true}).click();mark('trust:click-returned');await finishInspection(inspect,beforeTrust,inspectionOps,'trust');
   async function inspectOnce(phase){const before=await runInspectionOnce(inspect,inspectionOps,phase);const text=await diagnostic.innerText();assert.ok(text.includes(b.guest.leaf.path));await diagnostic.scrollIntoViewIfNeeded();await expect(diagnostic).toBeVisible();const after=await observe();const commands=after.commands.slice(before.commands.length);assert.ok(commands.length>0&&commands.every(r=>r.closed&&r.stdoutEOF&&r.stderrEOF&&!r.overflow));return {phase,UIText:text,commands};}
   mark('normal');const normal=await inspectOnce('normal');assert.ok(normal.UIText.includes(b.guest.genuineCLI.version)&&normal.UIText.includes('로그인 필요')&&!normal.UIText.includes('Codex 설치 필요'));const normalState=await control('status');assert.ok(normalState.entries.length>first.entries.length);result.conditions.push(normal);await snapshot('01-normal-genuine-cli-host.png');
-  mark('denied');await quiet();const deniedState=await changePermission(permission,'deny',control);const denied=await inspectOnce('denied');const afterDenied=await control('status');assertCheckpoint(afterDenied,b.guest,0);assert.deepEqual(afterDenied.entries,deniedState.entries);const failed=denied.commands.find(r=>r.code===125&&r.stderr.includes(folderMessage));assert.ok(failed);assertDeniedObservation({...failed,UIText:denied.UIText,extraCLIEntries:afterDenied.entries.length-deniedState.entries.length,buttonEnabled:await inspect.isEnabled()});result.conditions.push(denied);await snapshot('02-real-linux-permission-denied-host.png');
+  mark('denied');await quiet();const deniedState=await changePermission(permission,'deny',control);const denied=await inspectOnce('denied');const afterDenied=await control('status');assertCheckpoint(afterDenied,b.guest,0);assert.deepEqual(afterDenied.entries,deniedState.entries);const failures=denied.commands.filter(r=>r.stderr.includes(folderMessage));assert.equal(failures.length,1);const failed=failures[0];assertObservedFolderDenial({...failed,UIText:denied.UIText,extraCLIEntries:afterDenied.entries.length-deniedState.entries.length,buttonEnabled:await inspect.isEnabled()},deniedState,afterDenied,b.guest);result.conditions.push(denied);await snapshot('02-real-linux-permission-denied-host.png');
   mark('restored');await changePermission(permission,'restore',control);const restored=await inspectOnce('restored');assert.ok(restored.UIText.includes(b.guest.genuineCLI.version)&&restored.UIText.includes('로그인 필요'));const restoredState=await control('status');assert.ok(restoredState.entries.length>afterDenied.entries.length);result.conditions.push(restored);await snapshot('03-same-folder-restored-host.png');
   result.privateAgentRunsAfter=await invoke('agent.list');assert.deepEqual(result.privateAgentRunsAfter,[]);assert.deepEqual((await page.evaluate(()=>window.accountManager.getState())).accounts,[]);result.manualEnvironmentSequenceComplete=true;mark('complete');
  }catch(error){failure=error;result.error={name:error.name,message:error.message};if(result.appLaunchAttempts&&!owner)result.launchOwnership='UNKNOWN: launch rejected before a public original handle; no PID adoption';
