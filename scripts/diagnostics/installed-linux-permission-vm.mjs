@@ -317,7 +317,7 @@ function inputs(b, a, code) {
   need(app.acceptedPrivateApp === true && app.productSource === PRODUCT_SOURCE && app.harnessSource === b.harnessSource && app.runID === b.runID &&
     same(app.packageZipPin, b.ui.packageZipPin) && same(app.expectedASARPin, b.ui.expectedASARPin) && same(app.executablePin, b.ui.executablePin) &&
     app.privateRoot === b.privateRoot, 'same-runner-private-app');
-  need(b.ui.driverPin.path === path.join(b.root, 'scripts/diagnostics/installed-linux-permission-ui.mjs') && b.ui.driverPin.sha256 === UI_SHA256, 'unchanged-ui-driver');
+  need(b.ui.driverPin.path === path.join(b.root, 'scripts/diagnostics/installed-linux-permission-ui-v2.mjs') && b.ui.driverPin.sha256 === UI_SHA256, 'reviewed-ui-v2-driver');
   for (const record of [b.ui.driverPin, b.ui.packageZipPin, b.ui.expectedASARPin, b.ui.executablePin, ...b.ui.dependencyPins]) verifyPin(record);
   need(fs.realpathSync(b.privateRoot) === b.privateRoot, 'canonical-private-root'); const st = fs.lstatSync(b.privateRoot);
   need(st.isDirectory() && st.uid === process.getuid() && (st.mode & 0o777) === 0o700, 'owned-private-root');

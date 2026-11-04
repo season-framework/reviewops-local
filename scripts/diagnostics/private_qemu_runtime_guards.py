@@ -20,6 +20,7 @@ ADDITIONS = {
     'scripts/diagnostics/private-qemu-capability.py',
     '.github/workflows/private-qemu-capability.yml',
     'scripts/diagnostics/installed-linux-permission-combined.py',
+    'scripts/diagnostics/installed-linux-permission-ui-v2.mjs',
     'scripts/diagnostics/installed-linux-permission-vm.mjs',
     'scripts/diagnostics/installed-linux-vm-guards.mjs',
     'tests/installed-linux-vm-guards.test.mjs',

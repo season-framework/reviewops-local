@@ -325,9 +325,12 @@ class ConditionalOrchestration(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.c.admit(parent, env, 'darwin', 'x86_64')
 
-    def test_source_scope_is_eleven_exact_paths_and_pins_are_closed(self):
+    def test_source_scope_is_twelve_exact_paths_and_pins_are_closed(self):
         parent, env = self.parent()
         self.assertEqual(g.ADDITIONS, set(self.c.PATHS))
+        self.assertEqual(len(self.c.PATHS), 12)
+        self.assertIn('scripts/diagnostics/installed-linux-permission-ui-v2.mjs', self.c.PATHS)
+        self.assertNotIn('scripts/diagnostics/installed-linux-permission-ui.mjs', self.c.PATHS)
         pins = dict(parent['sourcePins'])
         pins.pop(next(iter(pins)))
         with self.assertRaises(ValueError):
@@ -462,7 +465,7 @@ class CombinedCoordinator(unittest.TestCase):
         m = self.m; parent, env = self.fixture()
         child, identity = m.admit(parent, env, 'darwin', 'arm64')
         self.assertTrue(child['approved']); self.assertFalse(child['allowVM']); self.assertFalse(child['allowSSH']); self.assertFalse(child['allowApp'])
-        self.assertEqual(len(child['sourcePins']), 11); self.assertEqual(identity['GITHUB_RUN_ID'], '100')
+        self.assertEqual(len(child['sourcePins']), 12); self.assertEqual(identity['GITHUB_RUN_ID'], '100')
         self.assertTrue(parent['allowVM'])  # Original parent is not rewritten.
         for change in [{'approved': False}, {'expectedRunNumber': None}, {'expectedRunNumber': 8},
             {'allowConditionalRuntimeAcceptance': False}, {'allowConditionalUIApproval': False},
@@ -471,6 +474,15 @@ class CombinedCoordinator(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 m.admit({**parent, **change}, env, 'darwin', 'arm64')
         with self.assertRaises(ValueError): m.child_control({**parent, 'approved': False})
+
+    def test_reviewed_ui_v2_hash_names_the_actual_new_entry_and_original_ui_is_not_an_addition(self):
+        relative = 'scripts/diagnostics/installed-linux-permission-ui-v2.mjs'
+        self.assertEqual(hashlib.sha256((ROOT / relative).read_bytes()).hexdigest(), self.m.UI_SHA)
+        self.assertIn(relative, self.m.c.PATHS)
+        original = ROOT / 'scripts/diagnostics/installed-linux-permission-ui.mjs'
+        self.assertEqual(hashlib.sha256(original.read_bytes()).hexdigest(),
+                         '2fbf69b3535296aa3d89699641fc4284dec21fc98d55f1fe84df321e1d8f55b2')
+        self.assertNotIn(original.relative_to(ROOT).as_posix(), self.m.c.PATHS)
 
     def test_actual_owner_environment_is_exact_five_setup_plus_six_admitted_ci_fields(self):
         m = self.m; _, ci = self.fixture()

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 export const PRODUCT_SOURCE = '2a1e9f166e61eb3a30148ea624b4bb921c8ebd6a';
 export const BASE_SOURCE = '34bf2ed064a93c709a2f6d00caa70ca444abca55';
-export const UI_SHA256 = '2fbf69b3535296aa3d89699641fc4284dec21fc98d55f1fe84df321e1d8f55b2';
+export const UI_SHA256 = '8bf13d42ec7254969703f397a41cfda7ff8f0cbd0d8e804ed9c3f3b0eb696a9c';
 export const R3_ROOT_SHA256 = '22d6acbec72a1da9e253a9bd5f52f1dc1b40beab52fbf515335a2f44b5613d95';
 export const CONTRACT = 'issue34-one-original-vm-conditional-ui-v1';
 export const ADDED_PATHS = Object.freeze([

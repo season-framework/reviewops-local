@@ -8,7 +8,7 @@ on:
         type: string
         required: true
       parent_control_json:
-        description: Root combined conditional authority with exact run allocation and eleven source pins
+        description: Root combined conditional authority with exact run allocation and twelve source pins
         type: string
         required: true
       whole_supply_proof_json:
