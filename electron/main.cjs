@@ -122,7 +122,7 @@ function closeWindowResources(host,discardStaged=true) {
 function closeAllBrowsers() { for(const record of windowContexts.values()){record.browsers?.closeAll();record.browsers=null;} }
 function ownedTerminal(id) { if(terminalOwners.get(id)!==getRequestWindow())throw new Error('이 창의 터미널만 사용할 수 있습니다.');return id; }
 function ownedStaged(token) { const item=stagedAttachments.get(token);if(item&&item.ownerWindow!==getRequestWindow())throw new Error('이 창에서 추가한 첨부파일만 사용할 수 있습니다.');return item; }
-function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|update|start|cancel|confirmResult|resolve)$|^review\.(version|target)\.|^backup\.import$/.test(action); }
+function changesData(action) { return /^(group|project|service|review)\.(save|delete|copy)$|^activity\.add$|^attachment\.(add|delete)$|^agent\.(start|cancel)$|^agent\.request\.(add|update|start|cancel|confirmResult|resolve)$|^review\.version\.(save|target)$|^backup\.import$/.test(action); }
 
 
 function screenshotBytes(payload) {

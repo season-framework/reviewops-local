@@ -906,6 +906,40 @@ test('review.copy preserves selected attachment bytes in a separate file owned b
   assert.deepEqual(await sourceClient.success('agent.list',{reviewId:copied.id}),[]);assert.equal(h.state.agentStarts.length,0);
 });
 
+test('version lists return inspected copies without changing data or notifying local and integration readers',async t=>{
+ const h=await harness(t),a=await seed(h),file=await addFile(h,a.review.id,'Read-only version bytes');
+ const entry=await h.success('review.version.save',{reviewId:a.review.id,target:{code:'retained-target'},attachmentIds:[file.id]});
+ const before=h.state.liveStore.exportData(),notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,beforeNotices=notices();
+ const local=await h.success('review.version.list',{reviewId:a.review.id});
+ const integration=await h.state.toolIntegration.dispatch('review.version.list',{reviewId:a.review.id});
+ for(const listed of [local,integration]){
+  assert.equal(listed.currentTarget.code,'retained-target');assert.equal(listed.entries[0].id,entry.id);
+  assert.equal(listed.entries[0].attachments[0].status,'available');assert.equal(listed.entries[0].attachments[0].sha256,file.sha256);
+ }
+ assert.deepEqual(h.state.liveStore.exportData(),before);
+ assert.equal(notices(),beforeNotices,'Reading retained versions must not send a data-change notification');
+});
+
+test('version targets send one notice per committed change and none for refusals',async t=>{
+ const h=await harness(t),a=await seed(h),file=await addFile(h,a.review.id,'Retained target bytes');
+ const entry=await h.success('review.version.save',{reviewId:a.review.id,target:{code:'saved-target'},attachmentIds:[file.id]});
+ const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length;
+ for(const [label,change] of [
+  ['local',payload=>h.success('review.version.target',payload)],
+  ['integration',payload=>h.state.toolIntegration.dispatch('review.version.target',payload)]
+ ]){
+  const beforeNotices=notices(),code=`${label}-target`;
+  await change({reviewId:a.review.id,target:{code}});
+  const versions=h.state.liveStore.get('reviews',a.review.id).evidence.review_versions;
+  assert.equal(versions.currentTarget.code,code);assert.deepEqual(versions.entries.map(row=>row.id),[entry.id]);
+  assert.equal(notices(),beforeNotices+1,`${label} target commits must send exactly one notice`);
+  const before=h.state.liveStore.exportData();
+  await assert.rejects(change({reviewId:a.review.id,target:{}}),/하나의 버전을 입력/);
+  assert.deepEqual(h.state.liveStore.exportData(),before);
+  assert.equal(notices(),beforeNotices+1,`${label} target refusals must not send a notice`);
+ }
+});
+
 test('version save uses its original main frame and sends one notice after its commit',async t=>{
  const h=await harness(t),a=await seed(h),file=await addFile(h,a.review.id,'Retained version bytes');
  const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,before=notices();
