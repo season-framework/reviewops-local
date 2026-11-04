@@ -14,6 +14,192 @@ const files = require('../electron/files.cjs');
 const MAIN_PATH = path.resolve(__dirname, '../electron/main.cjs');
 const MAIN_SOURCE = fs.readFileSync(MAIN_PATH, 'utf8');
 
+test('attachment.add refuses a picker completion after its original QA scope is released', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  await main.success('window.openProject', {projectId:a.project.id});
+  const host = await projectHost(h, a.project.id), client = h.forWindow(host);
+  const qa = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:a.project.id, clientId:'attachment-picker-owner'});
+  const file = path.join(h.root, 'owned-picker-material.txt');
+  fs.writeFileSync(file, 'Original privately selected attachment');
+  let releasePicker, pickerStarted;
+  const ready = new Promise(resolve => pickerStarted = resolve);
+  const picker = new Promise(resolve => releasePicker = resolve);
+  h.state.openHandler = async () => { pickerStarted(); return picker; };
+  const pending = client.invoke('attachment.add', {reviewId:a.review.id});
+  let result, before, files, notices;
+  try {
+    await ready;
+    await h.state.toolIntegration.automationHandler('automation.qa.release', qa);
+    before = h.state.liveStore.exportData();
+    files = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort();
+    notices = h.state.windowMessages.length;
+    releasePicker({canceled:false, filePaths:[file]});
+    result = await pending;
+  } finally {
+    releasePicker({canceled:true, filePaths:[]});
+    await pending;
+  }
+  assert.equal(result.ok, false, 'The original QA scope must still authorize the final attachment write');
+  assert.equal(result.error.code, 'TARGET_MISMATCH');
+  assert.deepEqual(h.state.liveStore.exportData(), before);
+  assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), files);
+  assert.equal(h.state.windowMessages.length, notices, 'The refused attachment adds no data-change notice');
+});
+
+test('attachment.add refuses an original QA scope after release and same-window reopen', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  await main.success('window.openProject', {projectId:a.project.id});
+  const client = h.forWindow(await projectHost(h, a.project.id));
+  const qa = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:a.project.id, clientId:'attachment-original-scope'});
+  const file = path.join(h.root, 'reopened-scope-attachment.txt'); fs.writeFileSync(file, 'Do not renew the original operation');
+  let entered, release; const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  h.state.openHandler = () => { entered(); return gate; };
+  const pending = client.invoke('attachment.add', {reviewId:a.review.id}); let result, before, files, notices;
+  try {
+    await ready; await h.state.toolIntegration.automationHandler('automation.qa.release', qa);
+    const reopened = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:a.project.id, clientId:'attachment-new-scope'});
+    assert.equal(reopened.windowId, qa.windowId); assert.notEqual(reopened.sessionId, qa.sessionId);
+    before = h.state.liveStore.exportData(); files = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(); notices = h.state.windowMessages.length;
+    release({canceled:false, filePaths:[file]}); result = await pending;
+  } finally { release({canceled:true, filePaths:[]}); await pending; }
+  assert.equal(result.ok, false, 'A new same-window QA session must not renew the original attachment operation');
+  assert.equal(result.error.code, 'TARGET_MISMATCH'); assert.deepEqual(h.state.liveStore.exportData(), before);
+  assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), files); assert.equal(h.state.windowMessages.length, notices);
+});
+
+test('attachment.add survives another window scope change and an unchanged own QA activation', async t => {
+  const h = await harness(t), a = await seed(h), b = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  await main.success('window.openProject', {projectId:a.project.id}); const client = h.forWindow(await projectHost(h, a.project.id));
+  const qa = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:a.project.id, clientId:'attachment-stable-scope'});
+  const file = path.join(h.root, 'unchanged-scope-attachment.txt'); fs.writeFileSync(file, 'Keep the unchanged original scope');
+  let entered, release; const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  h.state.openHandler = () => { entered(); return gate; };
+  const pending = client.invoke('attachment.add', {reviewId:a.review.id}); let result;
+  try {
+    await ready;
+    const other = await h.state.toolIntegration.automationHandler('automation.qa.open', {projectId:b.project.id, clientId:'other-attachment-window'});
+    await h.state.toolIntegration.automationHandler('automation.qa.release', other);
+    // Exercise the actual main callback supplied to the real QA manager.
+    h.state.qaOptions.onActiveChange(h.state.qaOptions.getWindow(qa.windowId), true);
+    release({canceled:false, filePaths:[file]}); result = await pending;
+  } finally { release({canceled:true, filePaths:[]}); await pending; }
+  assert.equal(result.ok, true, result.error?.message); assert.equal(result.data.length, 1);
+  assert.equal((await client.success('attachment.read', {id:result.data[0].id})).content, 'Keep the unchanged original scope');
+});
+
+for (const change of ['main-frame replacement', 'restored epoch', 'review rebirth', 'review move']) {
+  test('attachment.add refuses its ' + change + ' while the picker is held', async t => {
+    const h = await harness(t), a = await seed(h), client = h.forWindow(h.state.primaryWindow);
+    const file = path.join(h.root, 'held-attachment.txt'); fs.writeFileSync(file, 'Unpublished attachment bytes');
+    let entered, release; const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+    h.state.openHandler = () => { entered(); return gate; };
+    const pending = client.invoke('attachment.add', {reviewId:a.review.id});
+    let result, before, files, notices;
+    try {
+      await ready;
+      if (change === 'main-frame replacement') h.state.primaryWindow.webContents.mainFrame = {url:'reviewops://app/index.html'};
+      else if (change === 'restored epoch') h.state.liveStore.importData(h.state.liveStore.exportData());
+      else if (change === 'review rebirth') {
+        const db = h.state.liveStore.db, raw = {...db.prepare('SELECT * FROM reviews WHERE id=?').get(a.review.id)}, keys = Object.keys(raw);
+        h.state.liveStore.deleteReview(a.review.id);
+        db.prepare('INSERT INTO reviews(' + keys.join(',') + ') VALUES(' + keys.map(() => '?').join(',') + ')').run(...keys.map(key => raw[key]));
+      } else {
+        const destination = h.state.liveStore.saveProject({groupId:a.group.id, name:'Other attachment project', serviceIds:[a.service.id]});
+        h.state.liveStore.db.prepare('UPDATE reviews SET projectId=?,number=(SELECT COALESCE(MAX(number),0)+1 FROM reviews WHERE projectId=?) WHERE id=?').run(destination.id, destination.id, a.review.id);
+      }
+      before = h.state.liveStore.exportData(); files = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(); notices = h.state.windowMessages.length;
+      release({canceled:false, filePaths:[file]}); result = await pending;
+    } finally { release({canceled:true, filePaths:[]}); await pending; }
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, change === 'main-frame replacement' ? 'ACCESS_DENIED' : change === 'restored epoch' ? 'STALE_EPOCH' : 'STALE_REVIEW');
+    if(change!=='main-frame replacement')assert.equal(result.error.message, '리뷰가 변경되었습니다. 파일을 다시 선택하십시오.');
+    assert.deepEqual(h.state.liveStore.exportData(), before);
+    assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), files);
+    assert.equal(h.state.windowMessages.length, notices);
+  });
+}
+
+test('attachment.add permits agent history and next-service changes in its original review', async t => {
+  const h = await harness(t), a = await seed(h), client = h.forWindow(h.state.primaryWindow);
+  await client.success('service.save', {id:a.service.id, agentEnabled:1});
+  const job = await client.success('agent.start', {reviewId:a.review.id, requestId:crypto.randomUUID(), prompt:'Owned concurrent history'});
+  const file = path.join(h.root, 'history-attachment.txt'); fs.writeFileSync(file, 'Keep the original selected bytes');
+  let entered, release; const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  h.state.openHandler = () => { entered(); return gate; };
+  const pending = client.invoke('attachment.add', {reviewId:a.review.id}); let result;
+  try {
+    await ready;
+    h.state.agentUpdate({...job, kind:'agent', status:'completed', response:'Actual accepted callback history', finishedAt:new Date().toISOString()});
+    assert.equal(h.state.liveStore.get('agent_runs', job.id).response, 'Actual accepted callback history', 'Persist the accepted callback before unlinking its original service');
+    const next = h.state.liveStore.saveService({groupId:a.group.id, name:'Next attachment selection', kind:'local', rootPath:h.root});
+    h.state.liveStore.setProjectServices(a.project.id, [a.service.id, next.id]);
+    h.state.liveStore.saveReview({...h.state.liveStore.get('reviews', a.review.id), serviceId:next.id});
+    h.state.liveStore.setProjectServices(a.project.id, [next.id]);
+    release({canceled:false, filePaths:[file]}); result = await pending;
+    assert.equal(result.ok, true, result.error?.message); assert.equal(result.data.length, 1);
+    assert.equal(h.state.liveStore.get('reviews', a.review.id).serviceId, next.id);
+  } finally { release({canceled:true, filePaths:[]}); await pending; }
+  assert.equal(h.state.liveStore.get('agent_runs', job.id).response, 'Actual accepted callback history');
+  assert.equal((await client.success('attachment.read', {id:result.data[0].id})).content, 'Keep the original selected bytes');
+});
+
+test('attachment.add rolls back its failed commit without removing retained files or another window token', async t => {
+  const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  const existing = await addFile(h, a.review.id, 'Keep this existing attachment');
+  await main.success('window.openProject', {projectId:a.project.id}); const other = h.forWindow(await projectHost(h, a.project.id));
+  const draft = path.join(h.root, 'other-window-draft.txt'); fs.writeFileSync(draft, 'Keep this other window token');
+  const [token] = await other.success('attachment.stageFiles', {paths:[draft]});
+  const file = path.join(h.root, 'rejected-new-file.txt'); fs.writeFileSync(file, 'Reject only this new attachment');
+  h.state.openResult = {canceled:false, filePaths:[file]};
+  const before = h.state.liveStore.exportData(), files = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), notices = h.state.windowMessages.length;
+  const add = h.state.liveStore.addAttachment; h.state.liveStore.addAttachment = function(input) { add.call(this, input); throw new Error('Owned attachment commit failure'); };
+  let result; try { result = await main.invoke('attachment.add', {reviewId:a.review.id}); } finally { h.state.liveStore.addAttachment = add; }
+  assert.equal(result.ok, false); assert.match(result.error.message, /Owned attachment commit failure/);
+  assert.deepEqual(h.state.liveStore.exportData(), before); assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), files);
+  assert.equal(h.state.windowMessages.length, notices);
+  assert.equal((await main.success('attachment.read', {id:existing.id})).content, 'Keep this existing attachment');
+  assert.equal((await other.success('attachment.stagePreview', {token:token.token})).content, 'Keep this other window token');
+});
+
+test('attachment.add retains primitive review and activity targets across the picker boundary', async t => {
+  const h = await harness(t), a = await seed(h), b = await seed(h);
+  const activity = await h.success('activity.add', {reviewId:a.review.id, body:'Original activity'});
+  const foreign = await h.success('activity.add', {reviewId:b.review.id, body:'Other activity'});
+  const file = path.join(h.root, 'activity-material.txt'); fs.writeFileSync(file, 'Original activity material');
+  let entered, release; const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  h.state.openHandler = () => { entered(); return gate; };
+  const input = {reviewId:a.review.id, activityId:activity.id}, pending = h.invoke('attachment.add', input); let result;
+  try { await ready; input.reviewId = b.review.id; input.activityId = foreign.id; release({canceled:false, filePaths:[file]}); result = await pending; }
+  finally { release({canceled:true, filePaths:[]}); await pending; }
+  assert.equal(result.ok, true, result.error?.message);
+  assert.equal(result.data[0].reviewId, a.review.id); assert.equal(result.data[0].activityId, activity.id);
+  assert.equal(h.state.liveStore.snapshot().attachments.some(row => row.reviewId === b.review.id), false);
+});
+
+test('attachment.add rechecks its epoch after physical file publication and before the final transaction', async t => {
+  let armed = false, publications = 0, expected, writtenFile;
+  const h = await harness(t, {afterMainAtomicWrite({file, store}) {
+    if(!armed)return;
+    assert.equal(path.dirname(file), path.join(h.dataPath, 'attachments'));
+    armed = false; publications++; writtenFile = file;
+    assert.equal(fs.readFileSync(file, 'utf8'), 'Only this unpublished file belongs to the refused operation');
+    // A controlled Store seam after the real write, not a GUI restore schedule.
+    store.importData(store.exportData()); expected = store.exportData();
+  }}), a = await seed(h);
+  const existing = await addFile(h, a.review.id, 'Retain this previously committed attachment');
+  const existingPath = path.join(h.dataPath, 'attachments', existing.storageName), retained = fs.readFileSync(existingPath);
+  const files = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), notices = h.state.windowMessages.length;
+  const file = path.join(h.root, 'final-transaction-material.txt'); fs.writeFileSync(file, 'Only this unpublished file belongs to the refused operation');
+  h.state.openResult = {canceled:false, filePaths:[file]}; armed = true;
+  const result = await h.invoke('attachment.add', {reviewId:a.review.id});
+  assert.equal(publications, 1); assert.equal(result.ok, false); assert.equal(result.error.code, 'STALE_EPOCH');
+  assert.equal(result.error.message, '리뷰가 변경되었습니다. 파일을 다시 선택하십시오.');
+  assert.deepEqual(h.state.liveStore.exportData(), expected);
+  assert.equal(fs.existsSync(writtenFile), false); assert.deepEqual(fs.readFileSync(existingPath), retained);
+  assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), files);
+  assert.equal(h.state.windowMessages.length, notices);
+});
+
 // Only Electron's process/window boundary and SSH are mocked. Persistence uses the
 // production store and vault on temporary files, including real SQL rollback.
 async function harness(t, options = {}) {
@@ -135,7 +321,11 @@ async function harness(t, options = {}) {
       if (options.dbPath === path.join(dataPath, 'reviewops.sqlite')) state.liveStore = store;
       return store;
     } };
-    if (name === './vault.cjs') return { atomicWrite, createVault(file, storage) {
+    if (name === './vault.cjs') return { atomicWrite(file, content) {
+      const result = atomicWrite(file, content);
+      options.afterMainAtomicWrite?.({file, store:state.liveStore});
+      return result;
+    }, createVault(file, storage) {
       const vault = createVault(file, storage); state.realVault = vault;
       return { ...vault, get: wrapMutation(vault, 'get'), commit: wrapMutation(vault, 'commit'), clear: wrapMutation(vault, 'clear'), delete: wrapMutation(vault, 'delete') };
     } };
@@ -164,7 +354,11 @@ async function harness(t, options = {}) {
       const versions=require('../electron/review-versions.cjs');
       return {...versions,saveReviewVersion(store,input,read,operation){return versions.saveReviewVersion(store,input,async file=>{await options.versionReadGate({file,store});return read(file);},operation);}};
     }
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./qa-automation.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (name === './qa-automation.cjs') {
+      const qa = require('../electron/qa-automation.cjs');
+      return {...qa, createQaAutomation(options) { state.qaOptions = options; return qa.createQaAutomation(options); }};
+    }
+    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
