@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "fixes",
+      "title": "Keep review copies tied to their original source review",
+      "description": "ReviewOps stops a pending copy if its original review is deleted and recreated with the same ID or moved to another project while attachments are being read. Current source data and existing files stay intact. Ordinary activity history and source-service changes continue.",
+      "commits": [
+        "faa2bbc78af4e9360e849108b2874216d2687fa5"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Protect pending review copies when window access changes",
       "description": "ReviewOps stops a pending copy if its original window's QA access changes, the window closes, or its data is restored before saving. Releasing QA does not revive the old request; start a new copy when access is available again. Ordinary activity history and QA work in other windows remain compatible.",
       "commits": [
