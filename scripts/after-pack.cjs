@@ -8,7 +8,7 @@ module.exports=async function afterPack({appOutDir,packager}){
   // Copy the packaged canonical data after ASAR creation. Declaring this source
   // file in extraResources would exclude it from the app's relative requires.
   await fs.mkdir(path.join(resources,'mcp'),{recursive:true});
-  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']]){
+  for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']]){
     const bytes=asar.extractFile(path.join(resources,'app.asar'),path.join('electron',source));
     await fs.writeFile(path.join(resources,'mcp',target),bytes);
   }

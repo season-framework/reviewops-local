@@ -9,13 +9,13 @@ async function fixture(t,{missingCategory=false}={}){
  const source=path.join(directory,'source'),resources=path.join(directory,'resources'),archive=path.join(resources,'app.asar');
  await fs.mkdir(path.join(source,'electron'),{recursive:true});await fs.mkdir(resources);
  await fs.writeFile(path.join(source,'package.json'),JSON.stringify({version:build.version}));await fs.writeFile(path.join(source,'electron/reviewops-build.json'),JSON.stringify(build));
- for(const name of ['mcp-server.cjs','automation-api.cjs','review-categories.json','owned-node-bootstrap.cjs'])if(!missingCategory||name!=='review-categories.json')await fs.copyFile(path.join(__dirname,'../electron',name),path.join(source,'electron',name));
+ for(const name of ['mcp-server.cjs','automation-api.cjs','review-categories.json','instance-discovery.cjs','owned-node-bootstrap.cjs'])if(!missingCategory||name!=='review-categories.json')await fs.copyFile(path.join(__dirname,'../electron',name),path.join(source,'electron',name));
  await finished(await asar.createPackage(source,archive));return {directory,resources,archive,context:{appOutDir:directory,packager:{getResourcesDir:()=>resources}}};
 }
 test('afterPack preserves the canonical ASAR category data and makes identical standalone MCP copies',async t=>{
  const f=await fixture(t);await afterPack(f.context);const {packagedBuildInfo}=await import('../scripts/test-build.mjs');
  assert.deepEqual(packagedBuildInfo(f.archive,build),build);
- for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json']])assert.deepEqual(asar.extractFile(f.archive,path.join('electron',source)),await fs.readFile(path.join(f.resources,'mcp',target)));
+ for(const [source,target]of [['mcp-server.cjs','reviewops-mcp.cjs'],['automation-api.cjs','automation-api.cjs'],['review-categories.json','review-categories.json'],['instance-discovery.cjs','instance-discovery.cjs']])assert.deepEqual(asar.extractFile(f.archive,path.join('electron',source)),await fs.readFile(path.join(f.resources,'mcp',target)));
 });
 test('a standalone category copy cannot conceal the missing module needed by the app',async t=>{
  const f=await fixture(t,{missingCategory:true});await fs.mkdir(path.join(f.resources,'mcp'));await fs.copyFile(path.join(__dirname,'../electron/review-categories.json'),path.join(f.resources,'mcp/review-categories.json'));

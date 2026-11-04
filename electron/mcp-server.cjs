@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 const fs = require('node:fs/promises');
+const fsSync = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const net = require('node:net');
 const crypto = require('node:crypto');
+const discovery = require('./instance-discovery.cjs');
 const { dataTools, validate, schema, ID, string } = require('./automation-api.cjs');
 
 const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024, MAX_CONNECTION_INFO = 16 * 1024, MAX_QA_CONNECTION_STATUS = 2048;
@@ -27,7 +29,7 @@ const qaTools = [
   ['navigate', 'Navigate the selected native browser to an HTTP or HTTPS URL. Requires browserId from qa_state.', schema({ ...surface, url: { ...string(8192), minLength: 1 } }, [...required,'browserId','url'])]
 ].map(([action, description, inputSchema]) => ({ name: 'reviewops_qa_' + action, action: 'automation.qa.' + action, description, inputSchema,
   annotations: { readOnlyHint: ['state','capture'].includes(action), destructiveHint: ['close','reload'].includes(action), openWorldHint: ['navigate','click','key','type'].includes(action) } }));
-const connectionTool = { name: 'reviewops_connection_info', action: 'connection.info', description: 'Read the connected running app identity, reported QA capabilities and selected connection location without opening, focusing or controlling a project. This does not discover unknown data roots or grant QA ownership.', inputSchema: schema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
+const connectionTool = { name: 'reviewops_connection_info', action: 'connection.info', description: 'Read the selected running app identity, reported QA capabilities and connection location without opening, focusing or controlling a project. When no explicit or default connection exists, the MCP server may select exactly one privately registered running app. This does not grant QA ownership.', inputSchema: schema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
 const qaConnectionTool = { name: 'reviewops_qa_connection_status', action: 'connection.qa.status', description: 'Read QA availability for the selected app and project, using only this MCP server process\'s recorded binding when unambiguous. This is not chat ownership, reconnection or permission to control a window. It does not acquire, release or renew a QA session.', inputSchema: schema({projectId:ID},['projectId']), annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false} };
 const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool];
 const error = (message, code = 'CLIENT_ERROR') => Object.assign(new Error(message), { code });
@@ -58,7 +60,7 @@ function connectionInfoResult(value, selection, projectId) {
     const item = value.location[key];scalar(item, 4096);
     if (item !== '$HOME' && !item.startsWith('$HOME' + serverPaths.sep) && !serverPaths.isAbsolute(item)) invalid();
   }
-  if (!selection || !['connection-argument','data-path-argument','environment','platform-default'].includes(selection.selection)) invalid();
+  if (!selection || !['connection-argument','data-path-argument','environment','platform-default','running-instance-registry'].includes(selection.selection)) invalid();
   scalar(selection.platform, 32);
   const clientPaths = selection.platform === 'win32' ? path.win32 : path.posix;
   scalar(selection.connectionPath, 4096);scalar(selection.homePath, 4096);
@@ -103,6 +105,9 @@ async function invokeSocket(connectionPath, action, payload, { timeoutMs = 40000
     connection = JSON.parse(await fs.readFile(connectionFile, 'utf8'));
   } catch { throw error('ReviewOps connection is unavailable. Start ReviewOps and check the data folder.', 'APP_UNAVAILABLE'); }
   if (connection.version !== 1 || connection.socketPath !== expectedSocket(dataPath) || !/^[a-f0-9]{64}$/.test(connection.token || '') || !Number.isSafeInteger(connection.pid) || connection.pid <= 0) throw error('Invalid ReviewOps connection record. Check the selected data folder and connection configuration before retrying.', 'INVALID_CONNECTION');
+  return invokeConnection(connection, action, payload, { timeoutMs });
+}
+function invokeConnection(connection, action, payload, { timeoutMs = 40000 } = {}) {
   const request = JSON.stringify({ token: connection.token, action, payload }) + '\n';
   if (Buffer.byteLength(request) > MAX_INPUT) throw error('Request exceeds 512 KiB.', 'REQUEST_TOO_LARGE');
   return new Promise((resolve, reject) => {
@@ -124,6 +129,47 @@ async function invokeSocket(connectionPath, action, payload, { timeoutMs = 40000
     });
     socket.on('close', () => { if (!settled) finish(error('ReviewOps closed the connection before replying. Check the existing request before retrying.', 'CONNECTION_CLOSED')); });
   });
+}
+// Resolve lazily: initialize and tools/list never inspect a profile or contact an app.
+function createConnectionInvoker(config, { selection = { selection: config.selection, connectionPath: config.connectionPath, homePath: os.homedir(), platform: process.platform }, directory = () => discovery.registryDirectory(), timeoutMs = 2000 } = {}) {
+  let selected, resolving;
+  const changed = () => error('The discovered ReviewOps instance changed. Restart this MCP connection or select an explicit connection.', 'DISCOVERED_INSTANCE_CHANGED');
+  async function resolve() {
+    if (config.selection !== 'platform-default') return { legacy: true };
+    try { await fs.lstat(config.connectionPath); return { legacy: true }; }
+    catch (failure) { if (failure.code !== 'ENOENT') return { legacy: true }; }
+    const candidate = discovery.findInstance(directory());
+    const snapshot = discovery.readPrivateFile(candidate.connectionPath);
+    let connection;
+    try { connection = JSON.parse(snapshot.bytes.toString('utf8')); } catch { throw error('Invalid discovered ReviewOps connection record.', 'INVALID_CONNECTION'); }
+    if (!connection || JSON.stringify(Object.keys(connection).sort()) !== JSON.stringify(['pid','socketPath','token','version']) || connection.version !== 1 || connection.socketPath !== expectedSocket(path.dirname(path.dirname(candidate.connectionPath))) || !/^[a-f0-9]{64}$/.test(connection.token || '') || !Number.isSafeInteger(connection.pid) || connection.pid <= 0) throw error('Invalid discovered ReviewOps connection record.', 'INVALID_CONNECTION');
+    const nextSelection = { ...selection, selection: 'running-instance-registry', connectionPath: candidate.connectionPath };
+    const info = await invokeConnection(connection, 'connection.info', {}, { timeoutMs });
+    connectionInfoResult(info, nextSelection, config.projectId);
+    if (info.instanceId !== candidate.instanceId) throw changed();
+    // Finish admission without another await between the final observations and selection.
+    try { fsSync.lstatSync(config.connectionPath); throw changed(); }
+    catch (failure) { if (failure.code !== 'ENOENT') throw changed(); }
+    discovery.assertUnchanged(candidate.snapshot); discovery.assertUnchanged(snapshot);
+    const current = discovery.findInstance(directory());
+    if (current.instanceId !== candidate.instanceId || current.snapshot.identity !== candidate.snapshot.identity || !current.snapshot.bytes.equals(candidate.snapshot.bytes)) throw changed();
+    if (selection) Object.assign(selection, nextSelection);
+    return { connection: Object.freeze(connection), snapshot, registrySnapshot: candidate.snapshot, instanceId: candidate.instanceId };
+  }
+  return async (action, payload) => {
+    if (!selected) {
+      if (!resolving) resolving = resolve().then(value => { selected = value; return value; }).finally(() => { resolving = undefined; });
+      await resolving;
+    }
+    if (selected.legacy) return invokeSocket(config.connectionPath, action, payload);
+    discovery.assertUnchanged(selected.registrySnapshot); discovery.assertUnchanged(selected.snapshot);
+    const result = await invokeConnection(selected.connection, action, payload);
+    if (action === 'connection.info') {
+      connectionInfoResult(result, selection, config.projectId);
+      if (result.instanceId !== selected.instanceId) throw changed();
+    }
+    return result;
+  };
 }
 function toolResult(value, protocolVersion) {
   let metadata = value; const content = [];
@@ -243,12 +289,12 @@ function options(args, env = process.env) {
     selection: connectionPath ? 'connection-argument' : dataPath ? 'data-path-argument' : env.REVIEWOPS_DATA_DIR ? 'environment' : 'platform-default' };
 }
 function main(args = process.argv.slice(2)) {
-  const config = options(args), server = createMcpServer({ invoke: (action,payload) => invokeSocket(config.connectionPath,action,payload), projectId: config.projectId,
-    connectionSelection: { selection: config.selection, connectionPath: config.connectionPath, homePath: os.homedir(), platform: process.platform } });
+  const config = options(args), selection = { selection: config.selection, connectionPath: config.connectionPath, homePath: os.homedir(), platform: process.platform };
+  const server = createMcpServer({ invoke: createConnectionInvoker(config, { selection }), projectId: config.projectId, connectionSelection: selection });
   const stop = () => { void server.close().finally(() => process.exit(0)); };
   process.once('SIGINT',stop); process.once('SIGTERM',stop);
   process.stdout.on('error',stop);
   return server;
 }
-module.exports = { createMcpServer, invokeSocket, options, toolResult, tools, qaTools, connectionInfoResult, main };
+module.exports = { createMcpServer, invokeSocket, createConnectionInvoker, options, toolResult, tools, qaTools, connectionInfoResult, main };
 if (require.main === module) { try { main(); } catch (failure) { process.stderr.write(String(failure.message) + '\n'); process.exitCode = 1; } }

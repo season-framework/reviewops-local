@@ -189,7 +189,11 @@ async function harness(t, options = {}) {
       if (state.seasonError) throw new Error(state.seasonError);
       return { close: async () => { state.seasonIntegrationClosed = true; } };
     } };
-    if (name === './tool-integration.cjs') return {createToolIntegration:async options=>{state.toolIntegration=options;return {close:async()=>{state.toolIntegrationClosed=true;}};}};
+    if (name === './tool-integration.cjs') return {createToolIntegration:async options=>{state.toolIntegration=options;let unregistered=false;return {
+      close:async()=>{state.toolIntegrationClosed=true;(state.toolBridgeCalls||=[]).push('close');await state.toolCloseGate;},
+      unregisterForFinalQuitSync(){if(!unregistered){unregistered=true;(state.toolBridgeCalls||=[]).push('unregister');}}
+    };}};
+    if (name === './instance-discovery.cjs') return require('../electron/instance-discovery.cjs');
     if (name.startsWith('node:')) return require(name);
     if(name==='./viewer-sessions.cjs')return require('../electron/viewer-sessions.cjs');
     throw new Error(`Unexpected module: ${name}`);
@@ -203,7 +207,7 @@ async function harness(t, options = {}) {
   state.seasonError = options.seasonError;
   vm.runInNewContext(MAIN_SOURCE, {
     require: customRequire, __dirname: path.dirname(MAIN_PATH),
-    process: { env: options.defaultDataRoot ? {} : { REVIEWOPS_DATA_DIR: dataPath }, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
+    process: { env: {...options.registryEnvironment,...(options.defaultDataRoot ? {} : { REVIEWOPS_DATA_DIR: dataPath })}, platform: options.platform || process.platform, arch: process.arch, resourcesPath },
     URL, Response, Buffer, Date:options.quitClock?class extends Date{static now(){return options.quitClock.now;}}:Date, console: {...console, warn(...args) { (state.seasonWarnings ||= []).push(args); }}, setImmediate,
     setTimeout(callback,delay,...args){
       if((delay===10000||callback.name==='quitCloseExpired')&&options.captureQuitCloseTimers)state.quitCloseTimers.push(callback);
@@ -3674,4 +3678,33 @@ test('a different next selection cannot upgrade stale detached cancellation owne
    const before=h.state.liveStore.exportData(),messages=h.state.windowMessages.length;release();const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,kind==='restore'?'STALE_EPOCH':kind==='run-replacement'?'STALE_AGENT':'STALE_REVIEW');assert.deepEqual(h.state.liveStore.exportData(),before);assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.liveStore.get('services',a.service.id).id,a.service.id);
   }finally{release();await pending;}
  }
+});
+
+test('invalid optional discovery configuration keeps the existing custom-root bridge available', async t => {
+  const h = await harness(t, { platform: 'linux', registryEnvironment: { XDG_CONFIG_HOME: 'relative-config' } });
+  assert.ok(h.state.toolIntegration); assert.equal(h.state.toolIntegration.discoveryDirectory, undefined);
+  assert.equal(h.state.toolIntegration.connectionInfo.dataPath, h.dataPath);
+  const result = await h.state.toolIntegration.automationHandler('automation.projects.list', {});
+  assert.ok(Array.isArray(result.projects));
+  assert.ok(h.state.seasonWarnings.some(args => args[0] === 'Running-instance discovery is unavailable. Explicit connections remain available.'));
+});
+test('vetoed quit and failed agent drain retain the running-instance publication and bridge', async t => {
+  const vetoed = await harness(t), host = vetoed.state.primaryWindow;
+  host.on('close', event => event.preventDefault());
+  vetoed.appEvents.emit('before-quit', { preventDefault() {} });
+  await waitForValue(() => host.closeCalls, 'Quit did not reach the renderer veto');
+  assert.deepEqual(vetoed.state.toolBridgeCalls || [], []);
+  const failed = await harness(t); failed.state.primaryWindow.destroyed = true; failed.state.codexCloseError = true;
+  failed.appEvents.emit('before-quit', { preventDefault() {} });
+  await waitForValue(() => failed.state.windows.length > 1, 'Agent drain failure did not resume a window');
+  assert.deepEqual(failed.state.toolBridgeCalls || [], []);
+  assert.equal(failed.state.toolIntegrationClosed, undefined);
+});
+test('irreversible will-quit unregisters synchronously after bridge close starts without awaiting its drain', async t => {
+  const h = await harness(t); let release;
+  h.state.toolCloseGate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  h.appEvents.emit('will-quit');
+  assert.deepEqual(h.state.toolBridgeCalls, ['close', 'unregister']);
+  assert.equal(h.state.toolIntegrationClosed, true);
+  release();
 });

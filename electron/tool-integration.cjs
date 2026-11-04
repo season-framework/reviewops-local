@@ -3,6 +3,7 @@ const fs = require('node:fs/promises');
 const path = require('node:path');
 const net = require('node:net');
 const crypto = require('node:crypto');
+const { publishInstance } = require('./instance-discovery.cjs');
 const { validateBuildInfo, displayBuildVersion } = require('./build-info.cjs');
 
 const MAX_BYTES = 512 * 1024;
@@ -118,7 +119,7 @@ const publicRecord = record => ({ requestId: record.payload.requestId, status: r
   projectId: record.projectId || null, serviceId: record.serviceId || null, reviewId: record.reviewId || null,
   windowId: record.windowId ?? null, shown: record.status === 'shown', message: record.message || '', createdAt: record.createdAt, updatedAt: record.updatedAt });
 
-async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler, connectionInfo, qaConnectionStatus } = {}) {
+async function createToolIntegration({ dataPath, dispatch, showReview, platform = process.platform, displayTimeoutMs = 20000, automationHandler, connectionInfo, qaConnectionStatus, discoveryDirectory } = {}) {
   if (!path.isAbsolute(dataPath || '') || typeof dispatch !== 'function' || typeof showReview !== 'function') fail('외부 도구 연결 설정이 올바르지 않습니다.');
   // Capture only public startup scalars. Queries cannot invoke a window or Store.
   let describedConnection = null;
@@ -316,7 +317,19 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
     if (platform !== 'win32') await fs.chmod(socketPath, 0o600);
     await fs.writeFile(connectionPath, JSON.stringify({ version: 1, socketPath, token, pid: process.pid }), { mode: 0o600 }); await fs.chmod(connectionPath, 0o600);
   } catch (error) { await new Promise(resolve => server.close(resolve)); if (platform !== 'win32') await fs.rm(socketPath, { force: true }); throw error; }
-  return { handle, connectionPath, close: async () => {
+  let publication;
+  const removeDiscoverySync = () => {
+    try { publication?.removeSync(); }
+    catch { console.warn('Running-instance record changed or could not be removed; it was retained.'); }
+  };
+  if (discoveryDirectory !== undefined && describedConnection && platform !== 'win32') {
+    try { publication = publishInstance({ directory: discoveryDirectory, instanceId: describedConnection.instanceId, connectionPath, platform }); }
+    catch { console.warn('Running-instance discovery could not be published. Explicit connections remain available.'); }
+  }
+  return { handle, connectionPath, unregisterForFinalQuitSync() {
+    // will-quit is irreversible. close() has stopped accepting, but its async drain may still be pending.
+    if (closed && !server.listening) removeDiscoverySync();
+  }, close: async () => {
     if (closed) return;
     closed = true; for (const socket of connections) socket.destroy();
     await new Promise(resolve => server.close(resolve));
@@ -325,6 +338,7 @@ async function createToolIntegration({ dataPath, dispatch, showReview, platform 
       await save();
     });
     await fs.rm(connectionPath, { force: true }); if (platform !== 'win32') await fs.rm(socketPath, { force: true });
+    removeDiscoverySync();
   } };
 }
 module.exports = { createToolIntegration, toolSocketPath, publicConnectionInfo, queryQaConnectionStatus };
