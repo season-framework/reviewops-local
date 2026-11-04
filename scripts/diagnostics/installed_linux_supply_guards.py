@@ -12,6 +12,8 @@ BRANCH = 'refs/heads/codex/issue34-installed-linux-ssh-ui'
 REPOSITORY = 'season-framework/reviewops-local'
 FORMULA_COMMIT = '6f3d127080e96f5192e5280fc94babd809e231ac'
 QEMU_BOTTLE = 'a99cca4450c91f471e8e546b8fb48780e0cb2104ffbe15d394c1b431d44df620'
+QEMU_MANIFEST = 'c03180c7ec3614b9c31f8fe287e0d95c608f4c7a59fc925197c54acfb175d0b8'
+QEMU_TAB = '9f86bc4693ee848160c6eaeff3a8c915e8ca27ea1e2c16f20bb45de4f51b09b7'
 IMAGE_SHA = '04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94'
 IMAGE_KEY = 'D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81'
 IMAGE_DIR = 'https://cloud-images.ubuntu.com/releases/noble/release-20261017/'
@@ -35,9 +37,190 @@ REQUIRED_PREPARATION = ALLOWED_ADDITIONS - {
 }
 
 
+SAFE_REASONS = frozenset({
+    'guard-rejected', 'supply-stage', 'oci-request-shape', 'oci-manifest-seal',
+    'oci-manifest-schema', 'oci-response-identity', 'oci-reference', 'oci-layer-seal',
+    'oci-tab-seal', 'oci-json', 'oci-root-selection', 'oci-runtime-row',
+    'oci-nested-name', 'oci-neutral-tag', 'oci-host-arch',
+})
+
+
+class SupplyGuardFailure(ValueError):
+    def __init__(self, message):
+        super().__init__(message)
+        # Never publish an arbitrary exception string, even one from this class.
+        self.reason = message if message in SAFE_REASONS else 'guard-rejected'
+
+
 def need(value, message):
     if not value:
-        raise ValueError(message)
+        raise SupplyGuardFailure(message)
+
+
+class FailureStage:
+    NAMES = frozenset({'admission', 'source-guard', 'qemu-formula-source', 'qemu-manifests',
+                       'qemu-bottle-archives', 'ubuntu-signature', 'ubuntu-image',
+                       'vendor-archive', 'vendor-elf', 'complete'})
+
+    def __init__(self):
+        self.name = 'admission'
+
+    def enter(self, name):
+        need(name in self.NAMES, 'supply-stage')
+        self.name = name
+
+    def failure(self, error):
+        return {'stage': self.name, 'exceptionType': type(error).__name__,
+                'guardReason': error.reason if isinstance(error, SupplyGuardFailure)
+                and error.reason in SAFE_REASONS else None}
+
+
+OCI_ROW_KEYS = frozenset({'name', 'version', 'revision', 'bottleRebuild', 'pkgVersion', 'tag',
+                          'manifestBytes', 'manifestSHA256', 'tabSHA256', 'bottleBytes', 'bottleSHA256'})
+
+
+def oci_row(row):
+    need(isinstance(row, dict) and set(row) == OCI_ROW_KEYS, 'oci-request-shape')
+    need(isinstance(row['name'], str) and re.fullmatch('[a-z0-9][a-z0-9+@._-]{0,79}', row['name'])
+         and isinstance(row['version'], str) and re.fullmatch('[A-Za-z0-9][A-Za-z0-9.+_-]{0,79}', row['version']),
+         'oci-runtime-row')
+    need(all(type(row[k]) is int and 0 <= row[k] <= 10000 for k in ('revision', 'bottleRebuild')),
+         'oci-runtime-row')
+    need(row['pkgVersion'] == row['version'] + ('_' + str(row['revision']) if row['revision'] else ''),
+         'oci-runtime-row')
+    if row['tag'] == 'all':
+        need((row['name'], row['version'], row['revision'], row['bottleRebuild']) ==
+             ('ca-certificates', '2026-10-20', 0, 0), 'oci-neutral-tag')
+    else:
+        need(row['tag'] == 'arm64_sequoia', 'oci-host-arch')
+    need(type(row['manifestBytes']) is int and 0 < row['manifestBytes'] <= 512 * 1024
+         and type(row['bottleBytes']) is int and 0 < row['bottleBytes'] <= 512 * 1024**2,
+         'oci-request-shape')
+    for key in ('manifestSHA256', 'tabSHA256', 'bottleSHA256'):
+        digest(row[key])
+    return row
+
+
+def oci_request(qemu):
+    rows = qemu.get('ociBottles')
+    need(isinstance(rows, list) and len(rows) == 30, 'oci-root-selection')
+    for row in rows:
+        oci_row(row)
+    need(len({row['name'] for row in rows}) == 30, 'oci-root-selection')
+    root = rows[0]
+    need(root == {'name': 'qemu', 'version': '11.1.3', 'revision': 0, 'bottleRebuild': 0,
+                  'pkgVersion': '11.1.3', 'tag': 'arm64_sequoia', 'manifestBytes': 36175,
+                  'manifestSHA256': QEMU_MANIFEST, 'tabSHA256': QEMU_TAB,
+                  'bottleBytes': 113165355, 'bottleSHA256': QEMU_BOTTLE}, 'oci-root-selection')
+    need(qemu.get('dependencyBottleTags') == ['arm64_sequoia']
+         and sum(row['tag'] == 'all' for row in rows) == 1, 'oci-neutral-tag')
+    return rows
+
+
+def _json_object(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            need(key not in result, 'oci-json')
+            result[key] = value
+        return result
+    try:
+        value = json.loads(raw, object_pairs_hook=pairs)
+    except (ValueError, UnicodeError) as error:
+        raise SupplyGuardFailure('oci-json') from error
+    need(isinstance(value, dict), 'oci-json')
+    return value
+
+
+def oci_manifest(raw, row):
+    """Verify a reviewed immutable child, not a mutable index or formula API."""
+    oci_row(row)
+    need(isinstance(raw, bytes) and len(raw) == row['manifestBytes']
+         and hashlib.sha256(raw).hexdigest() == row['manifestSHA256'], 'oci-manifest-seal')
+    manifest = _json_object(raw)
+    need(set(manifest) == {'schemaVersion', 'config', 'layers', 'annotations'}
+         and type(manifest['schemaVersion']) is int and manifest['schemaVersion'] == 2,
+         'oci-manifest-schema')
+    config = manifest['config']
+    need(isinstance(config, dict) and config.get('mediaType') == 'application/vnd.oci.image.config.v1+json'
+         and isinstance(config.get('digest'), str) and re.fullmatch('sha256:[a-f0-9]{64}', config['digest'])
+         and type(config.get('size')) is int and config['size'] > 0, 'oci-manifest-schema')
+    annotations = manifest['annotations']
+    need(isinstance(annotations, dict) and all(isinstance(k, str) and isinstance(v, str)
+         for k, v in annotations.items()), 'oci-manifest-schema')
+    reference = row['pkgVersion'] + '.' + row['tag'] + (
+        '.' + str(row['bottleRebuild']) if row['bottleRebuild'] else '')
+    need(annotations.get('com.github.package.type') == 'homebrew_bottle'
+         and annotations.get('org.opencontainers.image.vendor') in {'homebrew', 'Homebrew'}
+         and annotations.get('org.opencontainers.image.version') == row['pkgVersion']
+         and annotations.get('org.opencontainers.image.ref.name') == reference
+         and annotations.get('org.opencontainers.image.title') == row['name'] + ' ' + reference,
+         'oci-reference')
+    layers = manifest['layers']
+    need(isinstance(layers, list) and len(layers) == 1 and isinstance(layers[0], dict), 'oci-layer-seal')
+    layer = layers[0]
+    need(layer.get('mediaType') == 'application/vnd.oci.image.layer.v1.tar+gzip'
+         and layer.get('digest') == 'sha256:' + row['bottleSHA256']
+         and type(layer.get('size')) is int and layer['size'] == row['bottleBytes']
+         and annotations.get('sh.brew.bottle.digest') == row['bottleSHA256']
+         and annotations.get('sh.brew.bottle.size') == str(row['bottleBytes']), 'oci-layer-seal')
+    tab_text = annotations.get('sh.brew.tab')
+    need(isinstance(tab_text, str) and hashlib.sha256(tab_text.encode()).hexdigest() == row['tabSHA256'],
+         'oci-tab-seal')
+    tab = _json_object(tab_text)
+    if row['tag'] == 'all':
+        need(tab.get('arch') is None and tab.get('built_on') is None, 'oci-neutral-tag')
+    else:
+        need(tab.get('arch') == 'arm64' and isinstance(tab.get('built_on'), dict)
+             and tab['built_on'].get('os') == 'Macintosh', 'oci-host-arch')
+    return tab, tab_text
+
+
+def oci_runtime_set(rows, tabs):
+    """Select exact root tuples while preserving literal nested build histories."""
+    need(len(rows) == 30 and len(tabs) == 30, 'oci-root-selection')
+    declarations = tabs[0].get('runtime_dependencies')
+    need(isinstance(declarations, list) and len(declarations) == 29, 'oci-root-selection')
+    selected, histories, differences, omissions = {}, [], [], []
+    for declaration in declarations:
+        need(isinstance(declaration, dict), 'oci-runtime-row')
+        name = declaration.get('full_name')
+        need(isinstance(name, str) and name not in selected, 'oci-runtime-row')
+        selected[name] = declaration
+    need(set(selected) == {row['name'] for row in rows[1:]}, 'oci-root-selection')
+    for row in rows[1:]:
+        declaration = selected[row['name']]
+        need(all(declaration.get(key) == row[field] for key, field in (
+            ('version', 'version'), ('revision', 'revision'), ('bottle_rebuild', 'bottleRebuild'),
+            ('pkg_version', 'pkgVersion'))) and type(declaration.get('revision')) is int
+            and type(declaration.get('bottle_rebuild')) is int
+            and type(declaration.get('declared_directly')) is bool, 'oci-root-selection')
+    for row, tab in zip(rows[1:], tabs[1:]):
+        nested = tab.get('runtime_dependencies')
+        need(isinstance(nested, list) and len(nested) <= 48, 'oci-runtime-row')
+        seen = set()
+        for declaration in nested:
+            need(isinstance(declaration, dict) and isinstance(declaration.get('full_name'), str),
+                 'oci-runtime-row')
+            name = declaration['full_name']
+            need(name in selected and name not in seen, 'oci-nested-name')
+            seen.add(name)
+            need(isinstance(declaration.get('version'), str) and isinstance(declaration.get('pkg_version'), str)
+                 and type(declaration.get('revision')) is int and declaration['revision'] >= 0
+                 and ('bottle_rebuild' not in declaration or type(declaration['bottle_rebuild']) is int
+                      and declaration['bottle_rebuild'] >= 0), 'oci-runtime-row')
+            missing = [key for key in ('version', 'revision', 'bottle_rebuild', 'pkg_version') if key not in declaration]
+            changed = [key for key in ('version', 'revision', 'bottle_rebuild', 'pkg_version')
+                       if key in declaration and declaration[key] != selected[name].get(key)]
+            if missing:
+                omissions.append({'bottle': row['name'], 'dependency': name, 'omittedFields': missing})
+            if changed or missing:
+                differences.append({'bottle': row['name'], 'literalDependency': declaration,
+                                    'rootSelectedDependency': selected[name], 'differentFields': changed,
+                                    'omittedFields': missing})
+        histories.append({'bottle': row['name'], 'literalRuntimeDependencies': nested})
+    return {'selectedRuntimeDeclarations': declarations, 'nestedBuildHistories': histories,
+            'nestedBuildDifferences': differences, 'nestedOmittedFields': omissions}
 
 
 def digest(value):
@@ -87,10 +270,7 @@ def admit_request(request, approval, request_bytes, env):
     need(qemu.get('version') == '11.1.3' and qemu.get('formulaCommit') == FORMULA_COMMIT
          and qemu.get('bottleTag') == 'arm64_sequoia' and qemu.get('bottleSHA256') == QEMU_BOTTLE,
          'Reviewed ARM QEMU bottle differs')
-    tags = qemu.get('dependencyBottleTags')
-    need(isinstance(tags, list) and tags and len(tags) == len(set(tags))
-         and all(tag in {'arm64_sequoia', 'arm64_sonoma', 'arm64_ventura'} for tag in tags),
-         'Dependency tags must be explicitly admitted ARM bottles compatible with macOS 15')
+    oci_request(qemu)
     image = request.get('ubuntu', {})
     need(image == {'directory': IMAGE_DIR, 'name': 'ubuntu-24.04-server-cloudimg-amd64.img',
                    'sha256': IMAGE_SHA, 'signingFingerprint': IMAGE_KEY}, 'Dated Ubuntu input differs')
