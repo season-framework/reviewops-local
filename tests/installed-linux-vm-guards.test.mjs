@@ -4,12 +4,14 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {EventEmitter} from 'node:events';
 import {run as ownerRun, verifyPin, verifyEvidencePin, readLiveClosure, materializeUIBinding} from '../scripts/diagnostics/installed-linux-permission-vm.mjs';
 import crypto from 'node:crypto';
 import {assertBinding as actualUIAdmission, BUILD as ACTUAL_UI_BUILD, FAILURE_TEXT_CAP, boundedFailureSummary,
   readOwnedUIState, captureFailureEvidence, INSPECTION_IDLE_MS, INSPECTION_STAGE_LIMIT, INSPECTION_CONTROL_NAME,
   appendInspectionStage, waitInspectionIdle, finishInspection, runInspectionOnce,
-  hasFreshFolderCommand} from '../scripts/diagnostics/installed-linux-permission-ui-v2.mjs';
+  hasFreshFolderCommand, assertDeniedObservation, assertOwnedFolderGuardCommand, assertObservedFolderDenial,
+  installSSHObserver} from '../scripts/diagnostics/installed-linux-permission-ui-v2.mjs';
 import {strictJSON, QMPFrames, QMPProtocol, OriginalVM, closure, uiCleanup, powerdownSafe, inspectSeedISO,
   publicKey, seedFiles, bootstrapMarker, witnessSource, materialized, assertParentAuthority, unboundRequest,
   hashBytes, CONTRACT, PRODUCT_SOURCE, R3_ROOT_SHA256, UI_SHA256, UI_CI_KEYS, uiChildEnvironment,
@@ -591,4 +593,75 @@ test('fixed inspection stage storage admits the 44-stage sequence and refuses ov
   while (stages.length < INSPECTION_STAGE_LIMIT) appendInspectionStage(stages, 'bounded-fixture', 'INERT');
   assert.throws(() => appendInspectionStage(stages, 'overflow', 'INERT'));
   assert.throws(() => appendInspectionStage([], 'x'.repeat(49), 'INERT'));
+});
+
+// Inert R6-shaped data: this retained command is not executed by a fixture.
+const R6_FOLDER_COMMAND="bash -lc 'export PATH=\"$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin\"\nexport NO_COLOR=1 TERM=dumb\nset -e\numask 077\nmkdir '\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6'\"'\"'\ncleanup() { if [ -s '\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6/pid'\"'\"' ]; then p=$(cat '\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6/pid'\"'\"'); kill -TERM -- \"-$p\" 2>/dev/null || true; fi; rm -f '\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6/pid'\"'\"'; rmdir '\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6'\"'\"' 2>/dev/null || true; }\ntrap cleanup EXIT\ntrap '\"'\"'exit 143'\"'\"' HUP INT TERM\ncd -- '\"'\"'/home/rvqa/owned-work'\"'\"' || { printf '\"'\"'%s\\n'\"'\"' '\"'\"'SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다. 폴더 경로와 접근 권한을 확인하십시오.'\"'\"' >&2; exit 125; }\ncommand -v '\"'\"'/home/rvqa/owned-bin/codex-observed'\"'\"' >/dev/null 2>&1 || { printf '\"'\"'%s\\n'\"'\"' '\"'\"'SSH 로그인 환경에서 Codex 실행 파일을 찾을 수 없거나 실행 권한이 없습니다. 프로젝트의 실행 파일 경로와 서버 파일 권한을 확인하십시오.'\"'\"' >&2; exit 127; }\ncommand -v setsid >/dev/null 2>&1 || { printf '\"'\"'%s\\n'\"'\"' '\"'\"'SSH 서버에 setsid 명령이 필요합니다.'\"'\"' >&2; exit 124; }\nset +e\nsetsid --wait bash -c '\"'\"'printf '\"'\"'\"'\"'\"'\"'\"'\"'%s\\n'\"'\"'\"'\"'\"'\"'\"'\"' \"$$\" > '\"'\"'\"'\"'\"'\"'\"'\"'/tmp/reviewops-agent-35532829-86e8-4dc2-9809-93db621dffb6/pid'\"'\"'\"'\"'\"'\"'\"'\"'\nexec '\"'\"'\"'\"'\"'\"'\"'\"'/home/rvqa/owned-bin/codex-observed'\"'\"'\"'\"'\"'\"'\"'\"' '\"'\"'\"'\"'\"'\"'\"'\"'--version'\"'\"'\"'\"'\"'\"'\"'\"''\"'\"'\nresult=$?\nexit \"$result\"'";
+
+function observedFolderFixture(code=1){
+ const g={home:'/home/rvqa',codeHome:'/home/rvqa/.codex',identity:{bootId:'4db7a562-6106-41dd-aa01-532c75ab0c23',uid:1001,euid:1001,kernel:'fixture-linux',machine:'x86_64'},
+  leaf:{path:'/home/rvqa/owned-work',dev:64769,ino:85362,uid:1001},
+  genuineCLI:{path:'/home/rvqa/owned-bin/codex.real',bytes:17,sha256:'a'.repeat(64)},
+  witness:{path:'/home/rvqa/owned-bin/codex-observed',bytes:19,sha256:'b'.repeat(64)}};
+ const before={platform:'Linux',identity:clone(g.identity),leaf:{...g.leaf,mode:0},genuineCLI:clone(g.genuineCLI),witness:clone(g.witness),
+  home:g.home,codeHome:g.codeHome,authAbsent:true,entries:[{args:['--version'],cwd:g.leaf.path,uid:1001,home:g.home,codeHome:g.codeHome,forbiddenEnvironmentNames:[]}]};
+ const message='SSH 계정으로 에이전트 작업 폴더를 열 수 없습니다. 폴더 경로와 접근 권한을 확인하십시오.';
+ const row={command:R6_FOLDER_COMMAND,closed:true,code,signal:null,stdoutEOF:true,stderrEOF:true,overflow:false,
+  exitObserved:true,exitCount:1,exitCode:code,exitSignal:null,
+  stderr:'bash: line 9: cd: '+g.leaf.path+': Permission denied\n'+message+'\n',
+  UIText:'Codex 설치 미확인 로그인 미확인 Permission denied '+message,extraCLIEntries:0,buttonEnabled:true};
+ return {row,before,after:clone(before),g};
+}
+
+test('observed folder denial preserves raw 1 or 125 only with the exact original guard and unchanged Linux checkpoint',()=>{
+ for(const code of [1,125]){
+  const f=observedFolderFixture(code);assertOwnedFolderGuardCommand(f.row.command,f.g);
+  assert.equal(assertObservedFolderDenial(f.row,f.before,f.after,f.g),f.row);
+  assert.equal(f.row.code,code);assert.equal(f.row.exitCode,code);
+  const optional={...f.row,exitObserved:false,exitCount:0,exitCode:null,exitSignal:null};
+  assert.equal(assertObservedFolderDenial(optional,f.before,f.after,f.g),optional);
+  if(code===125)assertDeniedObservation(f.row);else assert.throws(()=>assertDeniedObservation(f.row));
+ }
+});
+
+test('observed denial refuses wrong raw status, foreign or missing guards, new CLI entries and incomplete event/leaf evidence',()=>{
+ const changes=[
+  ...[0,2,124,127,'1',null].map(code=>f=>{f.row.code=code;f.row.exitCode=code;}),
+  f=>{f.row.command="bash -lc 'exit 1'";},f=>{f.row.command=f.row.command.replace('exit 125','exit 124');},
+  f=>{f.row.command=f.row.command.replaceAll('/home/rvqa/owned-work','/home/rvqa/foreign');},
+  f=>{f.row.command=f.row.command.replaceAll('/home/rvqa/owned-bin/codex-observed','/home/rvqa/other-cli');},
+  f=>{f.row.closed=false;},f=>{f.row.signal='SIGTERM';},f=>{f.row.stdoutEOF=false;},f=>{f.row.stderrEOF=false;},f=>{f.row.overflow=true;},
+  f=>{f.row.exitCode=125;},f=>{f.row.exitSignal='SIGTERM';},f=>{f.row.exitCount=2;},f=>{f.row.exitObserved=false;},
+  f=>{f.row.extraCLIEntries=1;},f=>{f.after.entries.push(clone(f.before.entries[0]));},
+  f=>{f.after.entries[0].args=['login','status'];},f=>{f.before.leaf.mode=0o700;},
+  f=>{f.after.leaf.ino++;},f=>{f.after.leaf.uid++;},f=>{f.after.identity.bootId='foreign-boot';},
+  f=>{f.row.stderr='Permission denied';},f=>{f.row.UIText+=' Codex 설치 필요';},f=>{f.row.buttonEnabled=false;}
+ ];
+ for(const [i,change]of changes.entries()){
+  const f=observedFolderFixture();change(f);assert.throws(()=>assertObservedFolderDenial(f.row,f.before,f.after,f.g),'negative fixture '+i);
+ }
+});
+
+test('actual passive SSH observer retains separate original exit and close values without replacing callbacks or opening transport',()=>{
+ class FakeClient extends EventEmitter{
+  connect(options){this.originalOptions=options;return this;}
+  exec(command,options,callback){if(typeof options==='function')callback=options;this.channel=new EventEmitter();this.channel.stderr=new EventEmitter();callback(null,this.channel);return this;}
+ }
+ const originalModule=Object.getOwnPropertyDescriptor(process,'mainModule'),originalObservation=Object.getOwnPropertyDescriptor(globalThis,'__reviewopsLinuxPermission');
+ try{
+  Object.defineProperty(process,'mainModule',{configurable:true,value:{require:name=>{assert.equal(name,'ssh2');return {Client:FakeClient};}}});
+  const target={host:'127.0.0.1',port:2222,username:'rvqa'};installSSHObserver(null,target);
+  const client=new FakeClient();client.connect(target);let callbacks=0;
+  for(const code of [1,125]){
+   client.exec('inert-not-executed',{pty:false},(error,channel)=>{assert.equal(error,null);assert.equal(channel,client.channel);callbacks++;});
+   const channel=client.channel;channel.emit('exit',code);channel.emit('end');channel.stderr.emit('end');channel.emit('close',code);
+  }
+  const rows=globalThis.__reviewopsLinuxPermission.commands;assert.equal(callbacks,2);assert.equal(rows.length,2);
+  assert.deepEqual(rows.map(row=>({code:row.code,exitCode:row.exitCode,exitCount:row.exitCount,exitObserved:row.exitObserved,signal:row.signal,exitSignal:row.exitSignal,closed:row.closed,stdoutEOF:row.stdoutEOF,stderrEOF:row.stderrEOF})),
+   [1,125].map(code=>({code,exitCode:code,exitCount:1,exitObserved:true,signal:null,exitSignal:null,closed:true,stdoutEOF:true,stderrEOF:true})));
+  const foreign=new FakeClient();foreign.connect({...target,port:2223});foreign.exec('foreign-inert',()=>{});assert.equal(rows.length,2);
+ }finally{
+  if(originalModule)Object.defineProperty(process,'mainModule',originalModule);else delete process.mainModule;
+  if(originalObservation)Object.defineProperty(globalThis,'__reviewopsLinuxPermission',originalObservation);else delete globalThis.__reviewopsLinuxPermission;
+ }
 });
