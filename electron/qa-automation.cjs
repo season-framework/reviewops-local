@@ -3,6 +3,30 @@ const crypto = require('node:crypto');
 const fail = (message, code = 'INVALID_REQUEST') => { throw Object.assign(new Error(message), {code}); };
 const id = (value, label) => { if(typeof value!=='string'||!/^[a-zA-Z0-9_-]{1,128}$/.test(value))fail(`${label}가 올바르지 않습니다.`);return value; };
 const number = (value, label, max=100000) => { if(!Number.isFinite(value)||Math.abs(value)>max)fail(`${label}가 올바르지 않습니다.`);return value; };
+const DOCUMENT_CONTRACT='observed-web-document-v1';
+const documentId=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
+function documentRequest(payload){
+  const fields={state:[],capture:[],click:['x','y','button','clickCount'],type:['text'],key:['key','modifiers'],scroll:['x','y','deltaX','deltaY']};
+  if(!Object.hasOwn(fields,payload.operation))fail('Choose a supported document operation.');
+  const input=!['state','capture'].includes(payload.operation),allowed=['sessionId','projectId','windowId','browserId','operation',...fields[payload.operation],...(input?['documentId']:[])];
+  if(Object.keys(payload).some(key=>!allowed.includes(key)))fail('Unexpected document operation field.');
+  const value={operation:payload.operation};
+  for(const key of ['sessionId','projectId','windowId','browserId'])value[key]=id(payload[key],key);
+  if(input){if(!documentId(payload.documentId))fail('Use the documentId returned by a document observation.');value.documentId=payload.documentId;}
+  for(const key of fields[value.operation])if(Object.hasOwn(payload,key))value[key]=payload[key];
+  if(['click','scroll'].includes(value.operation)){
+    for(const key of ['x','y'])if(number(value[key],key,20000)<0)fail('Input coordinates must be nonnegative.');
+  }
+  if(value.operation==='click'&&(!['left','right'].includes(value.button??'left')||![1,2].includes(value.clickCount??1)))fail('Invalid click button or count.');
+  if(value.operation==='scroll'){number(value.deltaY,'deltaY',20000);if(value.deltaX!==undefined)number(value.deltaX,'deltaX',20000);}
+  if(value.operation==='type'&&(typeof value.text!=='string'||value.text.length>100000||value.text.includes('\0')))fail('Invalid document text.');
+  if(value.operation==='key'){
+    if(typeof value.key!=='string'||!value.key||value.key.length>30)fail('Invalid document key.');
+    if(value.modifiers!==undefined&&(!Array.isArray(value.modifiers)||value.modifiers.length>4||value.modifiers.some(key=>!['Alt','Control','Meta','Shift'].includes(key))))fail('Invalid document modifiers.');
+    if(value.modifiers)value.modifiers=[...value.modifiers];
+  }
+  return Object.freeze(value);
+}
 function waitForLoad(contents) {
   if(contents.isDestroyed())return Promise.reject(new Error('화면이 닫혔습니다.'));
   if(!contents.isLoadingMainFrame())return Promise.resolve();
@@ -16,9 +40,10 @@ function waitForLoad(contents) {
 }
 // Coordinates and input stay inside one Chromium target. Neither the OS cursor
 // nor BrowserWindow.focus() participates in a QA operation.
-async function command(contents,method,params={}) {
+async function command(contents,method,params={},beforeSend) {
   if(contents.isDestroyed())fail('화면이 닫혔습니다.','TARGET_CLOSED');
   if(!contents.debugger.isAttached())contents.debugger.attach('1.3');
+  beforeSend?.();
   return contents.debugger.sendCommand(method,params);
 }
 const snapshotScript = `(() => {
@@ -59,7 +84,7 @@ async function capture(record,contents,browserId,nativeImage) {
   return {mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
 }
 function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiveChange=()=>{},now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
-  const sessions=new Map(),projects=new Map(),quarantined=new Set();
+  const sessions=new Map(),projects=new Map(),quarantined=new Set(),documents=new Map();
   let closed=false;
   const expiry=setInterval(()=>{if(!closed)prune();},Math.max(1,Math.min(sessionTimeoutMs,60000)));expiry.unref?.();
   const binding=session=>({sessionId:session.id,projectId:session.projectId,windowId:session.windowId,clientId:session.clientId});
@@ -97,7 +122,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     else if(record.host.isDestroyed()||expired)result.availability='available';
     else result.availability=current.failed?'quarantined':'busy';
     if(!matched)return result;
-    if(remembered.failed)result.bindingState='timed_out';
+    if(remembered.failed)result.bindingState=remembered.failureKind==='document-release'?'unavailable':'timed_out';
     else if(!record||record.projectId!==projectId)result.bindingState='unavailable';
     else if(record.host.isDestroyed())result.bindingState='target_closed';
     else if(expired)result.bindingState='expired';
@@ -125,6 +150,108 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
       catch(error){forget(session);throw error;}finally{session.active--;}
     })();
     return session.opening;
+  }
+  function watchDocument(contents){
+    if(documents.has(contents))return documents.get(contents);
+    const state={id:crypto.randomUUID(),tokens:new Map(),dead:contents.isDestroyed(),crashed:Boolean(contents.isCrashed?.())};
+    const rotate=()=>{state.id=crypto.randomUUID();state.tokens.clear();};
+    const navigating=(details,_url,_sameDocument,isMainFrame)=>{if(typeof details?.isMainFrame==='boolean'?details.isMainFrame:isMainFrame===true)rotate();};
+    const crashed=()=>{state.crashed=true;rotate();};
+    const loaded=()=>{if(!state.dead&&!contents.isCrashed?.())state.crashed=false;};
+    const destroyed=()=>{state.dead=true;rotate();state.detach();documents.delete(contents);};
+    const listeners=[['did-start-navigation',navigating],['render-process-gone',crashed],['did-finish-load',loaded],['destroyed',destroyed]];
+    state.detach=()=>{for(const [event,listener]of listeners)contents.removeListener(event,listener);};
+    for(const [event,listener]of listeners)contents.on(event,listener);
+    documents.set(contents,state);return state;
+  }
+  function documentTarget(payload,session){
+    const record=check(session,payload),target=record.browsers?.automationTargets().find(item=>item.browserId===payload.browserId);
+    if(!target)fail('Select an existing web surface in this project.','TARGET_MISMATCH');
+    const state=watchDocument(target.contents),scope=[payload.projectId,payload.windowId,payload.browserId].join('\0');
+    if(!state.tokens.has(scope))state.tokens.set(scope,crypto.randomUUID());
+    const entry={record,contents:target.contents,state,scope,generation:state.id,id:state.tokens.get(scope),ready:target.ready,scale:target.inputScale||target.contents.getZoomFactor?.()||1};
+    if(payload.documentId!==undefined&&payload.documentId!==entry.id)fail('The observed document changed before input. Read this same surface again.','QA_DOCUMENT_STALE');
+    assertDocument(payload,session,entry);return entry;
+  }
+  function assertDocument(payload,session,entry){
+    if(closed||sessions.get(session.id)!==session)fail('The QA session is no longer attached.','SESSION_EXPIRED');
+    if(session.failed)fail('This QA window is quarantined. Close and reopen it before further QA.','QA_TARGET_UNAVAILABLE');
+    const record=check(session,payload),target=record.browsers?.automationTargets().find(item=>item.browserId===payload.browserId);
+    if(record!==entry.record||!target||target.contents!==entry.contents||entry.state.dead||entry.state.id!==entry.generation||entry.state.tokens.get(entry.scope)!==entry.id||payload.documentId!==undefined&&payload.documentId!==entry.id)fail('The observed document changed before input. Read this same surface again.','QA_DOCUMENT_STALE');
+    if(target.documentReady!==true||entry.state.crashed||entry.contents.isDestroyed()||entry.contents.isCrashed?.()||entry.contents.isLoadingMainFrame())fail('The selected web document is not ready. Observe it after loading or recovery.','QA_DOCUMENT_NOT_READY');
+    if(target.ready!==entry.ready||(target.inputScale||entry.contents.getZoomFactor?.()||1)!==entry.scale)fail('The selected web surface changed readiness or scale. Observe it again.','QA_DOCUMENT_NOT_READY');
+  }
+  async function performDocument(payload,session,entry){
+    let deliveryBegun=false,release,primary,cleanupFailure,result;
+    entry.deliveryBegun=false;
+    const fence=()=>assertDocument(payload,session,entry);
+    const send=async(method,params,matchingRelease)=>{
+      fence();
+      const value=await command(entry.contents,method,params,()=>{
+        // Attach can synchronously change the document. Fence again immediately
+        // before the first actual Input.* invocation, including mouseMoved.
+        fence();deliveryBegun=true;entry.deliveryBegun=true;if(matchingRelease)release={method,params:matchingRelease};
+      });fence();return value;
+    };
+    const matchingRelease=async()=>{
+      if(!release)return;
+      const pending=release;release=null;
+      try{
+        // Release only on the original live contents, even if its document changed.
+        // No membership lookup may replace the object selected before press/down.
+        if(entry.state.dead||entry.state.crashed||entry.contents.isDestroyed()||entry.contents.isCrashed?.()||!entry.contents.debugger.isAttached())fail('The original pressed surface or debugger is no longer live.','QA_RELEASE_TARGET_GONE');
+        await entry.contents.debugger.sendCommand(pending.method,pending.params);
+      }catch(error){
+        cleanupFailure=error;session.documentReleaseFailure=error;session.failed=true;session.failureKind??='document-release';quarantined.add(entry.record.id);
+        // A disconnected controller may already have released the lease while
+        // the original release command was pending. Keep that same window scoped.
+        if(getWindow(entry.record.id)===entry.record&&!entry.record.host.isDestroyed()){
+          entry.record.qaActive=true;try{onActiveChange(entry.record,true);}catch(failure){session.documentQuarantineFailure=failure;}
+        }
+      }
+    };
+    try{
+      fence();if(entry.ready){await entry.ready;fence();}
+      const metadata={...binding(session),browserId:payload.browserId,contract:DOCUMENT_CONTRACT,documentId:entry.id};
+      if(payload.operation==='state'){
+        const value=await entry.contents.executeJavaScript(snapshotScript);fence();result={...value,...metadata};
+      }else if(payload.operation==='capture'){
+        const image=await entry.contents.capturePage(undefined,{stayHidden:true,stayAwake:true});fence();
+        if(image.isEmpty())fail('The selected document could not be captured.','CAPTURE_FAILED');
+        const png=image.toPNG(),viewport=await entry.contents.executeJavaScript('({width:innerWidth,height:innerHeight})');fence();
+        result={...metadata,mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
+      }else{
+        const x=payload.x*entry.scale,y=payload.y*entry.scale;
+        if(payload.operation==='type')await send('Input.insertText',{text:payload.text});
+        else if(payload.operation==='scroll')await send('Input.dispatchMouseEvent',{type:'mouseWheel',x,y,deltaX:(payload.deltaX??0)*entry.scale,deltaY:payload.deltaY*entry.scale});
+        else if(payload.operation==='click'){
+          const button=payload.button??'left';await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
+          for(let count=1;count<=(payload.clickCount??1);count++){
+            try{await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button,clickCount:count},{type:'mouseReleased',x,y,button,clickCount:count});}
+            finally{await matchingRelease();}
+            if(cleanupFailure)throw cleanupFailure;fence();
+          }
+        }else if(payload.operation==='key'){
+          const values={Alt:1,Control:2,Meta:4,Shift:8},mask=(payload.modifiers||[]).reduce((value,key)=>value|values[key],0),key=payload.key;
+          const keys={Enter:13,Tab:9,Backspace:8,Delete:46,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Home:36,End:35,PageUp:33,PageDown:34,' ':32};
+          const code=keys[key]||(/^[a-z0-9]$/i.test(key)?key.toUpperCase().charCodeAt(0):0);if(!code)fail('Unsupported document key.');
+          const params={key,modifiers:mask,windowsVirtualKeyCode:code,nativeVirtualKeyCode:code,...(key==='Enter'?{text:'\r'}:{})};
+          try{await send('Input.dispatchKeyEvent',{type:'keyDown',...params},{type:'keyUp',...params});}
+          finally{await matchingRelease();}
+          if(cleanupFailure)throw cleanupFailure;fence();
+        }
+        result={...metadata,applied:true};
+      }
+      fence();
+    }catch(error){primary=error;}
+    finally{await matchingRelease();}
+    if(primary||cleanupFailure){
+      if(!deliveryBegun)throw primary||cleanupFailure;
+      const describe=error=>`[${error.code||'REQUEST_FAILED'}] ${String(error.message||'Request failed').slice(0,240)}`;
+      const error=Object.assign(new Error(`Input may have applied. Observe the same surface and do not replay. Primary: ${describe(primary||cleanupFailure)}${cleanupFailure?`; matching release failed: ${describe(cleanupFailure)}`:''}`),{code:'QA_DOCUMENT_CHANGED_AFTER_INPUT',cause:primary||cleanupFailure,inputMayHaveApplied:true});
+      if(cleanupFailure)error.cleanupError=cleanupFailure;throw error;
+    }
+    return result;
   }
   async function perform(action,payload,session){
     const record=check(session,payload),metadata=binding(session);
@@ -204,6 +331,8 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     id(payload.sessionId,'QA 세션 ID');id(payload.projectId,'프로젝트 ID');id(payload.windowId,'창 ID');
     const session=sessions.get(payload.sessionId);check(session,payload);
     if(session.failed&&action!=='release')fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
+    let documentEntry;
+    if(action==='document'){payload=documentRequest(payload);documentEntry=documentTarget(payload,session);}
     // Serialize only operations on the same project. Different windows never
     // wait for one another's input, capture, navigation, or page loading.
     session.active++;
@@ -211,12 +340,12 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
       if(sessions.get(session.id)!==session)fail('QA 연결이 해제되었습니다.','SESSION_EXPIRED');
       if(session.failed&&action!=='release')fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
       let timer;
-      try{return await Promise.race([perform(action,payload,session),new Promise((_,reject)=>{timer=setTimeout(()=>{session.failed=true;quarantined.add(session.windowId);reject(Object.assign(new Error('QA 응답 시간이 초과되었습니다. 프로젝트 창을 닫고 다시 연결하십시오.'),{code:'QA_TIMEOUT'}));},operationTimeoutMs);})]);}
+      try{return await Promise.race([action==='document'?performDocument(payload,session,documentEntry):perform(action,payload,session),new Promise((_,reject)=>{timer=setTimeout(()=>{session.failed=true;session.failureKind??='timeout';quarantined.add(session.windowId);const error=Object.assign(new Error(action==='document'?'The document request timed out. Close and reopen this window; do not replay input.':'QA 응답 시간이 초과되었습니다. 프로젝트 창을 닫고 다시 연결하십시오.'),{code:'QA_TIMEOUT'});if(documentEntry)error.inputMayHaveApplied=Boolean(documentEntry.deliveryBegun);reject(error);},operationTimeoutMs);})]);}
       finally{clearTimeout(timer);}
     });
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,connectionStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,connectionStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

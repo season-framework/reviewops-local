@@ -31,8 +31,21 @@ const qaTools = [
   annotations: { readOnlyHint: ['state','capture'].includes(action), destructiveHint: ['close','reload'].includes(action), openWorldHint: ['navigate','click','key','type'].includes(action) } }));
 const connectionTool = { name: 'reviewops_connection_info', action: 'connection.info', description: 'Read the selected running app identity, reported QA capabilities and connection location without opening, focusing or controlling a project. When no explicit or default connection exists, the MCP server may select exactly one privately registered running app. This does not grant QA ownership.', inputSchema: schema({}), annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false } };
 const qaConnectionTool = { name: 'reviewops_qa_connection_status', action: 'connection.qa.status', description: 'Read QA availability for the selected app and project, using only this MCP server process\'s recorded binding when unambiguous. This is not chat ownership, reconnection or permission to control a window. It does not acquire, release or renew a QA session.', inputSchema: schema({projectId:ID},['projectId']), annotations: {readOnlyHint:true,destructiveHint:false,openWorldHint:false} };
-const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool];
+const documentOperations=['state','capture','click','type','key','scroll'];
+const documentFields=Object.assign({},...qaTools.filter(tool=>documentOperations.includes(tool.action.slice('automation.qa.'.length))).map(tool=>tool.inputSchema.properties));
+const documentTool={name:'reviewops_qa_document',action:'automation.qa.document',description:'Opt in to observed-web-document-v1 for one browserId. First request operation state or capture and retain its app-issued documentId; click/type/key/scroll require that exact ID. A stale observation is refused. If input may have started, observe again and never automatically replay. This does not reconnect a controller or clear timeout quarantine. Main host/composite captures are unsupported.',inputSchema:schema({...documentFields,operation:{type:'string',enum:documentOperations},documentId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'},key:{...string(30),minLength:1}},[...required,'browserId','operation']),annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}};
+const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool,documentTool];
 const error = (message, code = 'CLIENT_ERROR') => Object.assign(new Error(message), { code });
+function documentArguments(args){
+  const {operation,documentId,...fields}=args,tool=qaTools.find(tool=>tool.action==='automation.qa.'+operation);
+  validate(tool.inputSchema,fields);
+  if(['state','capture'].includes(operation)){if(Object.hasOwn(args,'documentId'))throw error('Document observations do not accept a caller-chosen documentId.');}
+  else if(documentId===undefined)throw error('Use the documentId returned by a document observation.');
+}
+function documentResult(value,args){
+  if(!value||value.contract!=='observed-web-document-v1'||!/^([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.test(value.documentId||'')||['sessionId','projectId','windowId','browserId'].some(key=>value[key]!==args[key])||args.documentId!==undefined&&value.documentId!==args.documentId)throw error('The app did not confirm the selected document contract. No legacy input will be substituted.','QA_DOCUMENT_UNSUPPORTED');
+  return value;
+}
 function connectionInfoResult(value, selection, projectId) {
   const invalid = () => { throw error('Running app connection information is unavailable or invalid.', 'INVALID_CONNECTION_INFO'); };
   const text = max => ({ type: 'string', minLength: 1, maxLength: max });
@@ -215,6 +228,7 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
         try {
           const args = params.arguments === undefined ? {} : params.arguments;
           validate(tool.inputSchema,args);
+          if(tool.action==='automation.qa.document')documentArguments(args);
           if (projectId && args.projectId !== undefined && args.projectId !== projectId) throw error('This MCP connection is bound to another project.', 'TARGET_MISMATCH');
           let invocation=args,bindingSource;
           if(tool.action==='connection.qa.status'){
@@ -231,10 +245,12 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
           catch (failure) {
             if (tool.action === 'connection.info' && failure.code === 'UNKNOWN_ACTION') throw error('The connected app does not report connection identity or capabilities. Check the configured app and MCP paths; no project connection was changed.', 'CONNECTION_INFO_UNSUPPORTED');
             if (tool.action === 'connection.qa.status' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not provide QA connection status. Inspect reviewops_connection_info; no QA connection was changed.','QA_CONNECTION_STATUS_UNSUPPORTED');
+            if (tool.action === 'automation.qa.document' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not support observed-web-document-v1. No legacy input was substituted or retried.','QA_DOCUMENT_UNSUPPORTED');
             throw failure;
           }
           if (tool.action === 'connection.info') value = connectionInfoResult(value, connectionSelection, projectId);
           if (tool.action === 'connection.qa.status') value = qaConnectionStatusResult(value,args.projectId,bindingSource,projectId);
+          if (tool.action === 'automation.qa.document') value = documentResult(value,args);
           if (tool.action === 'automation.projects.list' && projectId) value = { ...value, projects: value.projects.filter(project => (project.projectId || project.id) === projectId) };
           if (tool.action === 'automation.qa.open' && value?.sessionId) {
             const binding = { sessionId: value.sessionId, projectId: value.projectId, windowId: value.windowId };
