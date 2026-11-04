@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "fixes",
+      "title": "Protect pending review copies when window access changes",
+      "description": "ReviewOps stops a pending copy if its original window's QA access changes, the window closes, or its data is restored before saving. Releasing QA does not revive the old request; start a new copy when access is available again. Ordinary activity history and QA work in other windows remain compatible.",
+      "commits": [
+        "13b3a344440c11b8b2903d5b9203421a0aa56a67"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Reject attachment selections from outdated requests",
       "description": "If QA disconnects or the selected review is restored, replaced, or now belongs to another project, ReviewOps rejects the pending attachment save. Existing files stay intact, and normal history and next-service changes continue.",
       "commits": [
