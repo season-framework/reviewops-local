@@ -117,6 +117,37 @@ export async function changePermission(state,action,verifiedOperation){
 export function hasFreshFolderCommand(before,after,leaf){
  return after.commands.slice(before.commands.length).some(row=>typeof row.command==='string'&&row.command.includes(leaf));
 }
+export const INSPECTION_IDLE_MS=40000,INSPECTION_STAGE_LIMIT=48;
+export const INSPECTION_CONTROL_NAME=/^(실행 환경 검사|검사 중)$/;
+const inspectionClock={now:()=>performance.now(),pause:()=>new Promise(resolve=>setTimeout(resolve,50))};
+export function appendInspectionStage(stages,phase,at){
+ assert.ok(stages.length<INSPECTION_STAGE_LIMIT&&typeof phase==='string'&&phase.length>0&&phase.length<=48);
+ stages.push({phase,at});
+}
+// Same original control, including its busy label. No click, fallback or retry.
+export async function waitInspectionIdle(control,clock=inspectionClock){
+ const end=clock.now()+INSPECTION_IDLE_MS;
+ const remaining=()=>{const ms=end-clock.now();if(ms<=0)throw new Error('Original inspection control idle deadline; original resources are retained');return ms;};
+ while(clock.now()<end){
+  remaining();const count=await control.count();remaining();assert.equal(count,1,'Exactly one original inspection control');
+  const enabled=await control.isEnabled({timeout:remaining()});remaining();
+  if(enabled){const name=await control.innerText({timeout:remaining()});remaining();if(name.trim()==='실행 환경 검사')return;}
+  await clock.pause();
+ }
+ throw new Error('Original inspection control idle deadline; original resources are retained');
+}
+export async function finishInspection(control,before,ops,label,clock=inspectionClock){
+ // A quiet transport or an old enabled control cannot replace new command evidence.
+ await ops.waitFresh(before);ops.mark(label+':fresh-folder-observed');
+ await waitInspectionIdle(control,clock);ops.mark(label+':idle-after-observed');
+ await ops.quiet();ops.mark(label+':quiet-observed');
+}
+export async function runInspectionOnce(control,ops,label,clock=inspectionClock){
+ ops.mark(label+':idle-before-attempted');await waitInspectionIdle(control,clock);ops.mark(label+':idle-before-observed');
+ const before=await ops.observe();
+ ops.mark(label+':click-attempted');await control.click();ops.mark(label+':click-returned');
+ await finishInspection(control,before,ops,label,clock);return before;
+}
 
 // These are the only remote control scripts. No command is accepted from input.
 export function guestScript(action,g){
@@ -168,7 +199,7 @@ export async function run(bindingFile,approvalFile){
  const client=new Client();let controlClosed=false,ready=false;client.once('close',()=>{controlClosed=true;});client.on('error',error=>{result.controlError=error.code||error.name;save();});
  const connected=new Promise((resolve,reject)=>{client.once('ready',()=>{ready=true;resolve();});client.once('error',reject);});
  let app,owner,page,failure,controlPending=0,quitRequested=false,expectedMode=0o700,phase='initialized';
- const mark=value=>{phase=value;result.phase=value;assert.ok(result.stages.length<16);result.stages.push({phase:value,at:new Date().toISOString()});save();};
+ const mark=value=>{phase=value;result.phase=value;appendInspectionStage(result.stages,value,new Date().toISOString());save();};
  const permission={confirmed:false,modeRestored:false};
  const appClosed=()=>Boolean(owner&&owner.applicationClosed&&owner.exitObserved&&owner.childClosed&&owner.stdoutEOF&&owner.stderrEOF&&owner.stdoutClosed&&owner.stderrClosed);
  const observe=()=>app.evaluate(()=>globalThis.__reviewopsLinuxPermission);
@@ -197,8 +228,12 @@ export async function run(bindingFile,approvalFile){
   mark('fixture-save');const group=await invoke('group.save',{name:'Owned real Linux permission QA'}),service=await invoke('service.save',{groupId:group.id,name:'Owned Linux SSH',kind:'ssh',host:b.guest.host,port:b.guest.port,username:b.guest.username,authType:'key',privateKeyPath:b.guest.privateKeyPin.path,rootPath:b.guest.leaf.path,agentWorkPath:b.guest.leaf.path,agentBinary:b.guest.witness.path,agentEnabled:1});
   const project=await invoke('project.save',{groupId:group.id,name:'실제 Linux 폴더 권한 검사',serviceIds:[service.id]});assert.equal(project.connection.id,service.id);result.fixture={projectId:project.id,connectionId:service.id};
   mark('workspace-open');await page.locator('.workspace-refresh').click();const open=page.locator('button.work-home-node-link').and(page.getByRole('button',{name:project.name+' 프로젝트 열기',exact:true}));assert.equal(await open.count(),1);await open.click();const pane=page.locator('.workspace-pane:not([hidden])');mark('settings-tab');await pane.getByRole('navigation',{name:'프로젝트 기능',exact:true}).getByRole('button',{name:'설정',exact:true}).click();const settings=pane.locator('.original-project-settings');mark('agent-tab');await settings.getByRole('tab',{name:'에이전트',exact:true}).click();
-  mark('initial-environment-inspect');const inspect=settings.getByRole('button',{name:'실행 환경 검사',exact:true}),diagnostic=settings.locator('.agent-environment');await expect(inspect).toBeEnabled();await inspect.click();const trust=page.getByRole('dialog',{name:'SSH 호스트 확인',exact:true});await expect(trust).toBeVisible();await expect(trust).toContainText(b.guest.hostKeyFingerprint);await trust.getByRole('button',{name:'이 호스트 신뢰',exact:true}).click();await expect(inspect).toBeEnabled();await quiet();
-  async function inspectOnce(phase){const before=await observe();await expect(inspect).toBeEnabled();await inspect.click();await until(observe,after=>hasFreshFolderCommand(before,after,b.guest.leaf.path),'New post-click original folder command');await expect(inspect).toBeEnabled();await quiet();const text=await diagnostic.innerText();assert.ok(text.includes(b.guest.leaf.path));await diagnostic.scrollIntoViewIfNeeded();await expect(diagnostic).toBeVisible();const after=await observe();const commands=after.commands.slice(before.commands.length);assert.ok(commands.length>0&&commands.every(r=>r.closed&&r.stdoutEOF&&r.stderrEOF&&!r.overflow));return {phase,UIText:text,commands};}
+  mark('initial-environment-inspect');const inspect=settings.getByRole('button',{name:INSPECTION_CONTROL_NAME}),diagnostic=settings.locator('.agent-environment');
+  const inspectionOps={observe,waitFresh:before=>until(observe,after=>hasFreshFolderCommand(before,after,b.guest.leaf.path),'New post-click original folder command'),quiet,mark};
+  mark('initial:idle-before-attempted');await waitInspectionIdle(inspect);mark('initial:idle-before-observed');mark('initial:click-attempted');await inspect.click();mark('initial:click-returned');
+  const trust=page.getByRole('dialog',{name:'SSH 호스트 확인',exact:true});await expect(trust).toBeVisible();await expect(trust).toContainText(b.guest.hostKeyFingerprint);
+  const beforeTrust=await observe();mark('trust:before-snapshot');mark('trust:click-attempted');await trust.getByRole('button',{name:'이 호스트 신뢰',exact:true}).click();mark('trust:click-returned');await finishInspection(inspect,beforeTrust,inspectionOps,'trust');
+  async function inspectOnce(phase){const before=await runInspectionOnce(inspect,inspectionOps,phase);const text=await diagnostic.innerText();assert.ok(text.includes(b.guest.leaf.path));await diagnostic.scrollIntoViewIfNeeded();await expect(diagnostic).toBeVisible();const after=await observe();const commands=after.commands.slice(before.commands.length);assert.ok(commands.length>0&&commands.every(r=>r.closed&&r.stdoutEOF&&r.stderrEOF&&!r.overflow));return {phase,UIText:text,commands};}
   mark('normal');const normal=await inspectOnce('normal');assert.ok(normal.UIText.includes(b.guest.genuineCLI.version)&&normal.UIText.includes('로그인 필요')&&!normal.UIText.includes('Codex 설치 필요'));const normalState=await control('status');assert.ok(normalState.entries.length>first.entries.length);result.conditions.push(normal);await snapshot('01-normal-genuine-cli-host.png');
   mark('denied');await quiet();const deniedState=await changePermission(permission,'deny',control);const denied=await inspectOnce('denied');const afterDenied=await control('status');assertCheckpoint(afterDenied,b.guest,0);assert.deepEqual(afterDenied.entries,deniedState.entries);const failed=denied.commands.find(r=>r.code===125&&r.stderr.includes(folderMessage));assert.ok(failed);assertDeniedObservation({...failed,UIText:denied.UIText,extraCLIEntries:afterDenied.entries.length-deniedState.entries.length,buttonEnabled:await inspect.isEnabled()});result.conditions.push(denied);await snapshot('02-real-linux-permission-denied-host.png');
   mark('restored');await changePermission(permission,'restore',control);const restored=await inspectOnce('restored');assert.ok(restored.UIText.includes(b.guest.genuineCLI.version)&&restored.UIText.includes('로그인 필요'));const restoredState=await control('status');assert.ok(restoredState.entries.length>afterDenied.entries.length);result.conditions.push(restored);await snapshot('03-same-folder-restored-host.png');

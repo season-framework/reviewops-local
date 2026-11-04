@@ -7,7 +7,9 @@ import path from 'node:path';
 import {run as ownerRun, verifyPin, verifyEvidencePin, readLiveClosure, materializeUIBinding} from '../scripts/diagnostics/installed-linux-permission-vm.mjs';
 import crypto from 'node:crypto';
 import {assertBinding as actualUIAdmission, BUILD as ACTUAL_UI_BUILD, FAILURE_TEXT_CAP, boundedFailureSummary,
-  readOwnedUIState, captureFailureEvidence} from '../scripts/diagnostics/installed-linux-permission-ui-v2.mjs';
+  readOwnedUIState, captureFailureEvidence, INSPECTION_IDLE_MS, INSPECTION_STAGE_LIMIT, INSPECTION_CONTROL_NAME,
+  appendInspectionStage, waitInspectionIdle, finishInspection, runInspectionOnce,
+  hasFreshFolderCommand} from '../scripts/diagnostics/installed-linux-permission-ui-v2.mjs';
 import {strictJSON, QMPFrames, QMPProtocol, OriginalVM, closure, uiCleanup, powerdownSafe, inspectSeedISO,
   publicKey, seedFiles, bootstrapMarker, witnessSource, materialized, assertParentAuthority, unboundRequest,
   hashBytes, CONTRACT, PRODUCT_SOURCE, R3_ROOT_SHA256, UI_SHA256, UI_CI_KEYS, uiChildEnvironment,
@@ -513,4 +515,80 @@ test('secondary evidence failures preserve the original error and scenario verdi
     'agent-tab', async () => {calls.push('failure-photo'); return {file: 'INERT-FIXTURE-NOT-A-PNG', sha256: 'a'.repeat(64)};}, () => calls.push('persist'));
   assert.deepEqual(calls, ['dom', 'failure-photo', 'persist']); assert.equal(accepted.error, original);
   assert.equal(accepted.failurePhotos.length, 1); assert.deepEqual(accepted.photos, []); assert.deepEqual(accepted.conditions, []);
+});
+
+test('actual inspection helper waits through the busy label, snapshots after idle and awaits fresh evidence before completion', async () => {
+  const events = [], leaf = '/home/owned/leaf', commands = [{command: leaf + ' old'}];
+  let now = 0, state = 0, clicks = 0, releaseFresh, freshEntered;
+  const entered = new Promise(resolve => {freshEntered = resolve;});
+  const clock = {now: () => now, pause: async () => {now += 50; state++; events.push('pause');}};
+  const control = {count: async () => 1, isEnabled: async () => state !== 0 && state !== 3,
+    innerText: async () => state === 2 || state === 4 ? '실행 환경 검사' : '검사 중',
+    click: async () => {assert.equal(state, 2); clicks++; state = 3; events.push('click');}};
+  const ops = {mark: value => events.push(value), observe: async () => {
+    assert.equal(state, 2); events.push('snapshot'); return {commands: [...commands]};
+  }, waitFresh: async before => {
+    events.push('fresh-entered'); assert.equal(hasFreshFolderCommand(before, {commands}, leaf), false);
+    freshEntered(); await new Promise(resolve => {releaseFresh = resolve;});
+    commands.push({command: leaf + ' new'}); assert.equal(hasFreshFolderCommand(before, {commands}, leaf), true);
+    state = 4; events.push('fresh-confirmed');
+  }, quiet: async () => {assert.equal(state, 4); events.push('quiet');}};
+  const pending = runInspectionOnce(control, ops, 'normal', clock);
+  await entered;
+  assert.equal(clicks, 1); assert.equal(events.includes('quiet'), false);
+  assert.ok(events.indexOf('normal:idle-before-observed') < events.indexOf('snapshot'));
+  assert.ok(events.indexOf('snapshot') < events.indexOf('normal:click-attempted'));
+  releaseFresh(); const before = await pending;
+  assert.equal(before.commands.length, 1); assert.equal(clicks, 1); assert.equal(now, 100);
+  assert.ok(events.indexOf('normal:click-returned') < events.indexOf('fresh-entered'));
+  assert.ok(events.indexOf('fresh-confirmed') < events.indexOf('normal:idle-after-observed'));
+  assert.ok(events.indexOf('normal:idle-after-observed') < events.indexOf('quiet'));
+});
+
+test('trust completion cannot use old folder evidence or an already enabled idle control as a completion substitute', async () => {
+  const beforeTrust = {commands: [{command: '/home/owned/leaf old'}]}, events = [];
+  const control = {count: async () => {events.push('control-read'); return 1;}, isEnabled: async () => true,
+    innerText: async () => '실행 환경 검사', click: async () => {throw new Error('No second trust or inspection click');}};
+  await assert.rejects(finishInspection(control, beforeTrust, {mark: value => events.push(value),
+    waitFresh: async before => {assert.equal(before, beforeTrust); assert.equal(hasFreshFolderCommand(before, beforeTrust, '/home/owned/leaf'), false); throw new Error('No post-trust folder command');},
+    quiet: async () => events.push('quiet')}, 'trust'), /No post-trust folder command/);
+  assert.deepEqual(events, []);
+});
+
+test('inspection control admission is exact and idle waiting has one finite budget without clicking or retrying', async () => {
+  assert.equal(INSPECTION_CONTROL_NAME.test('실행 환경 검사'), true); assert.equal(INSPECTION_CONTROL_NAME.test('검사 중'), true);
+  for (const name of ['검사 중 다른 작업', '다시 실행 환경 검사', '']) assert.equal(INSPECTION_CONTROL_NAME.test(name), false);
+  let now = 0, clicks = 0;
+  const control = {count: async () => 1, isEnabled: async () => true, innerText: async () => '검사 중', click: async () => {clicks++;}};
+  await assert.rejects(waitInspectionIdle(control, {now: () => now, pause: async () => {now += 10000;}}), /idle deadline/);
+  assert.equal(now, INSPECTION_IDLE_MS); assert.equal(clicks, 0);
+  await assert.rejects(waitInspectionIdle({...control, count: async () => 2}), /Exactly one original inspection control/);
+  assert.equal(clicks, 0);
+  for (const late of ['count', 'enabled', 'text']) {
+    let observedAt = 0; const calls = [];
+    const observe = role => {calls.push(role); observedAt += 100; if (role === late) observedAt = INSPECTION_IDLE_MS + 1;};
+    const lateControl = {count: async () => {observe('count'); return 1;},
+      isEnabled: async options => {assert.deepEqual(options, {timeout: INSPECTION_IDLE_MS - 100}); observe('enabled'); return true;},
+      innerText: async options => {assert.deepEqual(options, {timeout: INSPECTION_IDLE_MS - 200}); observe('text'); return '실행 환경 검사';},
+      click: async () => {clicks++;}};
+    await assert.rejects(waitInspectionIdle(lateControl, {now: () => observedAt,
+      pause: async () => {throw new Error('A late idle observation must fail before a further wait');}}), /idle deadline/);
+    assert.deepEqual(calls, ['count', 'enabled', 'text'].slice(0, ['count', 'enabled', 'text'].indexOf(late) + 1));
+    assert.equal(clicks, 0);
+  }
+});
+
+test('fixed inspection stage storage admits the 44-stage sequence and refuses overflow or an oversized failure phase', () => {
+  const stages = [];
+  // Thirteen existing boundaries, four initial, six trust, and seven per manual phase.
+  const phases = [...Array.from({length: 13}, (_, i) => 'existing-' + i),
+    'initial:idle-before-attempted', 'initial:idle-before-observed', 'initial:click-attempted', 'initial:click-returned',
+    'trust:before-snapshot', 'trust:click-attempted', 'trust:click-returned', 'trust:fresh-folder-observed', 'trust:idle-after-observed', 'trust:quiet-observed',
+    ...['normal', 'denied', 'restored'].flatMap(phase => ['idle-before-attempted', 'idle-before-observed', 'click-attempted', 'click-returned', 'fresh-folder-observed', 'idle-after-observed', 'quiet-observed'].map(stage => phase + ':' + stage))];
+  assert.equal(phases.length, 44);
+  for (const phase of phases) appendInspectionStage(stages, phase, 'INERT');
+  assert.equal(INSPECTION_STAGE_LIMIT, 48);
+  while (stages.length < INSPECTION_STAGE_LIMIT) appendInspectionStage(stages, 'bounded-fixture', 'INERT');
+  assert.throws(() => appendInspectionStage(stages, 'overflow', 'INERT'));
+  assert.throws(() => appendInspectionStage([], 'x'.repeat(49), 'INERT'));
 });
