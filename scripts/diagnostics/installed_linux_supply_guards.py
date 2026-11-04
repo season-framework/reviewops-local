@@ -17,6 +17,11 @@ QEMU_TAB = '9f86bc4693ee848160c6eaeff3a8c915e8ca27ea1e2c16f20bb45de4f51b09b7'
 IMAGE_SHA = '04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94'
 IMAGE_KEY = 'D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81'
 IMAGE_DIR = 'https://cloud-images.ubuntu.com/releases/noble/release-20261017/'
+UBUNTU_SIGNATURE_INPUTS = {
+    'key': {'bytes': 3325, 'sha256': '927138de292fac4d861105a052cf56e9c5921987da385c844d88f34d19b39ab0'},
+    'sums': {'bytes': 7843, 'sha256': '0449a33b78dddb301a3ce2b80398984bc3e1f7880e27b86a31e58bdcbd3d3816'},
+    'signature': {'bytes': 833, 'sha256': '68aae716a548e466e58afddd8b767c54c791f40f1d20d1d12e27c471edb535e5'},
+}
 APP_SHA = '2e48f3aa200cf0d0a232d3e70508398105009a7e2ec08aeb928b05460646bead'
 MAX_DOWNLOAD = 3 * 1024**3
 ALLOWED_ADDITIONS = {
@@ -42,6 +47,7 @@ SAFE_REASONS = frozenset({
     'oci-manifest-schema', 'oci-response-identity', 'oci-reference', 'oci-layer-seal',
     'oci-tab-seal', 'oci-json', 'oci-root-selection', 'oci-runtime-row',
     'oci-nested-name', 'oci-neutral-tag', 'oci-host-arch',
+    'gpg-availability', 'gpg-home', 'gpg-keyring', 'gpg-status', 'gpg-primary', 'ubuntu-checksum',
 })
 
 
@@ -59,7 +65,8 @@ def need(value, message):
 
 class FailureStage:
     NAMES = frozenset({'admission', 'source-guard', 'qemu-formula-source', 'qemu-manifests',
-                       'qemu-bottle-archives', 'ubuntu-signature', 'ubuntu-image',
+                       'qemu-bottle-archives', 'ubuntu-signature', 'ubuntu-key-dearmor',
+                       'ubuntu-signature-verify', 'ubuntu-image',
                        'vendor-archive', 'vendor-elf', 'complete'})
 
     def __init__(self):
@@ -223,6 +230,65 @@ def oci_runtime_set(rows, tabs):
             'nestedBuildDifferences': differences, 'nestedOmittedFields': omissions}
 
 
+def short_gpg_home(path, uid, mode, is_directory, is_symlink, expected_uid):
+    """Admit actual fresh-home observations, not an ambient user's GnuPG home."""
+    need(isinstance(path, str) and re.fullmatch('/private/tmp/r34g-[A-Za-z0-9_-]{8,32}', path)
+         and len((path + '/S.gpg-agent.browser').encode()) < 104
+         and type(uid) is int and uid == expected_uid and mode == 0o700
+         and is_directory is True and is_symlink is False, 'gpg-home')
+
+
+def remove_empty_gpg_home(closed, same_home, entries, rmdir):
+    """Only atomic empty-directory removal; never remove a home entry."""
+    if closed is not True or same_home is not True or not isinstance(entries, list) or entries:
+        return False, None
+    try:
+        rmdir()
+    except OSError as error:
+        return False, {'exceptionType': type(error).__name__, 'errno': error.errno}
+    return True, None
+
+
+def gpgv_status(raw, exit_code, expected_primary=IMAGE_KEY):
+    """Admit cryptographic validity under the pinned primary; not a revocation audit."""
+    need(type(exit_code) is int and exit_code == 0 and isinstance(raw, bytes), 'gpg-status')
+    try:
+        lines = raw.decode('utf-8').splitlines()
+    except UnicodeError as error:
+        raise SupplyGuardFailure('gpg-status') from error
+    statuses = []
+    for line in lines:
+        if not line:
+            continue
+        fields = line.split()
+        need(len(fields) >= 2 and fields[0] == '[GNUPG:]', 'gpg-status')
+        statuses.append((fields[1], fields[2:]))
+    bad = {'BADSIG', 'ERRSIG', 'NO_PUBKEY', 'NODATA', 'FAILURE', 'ERROR', 'EXPSIG',
+           'EXPKEYSIG', 'REVKEYSIG', 'KEYEXPIRED', 'KEYREVOKED', 'SIGEXPIRED', 'BADARMOR', 'UNEXPECTED'}
+    need(not any(code in bad for code, _ in statuses)
+         and sum(code == 'NEWSIG' for code, _ in statuses) <= 1
+         and sum(code == 'GOODSIG' for code, _ in statuses) <= 1, 'gpg-status')
+    valid = [fields for code, fields in statuses if code == 'VALIDSIG']
+    need(len(valid) == 1 and len(valid[0]) >= 9, 'gpg-status')
+    fields = valid[0]
+    fingerprint = lambda value: isinstance(value, str) and re.fullmatch('[0-9A-F]{40}(?:[0-9A-F]{24})?', value)
+    need(fingerprint(fields[0]), 'gpg-primary')
+    primary = fields[9] if len(fields) >= 10 else fields[0]
+    need(fingerprint(primary) and primary == expected_primary, 'gpg-primary')
+    return {'signingFingerprint': fields[0], 'primaryFingerprint': primary,
+            'primaryFieldPresent': len(fields) >= 10, 'validSignatureCount': 1,
+            'emittedStatusCodes': [code for code, _ in statuses], 'revocationOrExpiryAuditClaim': False}
+
+
+def signed_image_checksum(text, name, expected_sha=IMAGE_SHA):
+    try:
+        actual = checksum_row(text, name)
+    except ValueError as error:
+        raise SupplyGuardFailure('ubuntu-checksum') from error
+    need(actual == expected_sha, 'ubuntu-checksum')
+    return actual
+
+
 def digest(value):
     need(isinstance(value, str) and re.fullmatch('[a-f0-9]{64}', value), 'A full SHA256 is required')
     return value
@@ -273,7 +339,8 @@ def admit_request(request, approval, request_bytes, env):
     oci_request(qemu)
     image = request.get('ubuntu', {})
     need(image == {'directory': IMAGE_DIR, 'name': 'ubuntu-24.04-server-cloudimg-amd64.img',
-                   'sha256': IMAGE_SHA, 'signingFingerprint': IMAGE_KEY}, 'Dated Ubuntu input differs')
+                   'sha256': IMAGE_SHA, 'signingFingerprint': IMAGE_KEY,
+                   'signatureInputs': UBUNTU_SIGNATURE_INPUTS}, 'Dated Ubuntu input differs')
     vendor = request.get('vendor', {})
     tag = vendor.get('tag')
     need(tag == 'rust-v0.166.0', 'Reviewed immutable vendor tag differs')

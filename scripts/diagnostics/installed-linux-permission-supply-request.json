@@ -419,7 +419,21 @@
     "directory": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/",
     "name": "ubuntu-24.04-server-cloudimg-amd64.img",
     "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
-    "signingFingerprint": "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81"
+    "signingFingerprint": "D2EB44626FDDC30B513D5BB71A5D6C4C7DB87C81",
+    "signatureInputs": {
+      "key": {
+        "bytes": 3325,
+        "sha256": "927138de292fac4d861105a052cf56e9c5921987da385c844d88f34d19b39ab0"
+      },
+      "sums": {
+        "bytes": 7843,
+        "sha256": "0449a33b78dddb301a3ce2b80398984bc3e1f7880e27b86a31e58bdcbd3d3816"
+      },
+      "signature": {
+        "bytes": 833,
+        "sha256": "68aae716a548e466e58afddd8b767c54c791f40f1d20d1d12e27c471edb535e5"
+      }
+    }
   },
   "vendor": {
     "tag": "rust-v0.166.0",

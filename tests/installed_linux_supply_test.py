@@ -1,5 +1,6 @@
 """Inert supply admission tests: no subprocess, network, binary or application execution."""
 import copy
+import errno
 import hashlib
 import json
 from pathlib import Path
@@ -9,10 +10,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/diagnostics'))
 from installed_linux_supply_guards import (
-    BASE, BRANCH, FORMULA_COMMIT, IMAGE_SHA, FailureStage, Ownership, QEMU_BOTTLE, REPOSITORY,
+    BASE, BRANCH, FORMULA_COMMIT, IMAGE_KEY, IMAGE_SHA, FailureStage, Ownership, QEMU_BOTTLE, REPOSITORY,
     SupplyGuardFailure,
     admit_request, archive_name, arm64_macho, bottle, checksum_row, elf_x86_64, initial_url, qcow_base,
     oci_manifest, oci_request, oci_row, oci_runtime_set,
+    gpgv_status, remove_empty_gpg_home, short_gpg_home, signed_image_checksum,
 )
 
 
@@ -304,6 +306,100 @@ class OCIMetadata(unittest.TestCase):
         with self.assertRaisesRegex(SupplyGuardFailure, 'supply-stage'):
             stage.enter(secret)
         self.assertEqual(stage.name, 'qemu-manifests')
+
+
+class UbuntuSignatures(unittest.TestCase):
+    def status(self, signer=IMAGE_KEY, primary=IMAGE_KEY):
+        fields = [signer, '2026-10-17', '1792195200', '0', '4', '0', '1', '10', '00']
+        if primary is not None:
+            fields.append(primary)
+        return ('[GNUPG:] NEWSIG\n[GNUPG:] GOODSIG 1A5D6C4C7DB87C81 UEC%20Image\n'
+                '[GNUPG:] VALIDSIG ' + ' '.join(fields) + '\n').encode()
+
+    def test_exact_primary_or_subkey_with_expected_primary_status_is_admitted(self):
+        for signer in [IMAGE_KEY, 'A' * 40]:
+            result = gpgv_status(self.status(signer), 0)
+            self.assertEqual(result['signingFingerprint'], signer)
+            self.assertEqual(result['primaryFingerprint'], IMAGE_KEY)
+            self.assertTrue(result['primaryFieldPresent'])
+            self.assertFalse(result['revocationOrExpiryAuditClaim'])
+
+    def test_missing_primary_is_allowed_only_when_signer_itself_is_the_expected_primary(self):
+        result = gpgv_status(self.status(primary=None), 0)
+        self.assertFalse(result['primaryFieldPresent'])
+        with self.assertRaisesRegex(SupplyGuardFailure, 'gpg-primary'):
+            gpgv_status(self.status(signer='A' * 40, primary=None), 0)
+        with self.assertRaisesRegex(SupplyGuardFailure, 'gpg-primary'):
+            gpgv_status(self.status(primary='B' * 40), 0)
+
+    def test_nonzero_exit_or_observed_bad_status_is_not_overridden_by_validsig(self):
+        for code in [1, 2, None, False]:
+            with self.subTest(exit=code), self.assertRaisesRegex(SupplyGuardFailure, 'gpg-status'):
+                gpgv_status(self.status(), code)
+        for keyword in ['BADSIG', 'ERRSIG', 'NO_PUBKEY', 'NODATA', 'FAILURE', 'ERROR', 'EXPSIG',
+                        'EXPKEYSIG', 'REVKEYSIG', 'KEYEXPIRED', 'SIGEXPIRED']:
+            with self.subTest(status=keyword), self.assertRaisesRegex(SupplyGuardFailure, 'gpg-status'):
+                gpgv_status(self.status() + ('[GNUPG:] ' + keyword + ' ignored\n').encode(), 0)
+
+    def test_duplicate_valid_or_signature_contexts_are_refused(self):
+        for raw in [self.status() * 2, self.status() + b'[GNUPG:] NEWSIG\n',
+                    self.status() + b'[GNUPG:] GOODSIG 1234 Other\n']:
+            with self.assertRaisesRegex(SupplyGuardFailure, 'gpg-status'):
+                gpgv_status(raw, 0)
+
+    def test_human_output_missing_validsig_and_malformed_fingerprint_are_not_identity_proof(self):
+        for raw in [b'', b'Good signature from UEC Image\n', b'[GNUPG:] GOODSIG 1234 User\n',
+                    b'[GNUPG:] VALIDSIG too few fields\n', self.status(signer='1234'), b'\xff']:
+            with self.assertRaises(SupplyGuardFailure):
+                gpgv_status(raw, 0)
+        result = gpgv_status(self.status() + b'[GNUPG:] FUTURE_INFO ignored\n', 0)
+        self.assertEqual(result['primaryFingerprint'], IMAGE_KEY)
+
+    def test_image_transfer_requires_one_exact_signed_checksum_row(self):
+        name = 'ubuntu-24.04-server-cloudimg-amd64.img'
+        text = IMAGE_SHA + ' *' + name + '\n'
+        self.assertEqual(signed_image_checksum(text, name), IMAGE_SHA)
+        for changed in [text + text, '0' * 64 + ' *' + name + '\n', text.replace('amd64', 'arm64')]:
+            with self.assertRaisesRegex(SupplyGuardFailure, 'ubuntu-checksum'):
+                signed_image_checksum(changed, name)
+
+    def test_only_a_short_fresh_owned_private_home_is_admitted(self):
+        values = ['/private/tmp/r34g-abcd1234', 501, 0o700, True, False, 501]
+        short_gpg_home(*values)
+        for index, changed in [(0, '/Users/runner/work/long-output/gnupg'), (1, 502),
+                               (2, 0o755), (3, False), (4, True)]:
+            arguments = values.copy()
+            arguments[index] = changed
+            with self.subTest(index=index), self.assertRaisesRegex(SupplyGuardFailure, 'gpg-home'):
+                short_gpg_home(*arguments)
+
+    def test_cleanup_retains_late_entries_and_never_removes_children(self):
+        names, calls = [], []
+        def late_entry_before_atomic_rmdir():
+            calls.append('rmdir')
+            names.append('S.gpg-agent')
+            raise OSError(errno.ENOTEMPTY, 'Late entry must remain retained')
+        removed, error = remove_empty_gpg_home(True, True, [], late_entry_before_atomic_rmdir)
+        self.assertFalse(removed)
+        self.assertEqual(error['errno'], errno.ENOTEMPTY)
+        self.assertEqual(names, ['S.gpg-agent'])
+        self.assertEqual(calls, ['rmdir'])
+        for closed, same, entries in [(False, True, []), (True, False, []), (True, True, [{'name': 'unexpected'}])]:
+            self.assertEqual(remove_empty_gpg_home(closed, same, entries, late_entry_before_atomic_rmdir), (False, None))
+        self.assertEqual(calls, ['rmdir'])
+        self.assertEqual(remove_empty_gpg_home(True, True, [], lambda: calls.append('empty-rmdir')), (True, None))
+        self.assertEqual(calls, ['rmdir', 'empty-rmdir'])
+
+    def test_three_signature_inputs_are_exactly_bound_in_the_prepare_request(self):
+        request = json.loads((ROOT / 'scripts/diagnostics/installed-linux-permission-supply-request.json').read_text())
+        self.assertEqual(request['ubuntu']['signatureInputs']['key']['bytes'], 3325)
+        case = SupplyAdmission()
+        case.setUp()
+        for name in ['key', 'sums', 'signature']:
+            changed = copy.deepcopy(case.request)
+            changed['ubuntu']['signatureInputs'][name]['sha256'] = '0' * 64
+            with self.subTest(input=name), self.assertRaises(SupplyGuardFailure):
+                case.admit(changed)
 
 
 class OriginalOwnership(unittest.TestCase):

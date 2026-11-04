@@ -9,9 +9,11 @@ import os
 from pathlib import Path
 import selectors
 import shutil
+import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -26,8 +28,9 @@ _spec.loader.exec_module(_guards)
 from installed_linux_supply_guards import (
     ALLOWED_ADDITIONS, BASE, FORMULA_COMMIT, IMAGE_DIR, IMAGE_KEY, IMAGE_SHA,
     MAX_DOWNLOAD, FailureStage, Ownership, QEMU_BOTTLE, SupplyGuardFailure,
-    admit_request, archive_name, arm64_macho, checksum_row, elf_x86_64, initial_url,
-    need, oci_manifest, oci_request, oci_runtime_set, qcow_base,
+    admit_request, archive_name, arm64_macho, elf_x86_64, initial_url,
+    gpgv_status, need, oci_manifest, oci_request, oci_runtime_set, qcow_base,
+    remove_empty_gpg_home, short_gpg_home, signed_image_checksum,
 )
 
 
@@ -368,45 +371,79 @@ def collect_bottles(request, transport, output, stage):
             'nonSystemMachOLoaderAcceptance': None, 'relocationAndCapabilityAcceptance': None, 'sourceBuilds': 0}
 
 
-def collect_image(request, transport, tools, output, gpg, stage):
+def collect_ubuntu_signature(request, transport, tools, output, gpg, gpgv, stage):
+    """Small public-data verification before any large supply transfer."""
     stage.enter('ubuntu-signature')
-    sums = transport.get('SHA256SUMS', IMAGE_DIR + 'SHA256SUMS', {'cloud-images.ubuntu.com'}, 32768)
-    signature = transport.get('SHA256SUMS.gpg', IMAGE_DIR + 'SHA256SUMS.gpg', {'cloud-images.ubuntu.com'}, 8192)
+    expected = request['ubuntu']['signatureInputs']
+    sums = transport.get('SHA256SUMS', IMAGE_DIR + 'SHA256SUMS', {'cloud-images.ubuntu.com'},
+                         expected['sums']['bytes'], expected['sums']['sha256'], expected['sums']['bytes'])
+    signature = transport.get('SHA256SUMS.gpg', IMAGE_DIR + 'SHA256SUMS.gpg', {'cloud-images.ubuntu.com'},
+                              expected['signature']['bytes'], expected['signature']['sha256'], expected['signature']['bytes'])
     # A fixed key lookup, not a GPG network fetch. The fingerprint is checked locally.
     key_url = 'https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x' + IMAGE_KEY
-    key = transport.get('ubuntu-image-key.asc', key_url, {'keyserver.ubuntu.com'}, 65536, secret=False)
+    key = transport.get('ubuntu-image-key.asc', key_url, {'keyserver.ubuntu.com'},
+                        expected['key']['bytes'], expected['key']['sha256'], expected['key']['bytes'])
     key_bytes = key.read_bytes()
     need(key_bytes.startswith(b'-----BEGIN PGP PUBLIC KEY BLOCK-----') and b'PRIVATE KEY' not in key_bytes,
          'Only a public Ubuntu signing key is admitted')
-    gpg_home = output / 'gnupg'
-    gpg_home.mkdir(mode=0o700)
-    options = [str(gpg), '--no-options', '--homedir', str(gpg_home), '--batch', '--no-autostart',
-               '--no-auto-key-retrieve', '--no-auto-key-import']
-    tools.run('gpg-import-public-key', options + ['--import', str(key)])
-    listed = tools.run('gpg-public-fingerprint', options + ['--with-colons', '--fingerprint', '--list-keys'])
-    primary = []
-    want_fingerprint = False
-    for line in listed.decode('utf-8').splitlines():
-        fields = line.split(':')
-        if fields[0] == 'pub':
-            want_fingerprint = True
-        elif fields[0] == 'fpr' and want_fingerprint:
-            primary.append(fields[9])
-            want_fingerprint = False
-    need(primary == [IMAGE_KEY], 'Ubuntu primary key fingerprint differs')
-    status = tools.run('gpg-verify-checksums', options + ['--status-fd', '1', '--verify', str(signature), str(sums)])
-    valid = [line.split()[2] for line in status.decode('utf-8').splitlines() if line.startswith('[GNUPG:] VALIDSIG ')]
-    need(valid == [IMAGE_KEY] and checksum_row(sums.read_text(), request['ubuntu']['name']) == IMAGE_SHA,
-         'Signed Ubuntu checksum differs')
+    gpg_home = Path(tempfile.mkdtemp(prefix='r34g-', dir='/private/tmp')).resolve(strict=True)
+    observation_path = output / 'gpg-home-observation.json'
+    info = gpg_home.lstat()
+    short_gpg_home(str(gpg_home), info.st_uid, stat.S_IMODE(info.st_mode), stat.S_ISDIR(info.st_mode),
+                   stat.S_ISLNK(info.st_mode), os.getuid())
+    home_identity = (info.st_dev, info.st_ino)
+    keyring = output / 'ubuntu-image-public-keyring.gpg'
+    need(not keyring.exists() and not keyring.is_symlink(), 'gpg-keyring')
+    attempted, verified = False, None
+    try:
+        stage.enter('ubuntu-key-dearmor')
+        attempted = True
+        tools.run('gpg-dearmor-public-key', [str(gpg), '--no-options', '--homedir', str(gpg_home),
+                  '--batch', '--no-autostart', '--no-auto-key-retrieve', '--no-auto-key-import',
+                  '--no-random-seed-file',
+                  '--dearmor', '--output', str(keyring), str(key)])
+        info = keyring.lstat()
+        need(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid() and 0 < info.st_size <= 65536,
+             'gpg-keyring')
+        stage.enter('ubuntu-signature-verify')
+        status = tools.run('gpgv-verify-checksums', [str(gpgv), '--homedir', str(gpg_home),
+                           '--keyring', str(keyring), '--status-fd', '1', str(signature), str(sums)])
+        verified = gpgv_status(status, tools.receipts[-1]['wait'])
+        signed_image_checksum(sums.read_text(), request['ubuntu']['name'])
+    finally:
+        # No agent cleanup command: retain an unknown lifetime or unexpected socket.
+        closed = not attempted or bool(tools.ownership.current and tools.ownership.current['closed'])
+        current_home = gpg_home.lstat()
+        same_home = (current_home.st_dev, current_home.st_ino) == home_identity and stat.S_ISDIR(current_home.st_mode)
+        same_home = same_home and current_home.st_uid == os.getuid() and stat.S_IMODE(current_home.st_mode) == 0o700
+        entries = []
+        for path in sorted(gpg_home.iterdir()) if same_home else []:
+            info = path.lstat()
+            entries.append({'name': path.name, 'mode': stat.S_IMODE(info.st_mode),
+                            'type': stat.S_IFMT(info.st_mode), 'ownerUID': info.st_uid})
+        removed, cleanup_error = remove_empty_gpg_home(closed, same_home, entries, gpg_home.rmdir)
+        write(observation_path, {'path': str(gpg_home), 'createdFresh': True, 'ownerUID': os.getuid(),
+              'mode': 0o700, 'sameOwnedDirectoryAfterOriginals': same_home,
+              'entriesAfterOriginals': entries, 'originalAttemptClosed': closed,
+              'removedOwnedHome': removed, 'atomicRmdirError': cleanup_error,
+              'unrelatedAgentsOrInternalChildrenClaim': False})
+        need(closed and removed, 'gpg-home')
+    return {**verified, 'checksumPin': pin(sums), 'signaturePin': pin(signature), 'keyPin': pin(key),
+            'publicKeyringPin': pin(keyring), 'gpgExecutablePin': pin(gpg), 'gpgvExecutablePin': pin(gpgv),
+            'homeObservationPin': pin(observation_path), 'signatureVerified': True,
+            'signatureBeforeLargeArchives': True, 'explicitAgentLaunchCommandInvoked': False}
+
+
+def collect_image(request, transport, output, stage, verified):
+    need(verified.get('signatureVerified') is True and verified.get('primaryFingerprint') == IMAGE_KEY,
+         'ubuntu-checksum')
     stage.enter('ubuntu-image')
     image = transport.get('ubuntu-amd64.img', IMAGE_DIR + request['ubuntu']['name'],
                           {'cloud-images.ubuntu.com'}, 1024**3, expected_sha=IMAGE_SHA)
     with image.open('rb') as stream:
         header = stream.read(104)
     qcow_base(header)
-    return {'imagePin': pin(image), 'checksumPin': pin(sums), 'signaturePin': pin(signature),
-            'keyPin': pin(key), 'signingFingerprint': IMAGE_KEY, 'gpgExecutablePin': pin(gpg),
-            'signatureVerified': True, 'guestBooted': False}
+    return {**verified, 'imagePin': pin(image), 'guestBooted': False}
 
 
 def collect_vendor(request, transport, output, stage):
@@ -457,8 +494,12 @@ def main():
     output = args.output.absolute()
     need(not output.exists() and output.parent.resolve(strict=True) == root / 'test-results', 'Fresh diagnostic output required')
     gpg_value = shutil.which('gpg', path='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')
-    need(gpg_value is not None, 'A preinstalled GPG verifier is required; no package install fallback')
+    need(gpg_value is not None, 'gpg-availability')
     gpg = Path(gpg_value).resolve(strict=True)
+    gpgv_candidate = gpg.with_name('gpgv')
+    need(gpgv_candidate.is_file() and os.access(gpgv_candidate, os.X_OK), 'gpg-availability')
+    gpgv = gpgv_candidate.resolve(strict=True)
+    need(gpgv.parent == gpg.parent, 'gpg-availability')
     output.mkdir(mode=0o700)
     private = output / 'private'
     private.mkdir(mode=0o700)
@@ -485,8 +526,9 @@ def main():
              and set(current) - set(old) == set(request['allowedAdditions']),
              'Only the exact declared diagnostic additions are allowed')
         result['sourceGuard'] = {'baseFiles': 429, 'oldFilesUnchanged': True, 'addedPaths': request['allowedAdditions']}
+        result['ubuntuSignature'] = collect_ubuntu_signature(request, transport, tools, output, gpg, gpgv, stage)
         result['qemu'] = collect_bottles(request, transport, output, stage)
-        result['ubuntu'] = collect_image(request, transport, tools, output, gpg, stage)
+        result['ubuntu'] = collect_image(request, transport, output, stage, result['ubuntuSignature'])
         result['vendor'] = collect_vendor(request, transport, output, stage)
         stage.enter('complete')
         result['ok'] = True
