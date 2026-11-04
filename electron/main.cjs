@@ -1210,31 +1210,45 @@ async function dispatch(action, payload = {}, originalFrame) {
   if (action === 'reviewCategory.save') return store.saveReviewCategory(payload);
   if (action === 'review.copy') {
     const {copySource,copyReviewRecord}=require('./review-copy.cjs');
-    const {source,input,target}=store.transaction(()=>{
+    const {files,input,target}=store.transaction(()=>{
       assertWriteFrame(originalFrame);
       const source=copySource(store,payload),input=Object.freeze({reviewId:source.source.id,projectId:source.destination.id,
         attachmentIds:Object.freeze(source.attachments.map(file=>file.id))});
       const scope=Object.assign(Object.create(null),{reviewId:source.source.id,projectId:source.source.projectId});
-      return {source,input,target:store.captureAttachmentWriteAdmission(originalFrame.admission,scope)};
+      const files=Object.freeze(source.attachments.map(file=>Object.freeze({...file})));
+      return {files,input,target:store.captureAttachmentWriteAdmission(originalFrame.admission,scope)};
     });
     const assertTarget=()=>{
-      try{store.assertAttachmentWriteAdmission(target);}
+      try{
+        store.assertAttachmentWriteAdmission(target);
+        for(const file of files){
+          let current;
+          try{current=store.get('attachments',file.id);}
+          catch(error){
+            if(error.code!=='NOT_FOUND')throw error;
+            throw Object.assign(new Error('A selected attachment was removed.',{cause:error}),{code:'REVISION_CONFLICT'});
+          }
+          const keys=Object.keys(file);
+          if(current.reviewId!==input.reviewId||keys.length!==Object.keys(current).length||keys.some(key=>current[key]!==file[key]))
+            throw Object.assign(new Error('Selected attachment metadata changed.'),{code:'REVISION_CONFLICT'});
+        }
+      }
       catch(error){
-        if(error.code==='STALE_REVIEW')throw Object.assign(new Error('리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.',{cause:error}),{code:error.code});
+        if(['STALE_REVIEW','REVISION_CONFLICT'].includes(error.code))throw Object.assign(new Error('리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.',{cause:error}),{code:error.code});
         throw error;
       }
     };
     const assertSource=()=>commitWriteFrame(originalFrame,assertTarget);
     const tokens=[];let total=0;
     try {
-      for(const file of source.attachments){
+      for(const file of files){
         const bytes=await readAttachment(file);assertSource();
         const token=crypto.randomUUID();
         total+=bytes.length;if(total>200*1024*1024)throw new Error('복사할 첨부 파일은 합계 200 MB까지 지원합니다.');
         stagedAttachments.set(token,{token,bytes,ownerWindow:getRequestWindow(),expires:Date.now()+300000,metadata:{name:file.name,mimeType:file.mimeType,size:bytes.length,sha256:digest(bytes),storageName:crypto.randomUUID()+path.extname(file.storageName)}});
         tokens.push(token);
       }
-      // Keep the original frame and source birth through file preparation and SQL.
+      // Keep the original frame, source birth and selected rows through SQL.
       assertSource();
       return (await saveWithAttachments(tokens,()=>commitWriteFrame(originalFrame,()=>{
         assertTarget();return copyReviewRecord(store,input);
