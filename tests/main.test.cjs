@@ -993,6 +993,173 @@ async function heldReviewCopy(t) {
   };
 }
 
+test('review.copy refuses selected attachment replacement without mixing copied bytes and source provenance',async t=>{
+  const plain=value=>JSON.parse(JSON.stringify(value));
+  const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+  const delta=(before,after)=>({
+    reviews:after.graph.reviews.length-before.graph.reviews.length,
+    activities:after.graph.activities.length-before.graph.activities.length,
+    attachments:after.graph.attachments.length-before.graph.attachments.length,
+    storedFiles:after.files.length-before.files.length,
+    notices:after.notices-before.notices
+  });
+  const normal=await heldReviewCopy(t);let normalObservation;
+  try{
+    const source=normal.h.state.liveStore.get('reviews',normal.source.review.id);
+    const attachment=normal.h.state.liveStore.get('attachments',normal.original.id),bytes=fs.readFileSync(normal.originalPath);
+    await normal.hold();
+    const before=normal.observe(),result=plain(await normal.settle()),after=normal.observe();
+    assert.equal(result.ok,true);
+    const copied=after.graph.attachments.filter(row=>row.reviewId===result.data.id);assert.equal(copied.length,1);
+    const copiedBytes=fs.readFileSync(path.join(normal.h.dataPath,'attachments',copied[0].storageName));
+    assert.deepEqual(copiedBytes,bytes);assert.equal(copied[0].sha256,hash(bytes));
+    assert.equal(result.data.evidence.copiedFrom.attachments[0].sha256,hash(copiedBytes));
+    assert.deepEqual(normal.h.state.liveStore.get('reviews',source.id),source);
+    assert.deepEqual(normal.h.state.liveStore.get('attachments',attachment.id),attachment);
+    assert.deepEqual(fs.readFileSync(normal.originalPath),bytes);
+    assert.deepEqual(delta(before,after),{reviews:1,activities:3,attachments:1,storedFiles:1,notices:1});
+    normalObservation={result,before,after,deltas:delta(before,after),sourcePreserved:true,originalBytesPreserved:true,provenanceMatchesCopiedBytes:true};
+  }finally{await normal.close();}
+
+  const f=await heldReviewCopy(t),store=f.h.state.liveStore,readFile=require('node:fs/promises').readFile;
+  const sourceBefore=store.get('reviews',f.source.review.id),attachmentBefore=store.get('attachments',f.original.id);
+  assert.equal(attachmentBefore.activityId,null);
+  const bytesA=fs.readFileSync(f.originalPath),bytesB=Buffer.from('Valid replacement attachment B with different bytes');
+  const storageB=crypto.randomUUID()+'.txt',pathB=path.join(f.h.dataPath,'attachments',storageB);
+  fs.writeFileSync(pathB,bytesB,{flag:'wx'});assert.notEqual(hash(bytesA),hash(bytesB));
+  const controls=()=>({epoch:store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch,
+    sourceRevision:{...store.db.prepare('SELECT * FROM review_revisions WHERE reviewId=?').get(sourceBefore.id)}});
+  const originalControls=controls();
+  let replacement,before,after,beforeSource,afterSource,beforeAttachment,afterAttachment,beforeControls,afterControls,result,setupError,cleanupError;
+  try{
+    await f.hold();
+    // A supported synchronous Store seam replaces only the selected row. Both
+    // real private files remain intact; queued GUI interleaving is not claimed.
+    store.transaction(()=>{
+      store.deleteAttachment(attachmentBefore.id);
+      replacement=store.addAttachment({id:attachmentBefore.id,reviewId:sourceBefore.id,name:'Replacement source B.txt',
+        mimeType:'text/plain',storageName:storageB,size:bytesB.length,sha256:hash(bytesB)});
+    });
+    beforeControls=controls();
+    assert.equal(beforeControls.epoch,originalControls.epoch);
+    assert.equal(beforeControls.sourceRevision.generation,originalControls.sourceRevision.generation);
+    assert.equal(beforeControls.sourceRevision.deleted,0);
+    beforeSource=store.get('reviews',sourceBefore.id);beforeAttachment=store.get('attachments',attachmentBefore.id);
+    // addAttachment legitimately updates updatedAt; all other source fields stay.
+    const stable=row=>Object.fromEntries(Object.entries(row).filter(([key])=>key!=='updatedAt'));
+    assert.deepEqual(stable(beforeSource),stable(sourceBefore));
+    assert.equal(beforeAttachment.id,attachmentBefore.id);assert.equal(beforeAttachment.reviewId,sourceBefore.id);
+    assert.equal(beforeAttachment.sha256,hash(fs.readFileSync(pathB)));assert.deepEqual(fs.readFileSync(f.originalPath),bytesA);
+    assert.deepEqual(plain(await f.client.success('window.context')),f.context);
+    before=f.observe();result=plain(await f.settle());after=f.observe();afterControls=controls();
+    afterSource=store.get('reviews',sourceBefore.id);afterAttachment=store.get('attachments',attachmentBefore.id);
+  }catch(error){setupError={name:error.name,message:error.message,code:error.code,stack:error.stack};}
+  finally{try{await f.close();}catch(error){cleanupError={name:error.name,message:error.message,code:error.code,stack:error.stack};}}
+  const copiedRows=result?.ok&&after?after.graph.attachments.filter(row=>row.reviewId===result.data.id):[];
+  const copiedFiles=copiedRows.map(row=>{
+    const bytes=fs.readFileSync(path.join(f.h.dataPath,'attachments',row.storageName));
+    return {metadata:row,actualBytesBase64:bytes.toString('base64'),actualSHA256:hash(bytes)};
+  });
+  const copiedFrom=result?.ok?result.data.evidence.copiedFrom:null;
+  t.diagnostic('review-copy-attachment-provenance-baseline '+JSON.stringify({normal:normalObservation,
+    sourceBefore,attachmentBefore,replacement:replacement||null,beforeSource:beforeSource||null,afterSource:afterSource||null,
+    beforeAttachment:beforeAttachment||null,afterAttachment:afterAttachment||null,originalControls,beforeControls:beforeControls||null,afterControls:afterControls||null,
+    bytesA:{base64:bytesA.toString('base64'),sha256:hash(bytesA)},bytesB:{base64:bytesB.toString('base64'),sha256:hash(bytesB)},
+    result:result||null,copiedFrom,copiedFiles,before:before||null,after:after||null,deltas:before&&after?delta(before,after):null,
+    provenanceMatchesCopiedBytes:copiedFiles.length===1&&copiedFrom?copiedFrom.attachments[0].sha256===copiedFiles[0].actualSHA256:null,
+    readFunctionRestored:require('node:fs/promises').readFile===readFile,setupError:setupError||null,cleanupError:cleanupError||null,
+    scope:'Controlled production main/Store with one held A read and supported same-ID attachment-row replacement; no review rebirth, GUI/native race or remote writer'}));
+  assert.equal(setupError,undefined,'The same-source attachment replacement and original read must settle before checking the copy');
+  assert.equal(cleanupError,undefined);
+  assert.equal(result.ok,false,'The original copy must refuse changed selected material instead of mixing copied bytes and current source provenance');
+  assert.deepEqual(after,before);assert.deepEqual(afterControls,beforeControls);
+  assert.deepEqual(afterSource,beforeSource);assert.deepEqual(afterAttachment,beforeAttachment);
+  assert.deepEqual(fs.readFileSync(f.originalPath),bytesA);assert.deepEqual(fs.readFileSync(pathB),bytesB);
+});
+
+for(const change of ['removed','moved to another review']) {
+  test(`review.copy refuses a selected attachment ${change} during its read`,async t=>{
+    const f=await heldReviewCopy(t),store=f.h.state.liveStore,bytes=fs.readFileSync(f.originalPath);
+    const other=change==='moved to another review'?store.saveReview({projectId:f.source.project.id,serviceId:f.source.service.id,title:'Other attachment owner'}):null;
+    const generation=()=>store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(f.source.review.id).generation;
+    const originalGeneration=generation();
+    try{
+      await f.hold();
+      if(other)store.db.prepare('UPDATE attachments SET reviewId=? WHERE id=?').run(other.id,f.original.id);
+      else store.deleteAttachment(f.original.id);
+      assert.equal(generation(),originalGeneration);
+      const before=f.observe(),result=await f.settle();
+      assert.equal(result.ok,false);assert.equal(result.error.code,'REVISION_CONFLICT');
+      assert.deepEqual(f.observe(),before);assert.deepEqual(fs.readFileSync(f.originalPath),bytes);
+    }finally{await f.close();}
+  });
+}
+
+test('review.copy permits replacement of an unselected attachment during its selected read',async t=>{
+  const f=await heldReviewCopy(t),store=f.h.state.liveStore,selectedBytes=fs.readFileSync(f.originalPath);
+  const bytesC=Buffer.from('Unselected original C'),bytesD=Buffer.from('Unselected current D');
+  const storageC=crypto.randomUUID()+'.txt',storageD=crypto.randomUUID()+'.txt';
+  const pathC=path.join(f.h.dataPath,'attachments',storageC),pathD=path.join(f.h.dataPath,'attachments',storageD);
+  fs.writeFileSync(pathC,bytesC);fs.writeFileSync(pathD,bytesD);
+  const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+  const unselected=store.addAttachment({reviewId:f.source.review.id,name:'Unselected C.txt',storageName:storageC,size:bytesC.length,sha256:digest(bytesC)});
+  try{
+    await f.hold();
+    const replacement=store.transaction(()=>{
+      store.deleteAttachment(unselected.id);
+      return store.addAttachment({id:unselected.id,reviewId:f.source.review.id,name:'Unselected D.txt',storageName:storageD,size:bytesD.length,sha256:digest(bytesD)});
+    });
+    const currentSource=store.get('reviews',f.source.review.id),before=f.observe(),result=await f.settle(),after=f.observe();
+    assert.equal(result.ok,true);assert.deepEqual(store.get('attachments',unselected.id),replacement);
+    assert.deepEqual(store.get('reviews',f.source.review.id),currentSource);
+    const copied=after.graph.attachments.filter(row=>row.reviewId===result.data.id);assert.equal(copied.length,1);
+    assert.equal(copied[0].sha256,f.original.sha256);assert.equal(result.data.evidence.copiedFrom.attachments[0].sha256,f.original.sha256);
+    assert.equal(after.notices,before.notices+1);
+    assert.deepEqual(fs.readFileSync(path.join(f.h.dataPath,'attachments',copied[0].storageName)),selectedBytes);
+    assert.deepEqual(fs.readFileSync(f.originalPath),selectedBytes);assert.deepEqual(fs.readFileSync(pathC),bytesC);assert.deepEqual(fs.readFileSync(pathD),bytesD);
+  }finally{await f.close();}
+});
+
+test('review.copy refuses selected attachment replacement after physical publication and before SQL',async t=>{
+  let armed=false,published,expected,expectedRevisions,sourceReviewId,originalAttachment,originalPath,originalBytes,pathB,bytesB,storageB;
+  const digest=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+  const h=await harness(t,{afterMainAtomicWrite({file,store}){
+    if(!armed||path.dirname(file)!==path.join(h.dataPath,'attachments'))return;
+    armed=false;published=file;assert.notEqual(file,originalPath);assert.notEqual(file,pathB);
+    assert.deepEqual(fs.readFileSync(file),originalBytes);
+    store.transaction(()=>{
+      store.deleteAttachment(originalAttachment.id);
+      store.addAttachment({id:originalAttachment.id,reviewId:sourceReviewId,name:'Current source B at final commit.txt',
+        mimeType:'text/plain',storageName:storageB,size:bytesB.length,sha256:digest(bytesB)});
+    });
+    expected=store.exportData();expectedRevisions=store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all().map(row=>({...row}));
+  }}),source=await seed(h),destination=await seed(h),original=await addFile(h,source.review.id,'Original A at attachment commit');
+  const store=h.state.liveStore,epoch=store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch;
+  const generation=store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(source.review.id).generation;
+  sourceReviewId=source.review.id;originalAttachment=original;originalPath=path.join(h.dataPath,'attachments',original.storageName);originalBytes=fs.readFileSync(originalPath);
+  bytesB=Buffer.from('Current valid source B at attachment commit');storageB=crypto.randomUUID()+'.txt';pathB=path.join(h.dataPath,'attachments',storageB);fs.writeFileSync(pathB,bytesB);
+  await h.state.seasonIntegration.showReview({reviewId:source.review.id,fullscreen:false});
+  const sourceClient=h.forWindow(await projectHost(h,source.project.id));
+  await h.state.seasonIntegration.showReview({reviewId:destination.review.id,fullscreen:false});
+  const other=h.forWindow(await projectHost(h,destination.project.id)),draft=path.join(h.root,'other-provenance-draft.txt');
+  fs.writeFileSync(draft,'Keep this other window provenance token');const [token]=await other.success('attachment.stageFiles',{paths:[draft]});
+  const files=fs.readdirSync(path.join(h.dataPath,'attachments')).sort();
+  const notices=()=>h.state.windowMessages.filter(row=>row.channel==='reviewops:data-change').length,beforeNotices=notices();
+  try{
+    armed=true;const result=await sourceClient.invoke('review.copy',{reviewId:source.review.id,projectId:destination.project.id,attachmentIds:[original.id]});
+    assert.ok(published);assert.equal(armed,false);assert.equal(result.ok,false);assert.equal(result.error.code,'REVISION_CONFLICT');
+    assert.equal(result.error.message,'리뷰 또는 선택한 첨부 자료가 변경되었습니다. 사본을 다시 검사한 뒤 저장하십시오.');
+    assert.equal(store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get().epoch,epoch);
+    assert.equal(store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(source.review.id).generation,generation);
+    assert.deepEqual(store.exportData(),expected);
+    assert.deepEqual(store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all().map(row=>({...row})),expectedRevisions);
+    assert.equal(fs.existsSync(published),false);assert.deepEqual(fs.readdirSync(path.join(h.dataPath,'attachments')).sort(),files);
+    assert.deepEqual(fs.readFileSync(originalPath),originalBytes);assert.deepEqual(fs.readFileSync(pathB),bytesB);assert.equal(notices(),beforeNotices);
+    assert.equal(store.get('attachments',original.id).sha256,digest(bytesB));
+    assert.equal((await other.success('attachment.stagePreview',{token:token.token})).content,'Keep this other window provenance token');
+  }finally{armed=false;await other.success('attachment.discard',{tokens:[token.token]});}
+});
+
 test('review.copy refuses a new same-ID source incarnation after its selected attachment read',async t=>{
   const plain=value=>JSON.parse(JSON.stringify(value));
   const delta=(before,after)=>({

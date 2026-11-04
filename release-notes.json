@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "fixes",
+      "title": "Keep copied attachment files and source details consistent",
+      "description": "ReviewOps stops a pending copy and asks you to recheck if a selected attachment is removed, moved to another review or replaced while its files are being read or saved. Current source files and other windows' staged attachments are preserved. Changes to unselected attachments, ordinary history and source-service selection remain compatible.",
+      "commits": [
+        "287710ae8e5769bd1b1b9115da05ac1a3985e36f"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Keep review copies tied to their original source review",
       "description": "ReviewOps stops a pending copy if its original review is deleted and recreated with the same ID or moved to another project while attachments are being read. Current source data and existing files stay intact. Ordinary activity history and source-service changes continue.",
       "commits": [
