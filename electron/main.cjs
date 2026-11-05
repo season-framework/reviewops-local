@@ -21,7 +21,7 @@ const {createModelCache} = require('./model-cache.cjs');
 const {createModelTargets} = require('./model-targets.cjs');
 const {createAppLanguage} = require('./app-language.cjs');
 const {inspectDirectory,createChildDirectory} = require('./work-directory.cjs');
-const {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions}=require('./review-versions.cjs');
+const {changeReviewTarget,saveReviewVersion,listReviewVersions,versionListError,withoutReviewVersions}=require('./review-versions.cjs');
 const {qaProjectId,scopedSnapshot,assertProjectAction}=require('./project-qa-scope.cjs');
 const {createProjectServiceRuntime}=require('./project-service-runtime.cjs');
 
@@ -217,6 +217,15 @@ function writeFrame(admission, assertScope = () => {}) {
 function assertWriteFrame(frame) {
   if(!frame)throw Object.assign(new Error('An original write operation is required.'),{code:'INVALID_WRITE_ADMISSION'});
   frame.assertScope();store.assertWriteAdmission(frame.admission);
+}
+// This read capability retains ownership; it neither grants nor performs a write.
+function readFrame(admission, assertScope = () => {}) {
+  return Object.freeze({admission, assertScope});
+}
+function assertReadFrame(frame) {
+  if(!frame)throw Object.assign(new Error('An original read operation is required.'),{code:'INVALID_READ_ADMISSION'});
+  try {frame.assertScope();store.assertWriteAdmission(frame.admission);}
+  catch(error) {throw versionListError(error);}
 }
 function commitWriteFrame(frame, change, target) {
   return store.transaction(()=>{assertWriteFrame(frame);if(target)store.assertReviewWriteAdmission(target);return change();});
@@ -1012,7 +1021,7 @@ function withCaptureEvidence(payload){
   const screenshots=attachmentTokens(payload.attachmentTokens).map(token=>ownedStaged(token)?.capture).filter(Boolean);
   return screenshots.length?{...payload,evidence:{...(payload.evidence||{}),capturedAt:new Date().toISOString(),screenshots}}:payload;
 }
-async function dispatch(action, payload = {}, originalFrame) {
+async function dispatch(action, payload = {}, originalFrame, originalReader) {
   if(requestWindowContext.getStore())getRequestWindow();
   const projectScope=requestQaProjectId();
   if(projectScope)assertProjectAction({projectId:projectScope,action,payload,snapshot:store.snapshot(),
@@ -1257,7 +1266,7 @@ async function dispatch(action, payload = {}, originalFrame) {
       }),review=>({reviewId:review.id}))).entity;
     } finally {for(const token of tokens)stagedAttachments.delete(token);}
   }
-  if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment);
+  if (action === 'review.version.list') return listReviewVersions(store,payload.reviewId,readAttachment,originalReader);
   if (action === 'review.version.save') return saveReviewVersion(store,payload,readAttachment,originalFrame);
   if (action === 'review.version.target') return changeReviewTarget(store,payload);
   if (action === 'review.save') {payload=withCaptureEvidence(payload);const input={...payload};if(!payload.id&&payload.serviceId===undefined&&payload.projectId)input.serviceId=store.project(payload.projectId).connection?.id||null;return (await saveWithAttachments(payload.attachmentTokens,()=>store.saveReview(input),review=>({reviewId:review.id}))).entity;}
@@ -1541,7 +1550,7 @@ else {
       const host=senderWindow(event);if(!host)return {ok:false,error:{message:'허용되지 않은 요청입니다.'}};
       const admittedRecord=windowContexts.get(host);
       const admittedProjectId=admittedRecord.projectId,admittedQaProjectId=qaProjectId(admittedRecord);
-      const admittedQaIncarnation=storeWriteActions.has(action)?qaScopeIncarnation(admittedRecord):null;
+      const admittedQaIncarnation=(storeWriteActions.has(action)||action==='review.version.list')?qaScopeIncarnation(admittedRecord):null;
       return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host)),captureContextId:payload?.captureContextId,action,recordId:payload?.id},async()=>{try {
         let result;
         const frame=storeWriteActions.has(action)?writeFrame(store.captureWriteAdmission(),()=>{
@@ -1551,9 +1560,17 @@ else {
           if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId||qaScopeIncarnation(record)!==admittedQaIncarnation)
             throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
         }):null;
+        const reader=action==='review.version.list'?readFrame(store.captureWriteAdmission(),()=>{
+          const record=windowContexts.get(host);
+          if(senderWindow(event)!==host||record!==admittedRecord)
+            throw Object.assign(new Error('허용되지 않은 요청입니다.'),{code:'ACCESS_DENIED'});
+          if(record.projectId!==admittedProjectId||qaProjectId(record)!==admittedQaProjectId||qaScopeIncarnation(record)!==admittedQaIncarnation)
+            throw Object.assign(new Error('프로젝트 QA 연결에서는 지정한 프로젝트만 사용할 수 있습니다. 전체 관리는 QA 연결을 해제하거나 기본 창에서 수행하십시오.'),{code:'TARGET_MISMATCH'});
+        }):null;
         const execute=()=>{
           if(frame)assertWriteFrame(frame);
-          return dispatch(action,payload,frame);
+          if(reader)assertReadFrame(reader);
+          return dispatch(action,payload,frame,reader);
         };
         if (typeof action === 'string' && Object.hasOwn(localSharedActions, action)) {
           // Read after earlier mutations, then resolve the live sender and scope.
@@ -1573,7 +1590,7 @@ else {
           result=actionQueue.then(execute);
           actionQueue=result.catch(()=>{});
         }
-        const data=await result;if(changesData(action))dataChanged();
+        const data=await result;if(reader)assertReadFrame(reader);if(changesData(action))dataChanged();
         if(['project.save','project.delete','service.save','service.delete','group.delete','backup.import','ssh.trust'].includes(action))modelCache?.reconcile();
         return {ok:true,data};
       }
@@ -1591,7 +1608,8 @@ else {
       // action. Explicitly owned agent/request paths and service-deletion
       // cancellation carry it into their later commits.
       const frame=storeWriteActions.has(action)?writeFrame(store.captureWriteAdmission()):null;
-      const execute=async()=>{if(frame)assertWriteFrame(frame);const result=await dispatch(action,payload,frame);if(changesData(action))dataChanged();return result;};
+      const reader=action==='review.version.list'?readFrame(store.captureWriteAdmission()):null;
+      const execute=async()=>{if(frame)assertWriteFrame(frame);if(reader)assertReadFrame(reader);const result=await dispatch(action,payload,frame,reader);if(reader)assertReadFrame(reader);if(changesData(action))dataChanged();return result;};
       if(['snapshot','agent.read','agent.cancel'].includes(action))return execute();
       const result=actionQueue.then(execute);actionQueue=result.catch(()=>{});return result;
     };

@@ -153,3 +153,94 @@ test('the actual renderer rejection path preserves draft fields and emits no suc
  assert.equal(english[message],'The review or selected attachments changed. Recheck the saved copies before saving.');
  assert.equal(calls.some(([name])=>['toast','selected','source','attempt','reload'].includes(name)),false);
 });
+
+
+for (const code of ['ENOENT', 'EACCES']) {
+ test(`version list keeps original scope failures outside a rejected ${code} byte read`, async t => {
+  const {store,review,add,read}=setup(t),file=add('Original scope bytes');
+  await saveReviewVersion(store,{reviewId:review.id,target:{code:'original'},attachmentIds:[file.id]},read,originalOperation(store));
+  let allowed=true,entered,release;
+  const reading=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+  const operation=originalOperation(store,()=>{if(!allowed)throw Object.assign(new Error('Original scope lost'),{code:'ACCESS_DENIED'});});
+  const pending=listReviewVersions(store,review.id,async()=>{entered();await gate;throw Object.assign(new Error('Owned read failed'),{code});},operation)
+   .then(value=>({value}),error=>({error}));
+  let result,expected;
+  try{await Promise.race([reading,pending.then(()=>{throw new Error('List settled before its read gate');})]);allowed=false;expected=store.exportData();}
+  finally{release();result=await pending;}
+  assert.equal(result.error.code,'ACCESS_DENIED');assert.equal(result.value,undefined);assert.deepEqual(store.exportData(),expected);
+ });
+}
+
+test('version list settles every launched original read before an ownership refusal escapes',async t=>{
+ const {store,review,add,read}=setup(t),first=add('First owned bytes'),second=add('Second owned bytes');
+ await saveReviewVersion(store,{reviewId:review.id,target:{code:'paired'},attachmentIds:[first.id,second.id]},read,originalOperation(store));
+ let allowed=true,allStarted,settled=false;
+ const started=new Promise(resolve=>{allStarted=resolve}),releases=new Map(),reads=[];
+ const operation=originalOperation(store,()=>{if(!allowed)throw Object.assign(new Error('Original scope lost'),{code:'ACCESS_DENIED'});});
+ const pending=listReviewVersions(store,review.id,async file=>{
+  reads.push(file.id);await new Promise(resolve=>{releases.set(file.id,resolve);if(releases.size===2)allStarted();});return read(file);
+ },operation).then(value=>({value}),error=>({error})).then(result=>{settled=true;return result;});
+ let result,expected;
+ try{
+  await Promise.race([started,pending.then(()=>{throw new Error('List settled before both original reads started');})]);
+  allowed=false;expected=store.exportData();releases.get(first.id)();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(settled,false,'The second already-started read must settle before refusal');
+ }finally{for(const release of releases.values())release();result=await pending;}
+ assert.deepEqual(reads,[first.id,second.id]);assert.equal(result.error.code,'ACCESS_DENIED');assert.deepEqual(store.exportData(),expected);
+});
+
+test('version list permits ordinary history and service-selection edits without an aggregate fence',async t=>{
+ const {store,review,project,add,read,dbPath}=setup(t),file=add('Retained version bytes');
+ const first=store.saveService({groupId:project.groupId,name:'First local service',kind:'local',rootPath:path.dirname(dbPath)});
+ const second=store.saveService({groupId:project.groupId,name:'Next local service',kind:'local',rootPath:path.dirname(dbPath)});
+ store.saveProject({id:project.id,groupId:project.groupId,name:project.name,serviceIds:[first.id,second.id]});
+ store.saveReview({id:review.id,serviceId:first.id});
+ const saved=await saveReviewVersion(store,{reviewId:review.id,target:{code:'retained'},attachmentIds:[file.id]},read,originalOperation(store));
+ let entered,release;const reading=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+ const pending=listReviewVersions(store,review.id,async value=>{entered();await gate;return read(value);},originalOperation(store)).then(value=>({value}),error=>({error}));
+ let result,expected;
+ try{
+  await Promise.race([reading,pending.then(()=>{throw new Error('List settled before its read gate');})]);
+  store.addActivity({reviewId:review.id,body:'Legitimate history while listing'});store.saveReview({id:review.id,serviceId:second.id,body:'Current notes preserved'});
+  store.saveProject({id:project.id,groupId:project.groupId,name:project.name,serviceIds:[second.id]});expected=store.exportData();
+ }finally{release();result=await pending;}
+ assert.equal(result.error,undefined);assert.equal(result.value.entries[0].id,saved.id);assert.equal(result.value.entries[0].attachments[0].status,'available');
+ assert.deepEqual(store.exportData(),expected);
+});
+
+test('version list retains genuine unreadable and empty results without changing their DTOs',async t=>{
+ const {store,review,add,read}=setup(t),file=add('Unreadable original bytes');
+ assert.deepEqual(await listReviewVersions(store,review.id,read),{currentTarget:null,entries:[]});
+ const saved=await saveReviewVersion(store,{reviewId:review.id,target:{code:'unreadable'},attachmentIds:[file.id]},read,originalOperation(store));
+ const before=store.exportData(),listed=await listReviewVersions(store,review.id,async()=>{throw Object.assign(new Error('Owned access denied'),{code:'EACCES'});});
+ assert.equal(listed.entries[0].id,saved.id);assert.equal(listed.entries[0].attachments[0].status,'unreadable');
+ assert.equal(listed.entries[0].attachments[0].message,'보관된 사본을 읽을 수 없습니다. 파일 손상 또는 접근 권한을 검사하십시오.');assert.deepEqual(store.exportData(),before);
+});
+
+
+for (const change of ['restored epoch', 'review reborn']) {
+ test(`version list ${change} refusal preserves its cause and reload guidance`,async t=>{
+  const {store,review,add,read}=setup(t),file=add('Reload-list original bytes');
+  await saveReviewVersion(store,{reviewId:review.id,target:{code:'reload'},attachmentIds:[file.id]},read,originalOperation(store));
+  let entered,release;const reading=new Promise(resolve=>{entered=resolve}),gate=new Promise(resolve=>{release=resolve});
+  const pending=listReviewVersions(store,review.id,async value=>{entered();await gate;return read(value);},originalOperation(store)).then(value=>({value}),error=>({error}));
+  let result,expected;
+  try{
+   await Promise.race([reading,pending.then(()=>{throw new Error('List settled before its read gate');})]);
+   if(change==='restored epoch')store.importData(store.exportData());
+   else{
+    const original={...store.db.prepare('SELECT * FROM reviews WHERE id=?').get(review.id)},keys=Object.keys(original);
+    store.transaction(()=>{store.deleteReview(review.id);store.db.prepare(`INSERT INTO reviews(${keys.join(',')}) VALUES(${keys.map(()=>'?').join(',')})`).run(...keys.map(key=>original[key]));});
+   }
+   expected=store.exportData();
+  }finally{release();result=await pending;}
+  const code=change==='restored epoch'?'STALE_EPOCH':'STALE_REVIEW';
+  assert.equal(result.error.code,code);assert.equal(result.error.cause.code,code);assert.notEqual(result.error,result.error.cause);
+  const message='리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.';
+  assert.equal(result.error.message,message);assert.deepEqual(store.exportData(),expected);
+  const english=JSON.parse(fs.readFileSync(path.join(__dirname,'../src/i18n/en.json'),'utf8'));
+  assert.equal(english[message],'The review or data changed. Reload the saved review-version list.');
+  const translations=JSON.parse(fs.readFileSync(path.join(__dirname,'../src/i18n/translations.json'),'utf8'));
+  for(const language of ['ja','zh-CN','zh-TW'])assert.ok(translations[language][message]);
+ });
+}
