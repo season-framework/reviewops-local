@@ -4023,3 +4023,131 @@ for (const route of ['local', 'integration']) {
     assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, expectedNotices);
   });
 }
+
+test('local shared comment attachments use actual Store classification without writes or window effects', async t => {
+  const h = await harness(t), a = await seed(h), b = await seed(h), main = h.forWindow(h.state.primaryWindow), store = h.state.liveStore;
+  const empty = store.addActivity({ reviewId: a.review.id, body: '', allowEmpty: true });
+  const other = store.addActivity({ reviewId: a.review.id, body: 'Another user comment' });
+  const system = store.addActivity({ reviewId: a.review.id, body: 'PRIVATE_SYSTEM', role: 'system' });
+  const run = store.saveAgentRun({ reviewId: a.review.id, serviceId: a.service.id, workPath: a.service.rootPath,
+    status: 'completed', response: 'PRIVATE_AGENT_RESPONSE' });
+  const prompt = store.addActivity({ reviewId: a.review.id, body: 'PRIVATE_AGENT_PROMPT', role: 'user', agentRunId: run.id });
+  const response = store.snapshot().activities.find(row => row.agentRunId === run.id && row.role === 'agent');
+  const created = store.snapshot().activities.find(row => row.reviewId === a.review.id && row.type === 'created');
+  const foreign = store.addActivity({ reviewId: b.review.id, body: 'Other project user comment' });
+  assert.ok(response); assert.ok(created); assert.equal(empty.body, ''); assert.equal(empty.role, 'user'); assert.equal(empty.agentRunId, '');
+  const add = (id, reviewId, activityId, extra = {}) => store.addAttachment({ id, reviewId, activityId, name: id + '.txt',
+    mimeType: 'text/plain', size: 0, storageName: 'PRIVATE-' + id + '.txt', sha256: 'F'.repeat(64), ...extra });
+  add('comment-z', a.review.id, empty.id, { name: '  Actual 한 e\u0301 🙂.txt  ', mimeType: ' text/plain ', size: '0' });
+  add('comment-a', a.review.id, empty.id, { sha256: 'ab'.repeat(32), size: 1073741824 });
+  add('review-direct', a.review.id, null);
+  for (const [id, activityId] of [['other-user', other.id], ['system', system.id], ['response', response.id], ['prompt', prompt.id], ['created', created.id]])
+    add('linked-' + id, a.review.id, activityId);
+  const foreignFile = add('foreign-comment', b.review.id, foreign.id);
+  const expected = store.db.prepare('SELECT * FROM attachments WHERE reviewId=? AND activityId=? ORDER BY createdAt,id').all(a.review.id, empty.id).map(row =>
+    ({ id: row.id, reviewId: row.reviewId, name: row.name, mimeType: row.mimeType, size: row.size,
+      sha256: row.sha256, createdAt: row.createdAt, updatedAt: row.updatedAt }));
+  assert.equal(expected.length, 2); assert.ok(expected.some(row => row.name === 'Actual 한 e\u0301 🙂.txt' && row.size === 0));
+  await main.success('window.openProject', { projectId: a.project.id });
+  const host = await projectHost(h, a.project.id), client = h.forWindow(host);
+  await main.success('window.openProject', { projectId: b.project.id });
+  const bHost = await projectHost(h, b.project.id); bHost.focus();
+  const before = store.exportData(), revisions = store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all();
+  const receipts = store.db.prepare('SELECT * FROM command_receipts').all(), messages = h.state.windowMessages.length;
+  const windows = () => h.state.windows.map(window => ({ window, bounds: { ...window.bounds }, visible: window.visible, destroyed: window.destroyed }));
+  const windowBefore = windows(), filesBefore = fs.readdirSync(path.join(h.dataPath, 'attachments')).sort();
+  const database = () => ['reviewops.sqlite', 'reviewops.sqlite-wal'].map(name => {
+    const file = path.join(h.dataPath, name);
+    return { name, sha256: fs.existsSync(file) ? crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') : null };
+  });
+  const databaseBefore = database(), snapshot = store.snapshot.bind(store); let calls = 0;
+  store.snapshot = () => { calls++; return snapshot(); };
+  let result;
+  try { result = await client.success('shared.commentAttachments.list', { projectId: a.project.id, reviewId: a.review.id, commentId: empty.id }); }
+  finally { store.snapshot = snapshot; }
+  assert.equal(calls, 1);
+  assert.deepEqual(result, { version: 1, projectId: a.project.id, reviewId: a.review.id, commentId: empty.id, attachments: expected });
+  assert.deepEqual(Object.keys(result.attachments[0]), ['id', 'reviewId', 'name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt']);
+  assert.equal(JSON.stringify(result).includes('PRIVATE_'), false);
+  result.attachments[0].name = 'Caller-only.txt'; result.attachments.push({ id: 'caller-only' });
+  const target = { projectId: a.project.id, reviewId: a.review.id, commentId: empty.id };
+  assert.deepEqual((await client.success('shared.commentAttachments.list', target)).attachments, expected);
+  const notFound = { code: 'NOT_FOUND', message: 'Shared resource not found.' };
+  for (const payload of [{ ...target, commentId: system.id }, { ...target, commentId: prompt.id },
+    { ...target, commentId: response.id }, { ...target, commentId: created.id }, { ...target, commentId: foreign.id },
+    { ...target, commentId: 'missing' }, { ...target, reviewId: b.review.id },
+    { projectId: b.project.id, reviewId: b.review.id, commentId: foreign.id }]) {
+    const denied = await client.invoke('shared.commentAttachments.list', payload);
+    assert.equal(denied.ok, false); assert.deepEqual({ code: denied.error.code, message: denied.error.message }, notFound);
+  }
+  const invalid = await client.invoke('shared.commentAttachments.list', { ...target, projectGrants: [{ projectId: b.project.id, read: true }] });
+  assert.equal(invalid.ok, false); assert.equal(invalid.error.code, 'INVALID_QUERY');
+  assert.equal((await main.success('shared.commentAttachments.list', { projectId: b.project.id, reviewId: b.review.id, commentId: foreign.id })).attachments[0].id, foreignFile.id);
+  await assert.rejects(h.state.toolIntegration.dispatch('shared.commentAttachments.list', target), /지원하지 않는 기능/);
+  await assert.rejects(h.state.toolIntegration.automationHandler('automation.shared.commentAttachments.list', target), { code: 'UNKNOWN_ACTION' });
+  assert.deepEqual((await client.success('shared.commentAttachments.list', target)).attachments, expected, 'Denied reads do not poison the queue');
+  assert.deepEqual(store.exportData(), before);
+  assert.deepEqual(store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all(), revisions);
+  assert.deepEqual(store.db.prepare('SELECT * FROM command_receipts').all(), receipts);
+  assert.deepEqual(database(), databaseBefore);
+  assert.deepEqual(fs.readdirSync(path.join(h.dataPath, 'attachments')).sort(), filesBefore);
+  assert.deepEqual(windows(), windowBefore); assert.equal(h.state.focusedWindow, bHost);
+  assert.equal(h.state.windowMessages.length, messages); assert.equal(h.state.agentStarts.length, 0);
+  assert.equal(h.state.clipboardWrites?.length || 0, 0);
+});
+
+test('local shared comment attachments refuse queued frame replacement and closed original owners', async t => {
+  for (const change of ['same-URL-frame', 'closed-owner']) {
+    const h = await harness(t), a = await seed(h), main = h.forWindow(h.state.primaryWindow), store = h.state.liveStore;
+    const user = store.addActivity({ reviewId: a.review.id, body: '', allowEmpty: true });
+    await main.success('window.openProject', { projectId: a.project.id });
+    const host = await projectHost(h, a.project.id), client = h.forWindow(host), frame = host.webContents.mainFrame;
+    const unblock = await holdWriteAdmissionQueue(t, h, a.service.id);
+    let settled = false, result, before, messages;
+    const pending = client.invoke('shared.commentAttachments.list', { projectId: a.project.id, reviewId: a.review.id, commentId: user.id })
+      .then(value => { settled = true; return value; });
+    try {
+      await Promise.resolve(); assert.equal(settled, false, 'The exact original read is still queued');
+      if (change === 'same-URL-frame') {
+        host.webContents.mainFrame = { url: frame.url };
+        assert.notEqual(host.webContents.mainFrame, frame); assert.equal(host.isDestroyed(), false);
+      } else {
+        host.destroy(); await main.success('window.openProject', { projectId: a.project.id });
+        const replacement = await projectHost(h, a.project.id); assert.notEqual(replacement, host); replacement.focus();
+      }
+      before = store.exportData(); messages = h.state.windowMessages.length;
+    } finally {
+      try { await unblock(); }
+      finally { try { result = await pending; } finally { host.webContents.mainFrame = frame; } }
+    }
+    assert.equal(settled, true); assert.equal(result.ok, false, change); assert.equal(result.error.code, 'ACCESS_DENIED', change);
+    assert.deepEqual(store.exportData(), before); assert.equal(h.state.windowMessages.length, messages);
+    if (change === 'closed-owner')
+      assert.deepEqual((await h.forWindow(h.state.focusedWindow).success('shared.commentAttachments.list',
+        { projectId: a.project.id, reviewId: a.review.id, commentId: user.id })).attachments, []);
+  }
+});
+
+test('local shared comment attachments observe queued deletion without widening their original project', async t => {
+  const h = await harness(t), a = await seed(h), b = await seed(h), main = h.forWindow(h.state.primaryWindow), store = h.state.liveStore;
+  const user = store.addActivity({ reviewId: a.review.id, body: '', allowEmpty: true });
+  const other = store.addActivity({ reviewId: b.review.id, body: '', allowEmpty: true });
+  store.addAttachment({ id: 'queued-comment-file', reviewId: a.review.id, activityId: user.id, name: 'Queued.txt',
+    mimeType: 'text/plain', size: 0, storageName: 'PRIVATE-queued-comment.txt', sha256: 'F'.repeat(64) });
+  await main.success('window.openProject', { projectId: a.project.id });
+  const client = h.forWindow(await projectHost(h, a.project.id)), unblock = await holdWriteAdmissionQueue(t, h, a.service.id);
+  const removeReview = main.invoke('review.delete', { id: a.review.id }), removeProject = main.invoke('project.delete', { id: a.project.id });
+  const pending = client.invoke('shared.commentAttachments.list', { projectId: a.project.id, reviewId: a.review.id, commentId: user.id });
+  try {
+    await unblock(); assert.equal((await removeReview).ok, true); assert.equal((await removeProject).ok, true);
+    const before = store.exportData(), messages = h.state.windowMessages.length, result = await pending;
+    assert.equal(result.ok, false); assert.deepEqual({ code: result.error.code, message: result.error.message }, { code: 'NOT_FOUND', message: 'Shared resource not found.' });
+    const foreign = { projectId: b.project.id, reviewId: b.review.id, commentId: other.id };
+    assert.equal((await client.invoke('shared.commentAttachments.list', foreign)).error.code, 'NOT_FOUND');
+    assert.deepEqual((await main.success('shared.commentAttachments.list', foreign)).attachments, []);
+    assert.deepEqual(store.exportData(), before); assert.equal(h.state.windowMessages.length, messages);
+  } finally {
+    try { await unblock(); }
+    finally { await Promise.allSettled([removeReview, removeProject, pending]); }
+  }
+});

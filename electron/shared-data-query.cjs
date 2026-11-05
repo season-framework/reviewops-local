@@ -16,7 +16,8 @@ const MESSAGES = Object.freeze({
   NOT_FOUND: 'Shared resource not found.',
   INVALID_SNAPSHOT: 'Shared data is unavailable.',
   QUERY_LIMIT_EXCEEDED: 'Shared comments exceed the local query limit.',
-  ATTACHMENT_QUERY_LIMIT_EXCEEDED: 'Shared review attachments exceed the local query limit.'
+  ATTACHMENT_QUERY_LIMIT_EXCEEDED: 'Shared review attachments exceed the local query limit.',
+  COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED: 'Shared comment attachments exceed the local query limit.'
 });
 
 function fail(code) {
@@ -61,6 +62,7 @@ function grants(callerContext) {
 }
 function queryPayload(operation, payload) {
   const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] :
+    operation === 'commentAttachments.list' ? ['projectId', 'reviewId', 'commentId'] :
     operation === 'reviews.get' || operation === 'comments.list' || operation === 'attachments.list' ? ['projectId', 'reviewId'] : null;
   if (!keys) fail('INVALID_QUERY');
   closed(payload, keys, 'INVALID_QUERY');
@@ -168,6 +170,57 @@ function attachmentList(snapshot, projectId, reviewId) {
   return result;
 }
 
+// Authorize the selected ordinary user comment before reading attachment rows.
+// Comment content is not part of this metadata projection.
+function commentAttachmentList(snapshot, projectId, reviewId, commentId) {
+  const activities = rows(field(snapshot, 'activities', 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+  const seenActivities = new Set();
+  let selected = null;
+  for (const row of activities) {
+    if (storedId(row, 'reviewId') !== reviewId) continue;
+    const id = storedId(row, 'id');
+    if (seenActivities.has(id)) fail('INVALID_SNAPSHOT');
+    seenActivities.add(id);
+    if (id === commentId) selected = row;
+  }
+  if (!selected) fail('NOT_FOUND');
+  const type = field(selected, 'type', 'INVALID_SNAPSHOT');
+  const role = field(selected, 'role', 'INVALID_SNAPSHOT');
+  const run = field(selected, 'agentRunId', 'INVALID_SNAPSHOT');
+  if (!ACTIVITY_TYPES.has(type) || !ACTIVITY_ROLES.has(role) ||
+      typeof run !== 'string' || run !== '' && !ID.test(run)) fail('INVALID_SNAPSHOT');
+  if (type !== 'comment' || role !== 'user' || run !== '') fail('NOT_FOUND');
+
+  const attachments = rows(field(snapshot, 'attachments', 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+  const result = { version: 1, projectId, reviewId, commentId, attachments: [] };
+  let bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+  const seen = new Set();
+  for (const row of attachments) {
+    if (storedId(row, 'reviewId') !== reviewId) continue;
+    const id = storedId(row, 'id');
+    if (seen.has(id)) fail('INVALID_SNAPSHOT');
+    seen.add(id);
+    const activityId = field(row, 'activityId', 'INVALID_SNAPSHOT');
+    if (activityId !== null) identifier(activityId, 'INVALID_SNAPSHOT');
+    if (activityId !== commentId) continue;
+    if (result.attachments.length === MAX_ATTACHMENTS) fail('COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED');
+    const name = storedText(row, 'name', 255, true);
+    if (name === '.' || name === '..' || /[/\\]/.test(name)) fail('INVALID_SNAPSHOT');
+    const mimeType = storedText(row, 'mimeType', 255, true);
+    const size = field(row, 'size', 'INVALID_SNAPSHOT');
+    const sha256 = storedText(row, 'sha256', 64, true);
+    if (!Number.isSafeInteger(size) || size < 0 || size > 1024 * 1024 * 1024 ||
+        !/^[a-f0-9]{64}$/i.test(sha256)) fail('INVALID_SNAPSHOT');
+    const attachment = { id, reviewId, name, mimeType, size, sha256,
+      createdAt: storedDate(row, 'createdAt'), updatedAt: storedDate(row, 'updatedAt') };
+    const addition = Buffer.byteLength(JSON.stringify(attachment), 'utf8') + (result.attachments.length ? 1 : 0);
+    if (bytes + addition > MAX_ATTACHMENT_BYTES) fail('COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED');
+    bytes += addition;
+    result.attachments.push(attachment);
+  }
+  return result;
+}
+
 // Caller context is application-owned. Future adapters must never take grants
 // from the operation payload or treat this pure function as device authentication.
 function querySharedData(snapshot, callerContext, operation, payload) {
@@ -196,6 +249,7 @@ function querySharedData(snapshot, callerContext, operation, payload) {
   const review = reviewDto(matches[0]);
   if (operation === 'comments.list') return commentList(snapshot, projectId, review.id);
   if (operation === 'attachments.list') return attachmentList(snapshot, projectId, review.id);
+  if (operation === 'commentAttachments.list') return commentAttachmentList(snapshot, projectId, review.id, payload.commentId);
   return { version: 1, projectId, review };
 }
 
