@@ -94,7 +94,7 @@ test('capability descriptions do not open, touch or release a project session',a
 });
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
-async function documentFixture(t,options={}){
+async function documentFixture(t,options={},automationFactory=createQaAutomation){
  const {EventEmitter}=require('node:events'),commands=[],records=new Map(),scopes=[];
  class Contents extends EventEmitter{
   constructor(name){
@@ -110,7 +110,7 @@ async function documentFixture(t,options={}){
   navigate({details=true,main=true,same=false,url=this.url}={}){this.url=url;if(details)this.emit('did-start-navigation',{isMainFrame:main,isSameDocument:same,url});else this.emit('did-start-navigation',{},url,same,main);}
  }
  const create=projectId=>{const web=new Contents(projectId),record={id:'window-'+projectId,projectId,draft:'keep-'+projectId,terminalFixture:{connected:true},ready:null,web,targets:[],host:{isDestroyed:()=>false,webContents:new Contents('host-'+projectId)}};record.targets=[{browserId:'browser-'+projectId,contents:web,documentReady:true}];record.browsers={automationTargets:()=>record.targets.map(target=>({...target,ready:record.ready,inputScale:1}))};records.set(record.id,record);return record;};
- const api=createQaAutomation({getProject:projectId=>['A','B'].includes(projectId),getWindow:id=>records.get(id),openWindow:async({projectId})=>create(projectId),operationTimeoutMs:2000,onActiveChange:(record,active)=>scopes.push([record.id,active]),...options});
+ const api=automationFactory({getProject:projectId=>['A','B'].includes(projectId),getWindow:id=>records.get(id),openWindow:async({projectId})=>create(projectId),operationTimeoutMs:2000,onActiveChange:(record,active)=>scopes.push([record.id,active]),...options});
  t.after(()=>api.close());
  const bindings={A:only(await api.handle('open',{projectId:'A',clientId:'a'})),B:only(await api.handle('open',{projectId:'B',clientId:'b'}))};
  const call=(operation,extra={},project='B')=>api.handle('document',{...bindings[project],browserId:'browser-'+project,operation,...extra});
@@ -272,5 +272,114 @@ test('a late failed matching release quarantines its original window after expli
   pending=f.call('key',{documentId:state.documentId,key:'Enter'});const timedOut=assert.rejects(pending,{code:'QA_TIMEOUT'});await entered.promise;await timedOut;
   await f.api.handle('release',f.bindings.B);hold.resolve();await new Promise(resolve=>setImmediate(resolve));
   assert.equal(f.b.qaActive,true);assert.equal(f.api.connectionStatus({projectId:'B'}).availability,'quarantined');await assert.rejects(f.api.handle('open',{projectId:'B',clientId:'other'}),{code:'QA_TARGET_UNAVAILABLE'});assert.equal(f.a.qaActive,true);
+ }finally{hold.resolve();await pending?.catch(()=>{});}
+});
+
+// Evaluate the actual module with only its platform global replaced. The
+// production constructor and public document schema gain no test-only option.
+function documentAutomationFor(platform){
+ const filename=require.resolve('../electron/qa-automation.cjs'),module={exports:{}};
+ require('node:vm').runInNewContext(require('node:fs').readFileSync(filename,'utf8'),{
+  module,process:Object.freeze({platform}),setInterval,clearInterval,setTimeout,clearTimeout,
+  require:specifier=>{assert.equal(specifier,'node:crypto');return require(specifier);}
+ },{filename});
+ return module.exports.createQaAutomation;
+}
+const commandData=rows=>rows.map(row=>({method:row.method,params:JSON.parse(JSON.stringify(row.params))}));
+
+test('only document Meta+A on macOS adds selectAll to the original down event',async t=>{
+ for(const platform of ['darwin','win32','linux']){
+  const f=await documentFixture(t,{},documentAutomationFor(platform)),state=await f.observe();
+  for(const [key,modifiers] of [['A',['Meta']],['a',['Meta']],['A',['Meta','Meta']]]){
+   f.commands.length=0;await f.call('key',{documentId:state.documentId,key,modifiers});
+   const params={key,modifiers:4,windowsVirtualKeyCode:65,nativeVirtualKeyCode:65};
+   assert.deepEqual(commandData(f.commands),[
+    {method:'Input.dispatchKeyEvent',params:{type:'keyDown',...params,...(platform==='darwin'?{commands:['selectAll']}:{})}},
+    {method:'Input.dispatchKeyEvent',params:{type:'keyUp',...params}}
+   ],platform+' '+key);
+   assert.ok(f.commands.every(row=>row.contents===f.b.web));
+   assert.equal(Object.hasOwn(f.commands[1].params,'commands'),false);
+  }
+  f.commands.length=0;
+  await f.api.handle('key',{...f.bindings.B,key:'A',modifiers:['Meta']});
+  assert.deepEqual(commandData(f.commands),['keyDown','keyUp'].map(type=>({method:'Input.dispatchKeyEvent',params:{type,key:'A',modifiers:4,windowsVirtualKeyCode:65,nativeVirtualKeyCode:65}})));
+  assert.ok(f.commands.every(row=>row.contents===f.b.host.webContents));
+ }
+});
+
+test('document selectAll excludes other modifier masks, keys and caller commands',async t=>{
+ const f=await documentFixture(t,{},documentAutomationFor('darwin')),state=await f.observe();
+ const bits=[['Alt',1],['Control',2],['Meta',4],['Shift',8]];
+ for(let mask=0;mask<16;mask++)if(mask!==4){
+  f.commands.length=0;await f.call('key',{documentId:state.documentId,key:'A',modifiers:bits.filter(([,bit])=>mask&bit).map(([key])=>key)});
+  assert.equal(f.commands.length,2);assert.ok(f.commands.every(row=>row.params.modifiers===mask&&!Object.hasOwn(row.params,'commands')),'mask '+mask);
+ }
+ for(const key of ['B','C','V','X','Z','Enter','Tab','ArrowLeft']){
+  f.commands.length=0;await f.call('key',{documentId:state.documentId,key,modifiers:['Meta']});
+  assert.equal(f.commands.length,2);assert.ok(f.commands.every(row=>row.params.key===key&&!Object.hasOwn(row.params,'commands')),key);
+ }
+ f.commands.length=0;
+ for(const extra of [{commands:['selectAll']},{commands:['undo']},{platform:'darwin'}])
+  await assert.rejects(async()=>f.call('key',{documentId:state.documentId,key:'A',modifiers:['Meta'],...extra}),{code:'INVALID_REQUEST'});
+ assert.equal(f.commands.length,0);
+});
+
+test('a queued document key cannot gain or lose selectAll through caller mutation',async t=>{
+ for(const [initial,changed,mask] of [['Meta','Control',4],['Control','Meta',2]])await t.test(initial+' to '+changed,async t=>{
+  const f=await documentFixture(t,{},documentAutomationFor('darwin')),state=await f.observe(),entered=deferred(),hold=deferred();let reading,pending;
+  try{
+   f.b.web.onScript=async()=>{entered.resolve();await hold.promise;};
+   reading=f.call('state');await entered.promise;
+   const modifiers=[initial],request={...f.bindings.B,browserId:'browser-B',operation:'key',documentId:state.documentId,key:'A',modifiers};
+   pending=f.api.handle('document',request);request.key='B';request.documentId='forged';request.commands=['undo'];request.platform='win32';modifiers[0]=changed;modifiers.push('Shift');
+   assert.equal(f.commands.length,0);hold.resolve();await Promise.all([reading,pending]);
+   const params={key:'A',modifiers:mask,windowsVirtualKeyCode:65,nativeVirtualKeyCode:65};
+   assert.deepEqual(commandData(f.commands),[
+    {method:'Input.dispatchKeyEvent',params:{type:'keyDown',...params,...(initial==='Meta'?{commands:['selectAll']}:{})}},
+    {method:'Input.dispatchKeyEvent',params:{type:'keyUp',...params}}
+   ]);
+  }finally{hold.resolve();await Promise.allSettled([reading,pending].filter(Boolean));}
+ });
+});
+
+test('stale document Meta+A never sends a key or editing command',async t=>{
+ const f=await documentFixture(t,{},documentAutomationFor('darwin')),state=await f.observe();f.b.web.navigate();
+ await assert.rejects(async()=>f.call('key',{documentId:state.documentId,key:'A',modifiers:['Meta']}),{code:'QA_DOCUMENT_STALE'});
+ assert.equal(f.commands.length,0);assert.equal((await f.observe('A')).projectId,'A');
+});
+
+test('document selectAll never reaches the original cleanup keyUp or a replacement',async t=>{
+ for(const failure of ['navigation','down','release'])await t.test(failure,async t=>{
+  const f=await documentFixture(t,{},documentAutomationFor('darwin')),state=await f.observe(),original=f.b.web;let replacement;
+  original.onCommand=(_method,params)=>{
+   if(params.type==='keyDown'){
+    if(failure==='down')throw Object.assign(new Error('controlled down failure'),{code:'CDP_DOWN_FAILED'});
+    replacement=new f.Contents('replacement');f.b.web=replacement;f.b.targets=[{browserId:'browser-B',contents:replacement,documentReady:true}];original.navigate();
+   }
+   if(params.type==='keyUp'&&failure==='release')throw Object.assign(new Error('controlled release failure'),{code:'CDP_RELEASE_FAILED'});
+  };
+  await assert.rejects(f.call('key',{documentId:state.documentId,key:'A',modifiers:['Meta']}),error=>error.code==='QA_DOCUMENT_CHANGED_AFTER_INPUT'&&error.inputMayHaveApplied===true&&error.cause.code===(failure==='down'?'CDP_DOWN_FAILED':'QA_DOCUMENT_STALE')&&(failure!=='release'||error.cleanupError.code==='CDP_RELEASE_FAILED'));
+  assert.equal(f.commands.length,2);assert.ok(f.commands.every(row=>row.contents===original));
+  assert.deepEqual(JSON.parse(JSON.stringify(f.commands[0].params.commands)),['selectAll']);
+  assert.equal(f.commands[1].params.type,'keyUp');assert.equal(Object.hasOwn(f.commands[1].params,'commands'),false);
+  if(replacement)assert.equal(replacement.attachments,0);
+  if(failure==='release'){
+   assert.equal(f.api.connectionStatus({projectId:'B'}).availability,'quarantined');
+   await assert.rejects(async()=>f.observe(),{code:'QA_TARGET_UNAVAILABLE'});assert.equal(f.a.qaActive,true);
+  }
+ });
+});
+
+test('late selectAll keyUp failure keeps its original timeout without replay',async t=>{
+ const f=await documentFixture(t,{operationTimeoutMs:20},documentAutomationFor('darwin')),state=await f.observe(),entered=deferred(),hold=deferred();let pending;
+ try{
+  f.b.web.onCommand=async(_method,params)=>{if(params.type==='keyUp'){entered.resolve();await hold.promise;throw Object.assign(new Error('late release failure'),{code:'LATE_RELEASE_FAILED'});}};
+  pending=f.call('key',{documentId:state.documentId,key:'A',modifiers:['Meta']});
+  const timeout=assert.rejects(pending,error=>error.code==='QA_TIMEOUT'&&error.inputMayHaveApplied===true);await entered.promise;await timeout;
+  assert.equal(f.api.connectionStatus({projectId:'B',binding:f.bindings.B}).bindingState,'timed_out');
+  hold.resolve();await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(f.api.connectionStatus({projectId:'B',binding:f.bindings.B}).bindingState,'timed_out');
+  assert.equal(f.commands.length,2);assert.deepEqual(JSON.parse(JSON.stringify(f.commands[0].params.commands)),['selectAll']);
+  assert.equal(Object.hasOwn(f.commands[1].params,'commands'),false);await assert.rejects(async()=>f.observe(),{code:'QA_TARGET_UNAVAILABLE'});
  }finally{hold.resolve();await pending?.catch(()=>{});}
 });

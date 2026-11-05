@@ -236,7 +236,10 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
           const keys={Enter:13,Tab:9,Backspace:8,Delete:46,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Home:36,End:35,PageUp:33,PageDown:34,' ':32};
           const code=keys[key]||(/^[a-z0-9]$/i.test(key)?key.toUpperCase().charCodeAt(0):0);if(!code)fail('Unsupported document key.');
           const params={key,modifiers:mask,windowsVirtualKeyCode:code,nativeVirtualKeyCode:code,...(key==='Enter'?{text:'\r'}:{})};
-          try{await send('Input.dispatchKeyEvent',{type:'keyDown',...params},{type:'keyUp',...params});}
+          const down={type:'keyDown',...params};
+          // Editing belongs to the original down event, never its cleanup release.
+          if(process.platform==='darwin'&&mask===4&&/^[aA]$/.test(key))down.commands=['selectAll'];
+          try{await send('Input.dispatchKeyEvent',down,{type:'keyUp',...params});}
           finally{await matchingRelease();}
           if(cleanupFailure)throw cleanupFailure;fence();
         }
