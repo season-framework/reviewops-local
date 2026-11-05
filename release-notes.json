@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "fixes",
+      "title": "Confirm temporary build-artifact deletions",
+      "description": "Temporary build-artifact cleanup now follows each deletion with at most five read-only checks. Only HTTP 404 confirms absence; API errors and artifacts still visible at the limit remain failures with an artifact ID in the diagnostic.",
+      "commits": [
+        "3ec28112ca8c7d73d7e48f8c93c10dd08e330fa0"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Reject outdated review-version checks",
       "description": "Saved review-version lists now reject checks whose original window or project QA scope changed, whose dataset was replaced, or whose review was replaced or moved. Dataset and review refusals ask you to reload the list. Normal missing, changed and unreadable file results are preserved.",
       "commits": [
