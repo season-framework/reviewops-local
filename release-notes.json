@@ -3,6 +3,14 @@
   "version": "1.5.0",
   "entries": [
     {
+      "category": "fixes",
+      "title": "Reject outdated review-version checks",
+      "description": "Saved review-version lists now reject checks whose original window or project QA scope changed, whose dataset was replaced, or whose review was replaced or moved. Dataset and review refusals ask you to reload the list. Normal missing, changed and unreadable file results are preserved.",
+      "commits": [
+        "dba5230be2a99964b2b011ba7b641ea47dfe9a26"
+      ]
+    },
+    {
       "category": "features",
       "title": "List review attachment metadata within its project",
       "description": "List the names, declared file types, sizes and SHA-256 digests of files attached directly to a review through local project queries. Comment-linked files, storage paths and file contents are excluded. Lists above the 1,000-file or 512 KiB JSON limit are rejected in full.",
