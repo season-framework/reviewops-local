@@ -83,22 +83,58 @@ async function saveReviewVersion(store, input, readAttachment, operation) {
   throw error;
  }
 }
-async function listReviewVersions(store, reviewId, readAttachment) {
-  const review = store.get('reviews', reviewId), state = versionsOf(review), files = new Map(store.snapshot().attachments.filter(file => file.reviewId === reviewId).map(file => [file.id,file]));
+function versionListError(error) {
+  if(['STALE_EPOCH','STALE_REVIEW'].includes(error?.code))
+    return Object.assign(new Error('리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.',{cause:error}),{code:error.code});
+  return error;
+}
+async function listReviewVersions(store, reviewId, readAttachment, operation) {
+ try {
+  // Direct module readers capture their own epoch at entry. Main passes its
+  // original pre-queue capability and never reconstructs a frame after an await.
+  const original=operation===undefined?Object.freeze({admission:store.captureWriteAdmission(),assertScope(){}}):operation;
+  const assertOperation=()=>{
+    if(!original||typeof original.assertScope!=='function')throw Object.assign(new Error('An original read operation is required.'),{code:'INVALID_READ_ADMISSION'});
+    original.assertScope();store.assertWriteAdmission(original.admission);
+  };
+  const {state,files,admission}=store.transaction(()=>{
+    assertOperation();
+    const review=store.get('reviews',reviewId),state=versionsOf(review);
+    const admission=store.captureAttachmentWriteAdmission(original.admission,Object.assign(Object.create(null),{reviewId:review.id,projectId:review.projectId}));
+    return {state,admission,files:new Map(store.snapshot().attachments.filter(file=>file.reviewId===reviewId).map(file=>[file.id,file]))};
+  });
+  const assertOriginal=()=>store.transaction(()=>{assertOperation();store.assertAttachmentWriteAdmission(admission);});
   const inspected = new Map();
   const inspect = async snapshot => {
+    assertOriginal();
     if (!inspected.has(snapshot.id)) inspected.set(snapshot.id,(async()=>{
+      assertOriginal();
       const file = files.get(snapshot.id);
       if (!file) return {status:'missing'};
-      try {return {status:'available',sha256:digest(await readAttachment(file))};}
-      catch (error) {return {status:error.code==='ENOENT'?'missing':error.code==='ATTACHMENT_INTEGRITY_FAILED'?'changed':'unreadable',message:'보관된 사본을 읽을 수 없습니다. 파일 손상 또는 접근 권한을 검사하십시오.'};}
+      let result;
+      try {result={status:'available',sha256:digest(await readAttachment(file))};}
+      catch (error) {result={status:error.code==='ENOENT'?'missing':error.code==='ATTACHMENT_INTEGRITY_FAILED'?'changed':'unreadable',message:'보관된 사본을 읽을 수 없습니다. 파일 손상 또는 접근 권한을 검사하십시오.'};}
+      // Ownership refusals must escape the file-error classification, even when
+      // the original byte read itself rejected.
+      assertOriginal();
+      return result;
     })());
     const result = await inspected.get(snapshot.id);
+    assertOriginal();
     return {...snapshot,...result,status:result.status==='available'&&result.sha256!==snapshot.sha256?'changed':result.status,sha256:snapshot.sha256};
   };
   const entries = [];
-  for (const entry of state.entries) entries.push({...entry,needsReview:!sameTarget(entry.target,state.currentTarget),attachments:await Promise.all(entry.attachments.map(inspect))});
+  for (const entry of state.entries) {
+    // Every already-started original read settles before a scope refusal escapes.
+    const settled=await Promise.allSettled(entry.attachments.map(inspect));
+    assertOriginal();
+    const failed=settled.find(result=>result.status==='rejected');
+    if(failed)throw failed.reason;
+    entries.push({...entry,needsReview:!sameTarget(entry.target,state.currentTarget),attachments:settled.map(result=>result.value)});
+  }
+  assertOriginal();
   return {currentTarget:state.currentTarget,entries};
+ } catch(error) { throw versionListError(error); }
 }
 // Version labels are local review notes. Explicit data backups retain them;
 // generated agent instructions and selectable browser logs do not include them.
@@ -107,4 +143,4 @@ function withoutReviewVersions(value) {
   if (!value || typeof value !== 'object') return value;
   return Object.fromEntries(Object.entries(value).filter(([key])=>key!=='review_versions').map(([key,item])=>[key,withoutReviewVersions(item)]));
 }
-module.exports = {changeReviewTarget,saveReviewVersion,listReviewVersions,withoutReviewVersions};
+module.exports = {changeReviewTarget,saveReviewVersion,listReviewVersions,versionListError,withoutReviewVersions};

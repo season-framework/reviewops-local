@@ -37,7 +37,7 @@ export default function ReviewVersions({review,files,invoke,mutate,busy}) {
   {selected.length>20&&<p role="alert" className="review-version-error">{t('첨부 사본은 한 번에 20개까지 선택할 수 있습니다.')}</p>}
   <label className="review-version-source">{t('자료 출처 (선택)')}<input aria-label={t('자료 출처 (선택)')} value={source} maxLength={1000} disabled={disabled} onChange={event=>setSource(event.target.value)}/></label>
   <button type="button" disabled={disabled||!hasTarget||!selected.length||selected.length>20} onClick={()=>save(true)}>{saving?t('저장 중'):t('선택 자료와 버전 저장')}</button>
-  {loading&&<p role="status">{t('보관된 사본을 검사하는 중입니다.')}</p>}{error&&<p role="alert" className="review-version-error">{error}</p>}
+  {loading&&<p role="status">{t('보관된 사본을 검사하는 중입니다.')}</p>}{error&&<p role="alert" className="review-version-error">{t(error)}</p>}
   <ol className="review-version-records">{[...state.entries].reverse().map(entry=><li key={entry.id}><header><strong>{targetLabel(entry.target)}</strong><span className={entry.needsReview?'needs-review':''}>{entry.needsReview?t('재검토 필요'):t('검토 대상 일치')}</span></header><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>{entry.source&&<p>{t('자료 출처')}: {entry.source}</p>}<ul>{entry.attachments.map(file=><li key={file.id}><strong>{file.name}</strong><span className={file.status==='available'?'':'review-version-error'}>{t(statusLabel[file.status]||'사본 읽기 실패')}</span><small>{t('사본 저장 시각')}: {new Date(file.createdAt).toLocaleString()}</small><details><summary>{t('파일 해시')}</summary><code>{file.sha256}</code></details></li>)}</ul></li>)}</ol>
  </section>;
 }

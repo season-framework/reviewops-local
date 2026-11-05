@@ -164,6 +164,15 @@ async function harness(t, options = {}) {
       return require('../electron/automation-api.cjs');
     }
     if(name==='./project-service-runtime.cjs'){const runtime=require('../electron/project-service-runtime.cjs');return {...runtime,createProjectServiceRuntime(options){state.managedServices=runtime.createProjectServiceRuntime(options);return state.managedServices;}};}
+    if(name==='./review-versions.cjs'&&(options.versionListReadObserver||options.versionListReadGate||options.versionListReturnGate)){
+      const versions=require('../electron/review-versions.cjs');
+      return {...versions,async listReviewVersions(store,reviewId,read,operation){
+        const result=await versions.listReviewVersions(store,reviewId,async file=>{
+          options.versionListReadObserver?.(file);await options.versionListReadGate?.({file,store});return read(file);
+        },operation);
+        await options.versionListReturnGate?.({store,reviewId,result});return result;
+      }};
+    }
     if(name==='./review-versions.cjs'&&options.versionReadGate){
       const versions=require('../electron/review-versions.cjs');
       return {...versions,saveReviewVersion(store,input,read,operation){return versions.saveReviewVersion(store,input,async file=>{await options.versionReadGate({file,store});return read(file);},operation);}};
@@ -3865,3 +3874,152 @@ test('local shared attachments observe queued deletion without returning stale m
     assert.deepEqual(h.state.liveStore.exportData(), before); assert.equal(h.state.windowMessages.length, messages);
   } finally { await unblock(); await Promise.all([removeReview, removeProject, pending]); }
 });
+
+
+test('version list refuses its replaced original main frame while queued', async t => {
+  const reads = [], h = await harness(t, { versionListReadObserver: file => reads.push(file.id) });
+  const a = await seed(h), main = h.forWindow(h.state.primaryWindow);
+  const file = await addFile(h, a.review.id, 'Original version-list attachment bytes');
+  const entry = await main.success('review.version.save', { reviewId: a.review.id,
+    target: { code: 'original-reader-target' }, attachmentIds: [file.id] });
+  await main.success('window.openProject', { projectId: a.project.id });
+  const host = await projectHost(h, a.project.id), client = h.forWindow(host);
+  const normal = await client.success('review.version.list', { reviewId: a.review.id });
+  assert.equal(normal.entries[0].id, entry.id);
+  assert.equal(normal.entries[0].attachments[0].status, 'available');
+  assert.equal(normal.entries[0].attachments[0].sha256, file.sha256);
+  assert.deepEqual(reads, [file.id]); reads.length = 0;
+  const originalFrame = host.webContents.mainFrame;
+  const unblock = await holdWriteAdmissionQueue(t, h, a.service.id);
+  let settled = false, result, expected, expectedNotices;
+  const pending = client.invoke('review.version.list', { reviewId: a.review.id })
+    .then(value => { settled = true; return value; });
+  try {
+    await Promise.resolve(); assert.equal(settled, false, 'The original read must still be queued');
+    host.webContents.mainFrame = { url: originalFrame.url };
+    assert.notEqual(host.webContents.mainFrame, originalFrame);
+    assert.equal(host.isDestroyed(), false, 'Frame replacement does not close the original host');
+    expected = h.state.liveStore.exportData();
+    expectedNotices = h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length;
+  } finally {
+    // Settle the exact queued request before restoring its frame or closing Store.
+    try { await unblock(); }
+    finally {
+      try { result = await pending; }
+      finally { host.webContents.mainFrame = originalFrame; }
+    }
+  }
+  assert.equal(settled, true);
+  assert.deepEqual(h.state.liveStore.exportData(), expected);
+  assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, expectedNotices);
+  t.diagnostic(JSON.stringify({ scope: 'Controlled production main/Store with an owned queue gate; no native app or remote caller',
+    originalFrameReplaced: true, hostStillAlive: !host.isDestroyed(), actualOK: result.ok,
+    actualErrorCode: result.error?.code || null, returnedVersionEntries: result.data?.entries?.length ?? null,
+    businessStateUnchanged: true, newDataChangeNotices: 0, queuedAttachmentReads: reads.length }));
+  assert.equal(result.ok, false, 'A version-list read must refuse its replaced original main frame');
+  assert.equal(result.error.code, 'ACCESS_DENIED'); assert.deepEqual(reads, []);
+});
+
+
+for (const change of ['foreign navigation', 'closed window', 'released QA scope', 'restored epoch', 'review reborn', 'review moved']) {
+  test(`version list refuses its original reader after ${change} during an attachment read`, async t => {
+    let entered, release, armed = false;
+    const reading = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    const h = await harness(t, { versionListReadGate: async () => { if (armed) { entered(); await gate; } } });
+    const a = await seed(h), b = await seed(h), main = h.forWindow(h.state.primaryWindow);
+    const file = await addFile(h, a.review.id, 'Original list read bytes');
+    await main.success('review.version.save', { reviewId: a.review.id, target: { code: 'list-target' }, attachmentIds: [file.id] });
+    await main.success('window.openProject', { projectId: a.project.id });
+    const host = await projectHost(h, a.project.id), client = h.forWindow(host), originalURL = host.webContents.mainFrame.url;
+    const qa = change === 'released QA scope' ? await h.state.toolIntegration.automationHandler('automation.qa.open',
+      { projectId: a.project.id, clientId: 'version-list-original-reader' }) : null;
+    armed = true;
+    const pending = client.invoke('review.version.list', { reviewId: a.review.id });
+    let result, expected, expectedNotices;
+    try {
+      await Promise.race([reading, pending.then(() => { throw new Error('Version list settled before its owned read gate'); })]);
+      if (change === 'foreign navigation') host.webContents.mainFrame.url = 'https://foreign.invalid/';
+      if (change === 'closed window') { host.destroy(); h.state.focusedWindow = h.state.primaryWindow; }
+      if (change === 'released QA scope') assert.equal((await h.state.toolIntegration.automationHandler('automation.qa.release', qa)).released, true);
+      if (change === 'restored epoch') h.state.liveStore.importData(h.state.liveStore.exportData());
+      if (change === 'review reborn') {
+        const original = { ...h.state.liveStore.db.prepare('SELECT * FROM reviews WHERE id=?').get(a.review.id) }, keys = Object.keys(original);
+        h.state.liveStore.transaction(() => {
+          h.state.liveStore.deleteReview(a.review.id);
+          h.state.liveStore.db.prepare(`INSERT INTO reviews(${keys.join(',')}) VALUES(${keys.map(() => '?').join(',')})`).run(...keys.map(key => original[key]));
+        });
+      }
+      if (change === 'review moved') h.state.liveStore.db.prepare('UPDATE reviews SET projectId=?,serviceId=NULL,number=(SELECT COALESCE(MAX(number),0)+1 FROM reviews WHERE projectId=?) WHERE id=?').run(b.project.id, b.project.id, a.review.id);
+      expected = h.state.liveStore.exportData();
+      expectedNotices = h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length;
+    } finally {
+      release();
+      try { result = await pending; }
+      finally { host.webContents.mainFrame.url = originalURL; }
+    }
+    const code = change === 'restored epoch' ? 'STALE_EPOCH' : ['review reborn', 'review moved'].includes(change) ? 'STALE_REVIEW' :
+      change === 'released QA scope' ? 'TARGET_MISMATCH' : 'ACCESS_DENIED';
+    assert.equal(result.ok, false, change); assert.equal(result.error.code, code, change);
+    assert.deepEqual(h.state.liveStore.exportData(), expected);
+    assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, expectedNotices);
+    assert.equal(h.state.agentStarts.length, 0);
+  });
+}
+
+for (const route of ['local frame replacement', 'integration epoch replacement']) {
+  test(`version list rechecks its ${route} after helper settlement before delivery`, async t => {
+    let entered, release, armed = false;
+    const returned = new Promise(resolve => { entered = resolve; }), gate = new Promise(resolve => { release = resolve; });
+    const h = await harness(t, { versionListReturnGate: async () => { if (armed) { entered(); await gate; } } });
+    const a = await seed(h), file = await addFile(h, a.review.id, 'Returned helper bytes');
+    await h.success('review.version.save', { reviewId: a.review.id, target: { code: 'settled-target' }, attachmentIds: [file.id] });
+    const host = h.state.primaryWindow, originalFrame = host.webContents.mainFrame;
+    armed = true;
+    const pending = (route === 'local frame replacement' ? h.forWindow(host).invoke('review.version.list', { reviewId: a.review.id }) :
+      h.state.toolIntegration.dispatch('review.version.list', { reviewId: a.review.id })).then(value => ({ value }), error => ({ error }));
+    let result, expected, expectedNotices;
+    try {
+      await Promise.race([returned, pending.then(() => { throw new Error('Version list settled before its delivery gate'); })]);
+      if (route === 'local frame replacement') host.webContents.mainFrame = { url: originalFrame.url };
+      else h.state.liveStore.importData(h.state.liveStore.exportData());
+      expected = h.state.liveStore.exportData();
+      expectedNotices = h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length;
+    } finally {
+      release();
+      try { result = await pending; }
+      finally { host.webContents.mainFrame = originalFrame; }
+    }
+    if (route === 'local frame replacement') {
+      assert.equal(result.value.ok, false); assert.equal(result.value.error.code, 'ACCESS_DENIED');
+    } else assert.equal(result.error.code, 'STALE_EPOCH');
+    assert.deepEqual(h.state.liveStore.exportData(), expected);
+    assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, expectedNotices);
+  });
+}
+
+
+for (const route of ['local', 'integration']) {
+  test(`version list keeps its original ${route} epoch while queued without starting byte reads`, async t => {
+    const reads = [], h = await harness(t, { versionListReadObserver: file => reads.push(file.id) });
+    const a = await seed(h), file = await addFile(h, a.review.id, 'Queued epoch original bytes');
+    await h.success('review.version.save', { reviewId: a.review.id, target: { code: 'queued-epoch' }, attachmentIds: [file.id] });
+    const unblock = await holdWriteAdmissionQueue(t, h, a.service.id);
+    const pending = (route === 'local' ? h.invoke('review.version.list', { reviewId: a.review.id }) :
+      h.state.toolIntegration.dispatch('review.version.list', { reviewId: a.review.id })).then(value => ({ value }), error => ({ error }));
+    let result, expected, expectedNotices;
+    try {
+      h.state.liveStore.importData(h.state.liveStore.exportData());
+      expected = h.state.liveStore.exportData();
+      expectedNotices = h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length;
+    } finally {
+      try { await unblock(); }
+      finally { result = await pending; }
+    }
+    const error = route === 'local' ? result.value.error : result.error;
+    if (route === 'local') assert.equal(result.value.ok, false);
+    assert.equal(error.code, 'STALE_EPOCH');
+    assert.equal(error.message, '리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.');
+    assert.deepEqual(reads, []); assert.deepEqual(h.state.liveStore.exportData(), expected);
+    assert.equal(h.state.windowMessages.filter(row => row.channel === 'reviewops:data-change').length, expectedNotices);
+  });
+}
