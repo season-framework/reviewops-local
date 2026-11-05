@@ -5,9 +5,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { DatabaseSync } = require('node:sqlite');
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const BACKUP_FORMAT_VERSION = 10;
 const sharedWrites = require('./shared-write-core.cjs');
+const peerProjectBirths = require('./peer-project-births.cjs');
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
@@ -474,6 +475,10 @@ class LocalStore {
       sharedWrites.migrate(this.db);
       this.db.exec('PRAGMA user_version=11;');
     });
+    if (current < 12) this.transaction(() => {
+      peerProjectBirths.migrate(this.db);
+      this.db.exec('PRAGMA user_version=12;');
+    });
   }
 
   transaction(fn) {
@@ -499,6 +504,14 @@ class LocalStore {
     }
     catch (error) { try { this.db.exec('ROLLBACK'); } catch {} throw error; }
     finally { this.inTransaction = false; this.transactionFailed = false; this.transactionFailure = null; }
+  }
+
+  // A detached metadata read, never a peer grant. Existing write transactions
+  // cannot expose uncommitted birth values through this entry point.
+  peerReadDataset() {
+    if (arguments.length || this.inTransaction) fail('Committed peer read state is unavailable.', 'PEER_READ_UNAVAILABLE');
+    try { return this.transaction(() => peerProjectBirths.readDataset(this.db)); }
+    catch { fail('Committed peer read state is unavailable.', 'PEER_READ_UNAVAILABLE'); }
   }
 
   reviewWriteState(input, callerProvider) { return sharedWrites.readState(this, input, callerProvider); }
@@ -935,6 +948,7 @@ class LocalStore {
     return this.transaction(() => {
       sharedWrites.beginLogicalImport(this.db);
       for (const table of [...TABLES].reverse()) this.db.exec(`DELETE FROM ${table}`);
+      peerProjectBirths.resetForLogicalImport(this.db);
       this.insertImport(clean);
       sharedWrites.finishLogicalImport(this.db);
       return this.snapshot();
