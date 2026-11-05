@@ -228,7 +228,7 @@ jobs:
           TEST_CONTEXT_SHA: ${{ needs.metadata.outputs.context_sha }}
         run: |
           node scripts/test-build-context.mjs --context release/test/build-context.json --directory release/test --expected-sha "$TEST_CONTEXT_SHA"
-          node scripts/test-release.mjs --directory release/test --dry-run
+          node scripts/test-release.mjs --directory release/test --offline
       - name: Publish the complete build and remove previous test packages
         id: publication
         if: needs.package.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.publish == true
