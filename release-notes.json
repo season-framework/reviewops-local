@@ -3,6 +3,14 @@
   "version": "1.5.0",
   "entries": [
     {
+      "category": "fixes",
+      "title": "Select all text before document-bound QA input on macOS",
+      "description": "Meta+A in the observed-document key tool now carries Chromium's Select All editing command on macOS. The matching key-up stays on the original surface, and a page can cancel the editing action. Text input still uses the actual focus and selection.",
+      "commits": [
+        "e94be0b717898f96e58d20bb30a8dbba1b4f2b09"
+      ]
+    },
+    {
       "category": "features",
       "title": "Tie opt-in QA input to the observed web document",
       "description": "The new optional QA document tool lets agents observe an in-app web view or owned popup and send input with its app-issued document ID. Navigation, renderer loss and target replacement invalidate old observations. Stale requests are rejected before input starts; later failure warns that input may have applied and must not be replayed. Paired releases stay on the original contents, and failed cleanup quarantines the window. The eleven legacy QA tools remain unchanged.",
