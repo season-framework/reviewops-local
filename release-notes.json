@@ -4,6 +4,14 @@
   "entries": [
     {
       "category": "features",
+      "title": "List review attachment metadata within its project",
+      "description": "List the names, declared file types, sizes and SHA-256 digests of files attached directly to a review through local project queries. Comment-linked files, storage paths and file contents are excluded. Lists above the 1,000-file or 512 KiB JSON limit are rejected in full.",
+      "commits": [
+        "1471925493bbe4480f5f4146517e1a5a0555d5b2"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Read user comments through local project queries",
       "description": "Read a review's user comments through local queries confined to its project, preserving text and order. Prompts linked to agent runs, agent responses and structured evidence are excluded. Results above the comment or JSON size limit fail explicitly.",
       "commits": [
