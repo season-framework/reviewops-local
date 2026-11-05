@@ -24,6 +24,7 @@ test('human notes lead with grouped behavior and retain English source reference
  const pointer={schema:1,manifest:`reviewops-test-update-24001-${commit.slice(0,12)}.json`,buildNumber:24001,commit,size:100,sha256:'d'.repeat(64)};
  const build={channel:'test',version:'1.3.0',developmentNumber:2,buildNumber:24001,commit,builtAt:'2026-11-02T03:29:31.170Z'};
  const body=renderTestReleaseNotes({build,versionLabel:'1.3.0-dev-2',pointer,changes,highlights:[entry],verification:[{target:'win32-x64',ok:true,publisher:{status:'NotSigned'}}]});
+ assert.deepEqual([...body.matchAll(/^## (.+)$/gm)].map(match=>match[1]),['Fixes','Known limitations','Install and update','Verification','Build details']);
  assert.match(body,/\*\*Keep previews reliable after reload:\*\*/);assert.ok(body.indexOf('## Fixes')<body.indexOf('## Build details'));assert.ok(body.indexOf('## Install and update')<body.indexOf('<details>'));
  assert.equal(/^# /m.test(body),false);assert.equal(/[가-힣]/.test(body),false);assert.equal((body.match(/Keep previews reliable after reload/g)||[]).length,1);
  assert.ok(body.includes('[PR #50](https://github.com/season-framework/reviewops-local/pull/50)'));assert.ok(body.includes('**NotSigned**'));
@@ -41,6 +42,7 @@ test('untranslated subjects and protocol-looking text cannot introduce non-Engli
 
 test('stable draft notes share categories and preserve pending QA and unsigned-installer limits',async()=>{
  const {renderStableDraftNotes}=await load();const body=renderStableDraftNotes({version:'1.3.0',tag:'v1.3.0',commit,policy:{previousVersion:'1.2.11',reason:'Add scoped reviews'},verification:[{target:'win32-x64',ok:true,publisher:{status:'NotSigned'}}]},[entry]);
+ assert.deepEqual([...body.matchAll(/^## (.+)$/gm)].map(match=>match[1]),['Fixes','Known limitations','Install and update','Verification','Build details']);
  assert.match(body,/^\*\*Draft/);assert.ok(body.includes('QA report'));assert.ok(body.includes('## Fixes'));assert.ok(body.includes('**NotSigned**'));assert.equal(/^# /m.test(body),false);assert.equal(/[가-힣]/.test(body),false);assert.ok(body.includes(`/compare/v1.2.11...${commit}`));
  const fallback=renderStableDraftNotes({version:'1.2.11',tag:'v1.2.11',commit,policy:{reason:'한국어 정책 설명'}});assert.equal(/[가-힣]/.test(fallback),false);assert.ok(fallback.includes('## Changes'));
 });
