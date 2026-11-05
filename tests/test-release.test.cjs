@@ -275,3 +275,65 @@ test('partial platform artifacts survive failed-job cleanup and complete on retr
   assert.match(cleanup.env.KEEP_CURRENT, /needs\.metadata\.result/);
   assert.doesNotMatch(cleanup.env.KEEP_CURRENT, /needs\.package\.result/);
 });
+
+async function deletionConfirmationFixture(confirm) {
+  const { cleanupArtifacts } = await import('../scripts/test-build-artifacts.mjs');
+  const { REPOSITORY, PUBLICATION_GROUP } = await load;
+  const env = { GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: REPOSITORY, GITHUB_JOB: 'publish', GITHUB_WORKFLOW_REF: REPOSITORY+'/.github/workflows/test-release.yml@refs/heads/test', REVIEWOPS_PUBLICATION_GROUP: PUBLICATION_GROUP, GITHUB_SHA: 'a'.repeat(40), GITHUB_RUN_ID: '30', GITHUB_RUN_NUMBER: '3', GITHUB_RUN_ATTEMPT: '1', GITHUB_TOKEN: 'synthetic-test-token' };
+  const artifact = { id: 71, name: 'reviewops-test-build-context', workflow_run: { id: 30 } };
+  const calls = [], waits = [];
+  const fetchImpl = async (value, options) => {
+    const suffix = new URL(value).pathname.split('/actions/')[1];
+    calls.push({ suffix, method: options.method });
+    if (suffix === 'workflows/test-release.yml') return Response.json({ id: 7 });
+    if (suffix === 'artifacts') return Response.json({ artifacts: [artifact] });
+    if (suffix === 'runs/30') return Response.json({ workflow_id: 7, status: 'in_progress' });
+    assert.equal(suffix, 'artifacts/71');
+    if (options.method === 'DELETE') return new Response(null, { status: 204 });
+    assert.equal(options.method, 'GET');
+    assert.ok(options.signal instanceof AbortSignal);
+    return confirm();
+  };
+  return { run: () => cleanupArtifacts({ env, fetchImpl, remove: true, waitImpl: async ms => { waits.push(ms); } }), calls, waits, artifact };
+}
+
+test('artifact cleanup confirms one deletion after stale successful reads become 404', async () => {
+  let reads = 0; const responses = [];
+  const f = await deletionConfirmationFixture(() => {
+    reads++;
+    assert.ok(reads <= 3, 'Only confirmation reads may follow the original deletion');
+    const response = reads === 1 ? Response.json(null) : reads === 2 ? Response.json({ id: 71 }) : new Response('not found', { status: 404 });
+    responses.push(response);
+    return response;
+  });
+  const result = await f.run();
+  assert.equal(result.dryRun, false);
+  assert.deepEqual(result.artifacts, [{ id: 71, name: f.artifact.name, run: 30 }]);
+  assert.deepEqual(f.calls.filter(row => row.suffix === 'artifacts/71').map(row => row.method), ['DELETE', 'GET', 'GET', 'GET']);
+  assert.deepEqual(f.waits, [1000, 1000]);
+  assert.deepEqual(responses.map(response => response.bodyUsed), [true, true, true]);
+});
+
+test('artifact cleanup bounds persistent visibility without repeating the DELETE', async () => {
+  let reads = 0;
+  const f = await deletionConfirmationFixture(() => {
+    assert.ok(++reads <= 5, 'Persistent visibility must have a finite confirmation bound');
+    return Response.json({ id: 71 });
+  });
+  await assert.rejects(f.run(), error => /artifact 71/.test(error.message) && error.message.includes(f.artifact.name) && /not confirmed after 5 checks/.test(error.message));
+  assert.equal(reads, 5);
+  assert.deepEqual(f.calls.filter(row => row.method === 'DELETE'), [{ suffix: 'artifacts/71', method: 'DELETE' }]);
+  assert.deepEqual(f.waits, [1000, 1000, 1000, 1000]);
+});
+
+test('artifact cleanup stops on a confirmation API error and retains artifact identity', async () => {
+  let reads = 0;
+  const f = await deletionConfirmationFixture(() => {
+    reads++;
+    return new Response(null, { status: 503 });
+  });
+  await assert.rejects(f.run(), error => /artifact 71/.test(error.message) && error.message.includes(f.artifact.name) && /HTTP 503/.test(error.message) && /HTTP 503/.test(error.cause.message));
+  assert.equal(reads, 1);
+  assert.deepEqual(f.calls.filter(row => row.suffix === 'artifacts/71').map(row => row.method), ['DELETE', 'GET']);
+  assert.deepEqual(f.waits, []);
+});

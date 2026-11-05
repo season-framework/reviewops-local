@@ -1,19 +1,23 @@
 import path from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import { assertPublicationCI, REPOSITORY } from './test-release.mjs';
 const packageName = /^reviewops-test-build-(?:darwin-arm64|darwin-x64|win32-x64|context)$/;
 const nativeNames=['darwin-arm64','darwin-x64','win32-x64'].map(target=>`reviewops-test-build-${target}`);
-export async function cleanupArtifacts({ remove = false, keepCurrent = false, keepCandidate = false, env = process.env, fetchImpl = fetch } = {}) {
+const deletionChecks = 5, deletionPollMs = 1000, deletionRequestMs = 5000;
+export async function cleanupArtifacts({ remove = false, keepCurrent = false, keepCandidate = false, env = process.env, fetchImpl = fetch, waitImpl = delay } = {}) {
   assertPublicationCI(null, env);
   const token = env.GITHUB_TOKEN;
   if (!token) throw new Error('Actions 임시 파일 정리 토큰이 없습니다.');
   const currentRun = Number(env.GITHUB_RUN_ID);
   if (!Number.isSafeInteger(currentRun) || currentRun < 1) throw new Error('현재 Actions 실행 ID가 올바르지 않습니다.');
   const api = `https://api.github.com/repos/${REPOSITORY}`;
-  async function request(suffix, method = 'GET') {
-    const response = await fetchImpl(api + suffix, { method, redirect: 'error', headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Cache-Control': 'no-cache' } });
-    if (response.status === 404) return null;
+  async function request(suffix, method = 'GET', { statusOnly = false, signal } = {}) {
+    const response = await fetchImpl(api + suffix, { method, redirect: 'error', ...(signal ? { signal } : {}), headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Cache-Control': 'no-cache' } });
+    if (statusOnly) await response.body?.cancel();
+    if (response.status === 404) return statusOnly ? 404 : null;
     if (!response.ok) throw new Error(`Actions 임시 파일 요청이 실패했습니다: HTTP ${response.status}`);
+    if (statusOnly) return response.status;
     return response.status === 204 ? true : response.json();
   }
   const workflow = await request('/actions/workflows/test-release.yml');
@@ -44,7 +48,19 @@ export async function cleanupArtifacts({ remove = false, keepCurrent = false, ke
   const selected = eligible.filter(item => item.run !== retainedRun);
   if (remove) for (const artifact of selected) {
     await request(`/actions/artifacts/${artifact.id}`, 'DELETE');
-    if (await request(`/actions/artifacts/${artifact.id}`)) throw new Error('삭제한 Actions 임시 파일이 아직 조회됩니다.');
+    // Confirm the original DELETE with reads only; never replay the deletion.
+    let absent = false;
+    for (let check = 0; check < deletionChecks; check++) {
+      let status;
+      try {
+        status = await request(`/actions/artifacts/${artifact.id}`, 'GET', { statusOnly: true, signal: AbortSignal.timeout(deletionRequestMs) });
+      } catch (error) {
+        throw new Error(`Deletion confirmation failed for Actions artifact ${artifact.id} (${artifact.name}): ${error.message}`, { cause: error });
+      }
+      if (status === 404) { absent = true; break; }
+      if (check + 1 < deletionChecks) await waitImpl(deletionPollMs);
+    }
+    if (!absent) throw new Error(`Deletion of Actions artifact ${artifact.id} (${artifact.name}) was not confirmed after ${deletionChecks} checks.`);
   }
   return { dryRun: !remove, retainedRun, artifacts: selected };
 }
