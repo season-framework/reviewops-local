@@ -7,7 +7,8 @@
       "title": "Reject outdated review-version checks",
       "description": "Saved review-version lists now reject checks whose original window or project QA scope changed, whose dataset was replaced, or whose review was replaced or moved. Dataset and review refusals ask you to reload the list. Normal missing, changed and unreadable file results are preserved.",
       "commits": [
-        "dba5230be2a99964b2b011ba7b641ea47dfe9a26"
+        "dba5230be2a99964b2b011ba7b641ea47dfe9a26",
+        "c74e21f1ab2e9298252406df02174e5f2af79c5a"
       ]
     },
     {
