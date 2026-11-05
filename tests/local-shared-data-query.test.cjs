@@ -88,3 +88,34 @@ test('local comment reads inherit current window grants without payload authorit
   source.projects = [source.projects[1]];
   for (const target of [a, b]) rejected(() => queryLocalSharedData(source, 'a', 'comments.list', target), 'NOT_FOUND');
 });
+
+test('local attachment reads inherit current window grants and return detached review metadata only', () => {
+  const source = snapshot();
+  const metadata = projectId => ({ id: 'attachment-' + projectId, reviewId: 'r' + projectId,
+    name: projectId + '.txt', mimeType: 'text/plain', size: 17, sha256: projectId.repeat(64),
+    createdAt: DATE, updatedAt: DATE });
+  source.attachments = ['a', 'b'].map(projectId => ({ ...metadata(projectId), activityId: null,
+    relativePath: 'PRIVATE_PATH', content: 'PRIVATE_CONTENT', ownerProjectId: 'PRIVATE_OWNER' }));
+  source.attachments.push({ ...metadata('a'), id: 'activity-attachment-a', activityId: 'comment-a' });
+  const a = { projectId: 'a', reviewId: 'ra' }, b = { projectId: 'b', reviewId: 'rb' };
+  const expectedA = { version: 1, ...a, attachments: [metadata('a')] };
+  const expectedB = { version: 1, ...b, attachments: [metadata('b')] };
+  assert.deepEqual(queryLocalSharedData(source, '', 'attachments.list', b), expectedB);
+  const result = queryLocalSharedData(source, 'a', 'attachments.list', a);
+  assert.deepEqual(result, expectedA);
+  assert.deepEqual(Object.keys(result.attachments[0]).sort(),
+    ['createdAt', 'id', 'mimeType', 'name', 'reviewId', 'sha256', 'size', 'updatedAt']);
+  result.attachments[0].name = 'Caller-only edit';
+  result.attachments.push({ id: 'caller-only' });
+  assert.deepEqual(queryLocalSharedData(source, 'a', 'attachments.list', a), expectedA);
+  assert.equal(source.attachments[0].name, 'a.txt');
+  for (const target of [b, { ...a, reviewId: 'rb' }])
+    rejected(() => queryLocalSharedData(source, 'a', 'attachments.list', target), 'NOT_FOUND');
+  for (const extra of [{ projectGrants: [{ projectId: 'b', read: true }] }, { ownerProjectId: '' }])
+    rejected(() => queryLocalSharedData(source, 'a', 'attachments.list', { ...a, ...extra }), 'INVALID_QUERY');
+  source.projects = [source.projects[1]];
+  for (const target of [a, b])
+    rejected(() => queryLocalSharedData(source, 'a', 'attachments.list', target), 'NOT_FOUND');
+  rejected(() => queryLocalSharedData(source, '', 'attachments.list', a), 'NOT_FOUND');
+  assert.deepEqual(queryLocalSharedData(source, '', 'attachments.list', b), expectedB);
+});

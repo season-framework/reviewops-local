@@ -306,3 +306,132 @@ test('the exact UTF-8 JSON envelope budget includes escaping, Unicode and separa
   activities.find(row => row.body.length < 100000).body += 'x';
   assert.deepEqual(errorOf(() => comments(commentSnapshot(activities))), { code: 'QUERY_LIMIT_EXCEEDED', message: 'Shared comments exceed the local query limit.' });
 });
+
+const attachment = (id, extra = {}) => ({ id, reviewId: 'review-a', activityId: null, name: 'Evidence.txt',
+  mimeType: 'text/plain', size: 0, sha256: 'F'.repeat(64), createdAt: DATE, updatedAt: DATE,
+  storageName: 'PRIVATE_STORAGE', ...extra });
+const attachmentSnapshot = attachments => ({ ...snapshot(), attachments });
+const attachments = source => querySharedData(source, caller('a'), 'attachments.list', { projectId: 'a', reviewId: 'review-a' });
+const attachmentEnvelope = values => ({ version: 1, projectId: 'a', reviewId: 'review-a', attachments: values.map(row =>
+  ({ id: row.id, reviewId: row.reviewId, name: row.name, mimeType: row.mimeType, size: row.size,
+    sha256: row.sha256, createdAt: row.createdAt, updatedAt: row.updatedAt })) });
+
+test('direct attachment metadata preserves exact fields, supplied order and detached values', () => {
+  const first = attachment('z-first', { name: 'Report:한".txt', mimeType: 'application/x-own; label=한' });
+  const second = attachment('a-second', { size: 1073741824, sha256: 'ab'.repeat(32), updatedAt: '2026-11-03T00:00:00.000Z' });
+  const source = attachmentSnapshot([first, second]), context = caller('a');
+  frozen(source); frozen(context);
+  const before = JSON.stringify(source), result = querySharedData(source, context, 'attachments.list', { projectId: 'a', reviewId: 'review-a' });
+  assert.deepEqual(result, attachmentEnvelope([first, second]));
+  assert.deepEqual(Object.keys(result), ['version', 'projectId', 'reviewId', 'attachments']);
+  assert.deepEqual(Object.keys(result.attachments[0]), ['id', 'reviewId', 'name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt']);
+  assert.notEqual(result.attachments[0], first); noPrivateFields(result);
+  result.attachments[0].name = 'Caller-only.txt'; result.attachments.push({ id: 'caller-only' });
+  assert.deepEqual(attachments(source), attachmentEnvelope([first, second]));
+  assert.equal(JSON.stringify(source), before);
+  assert.deepEqual(attachments(attachmentSnapshot([])).attachments, []);
+});
+
+test('attachment classification never follows activities or evaluates omitted metadata and paths', () => {
+  let reads = 0;
+  const poison = row => {
+    for (const key of ['name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt', 'storageName', 'path', 'bytes', 'url', 'evidence'])
+      Object.defineProperty(row, key, { get() { reads++; throw new Error('Excluded or private attachment material'); } });
+    return row;
+  };
+  const direct = attachment('direct');
+  for (const key of ['storageName', 'path', 'bytes', 'url', 'evidence'])
+    Object.defineProperty(direct, key, { get() { reads++; throw new Error('Private direct attachment material'); } });
+  const linked = ['ordinary-user-comment', 'run-linked-user-prompt', 'agent-response', 'system-history'].map(id =>
+    poison({ id: 'file-' + id, reviewId: 'review-a', activityId: id }));
+  const foreign = poison({ reviewId: 'review-b' });
+  for (const key of ['id', 'activityId']) Object.defineProperty(foreign, key, { get() { reads++; throw new Error('Foreign classification'); } });
+  const source = attachmentSnapshot([linked[0], foreign, direct, ...linked.slice(1)]);
+  Object.defineProperty(source, 'activities', { get() { reads++; throw new Error('Activities must not be consulted'); } });
+  assert.deepEqual(attachments(source), attachmentEnvelope([direct]));
+  assert.equal(reads, 0);
+});
+
+test('old reads and denied attachment targets do not inspect the attachment collection', () => {
+  let reads = 0;
+  const source = commentSnapshot([]), without = commentSnapshot([]);
+  Object.defineProperty(source, 'attachments', { get() { reads++; throw new Error('Attachments not admitted'); } });
+  for (const [operation, payload] of [['projects.list', {}], ['reviews.list', { projectId: 'a' }],
+    ['reviews.get', { projectId: 'a', reviewId: 'review-a' }], ['comments.list', { projectId: 'a', reviewId: 'review-a' }]])
+    assert.deepEqual(querySharedData(source, caller('a'), operation, payload), querySharedData(without, caller('a'), operation, payload));
+  for (const payload of [{ projectId: 'b', reviewId: 'review-b' }, { projectId: 'a', reviewId: 'review-b' },
+    { projectId: 'a', reviewId: 'missing' }, { projectId: 'missing', reviewId: 'review-a' }])
+    assert.deepEqual(errorOf(() => querySharedData(source, caller('a'), 'attachments.list', payload)), { code: 'NOT_FOUND', message: 'Shared resource not found.' });
+  assert.equal(errorOf(() => querySharedData(source, {}, 'attachments.list', { projectId: 'a', reviewId: 'review-a' })).code, 'ACCESS_DENIED');
+  assert.equal(reads, 0);
+});
+
+test('attachment payloads cannot supply grants, selection controls or accessor values', () => {
+  const source = attachmentSnapshot([]), payload = { projectId: 'a', reviewId: 'review-a' }; let reads = 0;
+  const accessor = Object.defineProperty({ reviewId: 'review-a' }, 'projectId', { get() { reads++; return 'a'; } });
+  const hidden = Object.defineProperty({ ...payload }, 'limit', { value: 1 });
+  for (const invalid of [undefined, {}, { projectId: 'a' }, { ...payload, activityId: null },
+    { ...payload, projectGrants: caller('b').projectGrants }, { ...payload, cursor: 'next' }, hidden, accessor,
+    { ...payload, [Symbol('owner')]: 'trusted' }, { ...payload, reviewId: '../other' }])
+    assert.deepEqual(errorOf(() => querySharedData(source, caller('a'), 'attachments.list', invalid)), { code: 'INVALID_QUERY', message: 'Invalid shared-data query.' });
+  assert.equal(reads, 0);
+});
+
+test('attachment links, metadata primitives and duplicate IDs fail closed without coercion', () => {
+  const expected = { code: 'INVALID_SNAPSHOT', message: 'Shared data is unavailable.' };
+  for (const [key, value] of [['activityId', undefined], ['activityId', ''], ['activityId', false], ['activityId', '../activity'],
+    ['id', 'bad/id'], ['name', '.'], ['name', '..'], ['name', 'a/b'], ['name', 'a\\b'], ['name', ''],
+    ['name', '  '], ['name', 'bad\0name'], ['name', 'x'.repeat(256)], ['mimeType', ''], ['mimeType', ' '],
+    ['mimeType', null], ['mimeType', 'bad\0type'], ['mimeType', 'x'.repeat(256)], ['size', '0'], ['size', -1],
+    ['size', 1.5], ['size', 1073741825], ['size', Number.MAX_SAFE_INTEGER + 1], ['sha256', 'f'.repeat(63)],
+    ['sha256', 'g'.repeat(64)], ['sha256', null], ['createdAt', 'yesterday'], ['updatedAt', '2026-11-02']])
+    assert.deepEqual(errorOf(() => attachments(attachmentSnapshot([attachment('bad', { [key]: value })]))), expected);
+  const missing = attachment('missing'); delete missing.activityId;
+  assert.deepEqual(errorOf(() => attachments(attachmentSnapshot([missing]))), expected);
+  let reads = 0;
+  for (const key of ['activityId', 'name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt']) {
+    const row = attachment('accessor'); Object.defineProperty(row, key, { get() { reads++; throw new Error('Must not invoke getter'); } });
+    assert.deepEqual(errorOf(() => attachments(attachmentSnapshot([row]))), expected);
+  }
+  for (const values of [undefined, {}, Array(100001).fill(null),
+    [attachment('duplicate'), attachment('duplicate')],
+    [attachment('duplicate'), attachment('duplicate', { activityId: 'linked-comment' })]])
+    assert.deepEqual(errorOf(() => attachments(attachmentSnapshot(values))), expected);
+  assert.equal(reads, 0);
+  const maximum = attachment('maximum', { name: 'x'.repeat(255), mimeType: 'y'.repeat(255) });
+  assert.deepEqual(attachments(attachmentSnapshot([maximum])), attachmentEnvelope([maximum]));
+});
+
+test('the 1001st direct attachment refuses before its metadata getters are inspected', () => {
+  const values = Array.from({ length: 1000 }, (_, i) => attachment('attachment-' + i, { name: 'x' }));
+  const source = attachmentSnapshot([...values, attachment('linked', { activityId: 'ordinary-comment' }), { reviewId: 'review-b' }]);
+  assert.equal(attachments(source).attachments.length, 1000);
+  const overflow = attachment('overflow'); let reads = 0;
+  for (const key of ['name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt'])
+    Object.defineProperty(overflow, key, { get() { reads++; throw new Error('Beyond count budget'); } });
+  source.attachments.push(overflow);
+  assert.deepEqual(errorOf(() => attachments(source)), { code: 'ATTACHMENT_QUERY_LIMIT_EXCEEDED', message: 'Shared review attachments exceed the local query limit.' });
+  assert.equal(reads, 0);
+});
+
+test('the attachment UTF-8 envelope accepts exactly 512 KiB and rejects one valid byte more', () => {
+  const limit = 524288;
+  const values = Array.from({ length: 1000 }, (_, i) => attachment('attachment-' + String(i).padStart(4, '0'),
+    { name: 'x', mimeType: 'application/octet-stream' }));
+  values[0].name = '한"'.repeat(30);
+  let remaining = limit - Buffer.byteLength(JSON.stringify(attachmentEnvelope(values)), 'utf8');
+  assert.ok(remaining > 0);
+  for (const row of values) for (const key of ['name', 'mimeType']) {
+    const length = Math.min(255 - row[key].length, remaining); row[key] += 'x'.repeat(length); remaining -= length;
+  }
+  assert.equal(remaining, 0, 'Valid metadata fields must reach the complete envelope boundary');
+  const expected = attachmentEnvelope(values);
+  assert.equal(Buffer.byteLength(JSON.stringify(expected), 'utf8'), limit);
+  assert.ok(JSON.stringify(expected).length < limit, 'Character counts must not substitute for UTF-8 bytes');
+  assert.deepEqual(attachments(attachmentSnapshot(values)), expected);
+  const nonfull = values.find(row => row.name.length < 255); assert.ok(nonfull);
+  nonfull.name += 'x';
+  assert.equal(Buffer.byteLength(JSON.stringify(attachmentEnvelope(values)), 'utf8'), limit + 1);
+  assert.equal(values.length, 1000); assert.ok(values.every(row => row.name.length <= 255 && row.mimeType.length <= 255));
+  assert.deepEqual(errorOf(() => attachments(attachmentSnapshot(values))), { code: 'ATTACHMENT_QUERY_LIMIT_EXCEEDED', message: 'Shared review attachments exceed the local query limit.' });
+});
