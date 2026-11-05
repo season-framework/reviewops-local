@@ -1,6 +1,10 @@
 'use strict';
 
 const MAX_ROWS = 100000;
+const MAX_COMMENTS = 1000;
+const MAX_COMMENT_BYTES = 4 * 1024 * 1024;
+const ACTIVITY_TYPES = new Set(['comment', 'created', 'updated', 'status']);
+const ACTIVITY_ROLES = new Set(['user', 'agent', 'system']);
 const STATUSES = new Set(['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed']);
 const PRIORITIES = new Set(['low', 'normal', 'high', 'critical']);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
@@ -8,7 +12,8 @@ const MESSAGES = Object.freeze({
   INVALID_QUERY: 'Invalid shared-data query.',
   ACCESS_DENIED: 'A valid server-owned read grant context is required.',
   NOT_FOUND: 'Shared resource not found.',
-  INVALID_SNAPSHOT: 'Shared data is unavailable.'
+  INVALID_SNAPSHOT: 'Shared data is unavailable.',
+  QUERY_LIMIT_EXCEEDED: 'Shared comments exceed the local query limit.'
 });
 
 function fail(code) {
@@ -53,7 +58,7 @@ function grants(callerContext) {
 }
 function queryPayload(operation, payload) {
   const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] :
-    operation === 'reviews.get' ? ['projectId', 'reviewId'] : null;
+    operation === 'reviews.get' || operation === 'comments.list' ? ['projectId', 'reviewId'] : null;
   if (!keys) fail('INVALID_QUERY');
   closed(payload, keys, 'INVALID_QUERY');
   for (const key of keys) identifier(field(payload, key, 'INVALID_QUERY'), 'INVALID_QUERY');
@@ -97,6 +102,34 @@ function unique(rowsToProject, projector) {
   });
 }
 
+function commentList(snapshot, projectId, reviewId) {
+  const activities = rows(field(snapshot, 'activities', 'INVALID_SNAPSHOT'), 'INVALID_SNAPSHOT');
+  const result = { version: 1, projectId, reviewId, comments: [] };
+  let bytes = Buffer.byteLength(JSON.stringify(result), 'utf8');
+  const seen = new Set();
+  for (const row of activities) {
+    if (storedId(row, 'reviewId') !== reviewId) continue;
+    const id = storedId(row, 'id');
+    if (seen.has(id)) fail('INVALID_SNAPSHOT');
+    seen.add(id);
+    const type = field(row, 'type', 'INVALID_SNAPSHOT'), role = field(row, 'role', 'INVALID_SNAPSHOT');
+    if (!ACTIVITY_TYPES.has(type) || !ACTIVITY_ROLES.has(role)) fail('INVALID_SNAPSHOT');
+    if (type !== 'comment' || role !== 'user') continue;
+    const run = field(row, 'agentRunId', 'INVALID_SNAPSHOT');
+    if (typeof run !== 'string' || run !== '' && !ID.test(run)) fail('INVALID_SNAPSHOT');
+    // Agent prompts also use the user role; their nonempty run link excludes them.
+    if (run !== '') continue;
+    if (result.comments.length === MAX_COMMENTS) fail('QUERY_LIMIT_EXCEEDED');
+    const comment = { id, reviewId, body: storedText(row, 'body', 100000),
+      createdAt: storedDate(row, 'createdAt'), updatedAt: storedDate(row, 'updatedAt') };
+    const addition = Buffer.byteLength(JSON.stringify(comment), 'utf8') + (result.comments.length ? 1 : 0);
+    if (bytes + addition > MAX_COMMENT_BYTES) fail('QUERY_LIMIT_EXCEEDED');
+    bytes += addition;
+    result.comments.push(comment);
+  }
+  return result;
+}
+
 // Caller context is application-owned. Future adapters must never take grants
 // from the operation payload or treat this pure function as device authentication.
 function querySharedData(snapshot, callerContext, operation, payload) {
@@ -122,7 +155,9 @@ function querySharedData(snapshot, callerContext, operation, payload) {
   const matches = ownReviews.filter(row => storedId(row, 'id') === payload.reviewId);
   if (!matches.length) fail('NOT_FOUND');
   if (matches.length !== 1) fail('INVALID_SNAPSHOT');
-  return { version: 1, projectId, review: reviewDto(matches[0]) };
+  const review = reviewDto(matches[0]);
+  if (operation === 'comments.list') return commentList(snapshot, projectId, review.id);
+  return { version: 1, projectId, review };
 }
 
 module.exports = { querySharedData };

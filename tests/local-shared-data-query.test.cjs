@@ -72,3 +72,19 @@ test('local shared adapter supports stored prototype-shaped IDs without object t
     assert.equal(queryLocalSharedData(source, id, 'reviews.get', { projectId: id, reviewId: 'ra' }).review.projectId, id);
   }
 });
+
+test('local comment reads inherit current window grants without payload authority', () => {
+  const source = snapshot();
+  source.activities = ['a', 'b'].map(projectId => ({ id: 'comment-' + projectId, reviewId: 'r' + projectId,
+    type: 'comment', role: 'user', agentRunId: '', body: 'Shared comment ' + projectId, createdAt: DATE, updatedAt: DATE }));
+  const a = { projectId: 'a', reviewId: 'ra' }, b = { projectId: 'b', reviewId: 'rb' };
+  assert.equal(queryLocalSharedData(source, '', 'comments.list', b).comments[0].id, 'comment-b');
+  const result = queryLocalSharedData(source, 'a', 'comments.list', a);
+  assert.deepEqual(Object.keys(result.comments[0]).sort(), ['body', 'createdAt', 'id', 'reviewId', 'updatedAt']);
+  result.comments[0].body = 'Caller-only edit';
+  assert.equal(queryLocalSharedData(source, 'a', 'comments.list', a).comments[0].body, 'Shared comment a');
+  rejected(() => queryLocalSharedData(source, 'a', 'comments.list', b), 'NOT_FOUND');
+  rejected(() => queryLocalSharedData(source, 'a', 'comments.list', { ...a, projectGrants: [{ projectId: 'b', read: true }] }), 'INVALID_QUERY');
+  source.projects = [source.projects[1]];
+  for (const target of [a, b]) rejected(() => queryLocalSharedData(source, 'a', 'comments.list', target), 'NOT_FOUND');
+});

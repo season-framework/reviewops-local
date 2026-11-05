@@ -61,7 +61,8 @@ const windowActions = new Set(['window.state','window.fullscreen','window.close'
 const localSharedActions = Object.freeze({
   'shared.projects.list': 'projects.list',
   'shared.reviews.list': 'reviews.list',
-  'shared.reviews.get': 'reviews.get'
+  'shared.reviews.get': 'reviews.get',
+  'shared.comments.list': 'comments.list'
 });
 // Explicit Store-persisting dispatches. This is independent of notification
 // matching; only the explicitly owned agent/request paths below fence callbacks.
