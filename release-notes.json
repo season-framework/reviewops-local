@@ -3,6 +3,14 @@
   "version": "1.5.0",
   "entries": [
     {
+      "category": "features",
+      "title": "Read user-comment attachment metadata through the local shared query",
+      "description": "Read file names, declared types, sizes and SHA-256 digests for one ordinary user comment within its granted project and review, including attachment-only comments. Agent responses, run-linked prompts and system/history entries are excluded. Storage paths and file contents are omitted; results above 1,000 files or 512 KiB of complete JSON are rejected in full.",
+      "commits": [
+        "63cf1bf632eb2da1c1e3b98229ac61e3273c472e"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Confirm temporary build-artifact deletions",
       "description": "Temporary build-artifact cleanup now follows each deletion with at most five read-only checks. Only HTTP 404 confirms absence; API errors and artifacts still visible at the limit remain failures with an artifact ID in the diagnostic.",
