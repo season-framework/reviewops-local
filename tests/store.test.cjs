@@ -580,6 +580,29 @@ test('a version 1 JSON backup restores with metadata defaults while preserving a
   assert.equal(store.exportData().version, BACKUP_FORMAT_VERSION);
 });
 
+test('legacy migration and import provide explicit user classification for shared comment reads', t => {
+  const { querySharedData } = require('../electron/shared-data-query.cjs');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'reviewops-comment-migration-'));
+  const dbPath = path.join(directory, 'legacy.sqlite');
+  let legacy, migrated;
+  t.after(() => { legacy?.close(); migrated?.close(); fs.rmSync(directory, { recursive: true, force: true }); });
+  const original = oldBackup();
+  legacy = new DatabaseSync(dbPath); populateV1Database(legacy, original); legacy.close(); legacy = null;
+  migrated = createStore({ dbPath });
+  const imported = setup(t).store; imported.importData(original);
+  const context = { projectGrants: [{ projectId: 'project-old', read: true }] };
+  for (const store of [migrated, imported]) {
+    const source = store.snapshot(), before = store.exportData();
+    const row = source.activities.find(item => item.id === 'activity-comment');
+    assert.equal(row.role, 'user'); assert.equal(row.agentRunId, '');
+    const result = querySharedData(source, context, 'comments.list', { projectId: 'project-old', reviewId: 'review-old' });
+    assert.deepEqual(result.comments, [{ id: row.id, reviewId: row.reviewId, body: row.body, createdAt: row.createdAt, updatedAt: row.updatedAt }]);
+    assert.deepEqual(store.exportData(), before);
+  }
+  const raw = { projects: migrated.snapshot().projects, reviews: migrated.snapshot().reviews, activities: original.activities.filter(row => row.type === 'comment') };
+  assert.throws(() => querySharedData(raw, context, 'comments.list', { projectId: 'project-old', reviewId: 'review-old' }), { code: 'INVALID_SNAPSHOT' });
+});
+
 test('project introduction is independent of its description and survives backup',t=>{
   const {store}=setup(t);const {project}=fixture(store);
   const saved=store.saveProject({id:project.id,intro:'프로젝트 소개 본문',description:'목록에 표시할 설명'});

@@ -3262,6 +3262,57 @@ test('local shared read remains project-bound when QA is released before queued 
  }finally{unblock();await probe;if(!released)await h.state.toolIntegration.automationHandler('automation.qa.release',qa);}
 });
 
+test('local shared comments use one production snapshot without writes or presentation effects', async t => {
+ const h=await harness(t),a=await seed(h),b=await seed(h),main=h.forWindow(h.state.primaryWindow),store=h.state.liveStore;
+ const first=store.addActivity({reviewId:a.review.id,body:'Shared human comment',evidence:{note:'PRIVATE_COMMENT_EVIDENCE'}});
+ const empty=store.addActivity({reviewId:a.review.id,body:'',allowEmpty:true});
+ store.addActivity({reviewId:a.review.id,body:'PRIVATE_SYSTEM_COMMENT',role:'system'});
+ store.addActivity({reviewId:b.review.id,body:'PRIVATE_OTHER_PROJECT'});
+ const run=store.saveAgentRun({reviewId:a.review.id,serviceId:a.service.id,workPath:a.service.rootPath,status:'completed',response:'PRIVATE_AGENT_RESPONSE'});
+ store.addActivity({reviewId:a.review.id,body:'PRIVATE_AGENT_PROMPT',role:'user',agentRunId:run.id});
+ const linked=store.snapshot().activities.filter(row=>row.agentRunId===run.id);
+ assert.deepEqual(linked.map(row=>[row.role,row.body]),[['agent','PRIVATE_AGENT_RESPONSE'],['user','PRIVATE_AGENT_PROMPT']]);
+ const before=store.exportData(),revisions=store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all(),receipts=store.db.prepare('SELECT * FROM command_receipts').all();
+ const messages=h.state.windowMessages.length,windows=h.state.windows.length,snapshot=store.snapshot.bind(store);let calls=0;
+ store.snapshot=()=>{calls++;return snapshot();};
+ let result;try{result=await main.success('shared.comments.list',{projectId:a.project.id,reviewId:a.review.id});}finally{store.snapshot=snapshot;}
+ assert.equal(calls,1);assert.equal(result.version,1);
+ assert.deepEqual(result.comments,[first,empty].map(row=>({id:row.id,reviewId:row.reviewId,body:row.body,createdAt:row.createdAt,updatedAt:row.updatedAt})));
+ assert.equal(JSON.stringify(result).includes('PRIVATE_'),false);
+ assert.deepEqual(store.exportData(),before);assert.deepEqual(store.db.prepare('SELECT * FROM review_revisions ORDER BY reviewId').all(),revisions);assert.deepEqual(store.db.prepare('SELECT * FROM command_receipts').all(),receipts);
+ assert.equal(h.state.windowMessages.length,messages);assert.equal(h.state.windows.length,windows);assert.equal(h.state.agentStarts?.length||0,0);
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const expected={code:'NOT_FOUND',message:'Shared resource not found.'};
+ for(const payload of [{projectId:b.project.id,reviewId:b.review.id},{projectId:a.project.id,reviewId:b.review.id},{projectId:a.project.id,reviewId:'missing'}]){
+  const denied=await client.invoke('shared.comments.list',payload);assert.equal(denied.ok,false);assert.deepEqual({code:denied.error.code,message:denied.error.message},expected);
+ }
+ await assert.rejects(h.state.toolIntegration.dispatch('shared.comments.list',{projectId:a.project.id,reviewId:a.review.id}),/지원하지 않는 기능/);
+ await assert.rejects(h.state.toolIntegration.automationHandler('automation.shared.comments.list',{}),{code:'UNKNOWN_ACTION'});
+});
+
+test('local shared comments recheck their original main frame after a queued wait', async t => {
+ const h=await harness(t),a=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const host=await projectHost(h,a.project.id),client=h.forWindow(host),url=host.webContents.mainFrame.url;
+ const unblock=await holdWriteAdmissionQueue(t,h,a.service.id);
+ const pending=client.invoke('shared.comments.list',{projectId:a.project.id,reviewId:a.review.id});
+ try{host.webContents.mainFrame.url='https://foreign.invalid/';await unblock();const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');}
+ finally{host.webContents.mainFrame.url=url;await unblock();await pending;}
+});
+
+test('local shared comments observe queued project deletion without widening the bound scope', async t => {
+ const h=await harness(t),a=await seed(h),b=await seed(h),main=h.forWindow(h.state.primaryWindow);
+ await main.success('window.openProject',{projectId:a.project.id});const client=h.forWindow(await projectHost(h,a.project.id));
+ const unblock=await holdWriteAdmissionQueue(t,h,a.service.id);
+ const removeReview=main.invoke('review.delete',{id:a.review.id}),removeProject=main.invoke('project.delete',{id:a.project.id});
+ const pending=client.invoke('shared.comments.list',{projectId:a.project.id,reviewId:a.review.id});
+ try{
+  await unblock();assert.equal((await removeReview).ok,true);assert.equal((await removeProject).ok,true);
+  const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'NOT_FOUND');
+  assert.equal((await client.invoke('shared.comments.list',{projectId:b.project.id,reviewId:b.review.id})).error.code,'NOT_FOUND');
+  assert.deepEqual((await main.success('shared.comments.list',{projectId:b.project.id,reviewId:b.review.id})).comments,[]);
+ }finally{await unblock();await Promise.all([removeReview,removeProject,pending]);}
+});
+
 
 async function holdWriteAdmissionQueue(t, h, serviceId) {
   let release; h.state.environmentGate = new Promise(resolve => { release = resolve; });

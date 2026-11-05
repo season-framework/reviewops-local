@@ -89,7 +89,7 @@ test('missing, malformed, duplicate or broadened grants fail closed', () => {
   for (const context of invalid) assert.equal(errorOf(() => querySharedData(source, context, 'projects.list', {})).code, 'ACCESS_DENIED');
 });
 
-test('only three operations and their exact required payloads are accepted', () => {
+test('existing operation payloads remain exact and unsupported operations stay rejected', () => {
   const source = snapshot();
   const invalid = [
     ['snapshot', {}], ['dispatch', {}], ['reviews.update', { projectId: 'a', reviewId: 'review-a' }],
@@ -190,4 +190,119 @@ test('prototype-shaped stored IDs remain exact IDs without object-key traversal'
     assert.equal(querySharedData(source, caller(id), 'reviews.get', { projectId: id, reviewId: 'review-a' }).review.projectId, id);
     assert.equal(errorOf(() => querySharedData(snapshot(), caller('a'), 'reviews.get', { projectId: 'a', reviewId: id })).code, 'NOT_FOUND');
   }
+});
+
+const comment = (id, extra = {}) => ({ id, reviewId: 'review-a', type: 'comment', role: 'user', agentRunId: '',
+  body: '', createdAt: DATE, updatedAt: DATE, ...extra });
+const commentSnapshot = activities => ({ ...snapshot(), activities });
+const comments = source => querySharedData(source, caller('a'), 'comments.list', { projectId: 'a', reviewId: 'review-a' });
+const commentEnvelope = activities => ({ version: 1, projectId: 'a', reviewId: 'review-a', comments: activities.map(row =>
+  ({ id: row.id, reviewId: row.reviewId, body: row.body, createdAt: row.createdAt, updatedAt: row.updatedAt })) });
+
+test('comments expose only unlinked user comment DTOs in the supplied equal-time order', () => {
+  let reads = 0;
+  const first = comment('z-first', { body: '  Intended user text: token=example\n한국어 日本語 🙂  ', updatedAt: '2026-11-03T00:00:00.000Z' });
+  const second = comment('a-second');
+  Object.defineProperty(first, 'evidence', { get() { reads++; throw new Error('Private evidence'); } });
+  Object.defineProperty(second, 'attachments', { get() { reads++; throw new Error('Private attachments'); } });
+  const omitted = [comment('prompt', { agentRunId: 'owned-run' }), comment('reply', { role: 'agent' }),
+    comment('system', { role: 'system' }), ...['created', 'updated', 'status'].map(type => comment(type, { type })),
+    { reviewId: 'review-b' }];
+  for (const row of omitted) for (const key of ['body', 'createdAt', 'updatedAt', 'evidence', 'path'])
+    Object.defineProperty(row, key, { get() { reads++; throw new Error('Excluded material'); } });
+  const source = commentSnapshot([first, ...omitted, second]);
+  const result = comments(source);
+  assert.deepEqual(result, commentEnvelope([first, second]));
+  assert.deepEqual(Object.keys(result).sort(), ['comments', 'projectId', 'reviewId', 'version']);
+  assert.deepEqual(Object.keys(result.comments[0]).sort(), ['body', 'createdAt', 'id', 'reviewId', 'updatedAt']);
+  assert.equal(reads, 0);
+  result.comments[0].body = 'Caller-only change';
+  assert.equal(comments(source).comments[0].body, first.body);
+  assert.deepEqual(comments(commentSnapshot([])).comments, []);
+  assert.deepEqual(comments(commentSnapshot([comment('agent-only', { role: 'agent' })])).comments, []);
+});
+
+test('old reads and denied comment targets do not inspect activities', () => {
+  let reads = 0;
+  const source = snapshot();
+  Object.defineProperty(source, 'activities', { get() { reads++; throw new Error('Activities not admitted'); } });
+  for (const [operation, payload] of [['projects.list', {}], ['reviews.list', { projectId: 'a' }],
+    ['reviews.get', { projectId: 'a', reviewId: 'review-a' }]]) {
+    const without = snapshot(); delete without.activities;
+    assert.deepEqual(querySharedData(source, caller('a'), operation, payload), querySharedData(without, caller('a'), operation, payload));
+  }
+  const expected = { code: 'NOT_FOUND', message: 'Shared resource not found.' };
+  for (const payload of [{ projectId: 'b', reviewId: 'review-b' }, { projectId: 'a', reviewId: 'review-b' },
+    { projectId: 'a', reviewId: 'missing' }, { projectId: 'missing', reviewId: 'review-a' }])
+    assert.deepEqual(errorOf(() => querySharedData(source, caller('a'), 'comments.list', payload)), expected);
+  assert.equal(errorOf(() => querySharedData(source, {}, 'comments.list', { projectId: 'a', reviewId: 'review-a' })).code, 'ACCESS_DENIED');
+  assert.equal(reads, 0);
+});
+
+test('comment payloads cannot add grants, selection controls or accessor fields', () => {
+  const source = commentSnapshot([]); let reads = 0;
+  const payload = { projectId: 'a', reviewId: 'review-a' };
+  const accessor = Object.defineProperty({ reviewId: 'review-a' }, 'projectId', { get() { reads++; return 'a'; } });
+  const hidden = Object.defineProperty({ ...payload }, 'limit', { value: 1 });
+  for (const invalid of [undefined, {}, { projectId: 'a' }, { ...payload, role: 'user' },
+    { ...payload, projectGrants: caller('b').projectGrants }, { ...payload, cursor: 'next' }, hidden, accessor,
+    { ...payload, [Symbol('device')]: 'trusted' }, { ...payload, reviewId: '../other' }])
+    assert.deepEqual(errorOf(() => querySharedData(source, caller('a'), 'comments.list', invalid)), { code: 'INVALID_QUERY', message: 'Invalid shared-data query.' });
+  assert.equal(reads, 0);
+});
+
+test('comment classification and selected primitive fields fail closed without coercion', () => {
+  const invalid = [['type', 'other'], ['role', 'unknown'], ['role', undefined], ['agentRunId', undefined],
+    ['agentRunId', null], ['agentRunId', '../run'], ['id', 'bad/id'], ['body', null], ['body', 1],
+    ['body', 'bad\0text'], ['body', 'x'.repeat(100001)], ['createdAt', 'yesterday'], ['updatedAt', '2026-11-02']];
+  const expected = { code: 'INVALID_SNAPSHOT', message: 'Shared data is unavailable.' };
+  for (const [key, value] of invalid)
+    assert.deepEqual(errorOf(() => comments(commentSnapshot([comment('bad', { [key]: value })]))), expected);
+  const missing = comment('missing-role'); delete missing.role;
+  assert.deepEqual(errorOf(() => comments(commentSnapshot([missing]))), expected);
+  const accessor = comment('accessor'); Object.defineProperty(accessor, 'body', { get() { throw new Error('Must not invoke getter'); } });
+  assert.deepEqual(errorOf(() => comments(commentSnapshot([accessor]))), expected);
+  for (const activities of [undefined, {}, Array(100001).fill(null)])
+    assert.deepEqual(errorOf(() => comments(commentSnapshot(activities))), expected);
+  assert.deepEqual(errorOf(() => comments(commentSnapshot([comment('duplicate'), comment('duplicate', { role: 'agent' })]))), expected);
+  assert.equal(comments(commentSnapshot([comment('maximum', { body: 'x'.repeat(100000) })])).comments[0].body.length, 100000);
+});
+
+test('comment results preserve frozen source values and do not evaluate foreign classification', () => {
+  let reads = 0;
+  const foreign = { reviewId: 'review-b' };
+  Object.defineProperty(foreign, 'role', { get() { reads++; throw new Error('Foreign role'); } });
+  const source = commentSnapshot([comment('__proto__', { body: 'Exact\ntext' }), foreign]);
+  Object.freeze(source.activities[0]); Object.freeze(foreign); Object.freeze(source.activities); Object.freeze(source);
+  const result = comments(source);
+  result.comments.push({ id: 'caller-only' }); result.comments[0].body = 'Changed locally';
+  assert.deepEqual(comments(source), commentEnvelope([source.activities[0]]));
+  assert.equal(reads, 0);
+});
+
+test('the 1001st eligible comment refuses before its body or dates are inspected', () => {
+  const source = commentSnapshot(Array.from({ length: 1000 }, (_, i) => comment('comment-' + i)));
+  assert.equal(comments(source).comments.length, 1000);
+  const overflow = comment('overflow'); let reads = 0;
+  for (const key of ['body', 'createdAt', 'updatedAt']) Object.defineProperty(overflow, key, { get() { reads++; throw new Error('Beyond count budget'); } });
+  source.activities.push(overflow);
+  assert.deepEqual(errorOf(() => comments(source)), { code: 'QUERY_LIMIT_EXCEEDED', message: 'Shared comments exceed the local query limit.' });
+  assert.equal(reads, 0);
+});
+
+test('the exact UTF-8 JSON envelope budget includes escaping, Unicode and separators', () => {
+  const limit = 4194304;
+  const activities = Array.from({ length: 50 }, (_, i) => comment('bytes-' + i));
+  activities[0].body = '한"\\\n🙂'.repeat(10000);
+  let remaining = limit - Buffer.byteLength(JSON.stringify(commentEnvelope(activities)), 'utf8');
+  for (const row of activities.slice(1)) {
+    const length = Math.min(100000, remaining); row.body = 'x'.repeat(length); remaining -= length;
+  }
+  assert.equal(remaining, 0, 'The fixture must reach the exact public envelope boundary');
+  const expected = commentEnvelope(activities);
+  assert.equal(Buffer.byteLength(JSON.stringify(expected), 'utf8'), limit);
+  assert.ok(JSON.stringify(expected).length < limit, 'Character counts are not UTF-8 byte counts');
+  assert.deepEqual(comments(commentSnapshot(activities)), expected);
+  activities.find(row => row.body.length < 100000).body += 'x';
+  assert.deepEqual(errorOf(() => comments(commentSnapshot(activities))), { code: 'QUERY_LIMIT_EXCEEDED', message: 'Shared comments exceed the local query limit.' });
 });
