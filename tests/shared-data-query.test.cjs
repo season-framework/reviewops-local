@@ -435,3 +435,165 @@ test('the attachment UTF-8 envelope accepts exactly 512 KiB and rejects one vali
   assert.equal(values.length, 1000); assert.ok(values.every(row => row.name.length <= 255 && row.mimeType.length <= 255));
   assert.deepEqual(errorOf(() => attachments(attachmentSnapshot(values))), { code: 'ATTACHMENT_QUERY_LIMIT_EXCEEDED', message: 'Shared review attachments exceed the local query limit.' });
 });
+
+const commentFile = (id, extra = {}) => attachment(id, { activityId: 'selected-comment', ...extra });
+// Preserve explicitly supplied undefined so malformed fixtures reach the query.
+const commentFileSnapshot = (...values) => ({ ...snapshot(), activities: values.length > 1 ? values[1] : [comment('selected-comment')],
+  attachments: values.length ? values[0] : [] });
+const commentFiles = (source, context = caller('a'), ...payload) => querySharedData(source, context, 'commentAttachments.list',
+  payload.length ? payload[0] : { projectId: 'a', reviewId: 'review-a', commentId: 'selected-comment' });
+const commentFileEnvelope = values => ({ version: 1, projectId: 'a', reviewId: 'review-a', commentId: 'selected-comment',
+  attachments: attachmentEnvelope(values).attachments });
+
+test('comment attachments preserve the exact eight fields, supplied order and detached empty-comment results', () => {
+  const first = commentFile('z-first', { name: '  한글 e\u0301 🙂.txt  ', mimeType: 'text/plain; label=한', size: 0 });
+  const second = commentFile('a-second', { size: 1073741824, sha256: 'ab'.repeat(32) });
+  const source = frozen(commentFileSnapshot([first, second])), context = frozen(caller('a'));
+  const before = JSON.stringify(source), result = commentFiles(source, context);
+  assert.deepEqual(result, commentFileEnvelope([first, second]));
+  assert.deepEqual(Object.keys(result), ['version', 'projectId', 'reviewId', 'commentId', 'attachments']);
+  assert.deepEqual(Object.keys(result.attachments[0]), ['id', 'reviewId', 'name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt']);
+  assert.notEqual(result.attachments[0], first); noPrivateFields(result);
+  result.attachments[0].name = 'Caller-only.txt'; result.attachments.push({ id: 'caller-only' });
+  assert.deepEqual(commentFiles(source), commentFileEnvelope([first, second]));
+  assert.equal(JSON.stringify(source), before);
+  assert.deepEqual(commentFiles(commentFileSnapshot()), commentFileEnvelope([]));
+});
+
+test('comment attachment authorization never evaluates selected comment content or unrelated private material', () => {
+  let reads = 0;
+  const poison = (row, keys) => {
+    for (const key of keys) Object.defineProperty(row, key, { get() { reads++; throw new Error('Unshared material'); } });
+    return row;
+  };
+  const selected = poison(comment('selected-comment'), ['body', 'createdAt', 'updatedAt', 'evidence', 'attachments', 'path']);
+  const other = poison({ id: 'other-comment', reviewId: 'review-a' }, ['type', 'role', 'agentRunId', 'body', 'evidence']);
+  const foreignActivity = poison({ reviewId: 'review-b' }, ['id', 'type', 'role', 'agentRunId', 'body']);
+  const metadata = ['name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt'];
+  const direct = poison({ id: 'direct', reviewId: 'review-a', activityId: null }, metadata);
+  const otherLink = poison({ id: 'other-linked', reviewId: 'review-a', activityId: 'other-comment' }, metadata);
+  const foreignFile = poison({ reviewId: 'review-b' }, ['id', 'activityId', ...metadata]);
+  const eligible = poison(commentFile('eligible'), ['storageName', 'path', 'url', 'bytes', 'evidence']);
+  const source = commentFileSnapshot([direct, foreignFile, eligible, otherLink], [other, selected, foreignActivity]);
+  assert.deepEqual(commentFiles(source), commentFileEnvelope([eligible]));
+  assert.equal(reads, 0);
+});
+
+test('comment attachment denial preserves project-review-comment access order and fixed not-found errors', () => {
+  const notFound = { code: 'NOT_FOUND', message: 'Shared resource not found.' }; let reads = 0;
+  const source = commentFileSnapshot();
+  Object.defineProperty(source, 'activities', { get() { reads++; throw new Error('Activities not admitted'); } });
+  for (const payload of [{ projectId: 'b', reviewId: 'review-b', commentId: 'selected-comment' },
+    { projectId: 'a', reviewId: 'review-b', commentId: 'selected-comment' },
+    { projectId: 'a', reviewId: 'absent', commentId: 'selected-comment' },
+    { projectId: 'absent', reviewId: 'review-a', commentId: 'selected-comment' }])
+    assert.deepEqual(errorOf(() => commentFiles(source, caller('a'), payload)), notFound);
+  source.reviews[0].body = 'bad\0review';
+  assert.equal(errorOf(() => commentFiles(source)).code, 'INVALID_SNAPSHOT', 'The existing review DTO is still validated first');
+  assert.equal(errorOf(() => commentFiles(source, {})).code, 'ACCESS_DENIED');
+  for (const selected of [null, comment('selected-comment', { reviewId: 'review-b' }),
+    comment('selected-comment', { type: 'created' }), comment('selected-comment', { role: 'agent' }),
+    comment('selected-comment', { role: 'system' }), comment('selected-comment', { agentRunId: 'actual-run' })]) {
+    const denied = commentFileSnapshot([], selected ? [selected] : []);
+    Object.defineProperty(denied, 'attachments', { get() { reads++; throw new Error('Attachments not admitted'); } });
+    assert.deepEqual(errorOf(() => commentFiles(denied)), notFound);
+  }
+  assert.equal(reads, 0);
+});
+
+test('selected comment classification and every same-review activity ID must be unambiguous data', () => {
+  const invalid = { code: 'INVALID_SNAPSHOT', message: 'Shared data is unavailable.' }; let reads = 0;
+  for (const [key, value] of [['type', 'unknown'], ['type', undefined], ['role', 'unknown'], ['role', null],
+    ['agentRunId', undefined], ['agentRunId', null], ['agentRunId', false], ['agentRunId', '../run']])
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([], [comment('selected-comment', { [key]: value })]))), invalid);
+  for (const selected of [comment('selected-comment', { type: 'created', agentRunId: null }),
+    comment('selected-comment', { role: 'agent', agentRunId: '../run' })])
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([], [selected]))), invalid);
+  for (const key of ['type', 'role', 'agentRunId']) {
+    const missing = comment('selected-comment'); delete missing[key];
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([], [missing]))), invalid);
+    const accessor = comment('selected-comment');
+    Object.defineProperty(accessor, key, { get() { reads++; throw new Error('Classification accessor'); } });
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([], [accessor]))), invalid);
+  }
+  for (const activities of [undefined, {}, Array(100001).fill(null),
+    [comment('selected-comment'), comment('selected-comment', { role: 'agent' })],
+    [comment('selected-comment'), { id: 'duplicate', reviewId: 'review-a' }, { id: 'duplicate', reviewId: 'review-a' }],
+    [comment('selected-comment'), { id: '../bad', reviewId: 'review-a' }]])
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([], activities))), invalid);
+  assert.equal(reads, 0);
+});
+
+test('comment attachment payloads and grants cannot inject authority or selection options', () => {
+  const source = commentFileSnapshot(), payload = { projectId: 'a', reviewId: 'review-a', commentId: 'selected-comment' }; let reads = 0;
+  const accessor = Object.defineProperty({ projectId: 'a', reviewId: 'review-a' }, 'commentId', { get() { reads++; return 'selected-comment'; } });
+  const hidden = Object.defineProperty({ ...payload }, 'limit', { value: 1 });
+  for (const invalid of [undefined, {}, { projectId: 'a', reviewId: 'review-a' }, { ...payload, activityId: 'other' },
+    { ...payload, projectGrants: caller('b').projectGrants }, { ...payload, ownerProjectId: '' }, { ...payload, cursor: 'next' },
+    hidden, accessor, { ...payload, [Symbol('owner')]: true },
+    ...['', '../comment', 'x'.repeat(129), false, null].map(commentId => ({ ...payload, commentId }))])
+    assert.deepEqual(errorOf(() => commentFiles(source, caller('a'), invalid)), { code: 'INVALID_QUERY', message: 'Invalid shared-data query.' });
+  for (const context of [{}, { projectGrants: [{ projectId: 'a', read: true, write: true }] },
+    { projectGrants: [{ projectId: 'a', read: true }, { projectId: 'a', read: true }] }])
+    assert.equal(errorOf(() => commentFiles(source, context)).code, 'ACCESS_DENIED');
+  assert.equal(errorOf(() => commentFiles(source, caller())).code, 'NOT_FOUND');
+  assert.equal(reads, 0);
+});
+
+test('comment attachment link classification, duplicate IDs and projected fields keep existing metadata constraints', () => {
+  const invalid = { code: 'INVALID_SNAPSHOT', message: 'Shared data is unavailable.' }; let reads = 0;
+  for (const [key, value] of [['activityId', undefined], ['activityId', ''], ['activityId', false], ['activityId', '../comment'],
+    ['id', 'bad/id'], ['name', '.'], ['name', '..'], ['name', 'a/b'], ['name', 'a\\b'], ['name', ''], ['name', ' '],
+    ['name', 'bad\0name'], ['name', 'x'.repeat(256)], ['mimeType', null], ['mimeType', ' '], ['mimeType', 'bad\0type'],
+    ['mimeType', 'x'.repeat(256)], ['size', '0'], ['size', -1], ['size', 1.5], ['size', 1073741825],
+    ['sha256', 'f'.repeat(63)], ['sha256', 'g'.repeat(64)], ['createdAt', 'yesterday'], ['updatedAt', '2026-11-02']])
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([commentFile('bad', { [key]: value })]))), invalid);
+  const missing = commentFile('missing'); delete missing.activityId;
+  assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([missing]))), invalid);
+  for (const key of ['activityId', 'name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt']) {
+    const row = commentFile('accessor');
+    Object.defineProperty(row, key, { get() { reads++; throw new Error('Metadata accessor'); } });
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot([row]))), invalid);
+  }
+  for (const values of [undefined, {}, Array(100001).fill(null), [commentFile('duplicate'), commentFile('duplicate')],
+    [commentFile('duplicate'), commentFile('duplicate', { activityId: null })],
+    [commentFile('duplicate', { activityId: 'other-comment' }), commentFile('duplicate', { activityId: null })]])
+    assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot(values))), invalid);
+  const maximum = commentFile('maximum', { name: 'x'.repeat(255), mimeType: 'y'.repeat(255) });
+  assert.deepEqual(commentFiles(commentFileSnapshot([maximum])), commentFileEnvelope([maximum]));
+  assert.equal(reads, 0);
+});
+
+test('the 1001st eligible comment attachment refuses before its metadata is inspected', () => {
+  const values = Array.from({ length: 1000 }, (_, i) => commentFile('file-' + i, { name: 'x' }));
+  const source = commentFileSnapshot([...values, commentFile('direct', { activityId: null }),
+    commentFile('other', { activityId: 'other-comment' }), { reviewId: 'review-b' }]);
+  assert.equal(commentFiles(source).attachments.length, 1000);
+  const overflow = commentFile('overflow'); let reads = 0;
+  for (const key of ['name', 'mimeType', 'size', 'sha256', 'createdAt', 'updatedAt'])
+    Object.defineProperty(overflow, key, { get() { reads++; throw new Error('Beyond count budget'); } });
+  source.attachments.push(overflow);
+  assert.deepEqual(errorOf(() => commentFiles(source)), { code: 'COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED', message: 'Shared comment attachments exceed the local query limit.' });
+  assert.equal(reads, 0);
+});
+
+test('comment attachment UTF-8 accounting includes comment identity and accepts exactly 512 KiB but not one more byte', () => {
+  const limit = 524288;
+  const values = Array.from({ length: 1000 }, (_, i) => commentFile('file-' + String(i).padStart(4, '0'),
+    { name: 'x', mimeType: 'application/octet-stream' }));
+  values[0].name = '한"'.repeat(30);
+  let remaining = limit - Buffer.byteLength(JSON.stringify(commentFileEnvelope(values)), 'utf8');
+  assert.ok(remaining > 0);
+  for (const row of values) for (const key of ['name', 'mimeType']) {
+    const length = Math.min(255 - row[key].length, remaining); row[key] += 'x'.repeat(length); remaining -= length;
+  }
+  assert.equal(remaining, 0, 'Valid fields must reach the exact complete success-envelope boundary');
+  const expected = commentFileEnvelope(values);
+  assert.equal(Buffer.byteLength(JSON.stringify(expected), 'utf8'), limit);
+  assert.ok(JSON.stringify(expected).length < limit, 'UTF-8 bytes must include Unicode and JSON escaping');
+  assert.deepEqual(commentFiles(commentFileSnapshot(values)), expected);
+  const nonfull = values.find(row => row.name.length < 255); assert.ok(nonfull); nonfull.name += 'x';
+  assert.equal(Buffer.byteLength(JSON.stringify(commentFileEnvelope(values)), 'utf8'), limit + 1);
+  assert.equal(values.length, 1000); assert.ok(values.every(row => row.name.length <= 255 && row.mimeType.length <= 255));
+  assert.deepEqual(errorOf(() => commentFiles(commentFileSnapshot(values))), { code: 'COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED', message: 'Shared comment attachments exceed the local query limit.' });
+});
