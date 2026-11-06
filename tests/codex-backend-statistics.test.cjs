@@ -104,7 +104,7 @@ test('a detail API failure preserves normal quota, completed reset, and the prev
   const normal = h.service.snapshot().accounts[0];
   failed = true;
   const fresh = await h.service.refreshAccountDetails(id);
-  assert.deepEqual(h.service.snapshot().accounts[0], normal);
+  assert.deepEqual(h.service.snapshot().accounts[0], { ...normal, usageDetailsError: fresh.usageError });
   assert.deepEqual(fresh.tokenUsage, previous.tokenUsage);
   assert.equal(fresh.usageFetchedAt, previous.usageFetchedAt);
   assert.match(fresh.usageError, /지원하지 않습니다/);
@@ -198,7 +198,7 @@ test('an identity mismatch cannot read detailed usage; changing login clears the
   const calls = h.calls.length;
   const rejected = await h.service.refreshAccountDetails(id);
   assert.deepEqual(h.calls.slice(calls).map((row) => row.method), ['account/read']);
-  assert.deepEqual(h.service.snapshot().accounts[0], normal);
+  assert.deepEqual(h.service.snapshot().accounts[0], { ...normal, usageDetailsError: rejected.usageError });
   assert.match(rejected.usageError, /계정이 변경/);
   await h.service.refreshAccounts([id]);
   const changedDetails = h.service.getAccountDetails(id);

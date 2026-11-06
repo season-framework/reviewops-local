@@ -77,6 +77,7 @@ contextBridge.exposeInMainWorld('accountManager', Object.freeze({
   login: invoke('login'),
   cancelLogin: invoke('cancelLogin'),
   refreshAccounts: invoke('refreshAccounts'),
+  configureUsageRefresh: invoke('configureUsageRefresh'),
   resetAccounts: (ids, selections = null) => ipcRenderer.invoke('accounts:resetAccounts', ids, selections),
   removeAccount: invoke('removeAccount'),
   openLogin: invoke('openLogin'),

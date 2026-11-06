@@ -6,6 +6,7 @@ const { randomUUID } = require('node:crypto');
 const { RpcClient } = require('./rpc-client.cjs');
 const { syncDirectory } = require('../directory-sync.cjs');
 const { emptyStatistics, restoreStatistics, publicDetails, tokenUsage, recordSnapshot, recordReset } = require('./statistics.cjs');
+const { DEFAULT_USAGE_REFRESH_MINUTES, usageRefreshInterval } = require('./usage-refresh.cjs');
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const OUTCOMES = {
@@ -102,7 +103,10 @@ class AccountService {
     this.refresh = { running: false, done: 0, total: 0 };
     this.clients = new Map();
     this.refreshTasks = new Map();
+    this.usageTasks = new Map();
+    this.usageRefreshIntervalMinutes = DEFAULT_USAGE_REFRESH_MINUTES;
     this.detailTasks = new Map();
+    this.detailEpochs = new Map();
     this.resetTasks = new Map();
     this.resetTaskSelections = new Map();
     this.removing = new Set();
@@ -133,6 +137,7 @@ class AccountService {
         throw new Error('계정 파일 형식이 올바르지 않습니다. 기존 파일은 변경하지 않았습니다.');
       }
       const ids = new Set();
+      this.usageRefreshIntervalMinutes = usageRefreshInterval(saved.usageRefreshIntervalMinutes ?? DEFAULT_USAGE_REFRESH_MINUTES);
       this.accounts = saved.accounts.map((row) => {
         if (!row || !UUID.test(row.id) || ids.has(row.id)) throw new Error('저장된 계정 식별자가 올바르지 않습니다.');
         ids.add(row.id);
@@ -143,6 +148,7 @@ class AccountService {
           status: row.email || row.usage ? 'ready' : 'signedOut',
           usage: row.usage && typeof row.usage === 'object' ? row.usage : null,
           lastUpdated: typeof row.lastUpdated === 'string' ? row.lastUpdated : null,
+          lastUsageRefreshAttemptAt: typeof row.lastUsageRefreshAttemptAt === 'string' ? row.lastUsageRefreshAttemptAt : null,
           authStarted: Boolean(row.authStarted || row.email || row.usage || row.status === 'loggingIn'),
         };
         if (row.status === 'error') { account.status = 'error'; account.error = '사용량을 다시 조회하십시오.'; }
@@ -187,6 +193,8 @@ class AccountService {
     return clone({
       accounts: this.accounts.map(({ resetAttempt, authStarted, statistics, ...account }) => ({
         ...account,
+        usageDetailsUpdatedAt: statistics?.usageFetchedAt ?? null,
+        usageDetailsError: statistics?.usageError ?? null,
         ...(resetAttempt ? { resetAttempt: {
           status: resetAttempt.status, outcome: resetAttempt.outcome,
           message: resetAttempt.message, needsRefresh: resetAttempt.needsRefresh,
@@ -195,6 +203,7 @@ class AccountService {
       })),
       activity: this.activity,
       refresh: this.refresh,
+      usageRefresh: { intervalMinutes: this.usageRefreshIntervalMinutes },
     });
   }
 
@@ -230,6 +239,7 @@ class AccountService {
     delete account.error;
     this._emit();
     try {
+      if (this.usageTasks.has(id)) await this.usageTasks.get(id);
       if (this.refreshTasks.has(id)) await this.refreshTasks.get(id);
       if (this.detailTasks.has(id)) await this.detailTasks.get(id);
       if (this.loginEpochs.get(id) !== epoch) return this.snapshot();
@@ -296,7 +306,9 @@ class AccountService {
       await Promise.all(selected.map(async (account) => {
         try {
           if (this.resetTasks.has(account.id)) await this.resetTasks.get(account.id);
-          if (this.accounts.includes(account) && account.status !== 'loggingIn') await this._refreshAccount(account.id);
+          if (this.accounts.includes(account) && account.status !== 'loggingIn') {
+            await (this.usageTasks.get(account.id) || this._refreshAccount(account.id));
+          }
         } finally { this.refresh.done++; this._emit(); }
       }));
     } finally {
@@ -305,6 +317,44 @@ class AccountService {
       this._emit();
     }
     return this.snapshot();
+  }
+
+  async configureUsageRefresh(minutes) {
+    this._assertOpen();
+    const previous = this.usageRefreshIntervalMinutes;
+    this.usageRefreshIntervalMinutes = usageRefreshInterval(minutes);
+    try { await this._save(); }
+    catch (error) { this.usageRefreshIntervalMinutes = previous; throw error; }
+    return this._emit();
+  }
+
+  refreshUsage(id) {
+    const account = this._account(id);
+    if (this.usageTasks.has(id)) return this.usageTasks.get(id);
+    const task = Promise.resolve().then(async () => {
+      if (account.requiresLogin || this.removing.has(id) || account.status === 'loggingIn') return;
+      if (this.resetTasks.has(id)) await this.resetTasks.get(id);
+      if (this.closed || !this.accounts.includes(account)) return;
+      const statistics = account.statistics;
+      const detailEpoch = this.detailEpochs.get(id) || 0;
+      const precedingDetails = this.detailTasks.has(id);
+      account.lastUsageRefreshAttemptAt = now();
+      await this._save();
+      if (this.resetTasks.has(id)) await this.resetTasks.get(id);
+      if (this.closed || !this.accounts.includes(account) || account.requiresLogin
+        || this.removing.has(id) || account.status === 'loggingIn' || this.loginStarting.has(id)) return;
+      if (await this._refreshAccount(id)) {
+        // A manual detailed read during this cycle already owns that work.
+        if (account.statistics !== statistics || (!precedingDetails && (this.detailEpochs.get(id) || 0) === detailEpoch)) {
+          await this.refreshAccountDetails(id);
+        }
+      }
+    }).finally(() => {
+      if (this.usageTasks.get(id) === task) this.usageTasks.delete(id);
+      this._closeIdleClient(id);
+    });
+    this.usageTasks.set(id, task);
+    return task;
   }
 
   getAccountDetails(id) {
@@ -316,6 +366,7 @@ class AccountService {
     if (account.requiresLogin) return Promise.resolve(this.getAccountDetails(id));
     if (this.detailTasks.has(id)) return this.detailTasks.get(id);
     if (this.removing.has(id) || account.status === 'loggingIn' || this.loginStarting.has(id)) return Promise.resolve(this.getAccountDetails(id));
+    this.detailEpochs.set(id, (this.detailEpochs.get(id) || 0) + 1);
     // Capture preceding operations before publishing this task so a later reset/read
     // can wait for it without either operation waiting on itself.
     const preceding = [this.resetTasks.get(id), this.refreshTasks.get(id)].filter(Boolean);
@@ -364,6 +415,7 @@ class AccountService {
         await this._save();
       }
     }
+    if (isCurrent()) this._emit();
     return publicDetails(account);
   }
 
@@ -415,6 +467,7 @@ class AccountService {
         client.close();
       }
       this.clients.delete(id);
+      this.detailEpochs.delete(id);
       this.accounts = this.accounts.filter((row) => row.id !== id);
       this._markDuplicates();
       this._activity(account, 'account', '계정을 삭제했습니다.');
@@ -540,7 +593,7 @@ class AccountService {
   }
 
   _closeIdleClient(id) {
-    if (this.resetTasks.has(id) || this.refreshTasks.has(id) || this.detailTasks.has(id) || this.loginStarting.has(id)) return;
+    if (this.usageTasks.has(id) || this.resetTasks.has(id) || this.refreshTasks.has(id) || this.detailTasks.has(id) || this.loginStarting.has(id)) return;
     const account = this.accounts.find((row) => row.id === id);
     if (account?.status === 'loggingIn' || account?.login) return;
     this.clients.get(id)?.close();
@@ -703,6 +756,7 @@ class AccountService {
   _save() {
     const payload = JSON.stringify({
       version: 1,
+      usageRefreshIntervalMinutes: this.usageRefreshIntervalMinutes,
       accounts: this.accounts.map(({ login, ...account }) => account),
       activity: this.activity,
     }, null, 2);

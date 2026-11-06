@@ -1778,5 +1778,12 @@
   "Codex 실행 파일 선택을 저장하지 못했습니다. 기존 설정을 유지합니다.": "Could not save the Codex executable selection. The existing setting is unchanged.",
   "Codex 실행 파일의 전체 경로를 선택하십시오.": "Choose the full path of the Codex executable.",
   "리뷰가 변경되었습니다. 파일을 다시 선택하십시오.": "The review changed. Select the files again.",
-  "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "The review or data changed. Reload the saved review-version list."
+  "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "The review or data changed. Reload the saved review-version list.",
+  "계정 사용량 자동 갱신": "Automatic account usage refresh",
+  "계정 사용량 갱신 주기": "Account usage refresh interval",
+  "계정 사용량 갱신 주기는 1~1440분 사이의 정수로 입력하십시오.": "Enter an account usage refresh interval from 1 to 1440 minutes.",
+  "ReviewOps가 실행 중이면 다른 화면을 보거나 창을 최소화해도 로그인한 계정의 사용량을 갱신합니다.": "While ReviewOps is running, signed-in account usage refreshes even on other pages or with the window minimized.",
+  "기본 30분이며, 저장한 주기는 즉시 적용되고 앱을 다시 실행해도 유지됩니다.": "The default is 30 minutes. Saved changes apply immediately and persist after restarting the app.",
+  "마지막 성공: {0}": "Last successful refresh: {0}",
+  "상세 사용량 갱신 실패 · 이전 값 유지": "Detailed usage refresh failed · previous values retained"
 }
