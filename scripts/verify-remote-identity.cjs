@@ -5,6 +5,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {signingPlan,assertDeveloperConfiguration,verifyDeveloperSignature,command}=require('./mac-signing.cjs');
 function verify(directory) {
   const manifestFile=path.join(directory,'remote-identity-manifest.json');
   const manifest=JSON.parse(fs.readFileSync(manifestFile,'utf8'));
@@ -18,10 +19,20 @@ function verify(directory) {
     if(bytes.length!==expected.bytes||crypto.createHash('sha256').update(bytes).digest('hex')!==expected.sha256)throw new Error('Identity addon changed after manifest generation.');
   }
 }
-module.exports=async context=>{
+function createAfterSign({env=process.env,execute=command}={}){
+ return async context=>{
   if(context.electronPlatformName!=='darwin')return;
-  const resources=context.packager.getResourcesDir(context.appOutDir);
-  verify(path.join(resources,'app.asar.unpacked','electron','native'));
-};
+  const resources=context.packager.getResourcesDir(context.appOutDir),directory=path.join(resources,'app.asar.unpacked','electron','native');
+  verify(directory);
+  const plan=signingPlan(env);
+  if(plan.mode==='developer-id'){
+   assertDeveloperConfiguration(context.packager,plan);
+   for(const arch of ['arm64','x64'])verifyDeveloperSignature(path.join(directory,`remote-identity-darwin-${arch}.node`),plan,execute);
+   verifyDeveloperSignature(path.resolve(resources,'../..'),plan,execute,{deep:true,entitlements:true});
+  }
+ };
+}
+module.exports=createAfterSign();
+module.exports.createAfterSign=createAfterSign;
 module.exports.verify=verify;
 if(require.main===module)verify(path.resolve(__dirname,'../electron/native'));

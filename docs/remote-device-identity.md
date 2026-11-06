@@ -50,6 +50,11 @@ still covers the bundled addons. Signing/ACL continuity across application
 updates must be verified for the actual release identity; the manifest does not
 prove that continuity. Windows needs no native addon build.
 
+An explicit [Developer ID signing route](macos-signing.md) can sign the addons
+and app with one selected identity and strict verification. It preserves the
+default ad-hoc route and does not migrate existing protected-item ACLs. Actual
+signed-build, runtime and installed-update continuity remain required evidence.
+
 Run `node --test tests/remote-device-identity*.test.cjs` for controlled tests.
 `REVIEWOPS_TEST_NATIVE_IDENTITY=1` additionally runs a real development Electron
 main fixture on Mac: temporary profile, Keychain enrollment, explicit-leaf TLS,
