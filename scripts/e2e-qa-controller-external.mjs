@@ -10,7 +10,7 @@ import {spawn, execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
 import {inspectMac} from './test-build.mjs';
 import {readBoundedJSON, inventory} from './packaged-bundle-guards.mjs';
-import {requireNativeHost, selectMainHost, verifyOriginalMainProcess, createPrivatePaths} from './native-adapters.mjs';
+import {requireNativeHost, selectMainHost, selectProjectHost, verifyOriginalMainProcess, createPrivatePaths} from './native-adapters.mjs';
 import {isolatedModelRuntime} from './model-cache-fixture.mjs';
 import {setTestLocale} from './test-locale.mjs';
 
@@ -72,7 +72,7 @@ const pass = value => {checks.push(value);console.log('PASS: ' + value);};
 const fixedBinding = value => Object.fromEntries(['appInstanceId', 'controllerId', 'projectId', 'reviewId', 'sessionId', 'windowId', 'generation', 'state'].map(key => [key, value[key]]));
 const proof = value => ({appInstanceId: value.appInstanceId, controllerId: value.controllerId, controllerProof: value.controllerProof, projectId: value.projectId});
 const ipc = (page, action, payload = {}) => page.evaluate(({action, payload}) => window.reviewops.invoke(action, payload), {action, payload});
-let app, main, appClosed, webServer, sshServer, tapServer, admin, draftA, aHeartbeat, failure, phase = 'admission', originalInventory;
+let app, main, appClosed, webServer, sshServer, tapServer, admin, draftA, aHeartbeat, failure, phase = 'admission', originalInventory, preflightPageA, preflightTargetA;
 const chats = {}, terminalIds = [], sshConnections = new Set(), sshChildren = new Set();
 const tapToken = randomBytes(32).toString('base64url'), tapPath = path.join(owned, 'chat-tap.sock'), tapWrapper = path.join(owned, 'mcp-tap.cjs');
 const protocolPending = new Map(), physicalMcp = new Map(), lifecycleDirectory = path.join(owned, 'mcp-lifecycle');
@@ -383,7 +383,12 @@ async function browser(key, url) {
   return until(async () => {
     const state = await admin.call(key, 'state'), target = state.browsers?.find(row => row.url === url && row.visible);
     if (!target) return null;
-    try {const value = await admin.call(key, 'state', {browserId: target.browserId});return value.elements?.some(row => row.tag?.toLowerCase() === 'input') ? target.browserId : null;}
+    try {
+      const value = await admin.call(key, 'state', {browserId: target.browserId}), viewport = value.viewport;
+      // Scrolling intentionally removes the input from the visible-element
+      // list. A successful observed document and live viewport establish readiness.
+      return value.url === url && value.observationId && Number.isFinite(viewport?.width) && viewport.width > 0 && Number.isFinite(viewport?.height) && viewport.height > 0 ? target.browserId : null;
+    }
     catch (error) {if (error.code === 'QA_DOCUMENT_NOT_READY') return null;throw error;}
   }, Boolean, 'Exact ready controller browser');
 }
@@ -394,12 +399,22 @@ async function webValue(url) {
     return all[0].executeJavaScript('({draft:document.querySelector("#draft").value,instance:window.instance,scrollY})');
   }, url);
 }
-async function terminalSnapshot(page, label) {
+function ownedTerminalExcerpt(data) {
+  const lines = data.split(/[\r\n]+/).filter(line => /^(?:OWNED_READY|OWNED_TICK [0-9]+|ECHO PING_[A-F0-9]+|OWNED_BYE)$/.test(line));
+  const recentTicks = new Set(lines.map((line, index) => line.startsWith('OWNED_TICK ') ? index : -1).filter(index => index >= 0).slice(-5));
+  return lines.filter((line, index) => !line.startsWith('OWNED_TICK ') || recentTicks.has(index)).slice(-12);
+}
+async function terminalSnapshot(page, label, previous = null) {
   const rows = [];
-  for (const id of terminalIds) {
-    const value = await ipc(page, 'terminal.read', {id, cursor: 0});assert.equal(value.closed, false);assert.equal(value.truncated, false);assert.ok(!value.error);
-    assert.ok(value.data.includes('OWNED_READY') && value.data.includes('OWNED_TICK '));
-    rows.push({id, cursor: value.cursor, tickCount: value.data.split('OWNED_TICK ').length - 1});
+  for (const [index, id] of terminalIds.entries()) {
+    const read = async () => {
+      const value = await ipc(page, 'terminal.read', {id, cursor: 0});assert.equal(value.closed, false);assert.equal(value.truncated, false);assert.ok(!value.error);
+      assert.ok(value.data.includes('OWNED_READY') && value.data.includes('OWNED_TICK '));
+      return {id, cursor: value.cursor, tickCount: value.data.split('OWNED_TICK ').length - 1, outputExcerpt: ownedTerminalExcerpt(value.data)};
+    };
+    // A fast adjacent observation can precede the next 250 ms stream tick.
+    // Wait for real progress on the same terminal, without restarting it.
+    rows.push(previous ? await until(read, value => value.cursor > previous[index].cursor && value.tickCount > previous[index].tickCount, 'Original SSH stream advances', 2000) : await read());
   }
   result.sshCheckpoints ||= [];result.sshCheckpoints.push({label, at: new Date().toISOString(), rows});return rows;
 }
@@ -407,7 +422,7 @@ async function aPreserved(page, url, original, label, priorStreams) {
   assert.deepEqual(fixedBinding(await admin.call('A', 'status')), original.binding, 'B recovery changed A logical ownership.');
   const web = await webValue(url);assert.equal(web.draft, original.web.draft);assert.equal(web.instance, original.web.instance);assert.equal(web.scrollY, original.web.scrollY);
   assert.equal(await draftA.inputValue(), original.appDraft, 'B recovery changed A unsaved app draft.');
-  const streams = await terminalSnapshot(page, label);
+  const streams = await terminalSnapshot(page, label, priorStreams);
   for (let index = 0; index < streams.length; index++) assert.ok(streams[index].cursor > priorStreams[index].cursor && streams[index].tickCount > priorStreams[index].tickCount, 'An original A SSH channel stopped streaming.');
   return streams;
 }
@@ -431,7 +446,7 @@ async function photo(page, name) {
   fs.writeFileSync(path.join(output, name), bytes, {mode: 0o600});photos.push({name, key, scope: 'Original product whole-host composite PNG, including native browser views; no edits or success overlay.', sha256: sha(bytes), bytes: bytes.length, width: capture.width, height: capture.height, at: new Date().toISOString()});
 }
 const instructions = key => `This is one bounded installed ReviewOps feature acceptance on your original external conversation. Use only the reviewops_qa_controller tool on your configured MCP server, projectId ${projects[key].id}. Never use shell, files, web/search, other MCP tools, other projects, or another controller. Keep the original controller proof private in this conversation and reuse the exact original controller for every follow-up. Do not retry uncertain input or invent success. The visible web page has an input and a canvas containing an image-only code; the code is not available in DOM state text. Discover the correct visible browser from host state. Use a fresh state/capture observation before input; use observed element coordinates, not global focus. Use controller capture on the web browser and read its actual returned image. End with a short answer containing the canvas code you actually saw; never include the controller proof. `;
-const webTask = (key, marker) => `In the owned web browser, observe the input. If it is off-screen, scroll up before observing/clicking it. Click the input, select all with key a + Meta, and type exactly ${marker}. Then scroll down by about 400 pixels using the controller scroll operation. Capture the web browser and report the actual canvas code. Use only ${key}'s own browser and fresh observations. `;
+const webTask = (key, marker) => `In the owned web browser, observe the input. If it is off-screen, scroll up before observing/clicking it. Click the input, select all with key a + Meta, and type exactly ${marker}. Then scroll down by about 400 pixels using the controller scroll operation. Every scroll must include browserId, a fresh observationId, x and y inside that observation's viewport, and deltaY (positive down, negative up); derive the point from actual state. Capture the web browser and report the actual canvas code. Use only ${key}'s own browser and fresh observations. `;
 const requireOperations = (calls, expected) => {for (const operation of expected) assert.ok(calls.some(call => call.operation === operation && !call.isError), 'A required genuine model tool operation was not observed.');};
 
 try {
@@ -457,24 +472,36 @@ try {
     reviews[key] = await ipc(main, 'review.save', {projectId: projects[key].id, title: 'External controller review ' + key});
   }
   result.projects = Object.fromEntries(['A', 'B'].map(key => [key, {projectId: projects[key].id, serviceId: projects[key].connection.id, reviewId: reviews[key].id}]));
+  phase = 'A-existing-SSH-before-model';
+  const openedA = await ipc(main, 'window.openProject', {projectId: projects.A.id, reviewId: reviews.A.id});
+  preflightTargetA = openedA;
+  preflightPageA = (await selectProjectHost(app, openedA, until, ipc, bounded)).page;
+  const exchanges = [];
+  for (let index = 0; index < 2; index++) {
+    const terminal = await ipc(preflightPageA, 'terminal.open', {projectId: projects.A.id, serviceId: projects.A.connection.id, cols: 80, rows: 24});terminalIds.push(terminal.id);
+    const ping = 'PING_' + nonce();await ipc(preflightPageA, 'terminal.write', {id: terminal.id, data: ping + '\n'});
+    const observed = await until(() => ipc(preflightPageA, 'terminal.read', {id: terminal.id, cursor: 0}), value => !value.closed && value.data.includes('ECHO ' + ping) && value.data.includes('OWNED_TICK '), 'Actual bidirectional SSH stream before any model');
+    const echo = observed.data.split(/[\r\n]+/).find(line => line === 'ECHO ' + ping);assert.ok(echo);
+    exchanges.push({terminalId: terminal.id, actualInput: ping + '\n', observedEcho: echo, observedCursor: observed.cursor, outputExcerpt: ownedTerminalExcerpt(observed.data), observedAt: new Date().toISOString()});
+  }
+  assert.equal(sshSessions.length, 2);const beforeQaStreams = await terminalSnapshot(preflightPageA, 'Two existing SSH channels before any model or controller');
+  result.sshPreflight = {...openedA, reviewId: reviews.A.id, terminalIds: [...terminalIds], channels: sshSessions.length, exchanges, scope: 'Actual product terminal I/O over two owned same-Mac loopback SSH channels; no AI SSH commands or second PC.', at: new Date().toISOString()};
   await until(() => fs.existsSync(path.join(data, 'integrations/tools.json')), Boolean, 'Owned installed tool connection');
   admin = new DriverMcp();await admin.initialize();
   phase = 'genuine-A-initial';chats.A = new ExternalChat('A');await chats.A.open();
   const markers = {A: 'A_MODEL_DRAFT_' + nonce(), B: 'B_MODEL_DRAFT_' + nonce(), recovered: 'B_RECONNECTED_' + nonce(), reloaded: 'B_RELOADED_' + nonce(), recreated: 'B_NEW_WINDOW_' + nonce()};
   const callsA = await chats.A.turn('A initial image/input/scroll', instructions('A') + `Open exactly once with reviewId ${reviews.A.id} and label Chat A. ` + webTask('A', markers.A), words.A);
   requireOperations(callsA, ['open', 'state', 'click', 'key', 'type', 'scroll', 'capture']);
-  const pageA = await projectPage('A');await expect(pageA.locator('.workspace-qa-scope')).toContainText('Chat A');
+  const pageA = await projectPage('A');assert.equal(controllers.A.windowId, openedA.windowId, 'A QA must acquire the existing working project host.');
+  await expect(pageA.locator('.workspace-qa-scope')).toContainText('Chat A');
   const browserA = await browser('A', origin + '/A');assert.equal((await webValue(origin + '/A')).draft, markers.A);assert.ok((await webValue(origin + '/A')).scrollY > 0);
   await pane(pageA).getByRole('tab', {name: '작업이력', exact: true}).click();draftA = pane(pageA).locator('.original-review-composer').getByLabel('작업 내용', {exact: true});
   const appDraft = 'A_UNSAVED_APP_DRAFT_' + nonce();await draftA.fill(appDraft);
-  for (let index = 0; index < 2; index++) {
-    const terminal = await ipc(pageA, 'terminal.open', {projectId: projects.A.id, serviceId: projects.A.connection.id, cols: 80, rows: 24});terminalIds.push(terminal.id);
-    const ping = 'PING_' + nonce();await ipc(pageA, 'terminal.write', {id: terminal.id, data: ping + '\n'});
-    await until(() => ipc(pageA, 'terminal.read', {id: terminal.id, cursor: 0}), value => !value.closed && value.data.includes('ECHO ' + ping), 'Actual bidirectional SSH stream');
-  }
   assert.equal(sshSessions.length, 2);const originalA = {binding: fixedBinding(await admin.call('A', 'status')), web: await webValue(origin + '/A'), appDraft};
-  let streams = await terminalSnapshot(pageA, 'A active before B');await photo(pageA, '01-a-genuine-qa-draft-ssh.png');
-  pass('Genuine A used actual image/input/scroll tools; its visible app draft and two bidirectional live SSH channels are active.');
+  let streams = await terminalSnapshot(pageA, 'A acquired its existing SSH host before B');
+  for (let index = 0; index < streams.length; index++) assert.ok(streams[index].cursor > beforeQaStreams[index].cursor && streams[index].tickCount > beforeQaStreams[index].tickCount, 'A QA acquisition must preserve its original live SSH channels.');
+  await photo(pageA, '01-a-genuine-qa-draft-ssh.png');
+  pass('Genuine A used actual image/input/scroll tools and acquired its existing working host; its visible app draft and two original bidirectional SSH channels are active.');
 
   phase = 'genuine-B-hot-attach';aHeartbeat = heartbeat(browserA);chats.B = new ExternalChat('B');await chats.B.open();
   const callsB = await chats.B.turn('B hot attachment image/input/scroll', instructions('B') + `Open exactly once with reviewId ${reviews.B.id} and label Chat B. ` + webTask('B', markers.B), words.B);
@@ -561,8 +588,10 @@ try {
   // Even failed cohorts clean only original handles owned by this driver.
   if (failure) for (const key of ['A', 'B']) if (chats[key]) await attempt(key + ' original failed-cohort turn interruption', () => chats[key].interrupt());
   if (draftA && !draftA.page().isClosed()) await attempt('Owned synthetic app draft cleanup', () => draftA.fill(''));
-  const pageA = app && controllers.A ? await projectPage('A').catch(() => null) : null;
+  const pageA = app && controllers.A ? await projectPage('A').catch(() => null) : preflightPageA && !preflightPageA.isClosed() ? preflightPageA : null;
   if (pageA) for (const id of terminalIds) await attempt('Owned SSH terminal natural exit', async () => {
+    const context = await ipc(pageA, 'window.context'), expected = controllers.A || preflightTargetA;
+    assert.equal(context.projectId, expected.projectId);assert.equal(context.windowId, expected.windowId);
     await ipc(pageA, 'terminal.write', {id, data: 'EXIT\n'});await until(() => ipc(pageA, 'terminal.read', {id, cursor: 0}), value => value.closed && value.data.includes('OWNED_BYE'), 'Original SSH stream natural end');await ipc(pageA, 'terminal.close', {id});
   });
   if (admin) {
