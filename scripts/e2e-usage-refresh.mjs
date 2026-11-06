@@ -79,11 +79,18 @@ try{
  pass('The real main-process1min timer refreshed while minimized on Home; one failed profile retained its values and success time while another refreshed');
  await app.evaluate(({BrowserWindow})=>{const window=BrowserWindow.getAllWindows()[0];window.restore();window.focus()});
  await page.locator('.main-nav').getByRole('button',{name:'계정관리',exact:true}).click();await expect(accountRow(accounts[1])).toContainText('사용량 조회에 실패했습니다.');await expect(accountRow(accounts[1])).toContainText('마지막 성공:');await expect(accountRow(accounts[2])).toContainText('다시 로그인 필요');await page.screenshot({path:path.join(output,'03-offline-retained-usage.png')});
- await accountRow(accounts[0]).getByRole('button',{name:accounts[0].label+' 상세 통계',exact:true}).click();await expect(page.getByRole('dialog').locator('.details-summary > div').filter({has:page.getByText('전체 사용량',{exact:true})}).getByRole('definition')).toBeVisible();
+ await accountRow(accounts[0]).getByRole('button',{name:accounts[0].label+' 상세 통계',exact:true}).click();
+ const openDetails=page.getByRole('dialog').locator('.account-details');
+ const totalUsage=page.getByRole('dialog').locator('.details-summary > div').filter({has:page.getByText('전체 사용량',{exact:true})}).getByRole('definition');
+ await expect(openDetails).toHaveAttribute('aria-busy','false');
+ await expect(totalUsage).toContainText('8M');
+ const beforeAutomaticDetails=calls().filter(row=>row.id===accounts[0].id&&row.method==='account/usage/read').length;
  control.failIds=[];control.usedPercent=60;control.tokens=12000000;updateControl();
  await expect.poll(async()=>(await state()).accounts.find(account=>account.id===accounts[1].id).status,{timeout:80000,intervals:[1000]}).toBe('ready');
  await expect.poll(async()=>(await state()).accounts.find(account=>account.id===accounts[1].id).usage.rateLimits.primary.usedPercent,{timeout:10000}).toBe(60);
- await expect(page.getByRole('dialog').locator('.details-summary > div').filter({has:page.getByText('전체 사용량',{exact:true})}).getByRole('definition')).toBeVisible();await page.screenshot({path:path.join(output,'03b-open-detail-live-refresh.png')});await page.getByRole('dialog').getByRole('button',{name:'닫기',exact:true}).last().click();
+ await expect.poll(()=>calls().filter(row=>row.id===accounts[0].id&&row.method==='account/usage/read').length,{timeout:10000}).toBe(beforeAutomaticDetails+1);
+ await expect(totalUsage).toContainText('12M');
+ await page.screenshot({path:path.join(output,'03b-open-detail-live-refresh.png')});await page.getByRole('dialog').getByRole('button',{name:'닫기',exact:true}).last().click();
  await expect(accountRow(accounts[1])).not.toContainText('사용량 조회에 실패했습니다.');
  await page.screenshot({path:path.join(output,'04-automatic-recovery.png')});
  await accountRow(accounts[1]).getByRole('button',{name:accounts[1].label+' 상세 통계',exact:true}).click();await expect(page.getByRole('dialog')).toContainText('마지막 성공:');await page.screenshot({path:path.join(output,'05-updated-details.png')});pass('The following scheduled interval recovered the failed account and updated the visible list and detail cache');
@@ -91,7 +98,7 @@ try{
  const count=quotaCount(accounts[0].id);await app.evaluate(({powerMonitor})=>powerMonitor.emit('resume'));await new Promise(resolve=>setTimeout(resolve,250));assert.equal(quotaCount(accounts[0].id),count);pass('A resume event with fresh data did not add duplicate requests');
  await stop();await launch();await settings();await expectSelectValue(usageSettings().getByRole('combobox',{name:'계정 사용량 갱신 주기',exact:true}),'1');assert.equal(quotaCount(accounts[0].id),count);assert.equal((await state()).accounts[1].usage.rateLimits.primary.usedPercent,60);await page.screenshot({path:path.join(output,'06-restarted-persisted-interval.png')});pass('Restart retained the1min setting and latest usage without an unnecessary startup refresh');
  assert.equal(errors.length,0);assert.equal(quotaCount(accounts[2].id),0);
- fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,checks,errors,sourceVersion:'1.5.0',environment:'Source Electron on macOS; synthetic isolated stdio account API; real main-process1min timers and IPC. Default30min scheduling also tested with an injected clock; physical sleep and production service were not exercised.',calls:calls()},null,2));
+ fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,checks,errors,sourceVersion:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,sourceCommit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),environment:'Source Electron on macOS; synthetic isolated stdio account API; real main-process1min timers and IPC. Default30min scheduling also tested with an injected clock; physical sleep and production service were not exercised.',calls:calls()},null,2));
  console.log('RESULTS: '+output);
 }catch(error){fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:false,checks,errors,error:error.stack},null,2));if(page)await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});throw error}
 finally{await stop();fs.rmSync(directory,{recursive:true,force:true})}
