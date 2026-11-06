@@ -6,6 +6,7 @@ const path = require('node:path');
 const {createPeerReadBrowsing} = require('./peer-read-browsing.cjs');
 const {createWebReadListener} = require('./remote-web-listener.cjs');
 const {createRemoteAppListener} = require('./remote-app-listener.cjs');
+const {createRemoteAttachments} = require('./remote-attachments.cjs');
 const {createRemoteAppSessionStore} = require('./remote-app-session-store.cjs');
 const {loadRemoteWebAssets} = require('./remote-web-assets.cjs');
 
@@ -115,6 +116,23 @@ function createRemoteManagement(options) {
   }
   function live(record) { return trusted(record) && Boolean(record.capability); }
   const browsing = createPeerReadBrowsing(ownRecord({store, verifyPeerHandle: principal => trusted(principalRecords.get(principal))}));
+  const attachments = createRemoteAttachments({store,dataPath:path.dirname(store.dbPath),onCommitted,
+    authorize(principal,scope) {
+      const record=principalRecords.get(principal);
+      if(!live(record)||!record.attachmentScope)fail('ACCESS_DENIED');
+      const grant=record.attachmentScope.grants.find(row=>row.projectId===scope.projectId);
+      if(!grant||grant.read!==true||scope.write&&(!record.app||grant.write!==true))fail('ACCESS_DENIED');
+      const epoch=store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get()?.epoch;
+      const birth=store.db.prepare('SELECT birth FROM peer_project_births WHERE projectId=?').get(scope.projectId)?.birth;
+      if(epoch!==record.attachmentScope.epoch||birth!==grant.birth)fail('ACCESS_DENIED');
+      return {principalId:record.principalId};
+    }});
+  function attachmentScope(projectGrants) {
+    const dataset=store.peerReadDataset(),births=new Map(dataset.projects.map(row=>[row.projectId,row.birth]));
+    return Object.freeze({epoch:dataset.epoch,grants:Object.freeze(projectGrants.map(row=>{
+      if(!births.has(row.projectId))fail('ACCESS_DENIED');return Object.freeze({...row,birth:births.get(row.projectId)});
+    }))});
+  }
   function syncBrowsingEnabled() { browsing.setEnabled(Boolean(web?.enabled || app?.enabled)); }
 
   function assertOperation(original) {
@@ -157,6 +175,7 @@ function createRemoteManagement(options) {
     if (record.retired) return;
     record.retired = true;
     const errors = [];
+    if(record.principal)try{attachments.revokeOwner(record.principal);}catch(error){errors.push(error);}
     if (record.capability) {
       try { browsing.closeSession(record.capability); } catch (error) { errors.push(error); }
       try { browsing.revokePeer(record.principal); } catch (error) { errors.push(error); }
@@ -170,16 +189,16 @@ function createRemoteManagement(options) {
   function readRequest(originalWeb, authority, name, payload) {
     const record = principalRecords.get(authority);
     if (!live(record) || (record.app || record.web) !== originalWeb) fail('ACCESS_DENIED');
-    const names = name === 'projects.list' ? [] : name === 'reviews.list' ? ['projectId'] :
+    const names = name === 'attachments.read' ? ['projectId','reviewId','attachmentId','offset'] : name === 'projects.list' ? [] : name === 'reviews.list' ? ['projectId'] :
       ['reviews.get', 'reviews.timeline'].includes(name) ? ['projectId', 'reviewId'] : null;
     if (!names) fail('ACCESS_DENIED');
-    const captured = fields(payload, names); for (const key of names) identifier(captured[key]); Object.freeze(captured);
+    const captured = fields(payload, names); for (const key of names)if(key==='offset'){if(!Number.isSafeInteger(captured[key])||captured[key]<0)fail('ACCESS_DENIED');}else identifier(captured[key]); Object.freeze(captured);
     const capability = record.capability, activation = originalWeb.activation;
     const check = () => {
       if (!live(record) || (record.app ? app : web) !== originalWeb || originalWeb.activation !== activation || record.capability !== capability) fail('ACCESS_DENIED');
     };
     return enqueueRead(() => {
-      check(); const value = browsing.query(capability, name, captured); check(); return value;
+      check(); const value = name==='attachments.read'?attachments.readChunk(authority,captured):browsing.query(capability, name, captured); check(); return value;
     });
   }
   function makeListener(lease, assets) {
@@ -226,6 +245,7 @@ function createRemoteManagement(options) {
     if (!record || record.retired) return;
     record.retired = true;
     const failures = [];
+    try { attachments.revokeOwner(record.principal); } catch(error) { failures.push(error); }
     if (record.capability) try { browsing.closeSession(record.capability); } catch (error) { failures.push(error); }
     try { browsing.revokePeer(record.principal); } catch (error) { failures.push(error); }
     if (failures.length) {
@@ -245,12 +265,13 @@ function createRemoteManagement(options) {
           assertActive();if(originalApp.activation!==activation)fail('ACCESS_DENIED');return guard();
         });
       },
-      onApprove(peer, grants) {
+      onApprove(peer, grants, identity) {
         if (app !== originalApp || closed || finalClose) fail('ACCESS_DENIED');
         if(appRecords.has(peer))forgetApp(peer);
         if(appRecords.size>=16)fail('ACCESS_DENIED');
         const principal = opaque(), record = {app:originalApp,principal,approved:true,retired:false,
-          capability:null,bootstrapping:true,expires:Number.MAX_SAFE_INTEGER};
+          capability:null,bootstrapping:true,expires:identity?.expiresAt||Number.MAX_SAFE_INTEGER,
+          principalId:identity?.principalId||crypto.randomUUID(),attachmentScope:attachmentScope(grants)};
         appRecords.set(peer,record); principalRecords.set(principal,record);
         try {
           browsing.approvePeer(principal,ownRecord({projectIds:grants.map(row=>row.projectId)}));
@@ -261,6 +282,11 @@ function createRemoteManagement(options) {
         } finally { record.bootstrapping=false; }
       },
       onRead(peer,name,payload) { return readRequest(originalApp,appRecords.get(peer)?.principal,name,payload); },
+      onAttachment(peer,name,payload) {
+        const record=appRecords.get(peer),activation=originalApp.activation;
+        const check=()=>{if(!live(record)||app!==originalApp||originalApp.activation!==activation)fail('ACCESS_DENIED');};
+        return enqueueRead(()=>{check();const value=attachments[name](record.principal,payload);check();return value;});
+      },
       onRevoke:forgetApp});
     return originalApp;
   }
@@ -411,6 +437,7 @@ function createRemoteManagement(options) {
         if (!record || record.retired || record.capability || record.web !== web || !web.enabled || record.expires <= Date.now()) fail('STALE_REMOTE_REQUEST');
         principal = opaque(); record.principal = principal; record.principalId = crypto.randomUUID();
         record.projectIds = Object.freeze(projects); record.approved = true; principalRecords.set(principal, record);
+        record.attachmentScope=attachmentScope(projects.map(projectId=>({projectId,read:true,write:false,execute:false})));
         // The verifier must recognize this locally approved original before the
         // facade opens its session. No serialized peer or grants are accepted.
         browsing.approvePeer(principal, ownRecord({projectIds: projects}));
@@ -466,6 +493,7 @@ function createRemoteManagement(options) {
         // cleanup, rather than releasing the provider beneath it.
         if (original) await original.done;
         if (operation) fail('REMOTE_MANAGEMENT_BUSY');
+        attachments.close();
         await provider.closeAndDrain();
         browsing.retireAndClose(); closed = true;
       })();

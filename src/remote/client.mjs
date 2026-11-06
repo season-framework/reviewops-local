@@ -1,6 +1,8 @@
 const AUTH_LIMIT = 4096;
 const READ_LIMIT = 1024 * 1024 + 1024;
 const REQUEST_LIMIT = 8192;
+const ATTACHMENT_LIMIT = 10 * 1024 * 1024;
+const CHUNK_LIMIT = 64 * 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const DATE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
@@ -25,11 +27,16 @@ function text(value, max, required = false) {
 function identifier(value, code = 'INVALID_RESPONSE') { if (typeof value !== 'string' || !ID.test(value)) fail(code); }
 function date(value) { if (typeof value !== 'string' || !DATE.test(value) || !Number.isFinite(Date.parse(value))) fail(); }
 function payloadFor(operation, value) {
-  const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] : ['reviews.get','reviews.timeline'].includes(operation) ? ['projectId', 'reviewId'] : null;
+  const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] : ['reviews.get','reviews.timeline'].includes(operation) ? ['projectId', 'reviewId'] : operation==='attachments.read'?['projectId','reviewId','attachmentId','offset']:null;
   if (!keys) fail('INVALID_QUERY', 'Unsupported read operation.');
   closed(value, keys, 'INVALID_REQUEST');
   const captured = {};
-  for (const key of keys) { identifier(value[key], 'INVALID_REQUEST'); captured[key] = value[key]; }
+  for (const key of keys) {
+    if(key==='offset'){
+      if(!Number.isSafeInteger(value[key])||value[key]<0||value[key]>ATTACHMENT_LIMIT||Object.is(value[key],-0))fail('INVALID_REQUEST');
+    }else identifier(value[key], 'INVALID_REQUEST');
+    captured[key] = value[key];
+  }
   return Object.freeze(captured);
 }
 function project(row) {
@@ -47,8 +54,29 @@ function uniqueRows(rows, validate) {
   const seen = new Set();
   for (const row of rows) { validate(row); if (seen.has(row.id)) fail(); seen.add(row.id); }
 }
+function chunkBytes(value) {
+  if(typeof value!=='string'||value.length>Math.ceil(CHUNK_LIMIT/3)*4||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value))fail();
+  let binary;try{binary=atob(value);}catch{fail();}
+  if(binary.length>CHUNK_LIMIT||btoa(binary)!==value)fail();
+  return Uint8Array.from(binary,character=>character.charCodeAt(0));
+}
+function attachmentChunk(payload,data){
+  closed(data,['version','attachment','offset','nextOffset','data','complete']);
+  const row=closed(data.attachment,['id','reviewId','activityId','name','mimeType','size','sha256','createdAt']);
+  identifier(row.id);if(row.id!==payload.attachmentId||row.reviewId!==payload.reviewId)fail();
+  if(row.activityId!==null)identifier(row.activityId);
+  text(row.name,255,true);text(row.mimeType,255);date(row.createdAt);
+  if(row.name==='.'||row.name==='..'||/[\x00-\x1f\x7f/\\]/.test(row.name)||/[\x00-\x1f\x7f]/.test(row.mimeType)||
+    !Number.isSafeInteger(row.size)||row.size<0||row.size>ATTACHMENT_LIMIT||typeof row.sha256!=='string'||!/^[a-f0-9]{64}$/i.test(row.sha256)||
+    data.version!==1||data.offset!==payload.offset||data.offset>row.size||!Number.isSafeInteger(data.nextOffset)||typeof data.complete!=='boolean')fail();
+  const bytes=chunkBytes(data.data);
+  try{
+    if(data.nextOffset!==data.offset+bytes.length||data.nextOffset>row.size||data.complete!==(data.nextOffset===row.size)||(!data.complete&&!bytes.length))fail();
+  }finally{bytes.fill(0);}
+}
 function readDTO(operation, payload, data) {
-  if (operation === 'reviews.timeline') {
+  if(operation==='attachments.read')attachmentChunk(payload,data);
+  else if (operation === 'reviews.timeline') {
     closed(data,['version','projectId','reviewId','activities','attachments','agentRuns']);
     if(data.projectId!==payload.projectId||data.reviewId!==payload.reviewId)fail();
     const common=row=>{identifier(row.id);if(row.reviewId!==payload.reviewId)fail();date(row.createdAt);date(row.updatedAt);};
@@ -150,10 +178,10 @@ async function body(response, limit, check) {
 }
 export function createRemoteWebClient({ fetchImpl = globalThis.fetch, makeRequestId = () => globalThis.crypto.randomUUID(), now = () => Date.now() } = {}) {
   if (typeof fetchImpl !== 'function' || typeof makeRequestId !== 'function' || typeof now !== 'function') fail('INVALID_REQUEST');
-  let generation = 0, active = null, preparing = false, logoutPending = null, loggingOut = false, session = null;
+  let generation = 0, active = null, preparing = false, logoutPending = null, loggingOut = false, session = null, transfer = null;
   const checkGeneration = original => { if (original !== generation) fail('ABORTED', 'The request was cancelled.'); };
-  function call(path, fields, kind, operation, payload) {
-    if (active || preparing || loggingOut && kind !== 'logout') fail('BUSY', 'Wait for the current request to finish.');
+  function call(path, fields, kind, operation, payload, transferOwner=null) {
+    if (active || preparing || transfer&&transferOwner!==transfer || loggingOut && kind !== 'logout') fail('BUSY', 'Wait for the current request to finish.');
     const original = generation; let requestId, encoded;
     preparing = true;
     try {
@@ -204,13 +232,47 @@ export function createRemoteWebClient({ fetchImpl = globalThis.fetch, makeReques
       if (session?.state !== 'approved' || Date.parse(session.expiresAt) <= now()) fail('AUTH_REQUIRED', 'Check browser approval before reading.');
       return call('/web/v1/read', { operation, payload }, 'read', operation, payload);
     },
+    downloadAttachment(input){
+      closed(input,['projectId','reviewId','attachmentId'],'INVALID_REQUEST');
+      const selected={};for(const key of ['projectId','reviewId','attachmentId']){identifier(input[key],'INVALID_REQUEST');selected[key]=input[key];}
+      if(active||preparing||transfer||loggingOut)fail('BUSY','Wait for the current request to finish.');
+      if(session?.state!=='approved'||Date.parse(session.expiresAt)<=now())fail('AUTH_REQUIRED','Check browser approval before reading.');
+      const original=generation,owner={pending:null};transfer=owner;
+      owner.pending=Promise.resolve().then(async()=>{
+        const parts=[];let offset=0,attachment=null,combined=null,published=false;
+        try{
+          for(let index=0;index<=Math.ceil(ATTACHMENT_LIMIT/CHUNK_LIMIT);index++){
+            checkGeneration(original);
+            if(session?.state!=='approved'||Date.parse(session.expiresAt)<=now())fail('AUTH_REQUIRED','Check browser approval before reading.');
+            const payload=payloadFor('attachments.read',{...selected,offset});
+            const value=await call('/web/v1/read',{operation:'attachments.read',payload},'read','attachments.read',payload,owner);
+            checkGeneration(original);
+            if(!attachment)attachment=Object.freeze({...value.attachment});
+            else if(Object.keys(attachment).some(key=>attachment[key]!==value.attachment[key]))fail('INVALID_RESPONSE','The attachment changed during download.');
+            const bytes=chunkBytes(value.data);parts.push(bytes);offset=value.nextOffset;
+            if(value.complete){
+              if(offset!==attachment.size)fail();
+              combined=new Uint8Array(offset);let at=0;for(const part of parts){combined.set(part,at);at+=part.length;}
+              checkGeneration(original);
+              const digest=await globalThis.crypto.subtle.digest('SHA-256',combined);
+              checkGeneration(original);
+              const hex=Array.from(new Uint8Array(digest),byte=>byte.toString(16).padStart(2,'0')).join('');
+              if(hex!==attachment.sha256.toLowerCase())fail('INVALID_RESPONSE','The attachment hash did not match.');
+              published=true;return Object.freeze({attachment,bytes:combined});
+            }
+          }
+          fail('RESPONSE_LIMIT','The attachment exceeds the download limit.');
+        }finally{parts.forEach(part=>part.fill(0));if(!published)combined?.fill(0);}
+      }).finally(()=>{if(transfer===owner)transfer=null;});
+      return owner.pending;
+    },
     cancel() { generation++; active?.controller.abort(); },
     logout() {
       if (logoutPending) return logoutPending;
       if (preparing) fail('BUSY', 'Wait for the current request to finish.');
-      generation++; loggingOut = true; session = null; const previous = active; previous?.controller.abort();
+      generation++; loggingOut = true; session = null; const previous = active,previousTransfer=transfer; previous?.controller.abort();
       logoutPending = Promise.resolve().then(async () => {
-        await previous?.pending.catch(error => { if (error?.code === 'RESPONSE_CLEANUP_FAILED') throw error; });
+        await (previousTransfer?.pending||previous?.pending)?.catch(error => { if (error?.code === 'RESPONSE_CLEANUP_FAILED') throw error; });
         return call('/web/v1/logout', {}, 'logout');
       }).finally(() => { loggingOut = false; logoutPending = null; });
       return logoutPending;

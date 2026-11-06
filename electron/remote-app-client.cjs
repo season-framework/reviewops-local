@@ -7,6 +7,36 @@ const {X509Certificate, createHash} = require('node:crypto');
 const {copyReadDTO} = require('./remote-web-listener.cjs');
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
 function fail(code) { throw Object.assign(new Error('The remote app connection could not be completed.'), {code}); }
+function attachmentReply(operation,payload,value){
+  const record=(input,keys)=>{
+    if(!input||typeof input!=='object'||Array.isArray(input)||Object.keys(input).length!==keys.length||keys.some(key=>!Object.hasOwn(input,key)))fail('INVALID_RESPONSE');
+    return input;
+  };
+  const id=value=>typeof value==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(value);
+  const integer=value=>Number.isSafeInteger(value)&&value>=0;
+  function metadata(value){
+    record(value,['id','reviewId','activityId','name','mimeType','size','sha256','createdAt']);
+    if(!id(value.id)||!id(value.reviewId)||value.activityId!==null&&!id(value.activityId)||
+      typeof value.name!=='string'||!value.name.trim()||value.name.length>255||/[/\\\x00-\x1f\x7f]/.test(value.name)||
+      typeof value.mimeType!=='string'||value.mimeType.length>255||!integer(value.size)||value.size>10*1024*1024||
+      typeof value.sha256!=='string'||!/^[a-f0-9]{64}$/.test(value.sha256)||typeof value.createdAt!=='string'||!Number.isFinite(Date.parse(value.createdAt)))fail('INVALID_RESPONSE');
+    if(payload.reviewId&&value.reviewId!==payload.reviewId)fail('INVALID_RESPONSE');return value;
+  }
+  if(operation==='readChunk')return copyReadDTO('attachments.read',payload,value);
+  if(operation==='describe'){metadata(value);if(value.id!==payload.attachmentId)fail('INVALID_RESPONSE');return value;}
+  if(operation==='discardUpload'){record(value,['discarded']);if(typeof value.discarded!=='boolean')fail('INVALID_RESPONSE');return value;}
+  if(operation==='beginUpload'&&value?.state==='uploading'){
+    record(value,['version','state','uploadId','received','size','expiresAt']);
+    if(value.version!==1||!id(value.uploadId)||!integer(value.received)||!integer(value.size)||value.received>value.size||value.size!==payload.size||!integer(value.expiresAt))fail('INVALID_RESPONSE');return value;
+  }
+  if(operation==='writeChunk'){
+    record(value,['version','uploadId','received','size']);if(value.version!==1||value.uploadId!==payload.uploadId||!integer(value.received)||!integer(value.size)||value.received>value.size||value.size>10*1024*1024)fail('INVALID_RESPONSE');return value;
+  }
+  record(value,['version','state','uploadId','requestId','projectId','reviewId','attachment','revision']);
+  if(value.version!==1||value.state!=='committed'||![value.uploadId,value.requestId,value.projectId,value.reviewId].every(id)||!Number.isSafeInteger(value.revision)||value.revision<1)fail('INVALID_RESPONSE');
+  for(const key of ['uploadId','requestId','projectId','reviewId'])if(payload[key]!==undefined&&payload[key]!==value[key])fail('INVALID_RESPONSE');
+  metadata(value.attachment);if(value.attachment.reviewId!==value.reviewId)fail('INVALID_RESPONSE');return value;
+}
 
 // Trust is scoped to one explicitly paired host and its exact certificate.
 // No global CA store, TLS defaults, local path or SSH settings are modified.
@@ -76,6 +106,7 @@ function createRemoteAppClient({address, port, certificatePEM, certificateFinger
     writeState: target => request('/api/app/writeState', target),
     command: envelope => request('/api/app/command', envelope),
     result: query => request('/api/app/result', query),
+    attachment: (operation,payload) => request('/api/app/attachment',{operation,payload}).then(value=>attachmentReply(operation,payload,value)),
     async disconnect() {
       try { if (sessionToken && !closed) return await request('/api/app/disconnect', {}); }
       finally { await close(); await onSessionToken(''); }

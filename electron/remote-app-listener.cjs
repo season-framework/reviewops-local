@@ -9,7 +9,9 @@ const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const LIMIT = Object.freeze({body: 256 * 1024, response: 1024 * 1024, connections: 16, requests: 8, sessions: 16});
 const publicCodes = new Set(['INVALID_COMMAND', 'INVALID_REQUEST', 'AUTH_REQUIRED', 'AUTH_FAILED', 'PENDING_APPROVAL',
   'ACCESS_DENIED', 'NOT_FOUND', 'STALE_EPOCH', 'STALE_REVIEW', 'REVISION_CONFLICT', 'IDEMPOTENCY_CONFLICT',
-  'COMMAND_LIMIT', 'EXECUTION_UNAVAILABLE', 'COMMAND_FAILED', 'BUSY']);
+  'COMMAND_LIMIT', 'EXECUTION_UNAVAILABLE', 'COMMAND_FAILED', 'BUSY', 'INVALID_ATTACHMENT_REQUEST',
+  'ATTACHMENTS_UNAVAILABLE','ATTACHMENT_TOO_LARGE','ATTACHMENT_CHANGED','UPLOAD_LIMIT','UPLOAD_EXPIRED',
+  'UPLOAD_INCOMPLETE','HASH_MISMATCH','CHUNK_CONFLICT']);
 const freshToken = () => randomBytes(32).toString('base64url');
 const digest = value => createHash('sha256').update(value).digest();
 function fail(code) { throw Object.assign(new Error('Remote app access is unavailable.'), {code}); }
@@ -31,9 +33,9 @@ function closed(input, keys) {
 // Only the local main process receives this object's invitation/approval API.
 function createRemoteAppListener({lease, store, executeAgent, clock = Date.now,
   onApprove = () => {}, onRead = () => fail('EXECUTION_UNAVAILABLE'), onRevoke = () => {}, sessionStore = null,
-  assertActive = () => {}, onCommitted = () => {}}) {
+  assertActive = () => {}, onCommitted = () => {}, onAttachment = () => fail('EXECUTION_UNAVAILABLE')}) {
   if (!lease || typeof lease.createServer !== 'function' ||
-      [clock, onApprove, onRead, onRevoke, assertActive, onCommitted].some(value => typeof value !== 'function') ||
+      [clock, onApprove, onRead, onRevoke, assertActive, onCommitted, onAttachment].some(value => typeof value !== 'function') ||
       sessionStore && (typeof sessionStore.read !== 'function' || typeof sessionStore.write !== 'function')) fail('INVALID_REQUEST');
   const sessions = new Map(), sockets = new Set(), secureSockets = new Set(), work = new Set();
   let server, address, port, closing = false, active = 0, invitation, closePromise;
@@ -59,7 +61,7 @@ function createRemoteAppListener({lease, store, executeAgent, clock = Date.now,
       const session = {...row, digest: Buffer.from(row.digest, 'hex'), peer: Object.freeze(Object.create(null)), state: 'pending'};
       sessions.set(session.id, session);
       onApprove(session.peer, Object.freeze(session.grants.map(({projectId, read, write, execute}) =>
-        Object.freeze({projectId, read, write, execute}))));
+        Object.freeze({projectId, read, write, execute}))), Object.freeze({principalId:session.id,expiresAt:session.expiresAt}));
       session.state = 'approved';
     }
     persist();
@@ -125,7 +127,7 @@ function createRemoteAppListener({lease, store, executeAgent, clock = Date.now,
           Number(request.headers['content-length']) > LIMIT.body) fail('INVALID_REQUEST');
       const route = request.url;
       if (!['/api/app/connect', '/api/app/state', '/api/app/read', '/api/app/writeState',
-        '/api/app/command', '/api/app/result', '/api/app/disconnect'].includes(route)) fail('NOT_FOUND');
+        '/api/app/command', '/api/app/result', '/api/app/disconnect', '/api/app/attachment'].includes(route)) fail('NOT_FOUND');
       const input = await readBody(request);
       if (route === '/api/app/connect') {
         const {invitation: supplied, label} = closed(input, ['invitation', 'label']);
@@ -156,6 +158,10 @@ function createRemoteAppListener({lease, store, executeAgent, clock = Date.now,
         const captured = closed(payload, keys);
         for (const key of keys) if (typeof captured[key] !== 'string' || !ID.test(captured[key])) fail('INVALID_REQUEST');
         authorize(session); value = await onRead(session.peer, operation, captured); authorize(session);
+      } else if(route === '/api/app/attachment') {
+        const {operation,payload}=closed(input,['operation','payload']);
+        if(!['describe','readChunk','beginUpload','writeChunk','commitUpload','result','discardUpload'].includes(operation))fail('INVALID_REQUEST');
+        authorize(session);value=await onAttachment(session.peer,operation,payload);authorize(session);
       } else value = route === '/api/app/writeState' ? commands.writeState(session, input) :
         route === '/api/app/command' ? await commands.execute(session, input) : commands.result(session, input);
       send(response, 200, {ok: true, data: value});
@@ -217,7 +223,7 @@ function createRemoteAppListener({lease, store, executeAgent, clock = Date.now,
       session.state = 'pending'; session.grants = []; session.epoch = '';
       try {
         onApprove(session.peer, Object.freeze(captured.map(({projectId, read, write, execute}) =>
-          Object.freeze({projectId, read, write, execute}))));
+          Object.freeze({projectId, read, write, execute}))), Object.freeze({principalId:session.id,expiresAt:session.expiresAt}));
         session.grants = captured; session.epoch = dataset.epoch; session.state = 'approved'; persist();
       } catch (error) { try { retire(session, false); } catch {} throw error; }
       return publicState(session);

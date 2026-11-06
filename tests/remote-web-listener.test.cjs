@@ -6,6 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {EventEmitter} = require('node:events');
 const {Readable} = require('node:stream');
+const {createHash}=require('node:crypto');
 const {createWebReadListener} = require('../electron/remote-web-listener.cjs');
 
 const date = '2026-11-06T00:00:00.000Z';
@@ -116,6 +117,65 @@ async function fixture(options = {}) {
 function invitationFields(value) { return {invitationId: value.invitationId, secret: value.secret}; }
 function read(requestId = 'read-1', operation = 'projects.list', payload = {}) { return {version: 1, requestId, operation, payload}; }
 function authenticated(cookie, extra = {}) { return {headers: {cookie, ...extra}}; }
+
+const attachmentQuery={projectId:project.id,reviewId:review.id,attachmentId:'attachment-a',offset:0};
+function chunkDTO(bytes=Buffer.from([0,255,1])){
+  return{version:1,attachment:{id:'attachment-a',reviewId:review.id,activityId:null,name:'file.bin',mimeType:'application/octet-stream',
+    size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),createdAt:date},offset:0,nextOffset:bytes.length,data:bytes.toString('base64'),complete:true};
+}
+test('attachment reads retain the original approved browser principal and exact numeric offset',async()=>{
+  const original=chunkDTO(Buffer.alloc(65536,13));
+  const item=await fixture({onRead:async()=>original});
+  try{
+    const session=await item.approve();
+    const result=await item.send('/web/v1/read',read('chunk','attachments.read',attachmentQuery),authenticated(session.cookie));
+    assert.deepEqual(result.json().data,original);
+    assert.strictEqual(item.calls[0][0],session.authority);assert.equal(item.calls[0][1],'attachments.read');
+    assert.deepEqual({...item.calls[0][2]},attachmentQuery);assert.ok(Object.isFrozen(item.calls[0][2]));
+    assert.equal(result.bytes.includes(Buffer.from('storageName')),false);
+  }finally{await item.listener.closeAndDrain();}
+});
+test('attachment offsets and extra authority fields are refused before the engine callback',async()=>{
+  const item=await fixture();
+  try{
+    const session=await item.approve();
+    for(const payload of [{...attachmentQuery,offset:-1},{...attachmentQuery,offset:'0'},{...attachmentQuery,offset:0.5},
+      {...attachmentQuery,offset:10*1024*1024+1},{...attachmentQuery,path:'/private/file'}]){
+      const result=await item.send('/web/v1/read',read('bad','attachments.read',payload),authenticated(session.cookie));
+      assert.equal(result.json().ok,false);
+    }
+    assert.equal(item.calls.length,0);
+  }finally{await item.listener.closeAndDrain();}
+});
+test('attachment output refuses private fields, foreign metadata and noncanonical chunks',async()=>{
+  const original=chunkDTO(),invalid=[
+    {...original,attachment:{...original.attachment,storageName:'private.bin'}},
+    {...original,attachment:{...original.attachment,reviewId:'foreign'}},
+    {...original,attachment:{...original.attachment,name:'../private'}},
+    {...original,attachment:{...original.attachment,size:10*1024*1024+1}},
+    {...original,data:'AB=='},
+    {...original,nextOffset:4},
+    chunkDTO(Buffer.alloc(65537))
+  ];
+  let returned;const item=await fixture({onRead:async()=>returned});
+  try{
+    const session=await item.approve();
+    for(const value of invalid){returned=value;const result=await item.send('/web/v1/read',read('bad','attachments.read',attachmentQuery),authenticated(session.cookie));assert.equal(result.json().error.code,'INVALID_SNAPSHOT');}
+    returned=chunkDTO(Buffer.alloc(0));
+    const empty=await item.send('/web/v1/read',read('empty','attachments.read',attachmentQuery),authenticated(session.cookie));
+    assert.deepEqual(empty.json().data,returned);
+  }finally{await item.listener.closeAndDrain();}
+});
+test('revoking browser approval withholds its original held attachment bytes',async()=>{
+  const held=deferred(),entered=deferred();const item=await fixture({onRead:()=>{entered.resolve();return held.promise;}});
+  try{
+    const session=await item.approve();
+    const response=item.server().dispatch('/web/v1/read',read('held','attachments.read',attachmentQuery),authenticated(session.cookie));
+    await entered.promise;item.listener.revoke(session.authority);
+    held.resolve(chunkDTO());const result=await response.pending;
+    assert.equal(result.destroyed,true);assert.equal(result.bytes,undefined);
+  }finally{held.resolve(chunkDTO());await item.listener.closeAndDrain();}
+});
 
 test('captures fixed assets and rejects path/host/origin aliases without invoking authority', async () => {
   const item = await fixture();

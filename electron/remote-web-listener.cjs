@@ -22,10 +22,14 @@ const MESSAGES = Object.freeze({
 });
 const PUBLIC_CODES = Object.freeze({BROWSING_QUERY_LIMIT_EXCEEDED: 'QUERY_LIMIT_EXCEEDED',
   AUTHORITY_LIMIT_EXCEEDED: 'BUSY', STALE_EPOCH: 'STALE_SESSION', STALE_REVIEW: 'STALE_SESSION',
-  PEER_READ_UNAVAILABLE: 'UNAVAILABLE'});
+  PEER_READ_UNAVAILABLE: 'UNAVAILABLE',INVALID_ATTACHMENT_REQUEST:'INVALID_QUERY',
+  ATTACHMENT_TOO_LARGE:'QUERY_LIMIT_EXCEEDED',ATTACHMENT_CHANGED:'INVALID_SNAPSHOT',ATTACHMENTS_UNAVAILABLE:'UNAVAILABLE',
+  ENOENT:'NOT_FOUND',ELOOP:'NOT_FOUND',EACCES:'UNAVAILABLE',EPERM:'UNAVAILABLE'});
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TOKEN = /^[A-Za-z0-9_-]{43}$/;
+const ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const CHUNK_BYTES = 64 * 1024;
 const MIME = new Set(['text/html; charset=utf-8', 'application/javascript; charset=utf-8',
   'text/css; charset=utf-8', 'application/json; charset=utf-8', 'image/svg+xml', 'image/png', 'font/woff2']);
 const SECURITY_HEADERS = Object.freeze({
@@ -125,12 +129,15 @@ function captureRead(input) {
   closed(input, ['version', 'requestId', 'operation', 'payload']);
   if (input.version !== 1 || typeof input.requestId !== 'string' || !ID.test(input.requestId)) fail('INVALID_REQUEST');
   const keys = input.operation === 'projects.list' ? [] : input.operation === 'reviews.list' ? ['projectId'] :
-    ['reviews.get','reviews.timeline'].includes(input.operation) ? ['projectId', 'reviewId'] : null;
+    ['reviews.get','reviews.timeline'].includes(input.operation) ? ['projectId', 'reviewId'] :
+      input.operation==='attachments.read'?['projectId','reviewId','attachmentId','offset']:null;
   if (!keys) fail('INVALID_QUERY');
   closed(input.payload, keys);
   const payload = Object.create(null);
   for (const key of keys) {
-    if (typeof input.payload[key] !== 'string' || !ID.test(input.payload[key])) fail('INVALID_QUERY');
+    if(key==='offset'){
+      if(!Number.isSafeInteger(input.payload[key])||input.payload[key]<0||input.payload[key]>ATTACHMENT_BYTES||Object.is(input.payload[key],-0))fail('INVALID_QUERY');
+    }else if (typeof input.payload[key] !== 'string' || !ID.test(input.payload[key])) fail('INVALID_QUERY');
     payload[key] = input.payload[key];
   }
   return Object.freeze({operation: input.operation, payload: Object.freeze(payload)});
@@ -175,6 +182,26 @@ function copyReadDTO(operation, payload, input) {
     ['number', value => Number.isSafeInteger(value) && value > 0], ['title', text(300, true)], ['body', text(100000)],
     ['status', value => ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'].includes(value)],
     ['priority', value => ['low', 'normal', 'high', 'critical'].includes(value)], ['category', id], ['createdAt', date], ['updatedAt', date]];
+  if(operation==='attachments.read'){
+    try{closed(input,['version','attachment','offset','nextOffset','data','complete']);}catch{fail('INVALID_SNAPSHOT');}
+    if(input.version!==1||input.offset!==payload.offset||!Number.isSafeInteger(input.offset)||input.offset<0||
+      !Number.isSafeInteger(input.nextOffset)||typeof input.complete!=='boolean'||typeof input.data!=='string'||
+      input.data.length>Math.ceil(CHUNK_BYTES/3)*4||!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(input.data))fail('INVALID_SNAPSHOT');
+    const attachment=object(data(input,'attachment'),[
+      ['id',value=>id(value)&&value===payload.attachmentId],['reviewId',value=>value===payload.reviewId],['activityId',value=>value===null||id(value)],
+      ['name',value=>text(255,true)(value)&&value!=='.'&&value!=='..'&&!/[\x00-\x1f\x7f/\\]/.test(value)],
+      ['mimeType',value=>text(255)(value)&&!/[\x00-\x1f\x7f]/.test(value)],
+      ['size',value=>Number.isSafeInteger(value)&&value>=0&&value<=ATTACHMENT_BYTES],
+      ['sha256',value=>typeof value==='string'&&/^[a-f0-9]{64}$/i.test(value)],['createdAt',date]
+    ]);
+    const decoded=Buffer.from(input.data,'base64');
+    if(decoded.length>CHUNK_BYTES||decoded.toString('base64')!==input.data||input.offset>attachment.size||
+      input.nextOffset!==input.offset+decoded.length||input.nextOffset>attachment.size||
+      input.complete!==(input.nextOffset===attachment.size)||(!input.complete&&!decoded.length))fail('INVALID_SNAPSHOT');
+    const result={version:1,attachment,offset:input.offset,nextOffset:input.nextOffset,data:input.data,complete:input.complete};
+    charge(Buffer.byteLength(JSON.stringify({...result,attachment:null})));
+    return result;
+  }
   if (operation === 'reviews.timeline') {
     try { closed(input, ['version','projectId','reviewId','activities','attachments','agentRuns']); } catch { fail('INVALID_SNAPSHOT'); }
     if (input.version !== 1 || input.projectId !== payload.projectId || input.reviewId !== payload.reviewId) fail('INVALID_SNAPSHOT');

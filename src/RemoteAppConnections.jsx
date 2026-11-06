@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {t,useLocale} from './i18n/index.js';
+import {uploadRemoteAttachment,downloadRemoteAttachment,captureTimelineAttachment,REMOTE_FILE_BYTES} from './remote/attachments.mjs';
 
 export default function RemoteAppConnections({invoke,active=true}){
  useLocale();
@@ -8,23 +9,29 @@ export default function RemoteAppConnections({invoke,active=true}){
  const [verified,setVerified]=useState(false),[selected,setSelected]=useState(''),[projects,setProjects]=useState([]),[reviews,setReviews]=useState([]),[projectId,setProjectId]=useState(''),[reviewId,setReviewId]=useState('');
  const [detail,setDetail]=useState(null),[timeline,setTimeline]=useState(null),[editor,setEditor]=useState({title:'',body:'',priority:'normal',category:'ux'});
  const [comment,setComment]=useState(''),[prompt,setPrompt]=useState(''),[followup,setFollowup]=useState(null),[pendingCommand,setPendingCommand]=useState(null);
+ const [uploadFile,setUploadFile]=useState(null),[uploadActivity,setUploadActivity]=useState(''),[transfer,setTransfer]=useState(null),[pendingUploads,setPendingUploads]=useState([]);
  const alive=useRef(true),pending=useRef(false);
+ const selection=useRef(null),fileInput=useRef(null);selection.current={id:selected,projectId,reviewId,active};
  const drafts=useRef(new Map()),draftKey=[selected,projectId,reviewId].join(':');
  const saveDraft=patch=>drafts.current.set(draftKey,{...(drafts.current.get(draftKey)||{}),...patch});
  const editReview=patch=>setEditor(previous=>{const value={...previous,...patch};saveDraft({editor:value});return value;});
- useEffect(()=>{const draft=drafts.current.get(draftKey);setEditor(draft?.editor||{title:'',body:'',priority:'normal',category:'ux'});setComment(draft?.comment||'');setPrompt(draft?.prompt||'');},[draftKey]);
+ useEffect(()=>{const draft=drafts.current.get(draftKey);setEditor(draft?.editor||{title:'',body:'',priority:'normal',category:'ux'});setComment(draft?.comment||'');setPrompt(draft?.prompt||'');setUploadFile(null);setUploadActivity('');setTransfer(null);},[draftKey]);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[]);
  const state=async()=>{
   const result=await invoke('remoteApp.state');if(!Array.isArray(result?.connections)||!Array.isArray(result.pendingCommands))throw new Error();
   if(alive.current){setHosts(result.connections);setPendingCommand(current=>{
    const saved=result.pendingCommands.find(row=>row.id===current?.id&&row.requestId===current?.envelope?.requestId)||result.pendingCommands[0];
    return saved?{id:saved.id,envelope:{requestId:saved.requestId,epoch:saved.epoch,projectId:saved.projectId,operation:saved.operation}}:null;
-  });}
+  });setPendingUploads(Array.isArray(result.pendingUploads)?result.pendingUploads:[]);}
  };
  const perform=async(action)=>{
   if(pending.current||!active)return;pending.current=true;setBusy(true);setError('');setMessage('');
   try{await action();await state();}
-  catch(cause){if(alive.current)setError(t('원격 요청을 완료하지 못했습니다. 연결과 권한을 확인하십시오. ({0})',[typeof cause?.code==='string'?cause.code:'CONNECTION_UNAVAILABLE']));}
+  catch(cause){if(alive.current)setError(t('원격 요청을 완료하지 못했습니다. 연결과 권한을 확인하십시오. ({0})',[typeof cause?.code==='string'?cause.code:'CONNECTION_UNAVAILABLE']));
+   // A lost reply can still have a durable host result. Refresh the main-owned
+   // request ledger before offering another upload or command.
+   try{await state();}catch{}
+  }
   finally{pending.current=false;if(alive.current)setBusy(false);}
  };
  useEffect(()=>{if(active)perform(state)},[active,invoke]);
@@ -66,6 +73,48 @@ export default function RemoteAppConnections({invoke,active=true}){
   if(value.state!=='pending')setPendingCommand(null);
   setMessage(value.state==='pending'?t('처리 결과를 기다리고 있습니다. 요청을 다시 실행하지 마십시오.'):t('작업 PC의 저장된 처리 결과를 확인했습니다.'));
  });
+ const transferOwner=()=>{
+  const original=Object.freeze({id:selected,projectId,reviewId});
+  const assertCurrent=()=>{const current=selection.current;if(!alive.current||!current.active||
+   current.id!==original.id||current.projectId!==original.projectId||current.reviewId!==original.reviewId)
+   throw Object.assign(new Error(),{code:'STALE_ATTACHMENT_VIEW'});};
+  assertCurrent();return {original,assertCurrent,call:(operation,payload)=>{
+   assertCurrent();return invoke('remoteApp.attachment',{id:original.id,operation,payload});
+  }};
+ };
+ const chooseUpload=event=>{const file=event.target.files?.[0]||null;
+  if(file&&file.size>REMOTE_FILE_BYTES){setUploadFile(null);event.target.value='';setError(t('10 MiB 이하의 파일을 선택하십시오.'));return;}
+  setUploadFile(file);setTransfer(null);setError('');
+ };
+ const upload=()=>perform(async()=>{
+  const {original,assertCurrent,call}=transferOwner(),file=uploadFile,activityId=uploadActivity||null;
+  if(!file||pendingUploads.some(row=>row.id===original.id&&row.projectId===original.projectId&&row.reviewId===original.reviewId))
+   throw Object.assign(new Error(),{code:'UNRESOLVED_UPLOAD'});
+  const revision=await invoke('remoteApp.writeState',{...original});assertCurrent();
+  const result=await uploadRemoteAttachment({file,scope:{projectId:original.projectId,reviewId:original.reviewId},activityId,revision,
+   requestId:crypto.randomUUID(),call,assertCurrent,onProgress:value=>{assertCurrent();setTransfer({name:file.name,...value});}});
+  assertCurrent();setUploadFile(null);if(fileInput.current)fileInput.current.value='';
+  setMessage(t('작업 PC에 첨부파일을 저장했습니다.'));await loadDetail();return result;
+ });
+ const download=file=>perform(async()=>{
+  const {original,assertCurrent,call}=transferOwner();
+  const result=await downloadRemoteAttachment({scope:{projectId:original.projectId,reviewId:original.reviewId},expected:captureTimelineAttachment(file),call,assertCurrent,
+   onProgress:value=>{assertCurrent();setTransfer({name:file.name,...value});}});assertCurrent();
+  // Preserve the filename while saving inert binary; never navigate to shared
+  // HTML/SVG under the renderer's application origin.
+  const url=URL.createObjectURL(new Blob([result.bytes],{type:'application/octet-stream'})),link=document.createElement('a');
+  try{link.href=url;link.download=result.attachment.name;link.hidden=true;document.body.appendChild(link);link.click();}
+  finally{link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+  setMessage(t('파일의 전체 SHA-256을 확인하고 다운로드를 시작했습니다.'));
+ });
+ const uploadResult=row=>perform(async()=>{
+  const result=await invoke('remoteApp.attachment',{id:row.id,operation:'result',payload:{requestId:row.requestId,
+   epoch:row.epoch,projectId:row.projectId,reviewId:row.reviewId}});
+  if(result?.state!=='committed'||result.requestId!==row.requestId||result.projectId!==row.projectId||result.reviewId!==row.reviewId)
+   throw Object.assign(new Error(),{code:'INVALID_ATTACHMENT_RESPONSE'});
+  setMessage(t('작업 PC의 첨부파일 저장 결과를 확인했습니다.'));
+  if(selected===row.id&&projectId===row.projectId&&reviewId===row.reviewId)await loadDetail();
+ });
  if(!active)return null;
  return <section className="settings-panel remote-app-connections" aria-label={t('다른 PC에 원격 접속')}>
   <h2>{t('다른 PC에 원격 접속')}</h2><p>{t('작업 PC의 IP·포트와 초대 정보를 입력하십시오. 자료 저장과 에이전트 실행은 작업 PC에서 처리합니다.')}</p>
@@ -84,12 +133,37 @@ export default function RemoteAppConnections({invoke,active=true}){
    <button type="button" className="button" disabled={busy} onClick={()=>perform(()=>invoke('remoteApp.disconnect',{id:row.id}))}>{t('연결 해제')}</button>
    <button type="button" className="button" disabled={busy} onClick={()=>perform(()=>invoke('remoteApp.forget',{id:row.id}))}>{t('저장한 연결 삭제')}</button>
    </div></div>)}
+  {pendingUploads.length>0&&<section aria-label={t('확인할 첨부파일 전송')}><h3>{t('확인할 첨부파일 전송')}</h3>
+   <p>{t('저장 결과가 불명확하면 같은 요청의 결과만 확인하십시오. 파일을 다시 보내지 마십시오.')}</p>
+   {pendingUploads.map(row=><div key={`${row.id}:${row.requestId}`}><p>{row.name} · <code>{row.requestId}</code></p>
+    <button type="button" className="button" disabled={busy} onClick={()=>uploadResult(row)}>{t('첨부파일 저장 결과 확인')}</button>
+    {row.phase==='staging'&&<button type="button" className="button" disabled={busy} onClick={()=>perform(async()=>{
+     await invoke('remoteApp.cancelPendingUpload',{id:row.id,requestId:row.requestId});setMessage(t('임시 전송을 취소했습니다.'));
+    })}>{t('임시 전송 취소')}</button>}
+   </div>)}
+  </section>}
   {host&&<div className="remote-host"><h3>{t('원격 작업 공간: {0}',[host.label])}</h3><p>{host.address}:{host.port}</p>
    <button type="button" className="button" disabled={busy} onClick={loadProjects}>{t('공유 프로젝트 불러오기')}</button>
    <label>{t('원격 프로젝트')}<select value={projectId} disabled={busy} onChange={event=>{setProjectId(event.target.value);setReviewId('');setReviews([]);setDetail(null);setTimeline(null);}}><option value="">{t('프로젝트 선택')}</option>{projects.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
    <button type="button" className="button" disabled={busy||!projectId} onClick={loadReviews}>{t('리뷰 불러오기')}</button>
    <label>{t('원격 리뷰')}<select value={reviewId} disabled={busy} onChange={event=>{setReviewId(event.target.value);setDetail(null);setTimeline(null);}}><option value="">{t('새 리뷰 또는 리뷰 선택')}</option>{reviews.map(row=><option key={row.id} value={row.id}>#{row.number} · {row.title}</option>)}</select></label>
    <button type="button" className="button" disabled={busy||!reviewId} onClick={()=>perform(loadDetail)}>{t('상세·작업 결과 새로고침')}</button>
+   {transfer&&<p role="status">{t('첨부파일 전송: {0} · {1}/{2} 바이트',[transfer.name,transfer.received,transfer.size])}
+    {transfer.phase==='committing'&&` · ${t('저장 결과 확인 중')}`}</p>}
+   {timeline&&<section aria-label={t('원격 첨부파일')}><h3>{t('원격 첨부파일')}</h3>
+    {timeline.attachments.length?<ul>{timeline.attachments.map(file=><li key={file.id}>{file.name} · {file.size.toLocaleString()} {t('바이트')}
+     <button className="button" type="button" disabled={busy} onClick={()=>download(file)} aria-label={t('첨부파일 다운로드: {0}',[file.name])}>{t('다운로드')}</button>
+    </li>)}</ul>:<p>{t('첨부파일이 없습니다.')}</p>}
+    <fieldset disabled={busy||!grant?.write||!reviewId||Boolean(pendingCommand)||pendingUploads.some(row=>row.id===selected&&row.projectId===projectId&&row.reviewId===reviewId)}>
+     <legend>{t('작업 PC에 파일 첨부')}</legend><p>{t('파일당 최대 10 MiB입니다. 전송 중 창이나 리뷰를 바꾸면 전송이 중단됩니다.')}</p>
+     <label>{t('첨부할 파일')}<input ref={fileInput} key={draftKey} type="file" onChange={chooseUpload}/></label>
+     <label>{t('첨부 위치')}<select value={uploadActivity} onChange={event=>setUploadActivity(event.target.value)}>
+      <option value="">{t('리뷰에 첨부')}</option>{timeline.activities.filter(row=>row.type==='comment'&&row.role==='user').map(row=>
+       <option value={row.id} key={row.id}>{t('댓글: {0}',[row.body.slice(0,80)])}</option>)}
+     </select></label>
+     <button type="button" className="button primary" disabled={!uploadFile} onClick={upload}>{t('첨부파일 전송')}</button>
+    </fieldset>
+   </section>}
    {pendingCommand&&<div role="status"><p>{t('처리 결과가 확인되지 않은 요청이 있습니다. 새 요청을 보내지 말고 저장된 결과를 확인하십시오.')}</p><button type="button" className="button" disabled={busy} onClick={checkResult}>{t('요청 결과 확인')}</button></div>}
    <fieldset disabled={busy||!grant?.write||Boolean(pendingCommand)}><legend>{t('원격 리뷰 작성')}</legend><label>{t('제목')}<input value={editor.title} onChange={event=>editReview({title:event.target.value})} maxLength={300}/></label><label>{t('내용')}<textarea value={editor.body} onChange={event=>editReview({body:event.target.value})} maxLength={100000}/></label>
     <button className="button primary" type="button" disabled={!projectId||!editor.title.trim()} onClick={()=>command(reviewId?'review.update':'review.create',editor)}>{reviewId?t('원격 리뷰 수정'):t('원격 리뷰 등록')}</button>

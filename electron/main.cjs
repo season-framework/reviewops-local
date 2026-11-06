@@ -1537,7 +1537,7 @@ async function invokeRemoteAppControl(event,host,record,action,payload) {
   try {
     const original=captureRemoteControlFrame(event,host,record,action,{}),connections=remoteAppConnections;
     const method=action.slice('remoteApp.'.length);
-    if(!connections||!['state','connect','refresh','read','writeState','command','result','disconnect','forget'].includes(method))
+    if(!connections||!['state','connect','refresh','read','writeState','command','result','disconnect','forget','attachment','cancelPendingUpload'].includes(method))
       throw remoteControlError('INVALID_REMOTE_REQUEST');
     const guard=()=>{original.assertCurrent();if(remoteAppConnections!==connections)throw remoteControlError('STALE_REMOTE_REQUEST');};
     // The connection module captures and validates its input synchronously.

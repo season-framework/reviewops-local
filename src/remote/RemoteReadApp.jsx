@@ -20,6 +20,7 @@ export default function RemoteReadApp() {
   const [invitationId, setInvitationId] = useState(''), [secret, setSecret] = useState(''), [clientName, setClientName] = useState('');
   const [session, setSession] = useState(null), [pending, setPending] = useState(''), [error, setError] = useState(''), [disconnected, setDisconnected] = useState(false);
   const [logoutUnconfirmed, setLogoutUnconfirmed] = useState(false);
+  const [downloadNotice,setDownloadNotice]=useState('');
   const [projects, setProjects] = useState([]), [reviews, setReviews] = useState([]), [detail, setDetail] = useState(null);
   const [timeline, setTimeline] = useState(null);
   const [projectId, setProjectId] = useState(''), [reviewId, setReviewId] = useState('');
@@ -30,13 +31,14 @@ export default function RemoteReadApp() {
   const clearData = () => {
     setProjects([]); setReviews([]); setDetail(null); setTimeline(null); setProjectId(''); setReviewId('');
     setUpdated({ projects: null, reviews: null, detail: null }); setStale({ projects: true, reviews: true, detail: true });
+    setDownloadNotice('');
   };
   const action = async (name, invoke, accept) => {
     if (inFlight.current) return;
-    const original = ++sequence.current; inFlight.current = name; setPending(name); setError('');
+    const original = ++sequence.current; inFlight.current = name; setPending(name); setError('');setDownloadNotice('');
     try {
       const value = await invoke();
-      if (!alive.current || original !== sequence.current) return;
+      if (!alive.current || original !== sequence.current) {if(name==='download')value.bytes.fill(0);return;}
       setDisconnected(false); setLogoutUnconfirmed(false); accept(value);
     } catch (cause) {
       if (!alive.current || original !== sequence.current) return;
@@ -61,6 +63,23 @@ export default function RemoteReadApp() {
     timeline: await client.read('reviews.timeline', {projectId, reviewId})}), value => {
     setDetail(value.review); setTimeline(value.timeline); setUpdated(current => ({ ...current, detail: new Date().toISOString() })); setStale(current => ({ ...current, detail: false }));
   });
+  const downloadAttachment=row=>{
+    const expected=Object.fromEntries(['id','reviewId','activityId','name','mimeType','size','sha256','createdAt'].map(key=>[key,row[key]]));
+    action('download',()=>client.downloadAttachment({projectId,reviewId,attachmentId:expected.id}),value=>{
+      let url,anchor;
+      try{
+        if(Object.keys(expected).some(key=>expected[key]!==value.attachment[key]))throw Object.assign(new Error('The attachment changed.'),{code:'INVALID_RESPONSE'});
+        // Always download as inert binary; a shared HTML/SVG file is never opened
+        // as active content inside this trusted browser origin.
+        url=URL.createObjectURL(new Blob([value.bytes],{type:'application/octet-stream'}));
+        anchor=document.createElement('a');anchor.href=url;anchor.download=value.attachment.name;anchor.rel='noopener';
+        document.body.append(anchor);anchor.click();setDownloadNotice(`Verified download: ${value.attachment.name}`);
+      }finally{
+        anchor?.remove();value.bytes.fill(0);
+        if(url)setTimeout(()=>URL.revokeObjectURL(url),1000);
+      }
+    });
+  };
   const refresh = useRef(null);
   refresh.current = () => {
     if (session?.state !== 'approved' || inFlight.current || document.hidden) return;
@@ -112,7 +131,7 @@ export default function RemoteReadApp() {
       <section className="panel" aria-labelledby="detail-title"><h2 id="detail-title">Review detail</h2><Freshness at={updated.detail} stale={stale.detail} />{detail ? <article><h3>#{detail.number} · {detail.title}</h3><dl><dt>Status</dt><dd>{detail.status}</dd><dt>Priority</dt><dd>{detail.priority}</dd><dt>Category</dt><dd>{detail.category}</dd><dt>Last edited</dt><dd><time dateTime={detail.updatedAt}>{new Date(detail.updatedAt).toLocaleString()}</time></dd></dl><pre className="user-text review-body">{detail.body}</pre></article> : <p>Select a shared review to read it.</p>}</section>
       {timeline&&<>
         <section className="panel"><h2>Comments and history</h2><Freshness at={updated.detail} stale={stale.detail}/>{timeline.activities.length?timeline.activities.map(row=><article key={row.id}><h3>{row.role} · {row.type}</h3><time dateTime={row.createdAt}>{new Date(row.createdAt).toLocaleString()}</time>{row.toStatus&&<p>{row.fromStatus} → {row.toStatus}</p>}<pre className="user-text">{row.body}</pre></article>):<p>No shared history.</p>}</section>
-        <section className="panel"><h2>Attachments</h2>{timeline.attachments.length?<ul>{timeline.attachments.map(row=><li key={row.id}>{row.name} · {row.size.toLocaleString()} bytes</li>)}</ul>:<p>No shared attachments.</p>}</section>
+        <section className="panel"><h2>Attachments</h2><p>Downloads are verified before saving. Maximum file size: 10 MiB.</p>{downloadNotice&&<p role="status">{downloadNotice}</p>}{timeline.attachments.length?<ul>{timeline.attachments.map(row=><li key={row.id}>{row.name} · {row.size.toLocaleString()} bytes <button type="button" aria-label={`Download ${row.name}`} disabled={busy||stale.detail||disconnected||row.size>10*1024*1024} onClick={()=>downloadAttachment(row)}>Download</button>{row.size>10*1024*1024&&' · Exceeds the download limit.'}</li>)}</ul>:<p>No shared attachments.</p>}</section>
         <section className="panel"><h2>Agent activity and results</h2><Freshness at={updated.detail} stale={stale.detail}/>{timeline.agentRuns.length?timeline.agentRuns.map(row=><article key={row.id}><h3>{row.status}</h3><p>Started <time dateTime={row.startedAt}>{new Date(row.startedAt).toLocaleString()}</time>{row.finishedAt&&<> · Finished <time dateTime={row.finishedAt}>{new Date(row.finishedAt).toLocaleString()}</time></>}</p><pre className="user-text">{row.response}</pre></article>):<p>No agent activity.</p>}</section>
       </>}
     </main>}

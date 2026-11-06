@@ -1,6 +1,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const {createHash}=require('node:crypto');
 const load = () => import('../src/remote/client.mjs');
 const DATE = '2099-01-01T00:00:00.000Z';
 const STAMP = '2026-11-06T00:00:00.000Z';
@@ -24,6 +25,76 @@ async function approved(fetchRead, options = {}) {
   } });
   await client.status(); return { client, calls };
 }
+const attachmentMeta=bytes=>({id:'file-a',reviewId:'review-a',activityId:null,name:'download.bin',mimeType:'application/octet-stream',size:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex'),createdAt:STAMP});
+const attachmentPayload={projectId:'project-a',reviewId:'review-a',attachmentId:'file-a'};
+const attachmentChunk=(bytes,offset,meta=attachmentMeta(bytes))=>{const data=bytes.subarray(offset,offset+65536);return{version:1,attachment:{...meta},offset,nextOffset:offset+data.length,data:data.toString('base64'),complete:offset+data.length===bytes.length};};
+
+test('attachment download owns sequential bounded reads and verifies complete binary SHA256',async()=>{
+  const bytes=Buffer.alloc(65541);for(let index=0;index<bytes.length;index++)bytes[index]=index%256;
+  const offsets=[];
+  const {client}=await approved(async(_path,init)=>{const query=request(init);assert.equal(query.operation,'attachments.read');offsets.push(query.payload.offset);return response(init,attachmentChunk(bytes,query.payload.offset));});
+  const result=await client.downloadAttachment(attachmentPayload);
+  assert.deepEqual(offsets,[0,65536]);assert.deepEqual(Buffer.from(result.bytes),bytes);assert.deepEqual(result.attachment,attachmentMeta(bytes));
+  result.bytes.fill(0);
+});
+test('empty attachment has one verified complete chunk without an extra EOF request',async()=>{
+  let reads=0;const bytes=Buffer.alloc(0),{client}=await approved(async(_path,init)=>{reads++;return response(init,attachmentChunk(bytes,0));});
+  const result=await client.downloadAttachment(attachmentPayload);assert.equal(result.bytes.length,0);assert.equal(reads,1);
+});
+test('exact 10MiB attachment is complete in 160 bounded requests',async()=>{
+  const bytes=Buffer.alloc(10*1024*1024,0x9b),meta=attachmentMeta(bytes);let reads=0;
+  const {client}=await approved(async(_path,init)=>{reads++;return response(init,attachmentChunk(bytes,request(init).payload.offset,meta));});
+  const result=await client.downloadAttachment(attachmentPayload);
+  assert.equal(reads,160);assert.equal(result.bytes.length,bytes.length);assert.deepEqual(Buffer.from(result.bytes),bytes);result.bytes.fill(0);
+});
+test('attachment payload offsets and authority fields are captured before any fetch',async()=>{
+  const {client,calls}=await approved(()=>{throw new Error('must not fetch');});
+  for(const offset of [-1,-0,NaN,Infinity,1.5,'0',10*1024*1024+1])assert.throws(()=>client.read('attachments.read',{...attachmentPayload,offset}),code('INVALID_REQUEST'));
+  assert.throws(()=>client.downloadAttachment({...attachmentPayload,storageName:'private'}),code('INVALID_REQUEST'));
+  assert.equal(calls.length,1);
+});
+test('changed metadata and wrong final hash withhold the entire attachment',async()=>{
+  const bytes=Buffer.alloc(65537,7);
+  for(const kind of ['metadata','hash']){
+    const {client}=await approved(async(_path,init)=>{
+      const offset=request(init).payload.offset,value=attachmentChunk(bytes,offset);
+      if(kind==='metadata'&&offset)value.attachment.name='changed.bin';
+      if(kind==='hash')value.attachment.sha256='0'.repeat(64);
+      return response(init,value);
+    });
+    await assert.rejects(client.downloadAttachment(attachmentPayload),code('INVALID_RESPONSE'));
+  }
+});
+test('chunk DTO refuses private fields, wrong target, bad base64, stalled offsets and oversized files',async()=>{
+  const bytes=Buffer.from([0,255,1]),valid=attachmentChunk(bytes,0);
+  const invalid=[
+    {...valid,attachment:{...valid.attachment,storageName:'private.bin'}},
+    {...valid,attachment:{...valid.attachment,id:'foreign'}},
+    {...valid,attachment:{...valid.attachment,name:'../secret'}},
+    {...valid,attachment:{...valid.attachment,size:10*1024*1024+1}},
+    {...valid,data:'AB=='},
+    {...valid,nextOffset:4},
+    {...valid,data:'',nextOffset:0,complete:false},
+    {...valid,complete:false}
+  ];
+  for(const value of invalid){const {client}=await approved(async(_path,init)=>response(init,value));await assert.rejects(client.read('attachments.read',{...attachmentPayload,offset:0}),code('INVALID_RESPONSE'));}
+});
+test('logout cancels the original transfer, drains its response and prevents later chunk fetches',async()=>{
+  const bytes=Buffer.alloc(131073,9);let streamController,resolveHeld;
+  const held=new Promise(resolve=>{resolveHeld=resolve;});
+  const {client,calls}=await approved(async(path,init)=>{
+    if(path==='/web/v1/logout')return response(init,{state:'logged-out'});
+    const offset=request(init).payload.offset;
+    if(!offset)return response(init,attachmentChunk(bytes,offset));
+    return new Response(new ReadableStream({start(controller){streamController=controller;resolveHeld(init);}}),{headers:mime});
+  });
+  const transfer=client.downloadAttachment(attachmentPayload),rejected=assert.rejects(transfer,code('ABORTED'));
+  const heldRequest=await held;assert.throws(()=>client.status(),code('BUSY'));
+  const logout=client.logout();streamController.enqueue(encoder.encode(ok(heldRequest,attachmentChunk(bytes,65536))));streamController.close();
+  await rejected;assert.deepEqual(await logout,{state:'logged-out'});
+  assert.deepEqual(calls.filter(row=>row.path==='/web/v1/read').map(row=>request(row.init).payload.offset),[0,65536]);
+  assert.equal(calls.filter(row=>row.path==='/web/v1/logout').length,1);
+});
 
 test('web login uses one fixed same-origin POST and captures input without URL or storage credentials', async () => {
   const { createRemoteWebClient } = await load(); let sent;
