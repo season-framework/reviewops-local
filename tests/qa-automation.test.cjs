@@ -118,6 +118,7 @@ async function documentFixture(t,options={},automationFactory=createQaAutomation
   isDestroyed(){return this.destroyed;}
   isCrashed(){return this.crashed;}
   isLoadingMainFrame(){return this.loading;}
+  getURL(){return this.url;}
   getZoomFactor(){return 1;}
   async executeJavaScript(script){if(this.onScript)await this.onScript(script);return script.includes('scrollX')?{url:this.url,title:'Controlled page',text:'fixture',elements:[],viewport:{width:800,height:600},documentId:'page-forgery',contract:'page-forgery'}:{width:800,height:600};}
   async capturePage(){if(this.onCapture)await this.onCapture();const png=Buffer.alloc(24);png.writeUInt32BE(800,16);png.writeUInt32BE(600,20);return{isEmpty:()=>false,toPNG:()=>png};}
@@ -404,4 +405,44 @@ test('private original-lease cleanup proof distinguishes absent membership from 
  present=false;assert.equal(api.connectionStatus({projectId:'a',binding:only(original)}).availability,'unavailable');assert.equal(api.leaseStatus(original).leaseState,'attached');assert.throws(()=>api.handle('release',only(original)),{code:'TARGET_CLOSED'});assert.equal(api.leaseStatus(original).leaseState,'absent');
  present=true;const replacement=await api.handle('open',{projectId:'a',clientId:'replacement-client'});assert.equal(api.leaseStatus(original).leaseState,'absent');assert.equal(api.leaseStatus(replacement).leaseState,'attached');assert.equal(record.qaActive,true);api.close();assert.equal(api.leaseStatus(original).leaseState,'unknown');assert.equal(api.leaseStatus(replacement).leaseState,'unknown');
  }finally{api.close();}
+});
+
+test('guarded native QA navigation waits for its own completed load while B remains available',async t=>{
+ const f=await documentFixture(t),started=deferred(),url='https://fixture.invalid/slow',observed=await f.observe('A');let settled=false,stateReads=0;
+ f.a.targets[0].navigate=async(value,guard)=>{guard();f.a.web.loading=true;f.a.web.navigate({url:value});started.resolve();return {id:'browser-A',error:''};};
+ f.a.browsers.dispatch=async(action,payload)=>{assert.equal(action,'browser.state');assert.equal(payload.id,'browser-A');stateReads++;return {id:'browser-A',error:''};};
+ const pending=f.api.handle('navigate',{...f.bindings.A,browserId:'browser-A',url}).then(value=>{settled=true;return value;});
+ try{
+  await started.promise;const capture=await f.api.handle('capture',{...f.bindings.B,browserId:'browser-B'});assert.equal(capture.projectId,'B');
+  assert.equal(settled,false,'Scheduling loadURL must not report completed QA navigation');assert.equal(stateReads,0);assert.equal(f.a.qaActive,true);assert.equal(f.b.qaActive,true);
+  f.a.web.loading=false;f.a.web.emit('did-finish-load');assert.equal((await pending).url,url);assert.equal(stateReads,1);
+  await assert.rejects(async()=>f.call('type',{documentId:observed.documentId,text:'old document'},'A'),{code:'QA_DOCUMENT_STALE'});assert.equal(f.commands.length,0);
+ }finally{f.a.web.loading=false;f.a.web.emit('did-finish-load');await pending.catch(()=>{});}
+});
+
+test('guarded native QA navigation refuses delayed load failures and recorded native errors',async t=>{
+ for(const phase of ['load-event','recorded-state'])await t.test(phase,async t=>{
+  const f=await documentFixture(t),url='https://fixture.invalid/fails';let stateReads=0;
+  f.a.targets[0].navigate=async(_value,guard)=>{guard();f.a.web.loading=phase==='load-event';return {id:'browser-A',error:''};};
+  f.a.browsers.dispatch=async()=>{stateReads++;return {id:'browser-A',error:'Recorded native navigation failure'};};
+  const pending=f.api.handle('navigate',{...f.bindings.A,browserId:'browser-A',url});
+  const refused=assert.rejects(pending,phase==='load-event'?/Controlled native load failure/:{code:'NAVIGATION_FAILED'});
+  if(phase==='load-event'){await new Promise(setImmediate);f.a.web.loading=false;f.a.web.emit('did-fail-load',{},-105,'Controlled native load failure',url,true);}
+  await refused;assert.equal(stateReads,phase==='load-event'?0:1);await f.api.handle('type',{...f.bindings.B,text:'B still available'});assert.equal(f.commands.at(-1).contents,f.b.host.webContents);
+ });
+});
+
+test('guarded native QA navigation revalidates its goal after loading',async t=>{
+ const f=await documentFixture(t),started=deferred();let active=true;
+ f.a.targets[0].navigate=async(_value,guard)=>{guard();f.a.web.loading=true;started.resolve();return {id:'browser-A',error:''};};
+ f.a.browsers.dispatch=async()=>{throw new Error('A stale goal must not read another navigation result');};
+ const pending=f.api.handle('navigate',{...f.bindings.A,browserId:'browser-A',url:'https://fixture.invalid/held'},()=>{if(!active)throw Object.assign(new Error('Goal paused while loading'),{code:'OPS_QA_STALE'});});
+ const refused=assert.rejects(pending,{code:'OPS_QA_STALE'});await started.promise;await new Promise(setImmediate);active=false;f.a.web.loading=false;f.a.web.emit('did-finish-load');await refused;assert.equal(f.commands.length,0);
+});
+
+test('guarded popup QA navigation does not read a native-manager browser ID',async t=>{
+ const f=await documentFixture(t),url='https://fixture.invalid/popup';
+ f.a.targets[0].navigate=async(value,guard)=>{guard();f.a.web.url=value;};
+ f.a.browsers.dispatch=async()=>{throw new Error('A popup has no native-manager browser record');};
+ assert.equal((await f.api.handle('navigate',{...f.bindings.A,browserId:'browser-A',url})).url,url);
 });

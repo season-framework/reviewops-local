@@ -307,10 +307,16 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     }
     if(action==='navigate'){
       if(!payload.browserId)fail('주소 이동은 검사 화면 ID가 필요합니다.');
-      assertActive();if(target.navigate)await target.navigate(payload.url,assertActive);else {
+      let nativeState=true;
+      assertActive();if(target.navigate){const scheduled=await target.navigate(payload.url,assertActive);nativeState=scheduled?.id===payload.browserId;}else {
         await record.browsers.dispatch('browser.navigate',{id:payload.browserId,url:payload.url});
-        await waitForLoad(contents);
+      }
+      // Native UI navigation only schedules loadURL; QA completes after loading.
+      // Popup callbacks await loadURL themselves and have no browser-manager ID.
+      await waitForLoad(contents);assertActive();
+      if(nativeState){
         const state=await record.browsers.dispatch('browser.state',{id:payload.browserId});
+        assertActive();
         if(state.error)fail(state.error,'NAVIGATION_FAILED');
       }
       assertActive();return {...metadata,url:contents.getURL()};
