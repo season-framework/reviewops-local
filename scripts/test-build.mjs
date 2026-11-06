@@ -10,6 +10,7 @@ import { withBuildInfo } from './build-info.mjs';
 import { fileHash, namesFor, jsonBytes } from './test-release.mjs';
 import {runRequiredOwnedGate, runWindowsInstalledSmoke, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {inspectOpsArchive} from './ops-native-smoke.mjs';
 const require = createRequire(import.meta.url), run = promisify(execFile);
 const { validateBuildInfo } = require('../electron/build-info.cjs');
 const { validateArchive } = require('../electron/update-archive.cjs');
@@ -89,6 +90,7 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
       if (target.startsWith('darwin')) {
         const bundle = path.join(packageRoot, arch === 'arm64' ? 'mac-arm64' : 'mac', 'ReviewOps.app');
         await inspectMac(bundle, build, arch);
+        inspectOpsArchive(path.join(bundle,'Contents/Resources/app.asar'),{repository:root,asar});
         const dmg = await copy(path.join(packageRoot, `ReviewOps-${build.version}-${arch}.dmg`), names.find(name => name.endsWith(`-${arch}.dmg`)));
         await run('/usr/bin/hdiutil', ['verify', dmg], { timeout: 120000 });
         const zip = path.join(output, names.find(name => name.endsWith(`-${arch}.zip`)));
@@ -99,8 +101,11 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
         try {
           await run('/usr/bin/ditto', ['-x', '-k', zip, temporary], { timeout: 180000 });
           const extracted=path.join(temporary,'ReviewOps.app');await inspectMac(extracted, build, arch);
+          inspectOpsArchive(path.join(extracted,'Contents/Resources/app.asar'),{repository:root,asar});
           const smokeEnv={...process.env,REVIEWOPS_TEST_EXECUTABLE:path.join(extracted,'Contents/MacOS/ReviewOps')};delete smokeEnv.ELECTRON_RUN_AS_NODE;
           await run(process.execPath,[path.join(root,'scripts/e2e.mjs')],{cwd:root,env:smokeEnv,timeout:300000,maxBuffer:8*1024**2});
+          const desktopReport=JSON.parse(await fs.readFile(path.join(root,'test-results/e2e-result.json'),'utf8'));
+          if(desktopReport.ops?.passed!==true||desktopReport.ops?.backupRestore!==true||desktopReport.ops?.restart!==true)throw new Error('Packaged Ops startup and data preservation were not verified.');
           ownedGateAttempted = true;
           await runRequiredOwnedGate({repository:root,target,mode:'private-bundle',
             executablePath:path.join(extracted,'Contents/MacOS/ReviewOps'),privateInstallRoot:temporary,
@@ -111,18 +116,19 @@ export async function packageTestBuild({ target, number, developmentNumber, comm
           throw error;
         }
         finally { if(!preservePrivateInstall) await fs.rm(temporary, { recursive: true, force: true }); }
-        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke','native-owned-service-16');
+        checks.push('codesign', 'dmg-verify', 'zip-extraction','native-smoke','native-owned-service-16','ops-package-source','ops-native-smoke');
       } else {
         const installer = path.join(packageRoot, `ReviewOps-${build.version}-windows-x64.exe`);
         packagedBuildInfo(path.join(packageRoot, 'win-unpacked/resources/app.asar'), build);
+        inspectOpsArchive(path.join(packageRoot,'win-unpacked/resources/app.asar'),{repository:root,asar});
         publisher = await windowsPublisher(installer);
         // Reuse the existing native install/startup/persistence/uninstall checks.
         await runWindowsInstalledSmoke({repository:root,installer,env:{...process.env,
           REVIEWOPS_VERIFY_PACKAGE_ROOT:packageRoot,REVIEWOPS_OWNED_RENDERER_RECORD:rendererBuildRecord}});
         const report = JSON.parse(await fs.readFile(path.join(root, 'test-results/windows-release.json'), 'utf8'));
-        if (report.ok !== true || report.sha256 !== await fileHash(installer) || report.ownedService?.ok !== true || report.ownedService?.cleanupConfirmed !== true) throw new Error('Windows 설치 검사가 완료되지 않았습니다.');
+        if (report.ok !== true || report.sha256 !== await fileHash(installer) || report.ownedService?.ok !== true || report.ownedService?.cleanupConfirmed !== true || report.ops?.passed!==true || report.ops?.backupRestore!==true || report.ops?.restartAndReinstall!==true || report.ops?.uninstallPreserved!==true) throw new Error('Windows 설치 검사가 완료되지 않았습니다.');
         await copy(installer, names.find(name => name.endsWith('.exe')));
-        checks.push('publisher-status', 'installed-application', 'native-owned-service-16');
+        checks.push('publisher-status', 'installed-application', 'native-owned-service-16','ops-package-source','ops-native-smoke');
       }
       const record = { schema: 1, target, ok: true, build, checks, ...(publisher ? { publisher } : {}), files: [] };
       for (const file of files) record.files.push({ name: path.basename(file), size: (await fs.stat(file)).size, sha256: await fileHash(file) });
