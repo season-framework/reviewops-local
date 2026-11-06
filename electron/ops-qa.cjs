@@ -113,9 +113,10 @@ function createOpsQa(options){
       return opsToolOutput(result,{images:bytes?[bytes]:[]});
     }catch(error){
       if(recorded)return opsToolOutput({error:safeError(error),originalResult:receipt.result},{success:false});
-      if(candidate&&lease!==candidate)await retireLease(candidate,'The goal changed while QA was opening.').catch(()=>{});
+      let cleanupBinding;
+      if(candidate&&lease!==candidate){let released=false;try{await retireLease(candidate,'The goal changed while QA was opening.');released=true;}catch{}cleanupBinding={...privateBinding(candidate),state:released?'released':'unknown'};}
       const unknown=Boolean(error.inputMayHaveApplied)||invoked&&mutation;
-      receipt={callId:metadata.callId,status:unknown?'unknown':'failed',error:safeError(error),binding:privateBinding(lease)};
+      receipt={callId:metadata.callId,status:unknown?'unknown':'failed',error:safeError(error),binding:cleanupBinding||privateBinding(lease||pendingRelease)};
       await recordOutcome(receipt);return output(receipt);
     }
   }
