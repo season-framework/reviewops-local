@@ -4,6 +4,7 @@ import { _electron as electron, expect } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 import assert from 'node:assert/strict';
+import {seedOpsSmoke, verifyOpsSmoke, verifyOpsData, verifyOpsFile, mutateOpsSmoke, seedUnavailableOpsThread} from './ops-native-smoke.mjs';
 
 const root = process.cwd();
 const testRoot = fs.mkdtempSync(path.join('/tmp','reviewops-e2e-'));
@@ -15,7 +16,7 @@ fs.mkdirSync(path.join(root,'test-results'),{recursive:true});
 fs.writeFileSync(path.join(localRoot,'검토메모.md'),'# 검토 메모\n\n검색 결과와 파일 목록을 검토합니다.\n');
 fs.writeFileSync(path.join(localRoot,'화면.html'),'<!doctype html><meta charset="utf-8"><style>body{font-family:system-ui;padding:32px;color:#262321;background:#faf8f5}h1{color:#c43d1c}article{padding:24px;background:white;border:1px solid #ddd;border-radius:10px}</style><h1>프로젝트 검토 화면</h1><article><h2>검색 결과</h2><p>검토할 화면의 제목과 목록을 표시합니다.</p><input placeholder="검색어"><button>검색</button></article>');
 const backup = path.join(testRoot,'backup.reviewops.json');
-let app;
+let app, opsFixture;
 const failures=[], externalRequests=[];
 async function launch() {
   const env={...process.env,HOME:homePath,CODEX_HOME:path.join(homePath,'.codex'),REVIEWOPS_CODEX_SSH_CONFIG:configPath,REVIEWOPS_DATA_DIR:path.join(testRoot,'data')};
@@ -115,10 +116,14 @@ try {
   await page.locator('#untrusted-test').evaluate(e=>e.remove());
   console.log('PASS: 문서 iframe에 native bridge 미노출');
 
+  opsFixture=await seedOpsSmoke(page,{workPath:localRoot});
+  console.log('PASS: Ops navigation, paused/finished goals and bundled cron timezone calculation without model execution');
   await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},backup);
   await ipc(page,'backup.export');
   const bundle=JSON.parse(fs.readFileSync(backup,'utf8'));
   assert.equal(bundle.data.reviews.length,1); assert.equal(Object.keys(bundle.files).length,1);
+  verifyOpsData(bundle.ops,opsFixture);
+  await mutateOpsSmoke(page,opsFixture);
   await ipc(page,'review.save',{...review,title:'백업 이후 변경'});
   await page.locator('.workspace-refresh').click();
   await expect(page.getByRole('heading',{name:'백업 이후 변경',exact:true})).toBeVisible();
@@ -166,10 +171,14 @@ try {
   assert.equal(restored.reviews[0].title,review.title);
   assert.match((await ipc(page,'attachment.read',{id:restored.attachments[0].id})).content,/검토 메모/);
   assert.equal(fs.readdirSync(path.join(testRoot,'data','recovery')).length,1);
+  await verifyOpsSmoke(page,opsFixture);
   console.log('PASS: 백업 복원 후 기존 그룹·프로젝트·편집 탭 종료와 복원 전 자료 보존');
 
   await app.close(); app=null;
+  verifyOpsFile(path.join(testRoot,'data'),opsFixture);
+  seedUnavailableOpsThread(path.join(testRoot,'data'),opsFixture);
   page=await launch();
+  const opsResult=await verifyOpsSmoke(page,opsFixture);
   restored=await ipc(page,'snapshot');
   assert.equal(restored.reviews.length,1); assert.equal(restored.activities.filter(a=>a.type==='comment').length,1);
   console.log('PASS: 앱 종료·재실행 후 자료 유지');
@@ -190,7 +199,7 @@ try {
   assert.deepEqual(failures,[]);
   assert.deepEqual(externalRequests,[]);
   console.log('PASS: 렌더러 오류 없음, 외부 HTTP 요청 없음');
-  fs.writeFileSync(path.join(root,'test-results','e2e-result.json'),JSON.stringify({passed:true,executable:process.env.REVIEWOPS_TEST_EXECUTABLE||'development Electron',version:(await ipc(page,'app.info')).version,externalRequests,failures,platform:process.platform,arch:process.arch},null,2));
+  fs.writeFileSync(path.join(root,'test-results','e2e-result.json'),JSON.stringify({passed:true,executable:process.env.REVIEWOPS_TEST_EXECUTABLE||'development Electron',version:(await ipc(page,'app.info')).version,externalRequests,failures,platform:process.platform,arch:process.arch,ops:{...opsResult,backupRestore:true,restart:true}},null,2));
 } catch(error) {
   if(app) {const pages=await app.windows();if(pages[0])await pages[0].screenshot({path:path.join(root,'test-results','failure.png')}).catch(()=>{});}
   throw error;

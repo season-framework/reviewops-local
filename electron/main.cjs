@@ -38,7 +38,7 @@ const dialog=appLanguage.dialog(nativeDialog);
 protocol.registerSchemesAsPrivileged([{ scheme: 'reviewops', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const devUrl = !app.isPackaged ? process.env.REVIEWOPS_DEV_URL : null;
 const attachmentPath = path.join(dataPath, 'attachments');
-let window, store, vault, agents, codexManager, updater, modelCache, remoteManagement, remoteAppConnections;
+let window, store, vault, agents, codexManager, updater, modelCache, remoteManagement, remoteAppConnections, opsManager;
 let seasonIntegration, toolIntegration, qaAutomation;
 let managedServices;
 const windowContexts = new Map(), projectWindows = new Map(), terminalOwners = new Map();
@@ -109,6 +109,52 @@ function currentWindowRecord() {
   return record;
 }
 function sendToWindows(channel,value) { for(const host of liveWindows())if(channel!=='reviewops:model-cache-state'||!qaProjectId(windowContexts.get(host)))host.webContents.send(channel,value); }
+function sendOpsState(value){for(const host of liveWindows()){const record=windowContexts.get(host);if(record.projectId===''&&!qaProjectId(record))host.webContents.send('reviewops:ops-state',value);}}
+function opsProjectService(input){
+  if(!input.projectId)return null;
+  const project=store.project(input.projectId),ids=project.serviceIds;
+  const selected=input.serviceId|| (ids.length===1?ids[0]:null);
+  if(!selected||!ids.includes(selected))throw Object.assign(new Error('목표에서 사용할 프로젝트 연결을 선택하십시오.'),{code:'OPS_TARGET_AMBIGUOUS'});
+  return serviceById(selected,true);
+}
+const OPS_CONNECTION_KEYS=['id','kind','host','hostAlias','sshConfigPath','port','username','rootPath','agentWorkPath','hostFingerprint'];
+function opsConnectionSignature(service){return crypto.createHash('sha256').update(JSON.stringify(OPS_CONNECTION_KEYS.map(key=>service?.[key]))).digest('hex');}
+function assertOpsQaContext(context){
+  if(!context.projectId)throw Object.assign(new Error('등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'),{code:'OPS_QA_UNAVAILABLE'});
+  const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===context.projectId)?.birth,service=opsProjectService(context);
+  if(restoring||quitting||updater?.installing||!birth||dataset.epoch!==context.projectEpoch||birth!==context.projectBirth||!context.projectConnectionSignature||opsConnectionSignature(service)!==context.projectConnectionSignature)throw Object.assign(new Error('목표의 원래 프로젝트 또는 연결이 변경되었습니다. 대상 설정을 다시 확인하십시오.'),{code:'OPS_QA_PROJECT_CHANGED'});
+}
+function createOpsQaBridge(options,appInstanceId){
+  const originalStore=store;
+  return require('./ops-qa.cjs').createOpsQa({...options,handle:(action,payload,guard)=>{
+    action=action.replace(/^automation\.qa\./,'');
+    if(!qaAutomation)throw Object.assign(new Error('프로젝트 QA 연결이 아직 준비되지 않았습니다.'),{code:'OPS_QA_UNAVAILABLE'});
+    // Cleanup uses only the bridge's private live lease. It may release that
+    // lease after deletion/restore, but can never acquire or input to a target.
+    if(action==='release'||action==='cleanupStatus'){const cleanupGuard=()=>{guard?.();if(options.appInstanceId!==appInstanceId)throw new Error('이전 앱의 QA 연결입니다.');};cleanupGuard();if(action==='cleanupStatus'){const result=qaAutomation.leaseStatus(payload);cleanupGuard();return result;}return qaAutomation.handle(action,payload,cleanupGuard);}
+    const context=options.getContext(),fence=()=>{guard?.();options.isCurrent(context);if(store!==originalStore||context.appInstanceId!==appInstanceId||payload.projectId!==context.projectId)throw Object.assign(new Error('원래 목표의 QA 프로젝트를 확인하십시오.'),{code:'OPS_QA_PROJECT_CHANGED'});assertOpsQaContext(context);};
+    fence();if(action==='status'){const result=qaAutomation.connectionStatus(payload);fence();return result;}return qaAutomation.handle(action,payload,fence);
+  }});
+}
+async function resolveOpsTarget(input){
+  const service=opsProjectService(input),originalStore=store;
+  if(!service){if(input.serviceId)throw new Error('폴더 목표에는 프로젝트 연결을 지정할 수 없습니다.');return {projectId:'',workPath:await require('./work-directory.cjs').requireDirectory(input.workPath),targetKind:'local',targetIdentity:'local',targetLabel:input.workPath,serviceId:null};}
+  const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===input.projectId)?.birth;
+  if(!birth||input.projectEpoch!==undefined&&(input.projectEpoch!==dataset.epoch||input.projectBirth!==birth))throw Object.assign(new Error('목표의 원래 프로젝트가 변경되었습니다. 목표 설정에서 대상을 다시 확인하십시오.'),{code:'OPS_PROJECT_CHANGED'});
+  const keys=OPS_CONNECTION_KEYS,signature=JSON.stringify(keys.map(key=>service[key]));
+  const assertTarget=()=>{const current=store.peerReadDataset(),selected=opsProjectService(input);if(store!==originalStore||current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===input.projectId)?.birth!==birth||JSON.stringify(keys.map(key=>selected?.[key]))!==signature)throw Object.assign(new Error('프로젝트 연결이 확인 중에 변경되었습니다.'),{code:'OPS_PROJECT_CHANGED'});};
+  const scope={projectEpoch:dataset.epoch,projectBirth:birth,projectConnectionSignature:opsConnectionSignature(service)};
+  const workPath=service.agentWorkPath||service.rootPath;
+  if(service.kind==='local'){const canonical=await require('./work-directory.cjs').requireDirectory(workPath);assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:canonical,targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};}
+  if(typeof ssh.inspectAppServerTarget!=='function')throw Object.assign(new Error('SSH Ops 연결을 준비하고 있습니다. 로컬 실행으로 전환하지 않았습니다.'),{code:'OPS_SSH_UNAVAILABLE'});
+  const result=await ssh.inspectAppServerTarget(service,{workPath});
+  assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:result.canonicalWorkPath,targetKind:'ssh',targetIdentity:result.identity,targetLockIdentity:result.lockIdentity||result.identity,targetLockIdentities:result.lockIdentities||[result.lockIdentity||result.identity],targetLabel:service.name||service.hostAlias||service.host};
+}
+async function resolveOpsSessionTarget(goal){
+  const target=await resolveOpsTarget(goal);
+  if(target.targetIdentity!==goal.targetIdentity||target.workPath!==goal.workPath)throw Object.assign(new Error('목표의 작업 서버 또는 폴더가 변경되었습니다.'),{code:'OPS_TARGET_CHANGED'});
+  return target.targetKind==='ssh'?{sshConfig:opsProjectService(goal),workPath:goal.workPath,binary:opsProjectService(goal).agentBinary||'codex',targetIdentity:goal.targetIdentity}:target;
+}
 function requestQaProjectId(){const context=requestWindowContext.getStore();return context?.qaProjectId||qaProjectId(context&&windowContexts.get(context.host));}
 function qaScopeIncarnation(record) {
   if(!qaScopeIncarnations.has(record))qaScopeIncarnations.set(record,Object.freeze(Object.create(null)));
@@ -132,7 +178,7 @@ async function waitForQaScope(record){
   record.pendingQaScope=pending;
   try{await ready;}finally{clearTimeout(timer);if(record.pendingQaScope===pending)record.pendingQaScope=null;}
 }
-function dataChanged() { sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
+function dataChanged() { opsManager?.targetsChanged();sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
 function closeWindowResources(host,discardStaged=true) {
   const record=windowContexts.get(host);if(record)viewerSessions.closeOwner(record.id);record?.browsers?.closeAll();if(record)record.browsers=null;
   for(const [id,owner] of terminalOwners)if(owner===host){try{terminals.close(id)}catch{}terminalOwners.delete(id);}
@@ -877,7 +923,9 @@ async function backupBundle() {
     if (total > 200 * 1024 * 1024) throw new Error('첨부파일 합계가 200 MB를 초과합니다. 데이터 폴더를 복사해 백업하십시오.');
     files[item.storageName] = bytes.toString('base64');
   }
-  return {format:'reviewops-local-backup', version:1, createdAt:new Date().toISOString(), data, files};
+  const bundle={format:'reviewops-local-backup', version:1, createdAt:new Date().toISOString(), data, files,...(opsManager?{ops:opsManager.exportData()}: {})};
+  if(Buffer.byteLength(JSON.stringify(bundle))>300*1024*1024)throw new Error('전체 백업이 300 MB를 초과합니다. 데이터 폴더를 복사해 백업하십시오.');
+  return bundle;
 }
 async function exportBackup() {
   const { canceled, filePath } = await dialog.showSaveDialog(getRequestWindow(), {title:'백업 저장', defaultPath:`ReviewOps-${new Date().toISOString().slice(0,10)}.reviewops.json`, filters:[{name:'ReviewOps 백업', extensions:['json']}]});
@@ -898,6 +946,7 @@ async function importBackup() {
   if ((await fsp.stat(file)).size > 300 * 1024 * 1024) throw new Error('백업 파일은 300 MB 이하여야 합니다.');
   const bundle = JSON.parse(await fsp.readFile(file, 'utf8'));
   if (bundle.format !== 'reviewops-local-backup' || bundle.version !== 1 || !bundle.data || !bundle.files || !Array.isArray(bundle.data.attachments)) throw new Error('지원하지 않는 백업 파일입니다.');
+  if(bundle.ops!==undefined){if(!opsManager)throw new Error('Ops 자료를 안전하게 복원할 수 없습니다. 원래 파일은 보존했습니다.');opsManager.validateImport(bundle.ops);}
   const validatedFiles = [];
   let total = 0;
   for (const attachment of bundle.data.attachments) {
@@ -914,6 +963,7 @@ async function importBackup() {
   // Validate the complete relationship graph before modifying the working database.
   const tempDir = await fsp.mkdtemp(path.join(app.getPath('temp'),'reviewops-restore-'));
   let validation;
+  const previousOps=opsManager?.exportData();
   try {
     managedServices?.assertMutationAllowed({all:true});
     validation = createStore({dbPath:path.join(tempDir,'validate.sqlite')});
@@ -934,8 +984,11 @@ async function importBackup() {
     managedServices.withConfigurationReset(() => changeWithCredentials(() => {
       vault.clear();
       store.importData(bundle.data);
+      if(bundle.ops!==undefined)opsManager.restore(bundle.ops);
+      else if(previousOps)opsManager.restore(previousOps);
     }));
   } catch(error) {
+    if(previousOps)try{opsManager.restore(previousOps,{pause:false});}catch(rollback){throw new AggregateError([error,rollback],'Ops 복원 결과를 확인하지 못했습니다. recovery 폴더의 원본 백업을 보존하십시오.');}
     for (const item of validatedFiles) await fsp.rm(path.join(attachmentPath,item.storageName),{force:true});
     throw error;
   }
@@ -1392,8 +1445,10 @@ async function dispatch(action, payload = {}, originalFrame, originalReader) {
   }
   if (action === 'backup.export') return exportBackup();
   if (action === 'backup.import') {
+    if(opsManager?.hasActiveWork())throw new Error('실행 중이거나 확인되지 않은 Ops 목표를 정리한 뒤 복원하십시오.');
+    opsManager?.setSuspended(true);
     restoring = true;
-    try { return await importBackup(); } finally { restoring = false; }
+    try { return await importBackup(); } finally { restoring = false;opsManager?.setSuspended(false); }
   }
   throw new Error('지원하지 않는 기능입니다.');
 }
@@ -1670,7 +1725,7 @@ function cancelQuitAttempt(attempt,error) {
   if(quitAttempt!==attempt)return;
   quitAttempt=null;quitting=false;
   attempt.cleanup?.();
-  managedServices?.resume();updater?.cancelInstall();
+  managedServices?.resume();opsManager?.setSuspended(false);updater?.cancelInstall();
   attempt.resolve?.(false);
   if(error)dialog.showErrorBox('ReviewOps 종료 오류',error.message);
 }
@@ -1678,8 +1733,9 @@ async function beginQuit() {
   const attempt={hosts:new Set(liveWindows()),phase:'draining'},hosts=[...attempt.hosts];
   quitAttempt=attempt;
   try {
-    // Stop remote admission synchronously before waiting on any app drain.
+    // Stop both schedulers and remote admission before waiting on any drain.
     // Neither pause nor a renderer veto retires the Store.
+    opsManager?.setSuspended(true);
     const pausing=remoteManagement?.pause();
     await Promise.all([managedServices?.close(),pausing]);
     if(quitAttempt!==attempt)return;
@@ -1813,10 +1869,22 @@ else {
       catch(error) { return {ok:false,error:{message:error.message || '작업을 완료하지 못했습니다.',code:error.code,fingerprint:error.fingerprint,host:error.host}}; }});
     });
     updateNativeMenu();
-    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||remoteManagement?.hasActiveWork()||managedServices?.hasActive()||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
+    updater=createUpdateManager({app,dataPath,shell,buildInfo:getBuildInfo(app.getVersion()),isBusy:()=>restoring||remoteManagement?.hasActiveWork()||opsManager?.hasActiveWork()||managedServices?.hasActive()||hasActiveWork({operations,terminals,codexManager,agents}),onChange:state=>sendToWindows('reviewops:update-state',state)});
     updater.start();
-    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,powerMonitor,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>modelCache?.reconcile()});
+    codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,powerMonitor,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>{modelCache?.reconcile();opsManager?.runtimeChanged();}});
     codexManager.registerHandlers(ipcMain);
+    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,onChange:sendOpsState});}
+    catch{console.warn('Ops state could not be opened. Existing Ops files were preserved.');}
+    const opsResume=()=>{void opsManager?.scheduler.wake();};powerMonitor?.on('resume',opsResume);
+    ipcMain.handle('ops:invoke',async(event,method,input)=>{
+      const host=senderWindow(event),record=host&&windowContexts.get(host),originalStore=store,manager=opsManager,incarnation=record?qaScopeIncarnation(record):null;
+      const guard=()=>{if(!host||senderWindow(event)!==host||windowContexts.get(host)!==record||record.projectId!==''||qaProjectId(record)||qaScopeIncarnation(record)!==incarnation||restoring||quitting||updater?.installing||store!==originalStore||opsManager!==manager)throw Object.assign(new Error('기본 창에서 Ops를 사용하십시오.'),{code:'OPS_ACCESS_DENIED'});};
+      guard();if(!manager)throw Object.assign(new Error('Ops 자료를 열지 못했습니다. 데이터 폴더의 원본을 보존하고 다시 실행하십시오.'),{code:'OPS_UNAVAILABLE'});
+      const admission=store.captureWriteAdmission(),assertCurrent=()=>{guard();originalStore.assertWriteAdmission(admission);};
+      const actions={snapshot:()=>manager.snapshot(),saveGoal:()=>manager.saveGoal(input,assertCurrent),deleteGoal:()=>manager.deleteGoal(input,assertCurrent),goalAction:()=>manager.goalAction(input),saveSchedule:()=>manager.saveSchedule(input),deleteSchedule:()=>manager.deleteSchedule(input),preview:()=>manager.preview(input),configure:()=>manager.configure(input)};
+      if(!Object.hasOwn(actions,method))throw new Error('지원하지 않는 Ops 요청입니다.');assertCurrent();return actions[method]();
+    });
+    app.on('will-quit',()=>{powerMonitor?.removeListener('resume',opsResume);ipcMain.removeHandler('ops:invoke');opsManager?.close().catch(()=>{});});
     startModelCache();
     createWindow();
     const integrationDispatch=(action,payload)=>{
@@ -1833,14 +1901,15 @@ else {
     qaAutomation=require('./qa-automation.cjs').createQaAutomation({
       getProject:id=>store.snapshot().projects.find(project=>project.id===id),
       getWindow:id=>[...windowContexts.values()].find(record=>record.id===id),
-      openWindow:async({projectId,reviewId})=>{
+      openWindow:async({projectId,reviewId},guard=()=>{})=>{
+        guard();
         if(reviewId&&store.get('reviews',reviewId).projectId!==projectId)throw new Error('리뷰의 프로젝트가 일치하지 않습니다.');
-        const record=projectWindow(projectId,{background:true});
+        guard();const record=projectWindow(projectId,{background:true});
         setQaScope(record,true);
         try {
         if(reviewId)await presentReview(record,{reviewId,projectId,fullscreen:false,focus:false});
         else {await require('./qa-automation.cjs').waitForLoad(record.host.webContents);record.host.showInactive();}
-        await waitForQaScope(record);
+        guard();await waitForQaScope(record);guard();
         return record;
         }catch(error){setQaScope(record,false);throw error;}
       },
@@ -1869,15 +1938,16 @@ else {
   let stoppingAgents=false,agentsStopped=false;
   app.on('before-quit',event=>{
     if(quitAttempt||liveWindows().length)return;
-    if((!agents&&!codexManager&&!managedServices?.hasActive()&&!remoteManagement)||agentsStopped)return;
+    if((!agents&&!codexManager&&!managedServices?.hasActive()&&!remoteManagement&&!opsManager)||agentsStopped)return;
     event.preventDefault();
     if(stoppingAgents)return;
     stoppingAgents=true;
     quitting=true;
     modelCache?.close();
     terminals.closeAll();
+    opsManager?.setSuspended(true);
     const pausing=remoteManagement?.pause();
-    Promise.all([pausing,managedServices?.close(),agents?.closeAll({preserveRemote:true}),codexManager?.close(),ssh.close?.(),remoteAppConnections?.closeAndDrain()]).then(()=>remoteManagement?.closeAndDrain()).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{managedServices?.resume();quitting=false;updater?.cancelInstall();stoppingAgents=false;if(!liveWindows().length)createWindow();startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
+    Promise.all([pausing,managedServices?.close(),agents?.closeAll({preserveRemote:true}),codexManager?.close(),remoteAppConnections?.closeAndDrain()]).then(()=>opsManager?.close()).then(()=>ssh.close?.()).then(()=>remoteManagement?.closeAndDrain()).then(()=>{stoppingAgents=false;agentsStopped=true;app.quit();}).catch(error=>{managedServices?.resume();opsManager?.setSuspended(false);quitting=false;updater?.cancelInstall();stoppingAgents=false;if(!liveWindows().length)createWindow();startModelCache();dialog.showErrorBox('에이전트 종료 오류',error.message);});
   });
   app.on('will-quit',event=>{if(remoteManagement&&!remoteManagement.storeClosed()){event.preventDefault();return;}quitAttempt?.cleanup?.();quitAttempt=null;qaAutomation?.close();modelCache?.close();updater?.close();updater?.launchInstall();seasonIntegration?.close().catch(()=>{});toolIntegration?.close().catch(()=>{});toolIntegration?.unregisterForFinalQuitSync?.();codexManager?.close().catch(()=>{});closeAllBrowsers();terminals.closeAll();stagedAttachments.clear();ssh.close?.();if(!remoteManagement)store?.close();});
 }

@@ -11,6 +11,7 @@ import {validateSource,assertDispatch,TARGETS} from './stable-release.mjs';
 import {fileHash,jsonBytes,hash} from './test-release.mjs';
 import {runRequiredOwnedGate,runWindowsInstalledSmoke,nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {inspectOpsArchive} from './ops-native-smoke.mjs';
 const require=createRequire(import.meta.url),asar=require('@electron/asar'),{validateArchive}=require('../electron/update-archive.cjs'),run=promisify(execFile),root=fileURLToPath(new URL('..',import.meta.url));
 async function sourceFiles(directory){const files=[];for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isSymbolicLink())throw new Error('소스 파일의 심볼릭 링크는 허용하지 않습니다.');if(entry.isDirectory())files.push(...await sourceFiles(file));else if(entry.isFile())files.push(file)}return files}
 export async function inspectStableArchive(archive,version,directory=root){
@@ -43,6 +44,7 @@ export async function packageStable({target,version,commit,env=process.env}){
   if(process.platform==='darwin'){
    const bundle=path.join(packageRoot,arch==='arm64'?'mac-arm64':'mac','ReviewOps.app'),verify=archive=>inspectStableArchive(archive,version);
    await inspectMac(bundle,{version},arch,verify);
+   inspectOpsArchive(path.join(bundle,'Contents/Resources/app.asar'),{repository:root,asar});
    const dmg=await copy(`ReviewOps-${version}-${arch}.dmg`);await run('/usr/bin/hdiutil',['verify',dmg],{timeout:120000});
    const zip=path.join(output,`ReviewOps-${version}-${arch}.zip`);await run('/usr/bin/ditto',['-c','-k','--norsrc','--keepParent',bundle,zip],{timeout:180000});await validateArchive(zip);files.push(zip);
    const temporary=await fs.mkdtemp(path.join(os.tmpdir(),'reviewops-stable-package-'));
@@ -50,23 +52,27 @@ export async function packageStable({target,version,commit,env=process.env}){
    try{
     await run('/usr/bin/ditto',['-x','-k',zip,temporary],{timeout:180000});
     const extracted=path.join(temporary,'ReviewOps.app');await inspectMac(extracted,{version},arch,verify);
+    inspectOpsArchive(path.join(extracted,'Contents/Resources/app.asar'),{repository:root,asar});
     const smokeEnv={...env,REVIEWOPS_TEST_EXECUTABLE:path.join(extracted,'Contents/MacOS/ReviewOps')};delete smokeEnv.ELECTRON_RUN_AS_NODE;
     await run(process.execPath,[path.join(root,'scripts/e2e.mjs')],{cwd:root,env:smokeEnv,timeout:300000,maxBuffer:8*1024**2});
+    const desktopReport=JSON.parse(await fs.readFile(path.join(root,'test-results/e2e-result.json'),'utf8'));
+    if(desktopReport.ops?.passed!==true||desktopReport.ops?.backupRestore!==true||desktopReport.ops?.restart!==true)throw new Error('Packaged Ops startup and data preservation were not verified.');
     ownedGateAttempted=true;
     await runRequiredOwnedGate({repository:root,target,mode:'private-bundle',
      executablePath:path.join(extracted,'Contents/MacOS/ReviewOps'),privateInstallRoot:temporary,
      rendererBuildRecord});
    }catch(error){preservePrivateInstall=ownedGateAttempted&&error.preservePrivateRoot!==false;if(preservePrivateInstall)console.error('Retain unconfirmed private app:',temporary,error.ownedRoot||'',error.resultPath||'');throw error}
    finally{if(!preservePrivateInstall)await fs.rm(temporary,{recursive:true,force:true})}
-   checks.push('codesign','dmg-verify','zip-extraction','native-smoke','native-owned-service-16');
+   checks.push('codesign','dmg-verify','zip-extraction','native-smoke','native-owned-service-16','ops-package-source','ops-native-smoke');
   }else{
    const name=`ReviewOps-${version}-windows-x64.exe`,installer=path.join(packageRoot,name);
    await inspectStableArchive(path.join(packageRoot,'win-unpacked/resources/app.asar'),version);publisher=await windowsPublisher(installer);
+   inspectOpsArchive(path.join(packageRoot,'win-unpacked/resources/app.asar'),{repository:root,asar});
    await runWindowsInstalledSmoke({repository:root,installer,env:{...env,REVIEWOPS_VERIFY_PACKAGE_ROOT:packageRoot,
     REVIEWOPS_EXPECT_STABLE_BUILD:'true',REVIEWOPS_OWNED_RENDERER_RECORD:rendererBuildRecord}});
    const report=JSON.parse(await fs.readFile(path.join(root,'test-results/windows-release.json'),'utf8'));
-   if(report.ok!==true||report.sourceCommit!==commit||report.version!==version||report.sha256!==await fileHash(installer)||report.stableBuild?.metadataAbsent!==true||report.ownedService?.ok!==true||report.ownedService?.cleanupConfirmed!==true)throw new Error('Windows 설치·실행·자료 보존 검사를 완료하지 못했습니다.');
-   await copy(name);checks.push('publisher-status','installed-application','native-owned-service-16');
+   if(report.ok!==true||report.sourceCommit!==commit||report.version!==version||report.sha256!==await fileHash(installer)||report.stableBuild?.metadataAbsent!==true||report.ownedService?.ok!==true||report.ownedService?.cleanupConfirmed!==true||report.ops?.passed!==true||report.ops?.backupRestore!==true||report.ops?.restartAndReinstall!==true||report.ops?.uninstallPreserved!==true)throw new Error('Windows 설치·실행·자료 보존 검사를 완료하지 못했습니다.');
+   await copy(name);checks.push('publisher-status','installed-application','native-owned-service-16','ops-package-source','ops-native-smoke');
   }
   const record={schema:1,channel:'stable',version,commit,target,platform:process.platform,arch:process.arch,ok:true,testMetadataAbsent:true,checks,...(publisher?{publisher}:{}),files:[]};
   for(const file of files)record.files.push({name:path.basename(file),size:(await fs.stat(file)).size,sha256:await fileHash(file)});

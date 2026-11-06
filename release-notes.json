@@ -4,6 +4,64 @@
   "entries": [
     {
       "category": "features",
+      "title": "Run persistent Ops goals in parallel",
+      "description": "Create goals with a local folder or approved SSH project connection, their own Codex settings and one persistent conversation. Start, pause, resume or finish each goal independently. Different targets can work in parallel; overlapping canonical folders wait with a visible reason.",
+      "commits": [
+        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
+        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
+        "06411de4a42901af92474ccd8c8a745415502c32",
+        "ee6a9606cfa8ea1725ab43c0cffc527bc9a4d3bf"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Schedule follow-ups inside each goal",
+      "description": "Add multiple cron schedules with IANA time zones. A goal can manage only its own schedules through Codex tools, recording the reason for each change. Due instructions steer its active turn or continue the same idle conversation. Missed occurrences coalesce once; paused and finished goals never restart automatically.",
+      "commits": [
+        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
+        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
+        "06411de4a42901af92474ccd8c8a745415502c32"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Let each Ops goal inspect its own project window",
+      "description": "Open a QA session bound to the goal’s registered project, window and original Codex conversation. Let Codex inspect screenshots and send scoped input while the Ops view shows the connection and operation receipts. Pausing or changing a goal releases only its own session; uncertain operations remain visible without automatic replay.",
+      "commits": [
+        "24dec2bd4752b298045b7c98335ca22a174ba946",
+        "27d6d84fea4c3cb1362fa6e13d33ac16f827df7b",
+        "49ca5b9792ecf2f0f6ca39951e9e98d122b4e6ba",
+        "e8fa49ddb2196c327bb0e200496383ced5f9ad09",
+        "62ba15106094eeb90dae920cad2a292122d9b5cc",
+        "098b44129897296e913c5381750d2a780d6aaa1e",
+        "5db19dc0a1621115c6194722c061e91cde339701"
+      ]
+    },
+    {
+      "category": "improvements",
+      "title": "Inspect goal prompts, progress and recovery",
+      "description": "Preview common, goal and schedule instructions together, then inspect the exact submitted prompt, reason, originating schedules and outcome in history. Recover the original conversation after restart and restore backups with goals paused. Interactive approval requests appear as errors; Ops has no approval dialog.",
+      "commits": [
+        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
+        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
+        "06411de4a42901af92474ccd8c8a745415502c32",
+        "85aac45b6766e08e3d30faba8589e5ec8f692d76"
+      ]
+    },
+    {
+      "category": "improvements",
+      "title": "Keep background commands owned through pauses and errors",
+      "description": "Retain a goal's folder while its commands are running or unconfirmed, even after the model finishes or a new request fails. Pause and finish stop only that thread's terminals before releasing the target. Offline goals recover independently without blocking the application window, other goals or scheduled work.",
+      "commits": [
+        "8c0e18cfb3f1ef1f693131f1ecb5e87f353f256a",
+        "4a7a2bf92995dade6711d2ad5518c70f75b6e632",
+        "e6f1d7385d746d1b63615921aa39ed05b81684c9",
+        "6dea5cbd12b06da98d6ca533857d229e58d7eaec",
+        "a903f710bb452836861891417ca3bbbcb70e5e46"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Refresh account usage automatically",
       "description": "Collect account limits and supported detailed usage every 30 minutes in the background, including while the window is minimized. Choose a 1–1440 minute interval in Settings → Automatic checks and keep it after restarting. Overdue startup and resume refresh once; failures retain the last successful values and retry on the chosen interval.",
       "commits": [

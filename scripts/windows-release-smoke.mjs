@@ -11,6 +11,7 @@ import { _electron as electron, expect } from '@playwright/test';
 import { setTestLocale } from './test-locale.mjs';
 import {runRequiredOwnedGate, nativeOutput, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {inspectOpsArchive,seedOpsSmoke,verifyOpsSmoke,verifyOpsFile,verifyOpsData,mutateOpsSmoke,seedUnavailableOpsThread} from './ops-native-smoke.mjs';
 
 const require = createRequire(import.meta.url);
 const asar = require('@electron/asar');
@@ -139,6 +140,7 @@ async function verifyAsar(archive) {
   const packagedMetadata = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   assert.equal(packagedMetadata.version, version);
   assert.equal(packagedMetadata.main, metadata.main);
+  report.opsPackage=inspectOpsArchive(archive,{repository:root,asar});
   check('Packaged source, built interface, licenses, and package version match the checkout', { comparedFiles: files.length, archiveEntries: entries.length });
   check('Package contains only application files and dependencies; no user data');
   return hashFile(archive);
@@ -357,8 +359,19 @@ try {
   assert.equal(page.isClosed(), false); await page.bringToFront();
   assert.equal((await invoke('window.context')).projectId, '');
   check('Closing both external project windows keeps the original application window open');
+  const opsFixture=await seedOpsSmoke(page,{workPath:filesPath});
+  const opsBackup=path.join(fixtureRoot,'native-ops.reviewops.json');
+  await app.evaluate(({dialog},file)=>{dialog.showSaveDialog=async()=>({canceled:false,filePath:file});},opsBackup);
+  await invoke('backup.export');
+  verifyOpsData(JSON.parse(await fs.readFile(opsBackup,'utf8')).ops,opsFixture);
+  await mutateOpsSmoke(page,opsFixture);
+  await app.evaluate(({dialog},file)=>{dialog.showOpenDialog=async()=>({canceled:false,filePaths:[file]});dialog.showMessageBox=async()=>({response:1});},opsBackup);
+  await invoke('backup.import');
+  await verifyOpsSmoke(page,opsFixture);
+  check('Installed Ops loads bundled cron, retains paused/finished goals, and restores its real JSON backup without starting a model');
   await closeWindow();
   check('Close icon shuts down the installed application');
+  seedUnavailableOpsThread(dataPath,opsFixture);
   // The owned-service gate runs only on this actually NSIS-installed EXE,
   // after closing the legacy profile and before reinstall/uninstall can mutate it.
   const rendererBuildRecord = process.env.REVIEWOPS_OWNED_RENDERER_RECORD || nativePackagedRendererRecord(root,'win32-x64','standalone-windows');
@@ -385,6 +398,8 @@ try {
   assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
   check('Same-version installer runs again and preserves the application archive and existing user files');
   await launch();
+  const opsPreserved=await verifyOpsSmoke(page,opsFixture);
+  verifyOpsFile(dataPath,opsFixture);
   const restored = await invoke('snapshot');
   assert.equal(restored.projects.find(item => item.id === project.id).name, project.name);
   assert.equal(restored.services.find(item => item.id === service.id).rootPath, filesPath);
@@ -401,6 +416,7 @@ try {
 
   const databaseFile = path.join(dataPath, 'reviewops.sqlite');
   const databaseHash = await hashFile(databaseFile);
+  const opsStateFile=path.join(dataPath,'ops','state.json'),opsStateHash=await hashFile(opsStateFile);
   const uninstaller = (await fs.readdir(installDir)).find(name => /^Uninstall.*\.exe$/i.test(name));
   assert.ok(uninstaller, 'Uninstaller is missing.');
   // _?= keeps NSIS in the current process so exit means removal has finished.
@@ -408,6 +424,9 @@ try {
   await waitForFileState(executable, false);
   assert.equal(await fs.readFile(keepFile, 'utf8'), keepText);
   assert.equal(await hashFile(databaseFile), databaseHash);
+  assert.equal(await hashFile(opsStateFile),opsStateHash);
+  verifyOpsFile(dataPath,opsFixture);
+  report.ops={...opsPreserved,backupRestore:true,restartAndReinstall:true,uninstallPreserved:true};
   check('Silent uninstall removes the executable and preserves the user database and existing files');
   report.ok = true;
 } catch (error) {

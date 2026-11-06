@@ -11,17 +11,18 @@ class RpcError extends Error {
   }
 }
 
-/** A deliberately small client: stdio only, without conversation/agent APIs. */
+/** A bounded stdio transport; application policy remains with each caller. */
 class RpcClient extends EventEmitter {
-  constructor({ command, args = ['app-server'], env, cwd, timeoutMs = 20_000, spawnImpl = spawn }) {
+  constructor({ command, args = ['app-server'], env, cwd, timeoutMs = 20_000, spawnImpl = spawn, clientInfo, onServerRequest }) {
     super();
-    this.options = { command, args, env, cwd, timeoutMs, spawnImpl };
+    this.options = { command, args, env, cwd, timeoutMs, spawnImpl, clientInfo, onServerRequest };
     this.pending = new Map();
     this.nextId = 1;
     this.buffer = '';
     this.closed = false;
     this.child = null;
     this.startPromise = null;
+    this.serverRequests = new Map();
   }
 
   start() {
@@ -51,7 +52,7 @@ class RpcClient extends EventEmitter {
     this.child.on('close', () => this._finish(new RpcError('Codex 연결이 종료되었습니다.', 'DISCONNECTED')));
     try {
       await this._request('initialize', {
-        clientInfo: { name: 'codex_account_manager', title: 'Codex Account Manager', version: require('../../package.json').version },
+        clientInfo: this.options.clientInfo || { name: 'codex_account_manager', title: 'Codex Account Manager', version: require('../../package.json').version },
         capabilities: { experimentalApi: true },
       });
       this._send({ method: 'initialized' });
@@ -116,10 +117,7 @@ class RpcClient extends EventEmitter {
       if (!message || typeof message !== 'object') continue;
       if (typeof message.method === 'string') {
         if (Object.hasOwn(message, 'id')) {
-          // The manager does not grant command, file, network, or tool approvals.
-          try {
-            this._send({ id: message.id, error: { code: -32601, message: 'Unsupported server request' } });
-          } catch { /* Close handler already rejects outstanding work. */ }
+          this._serverRequest(message);
         } else {
           this.emit('notification', message.method, message.params ?? {});
         }
@@ -138,6 +136,41 @@ class RpcClient extends EventEmitter {
         pending.reject(new RpcError('Codex 응답을 읽지 못했습니다.', 'PROTOCOL_ERROR'));
       }
     }
+  }
+
+  _serverRequest(message) {
+    const unsupported = { error: { code: -32601, message: 'Unsupported server request' } };
+    // Account clients omit the private hook and retain default denial.
+    if (typeof this.options.onServerRequest !== 'function') {
+      try { this._send({ id: message.id, ...unsupported }); } catch {}
+      return;
+    }
+    if (!['number','string'].includes(typeof message.id)) return;
+    const key = `${typeof message.id}:${message.id}`, signature = JSON.stringify([message.method, message.params]);
+    let record = this.serverRequests.get(key);
+    if (record && record.signature !== signature) {
+      try { this._send({ id: message.id, error: { code: -32600, message: 'Conflicting server request' } }); } catch {}
+      return;
+    }
+    if (!record) {
+      if (this.serverRequests.size >= 1000) {
+        for (const [previousKey, previous] of this.serverRequests) if (previous.done) {this.serverRequests.delete(previousKey);break;}
+        if (this.serverRequests.size >= 1000) {
+          try { this._send({ id: message.id, ...unsupported }); } catch {}
+          return;
+        }
+      }
+      const promise = Promise.resolve().then(() => this.options.onServerRequest({
+        id: message.id, method: message.method, params: message.params ?? {},
+      })).then(result => result === undefined ? unsupported : { result }, () => ({
+        error: { code: -32603, message: 'Server request could not be completed' },
+      }));
+      record = { signature, promise, done: false };this.serverRequests.set(key, record);
+      promise.then(() => { record.done = true; });
+    }
+    record.promise.then(response => {
+      try { this._send({ id: message.id, ...response }); } catch { /* Never replay a tool after disconnect. */ }
+    });
   }
 
   _finish(error) {

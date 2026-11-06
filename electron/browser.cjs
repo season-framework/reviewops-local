@@ -123,10 +123,12 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
     const url = !currentUrl || currentUrl === 'about:blank' ? item.requestedUrl : currentUrl;
     return {id:item.id,url,title:contents.getTitle(),loading:contents.isLoading(),canGoBack:contents.navigationHistory.canGoBack(),canGoForward:contents.navigationHistory.canGoForward(),error:item.error,logCounts:recorder.counts(item),selectedElement:item.selectedElement||null,...(item.sessionId?{sessionId:item.sessionId,epoch:item.sessionEpoch()}: {})};
   }
-  async function navigate(item, url) {
+  async function navigate(item, url, guard=()=>{}) {
+    guard();
     const target = browserUrl(url);
     const revision = ++item.navigationRevision;
     await item.emulationPromise;
+    guard();
     get(item.id);
     if(revision!==item.navigationRevision)return state(item);
     item.requestedUrl = target; item.error = '';
@@ -192,8 +194,8 @@ function createBrowserManager(window, {partition = PARTITION, backgroundPopups =
       return [...views.values()].filter(item=>!item.view.webContents.isDestroyed()).map(item=>({
         browserId:item.id,contents:item.view.webContents,inputScale:item.emulation?JSON.parse(item.emulation).scale:1,ready:item.emulationPromise,documentReady:!item.rendererGone&&!unavailableContents.has(item.view.webContents),visible:item.visible,url:item.view.webContents.getURL(),title:item.view.webContents.getTitle(),
         bounds:item.area?{x:item.area.x+item.view.getBounds().x,y:item.area.y+item.view.getBounds().y,width:item.view.getBounds().width,height:item.view.getBounds().height}:null,
-        clip:item.area
-      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,documentReady:!unavailableContents.has(popup.webContents),visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:url=>popup.webContents.loadURL(browserUrl(url))})));
+        clip:item.area,navigate:(url,guard)=>navigate(item,url,guard)
+      })).concat([...popups].filter(popup=>!popup.isDestroyed()).map(popup=>({browserId:popup.qaBrowserId,contents:popup.webContents,documentReady:!unavailableContents.has(popup.webContents),visible:popup.isVisible(),url:popup.webContents.getURL(),title:popup.webContents.getTitle(),inputScale:popup.webContents.getZoomFactor(),navigate:(url,guard=()=>{})=>{guard();return popup.webContents.loadURL(browserUrl(url));}})));
     },
     async dispatch(action, payload) {
       if(disposed&&action!=='browser.close')throw Object.assign(new Error('열린 화면을 찾을 수 없습니다.'),{code:'STALE_BROWSER_OWNER'});

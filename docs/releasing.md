@@ -177,6 +177,15 @@ The actual `--publish` option is permitted only in the Actions workflow's publis
 
 ### Publication sequence
 
+Native Ops checks must verify the packaged `ops-*.cjs` source and the pinned `cron-parser`/`luxon` dependencies. The actual installed application must expose Ops IPC and navigation, calculate an IANA-timezone schedule, and preserve paused/finished goals and settings through backup/restore and restart. Windows verification also retains the Ops JSON file across same-version reinstall and uninstall. These checks create no model conversation. The unavailable saved-thread startup fixture is synthetic; it does not certify genuine Codex conversation recovery.
+
+Before publishing an Ops candidate, also check installed goal execution and its project/window/QA-session binding, independent goals and cleanup, and the original genuine Codex conversation after reconnect and candidate reinstall. An update from a public version without Ops can prove core-data migration, but cannot by itself prove retention of a pre-existing Ops conversation. Record the actual path tested. The focused preservation script can run against an explicitly selected installed executable:
+
+```sh
+REVIEWOPS_TEST_EXECUTABLE=/path/to/ReviewOps.app/Contents/MacOS/ReviewOps \
+  REVIEWOPS_EXPECT_SOURCE_SHA=FULL_REVIEWED_SHA node scripts/e2e-ops-preservation.mjs
+```
+
 1. Build macOS arm64/x64 and Windows x64 packages with identical build identity.
 2. Verify embedded build identity, file contents, macOS signatures and DMGs, and the Windows installer's signature status. On Windows, check installation, startup, and preservation of projects and review categories after reinstalling the same app version. Bind installer size and SHA-256 to the verification result.
 3. Serialize test publication from every branch through one queue. If a higher global build number is already public, do not publish an older build that finishes later.

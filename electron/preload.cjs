@@ -67,6 +67,13 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
 // Embedded viewers must never receive account or host-management APIs.
 if (process.isMainFrame) {
 
+const invokeOps=method=>(...args)=>ipcRenderer.invoke('ops:invoke',method,...args);
+contextBridge.exposeInMainWorld('opsManager',Object.freeze({
+  snapshot:invokeOps('snapshot'),saveGoal:invokeOps('saveGoal'),deleteGoal:invokeOps('deleteGoal'),goalAction:invokeOps('goalAction'),
+  saveSchedule:invokeOps('saveSchedule'),deleteSchedule:invokeOps('deleteSchedule'),preview:invokeOps('preview'),configure:invokeOps('configure'),
+  onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-state',listener);}
+}));
+
 const invoke = (method) => (...args) => ipcRenderer.invoke(`accounts:${method}`, ...args);
 contextBridge.exposeInMainWorld('accountManager', Object.freeze({
   getState: invoke('getState'),
