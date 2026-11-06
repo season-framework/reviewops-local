@@ -163,6 +163,19 @@ test('direct and OpenSSH goals claim their shared endpoint alias for one remote 
  const a=await h.add('direct'),b=await h.add('openssh');await Promise.all([a,b].map(goalId=>h.manager.goalAction({goalId,action:'start'})));await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(h.manager.snapshot().goals.filter(g=>g.executionState==='waiting').length,1);
 });
 
+test('pause keeps its target claim after turn completion until background cleanup is confirmed',async t=>{
+ let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
+ const h=await harness(t,{interrupt:async(input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'interrupted'});entered();await gate;return {confirmed:true,state:'idle',turnId:input.turnId,status:'interrupted'};}}),folder=h.folder('held-terminal-cleanup'),a=await h.add('Stopping owner',folder),b=await h.add('Waiting target',folder);
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();
+ const stopping=h.manager.goalAction({goalId:a,action:'pause'});await ready;await h.manager.pumpAll();assert.equal(h.manager.snapshot().goals.find(g=>g.id===a).executionState,'unknown');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+ release();await stopping;await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='start').length,2);assert.equal(h.manager.snapshot().goals.find(g=>g.id===a).executionState,'idle');
+});
+
+test('pausing an idle persisted thread still asks its adapter to drain background terminals',async t=>{
+ const h=await harness(t),id=await h.add('Idle terminal owner');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.complete(id);
+ assert.equal(h.manager.snapshot().goals[0].turnId,null);await h.manager.goalAction({goalId:id,action:'pause'});assert.equal(h.calls.filter(c=>c.kind==='interrupt').length,1);assert.equal(h.manager.snapshot().goals[0].status,'paused');assert.equal(h.manager.snapshot().goals[0].executionState,'idle');
+});
+
 test('cron is exactly five fields, validates IANA zones, and preserves DST wall-clock recurrence',()=>{
   assert.throws(()=>validateSchedule('0 * * * * *','UTC'));assert.throws(()=>validateSchedule('* * * * *','Moon/Base'));assert.throws(()=>validateSchedule('H * * * *','UTC'));
   assert.equal(nextOccurrence('0 9 * * *','America/New_York',Date.parse('2026-03-07T15:00:00Z')),'2026-03-08T13:00:00.000Z');

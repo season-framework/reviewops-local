@@ -18,7 +18,7 @@ function terminalStatus(status){return status==='failed'?'failed':['interrupted'
 class OpsManager{
   constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,runtime,createSession,now=Date.now,schedulerOptions={}}){
     this.store=new OpsStore({dataPath});this.onChange=onChange;this.resolveTarget=resolveTarget;this.resolveSessionTarget=resolveSessionTarget;this.runtime=runtime;this.createSession=createSession;this.now=now;
-    this.sessions=new Map();this.pumps=new Map();this.messages=new Map();this.reconciling=new Map();this.lifecycle=new Map();this.closed=false;this.suspended=false;this.revision=this.store.data.revision;
+    this.sessions=new Map();this.pumps=new Map();this.messages=new Map();this.reconciling=new Map();this.lifecycle=new Map();this.draining=new Set();this.closed=false;this.suspended=false;this.revision=this.store.data.revision;
     this.scheduler=new OpsScheduler({tick:at=>this.tick(at),nextDue:()=>this.nextDue(),now,...schedulerOptions,onError:error=>this._schedulerError(error)});
   }
   _open(){if(this.closed)fail('OPS_CLOSED','Ops가 종료되고 있습니다.');}
@@ -144,7 +144,7 @@ class OpsManager{
       }
       this._mutate(data=>{const goal=this._goal(data,id);if(event.threadId)goal.threadId=event.threadId;
         if(event.type==='turn.started'){goal.turnId=event.turnId;goal.executionState='running';goal.waitingReason=null;goal.lastError=null;const pending=goal.history.find(h=>h.type==='delivery'&&h.status==='prepared'&&h.mode==='start');if(pending){pending.threadId=goal.threadId;pending.turnId=event.turnId;}}
-        else if(event.type==='turn.completed'){if(!goal.turnId||goal.turnId===event.turnId){goal.executionState=event.status==='failed'?'error':'idle';goal.turnId=null;goal.waitingReason=null;if(event.status==='failed')goal.lastError='Codex 실행이 실패했습니다. 기록을 확인한 뒤 재연결하십시오.';}for(const h of goal.history)if(h.type==='delivery'&&h.turnId===event.turnId&&['prepared','accepted'].includes(h.status)){h.status=terminalStatus(event.status);h.outcome=event.status||'completed';h.completedAt=this._time();}this._history(goal,'turn.completed',event.reason||'Codex 실행이 종료되었습니다.',{threadId:goal.threadId,turnId:event.turnId||null,status:event.status||'completed'});}
+        else if(event.type==='turn.completed'){if(!goal.turnId||goal.turnId===event.turnId){const held=this.draining.has(id)||['paused','finished'].includes(goal.status)&&goal.executionState==='unknown';goal.executionState=held?'unknown':event.status==='failed'?'error':'idle';goal.turnId=null;goal.waitingReason=null;if(event.status==='failed')goal.lastError='Codex 실행이 실패했습니다. 기록을 확인한 뒤 재연결하십시오.';}for(const h of goal.history)if(h.type==='delivery'&&h.turnId===event.turnId&&['prepared','accepted'].includes(h.status)){h.status=terminalStatus(event.status);h.outcome=event.status||'completed';h.completedAt=this._time();}this._history(goal,'turn.completed',event.reason||'Codex 실행이 종료되었습니다.',{threadId:goal.threadId,turnId:event.turnId||null,status:event.status||'completed'});}
         else if(event.type==='error'){goal.lastError=String(event.message||'Codex 연결 상태를 확인하십시오.');goal.executionState='unknown';const h=activeDelivery(goal);if(h)h.status='unknown';}
         else if(event.type==='delivery'){const h=goal.history.find(row=>row.id===event.deliveryId);if(h&&event.state==='accepted'){h.status='accepted';h.threadId=event.threadId||goal.threadId;h.turnId=event.turnId||goal.turnId;}else if(h&&event.state==='unknown')h.status='unknown';}
       });
@@ -186,7 +186,7 @@ class OpsManager{
         h.status=completed?terminalStatus(outcome||h.status):'accepted';if(outcome)h.outcome=outcome;g.threadId=h.threadId;g.turnId=completed?null:(result.activeTurnId||result.turnId||g.turnId);g.executionState=outcome==='failed'?'error':completed||result.state==='idle'?'idle':'running';g.lastError=outcome==='failed'?'Codex 실행이 실패했습니다. 기록을 확인하십시오.':null;for(const sid of h.scheduleIds||[]){const s=g.schedules.find(row=>row.id===sid);if(s)s.lastResult=h.status;}});
     }
   }
-  _deliveryError(id,error,deliveryId){if(this.closed)return;try{this._mutate(data=>{const goal=this._goal(data,id),delivery=deliveryId?goal.history.find(h=>h.id===deliveryId):activeDelivery(goal);goal.lastError=String(error?.message||error);const notSent=error?.deliveryState==='not_sent',ambiguous=delivery&&['prepared','unknown'].includes(delivery.status)||goal.turnId&&['running','starting','unknown'].includes(goal.executionState);goal.executionState=notSent&&goal.turnId?'running':ambiguous&&!notSent?'unknown':'error';if(delivery){delivery.status=notSent||delivery.status==='queued'?'queued':goal.executionState==='unknown'?'unknown':'failed';delivery.error=goal.lastError;}this._history(goal,'error','실행 상태 확인이 필요합니다.',{message:goal.lastError});});}catch{/* Preserve the original store file if persistence itself failed. */}}
+  _deliveryError(id,error,deliveryId){if(this.closed)return;try{this._mutate(data=>{const goal=this._goal(data,id),delivery=deliveryId?goal.history.find(h=>h.id===deliveryId):activeDelivery(goal);goal.lastError=String(error?.message||error);const notSent=error?.deliveryState==='not_sent',ambiguous=goal.executionState==='unknown'||delivery&&['prepared','unknown'].includes(delivery.status)||goal.turnId&&['running','starting','unknown'].includes(goal.executionState);goal.executionState=notSent&&goal.turnId?'running':ambiguous&&!notSent?'unknown':'error';if(delivery){delivery.status=notSent||delivery.status==='queued'?'queued':goal.executionState==='unknown'?'unknown':'failed';delivery.error=goal.lastError;}this._history(goal,'error','실행 상태 확인이 필요합니다.',{message:goal.lastError});});}catch{/* Preserve the original store file if persistence itself failed. */}}
   _schedulerError(error){if(this.closed)return;try{this._mutate(data=>{data.lastError=String(error?.message||error);});}catch{/* A failed scheduler checkpoint never changes another goal's state. */}}
   async reconnect(id,pump=true){
     if(this.reconciling.has(id))return this.reconciling.get(id);
@@ -196,14 +196,17 @@ class OpsManager{
         if(h&&['prepared','unknown','accepted'].includes(h.status)){if(result.delivery==='accepted'){h.status=result.state==='idle'?terminalStatus(result.outcome||result.turnStatus):'accepted';h.outcome=result.outcome||result.turnStatus||null;h.threadId=g.threadId;h.turnId=result.deliveryTurnId||result.turnId||h.turnId;if(result.outcome==='failed'){g.executionState='error';g.lastError='Codex 실행이 실패했습니다. 기록을 확인하십시오.';}}else if(result.delivery==='not_found'&&result.state==='idle'&&result.safeToRetry===true){h.status='queued';}else{h.status='unknown';g.executionState='unknown';}}
         this._history(g,'session.reconciled','원래 Codex 세션과 전달 기록을 확인했습니다.',{threadId:g.threadId,turnId:g.turnId,status:g.executionState});
       });
-      const current=this._goal(this.store.data,id);if(current.status!=='active'&&current.executionState==='running')await this._interrupt(id);
+      const current=this._goal(this.store.data,id);if(current.status!=='active'&&current.threadId)await this._interrupt(id);
     })().finally(()=>{this.reconciling.delete(id);if(pump)void this.pumpAll();});this.reconciling.set(id,task);return task;
   }
-  async _interrupt(id){const goal=this._goal(this.store.data,id);if(!goal.turnId){if(goal.executionState==='unknown')fail('OPS_DELIVERY_UNKNOWN','원래 실행 결과를 확인한 뒤 중지하십시오.');this._mutate(data=>{const g=this._goal(data,id);g.executionState='idle';g.waitingReason=null;});return;}
-    let turnId=goal.turnId,confirmed=false;
-    for(let attempt=0;attempt<3;attempt++){const result=await this._session(id).interrupt({threadId:goal.threadId,turnId});if(result?.confirmed===true){const finished=turnId;this._mutate(data=>{const g=this._goal(data,id);for(const h of g.history)if(h.type==='delivery'&&h.turnId===finished&&['prepared','accepted','unknown'].includes(h.status)){h.status=terminalStatus(result.status||'interrupted');h.outcome=result.status||'interrupted';h.completedAt=this._time();}});}if(result?.confirmed===true&&result.state==='idle'){confirmed=true;break;}if(result?.confirmed===true&&result.state==='running'&&result.activeTurnId&&result.activeTurnId!==turnId){turnId=result.activeTurnId;continue;}break;}
-    if(!confirmed)fail('OPS_INTERRUPT_UNCONFIRMED','원래 Codex 실행의 중지를 확인하지 못했습니다. 연결을 다시 확인하십시오.');
-    this._mutate(data=>{const g=this._goal(data,id);for(const h of g.history)if(h.type==='delivery'&&h.turnId===goal.turnId&&['prepared','accepted'].includes(h.status))h.status='interrupted';g.turnId=null;g.executionState='idle';});
+  async _interrupt(id){const goal=this._goal(this.store.data,id);if(!goal.threadId){if(goal.executionState==='unknown')fail('OPS_DELIVERY_UNKNOWN','원래 실행 결과를 확인한 뒤 중지하십시오.');this._mutate(data=>{const g=this._goal(data,id);g.executionState='idle';g.waitingReason=null;});return;}
+    this.draining.add(id);this._mutate(data=>{this._goal(data,id).executionState='unknown';});
+    try{
+      let turnId=goal.turnId,confirmed=false;
+      for(let attempt=0;attempt<3;attempt++){const result=await this._session(id).interrupt({threadId:goal.threadId,turnId});if(result?.confirmed===true){const finished=result.turnId||turnId;this._mutate(data=>{const g=this._goal(data,id);for(const h of g.history)if(h.type==='delivery'&&h.turnId===finished&&['prepared','accepted','unknown'].includes(h.status)){h.status=terminalStatus(result.status||'interrupted');h.outcome=result.status||'interrupted';h.completedAt=this._time();}});}if(result?.confirmed===true&&result.state==='idle'){confirmed=true;break;}if(result?.confirmed===true&&result.state==='running'&&result.activeTurnId&&result.activeTurnId!==turnId){turnId=result.activeTurnId;continue;}break;}
+      if(!confirmed)fail('OPS_INTERRUPT_UNCONFIRMED','원래 Codex 실행과 백그라운드 작업의 중지를 확인하지 못했습니다. 연결을 다시 확인하십시오.');
+      this._mutate(data=>{const g=this._goal(data,id);g.turnId=null;g.executionState='idle';g.waitingReason=null;g.lastError=null;});
+    }finally{this.draining.delete(id);}
   }
   async goalAction(input){fields(input,['goalId','action','instruction']);const {goalId:id,action}=input;this._goal(this.store.data,id);
     if(action==='request'){this._enqueue(id,{reason:'사용자의 추가 지시',instruction:string(input.instruction,100000,'추가 지시',true)});return this.snapshot();}
@@ -212,7 +215,7 @@ class OpsManager{
     if(this.lifecycle.has(id))return this.lifecycle.get(id);
     const task=(async()=>{
       if(action==='pause'||action==='finish'){
-        this._mutate(data=>{const goal=this._goal(data,id);goal.status=action==='pause'?'paused':'finished';this._history(goal,`goal.${goal.status}`,'사용자가 목표 실행을 변경했습니다.');if(action==='finish')for(const h of goal.history)if(h.type==='delivery'&&h.status==='queued')h.status='cancelled';});
+        this._mutate(data=>{const goal=this._goal(data,id);goal.status=action==='pause'?'paused':'finished';if(goal.threadId)goal.executionState='unknown';this._history(goal,`goal.${goal.status}`,'사용자가 목표 실행을 변경했습니다.');if(action==='finish')for(const h of goal.history)if(h.type==='delivery'&&h.status==='queued')h.status='cancelled';});
         const pending=this.pumps.get(id);if(pending)await pending;try{await this._interrupt(id);}catch(error){this._deliveryError(id,error);}return;
       }
       const current=this._goal(this.store.data,id);if(current.status==='finished')fail('OPS_GOAL_FINISHED','종료한 목표를 새 목표로 복사하거나 설정을 확인하십시오.');
