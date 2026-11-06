@@ -48,7 +48,7 @@ function createOpsSession(options) {
   let rpc = null, connecting = null, loaded = false, creating = false, creationUnknown = false, closed = false;
   let sshService = null, sessionWorkPath = workPath, targetIdentity = target.identityKey || null;
   let activeTurnId = null, state = 'unknown', queue = Promise.resolve(), eventQueue = Promise.resolve(), persistenceFailed = false;
-  const turns = new Map(), deliveries = new Map(), toolCalls = new Map(), partials = new Map(), overflowed = new Set();
+  const turns = new Map(), deliveries = new Map(), toolCalls = new Map(), partials = new Map(), overflowed = new Set(), pendingCompletions = new Set();
   const publish = event => {
     const task = eventQueue.then(() => onEvent({...event, goalId}));
     eventQueue = task.catch(() => { persistenceFailed = true; });
@@ -91,9 +91,21 @@ function createOpsSession(options) {
       turns.set(turn.id, turn);
       if (method === 'turn/started') { activeTurnId = turn.id;state = 'running'; }
       else if (activeTurnId === turn.id) { activeTurnId = null;state = 'idle'; }
-      publish({type: method === 'turn/started' ? 'turn.started' : 'turn.completed', threadId, turnId: turn.id, status: turn.status, state,
-        ...(turn.error ? {errorCode: 'OPS_TURN_FAILED'} : {})}).catch(() => {});
-      for (const item of turn.items || []) { const event = itemMessage(item, turn.id);if (event) publish(event).catch(() => {}); }
+      const event = {type: method === 'turn/started' ? 'turn.started' : 'turn.completed', threadId, turnId: turn.id, status: turn.status, state,
+        ...(turn.error ? {errorCode: 'OPS_TURN_FAILED'} : {})};
+      if (method === 'turn/completed') {
+        // Query outside eventQueue: the manager must keep ownership until the
+        // completed model turn's remaining background commands are known.
+        const completion = (async () => {
+          const background = await readBackground();if (closed) return;
+          await publish({...event, ...background});
+          for (const item of turn.items || []) { const message = itemMessage(item, turn.id);if (message) await publish(message); }
+        })();
+        pendingCompletions.add(completion);completion.catch(() => {}).finally(() => pendingCompletions.delete(completion));
+      } else {
+        publish(event).catch(() => {});
+        for (const item of turn.items || []) { const message = itemMessage(item, turn.id);if (message) publish(message).catch(() => {}); }
+      }
     } else if (method === 'item/completed') {
       const event = itemMessage(params.item, params.turnId);if (event) {partials.delete(`${params.turnId}:${params.item.id}`);publish(event).catch(() => {});}
     } else if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
@@ -211,7 +223,7 @@ function createOpsSession(options) {
     // metadata; unknown deliveries still require real history reconciliation.
     if (allowIdleMetadata && read.thread.status?.type === 'idle') {
       activeTurnId = null;state = 'idle';
-      return {threadId, turnId: null, state: 'idle', turns: [], updatedAt: read.thread.updatedAt, historyUnavailable: true};
+      return {threadId, turnId: null, state: 'idle', turns: [], updatedAt: read.thread.updatedAt, historyUnavailable: true, ...await readBackground()};
     }
     const page = await client.request('thread/turns/list', {threadId, limit: 100, sortDirection: 'desc', itemsView: 'full'});
     if (!Array.isArray(page.data)) fail('OPS_PROTOCOL_UNAVAILABLE');
@@ -220,7 +232,39 @@ function createOpsSession(options) {
     const type = read.thread.status?.type;
     const next = active ? 'running' : type === 'idle' ? 'idle' : 'unknown';
     activeTurnId = active?.id || null;state = next;
-    return {threadId, turnId: activeTurnId, state, turns: page.data, updatedAt: read.thread.updatedAt, nextCursor: page.nextCursor};
+    return {threadId, turnId: activeTurnId, state, turns: page.data, updatedAt: read.thread.updatedAt, nextCursor: page.nextCursor,
+      ...(state === 'idle' ? await readBackground() : {backgroundState: 'unknown', backgroundCount: null})};
+  }
+  async function readBackground() {
+    try {
+      const client = await connection();if (!threadId) return {backgroundState: 'unknown', backgroundCount: null};
+      let cursor = null, count = 0, pages = 0;const cursors = new Set();
+      do {
+        const result = await client.request('thread/backgroundTerminals/list', {threadId, limit: 100, ...(cursor ? {cursor} : {})});
+        if (!Array.isArray(result.data)) return {backgroundState: 'unknown', backgroundCount: null};
+        count += result.data.length;cursor = result.nextCursor;
+        if (cursor != null && (typeof cursor !== 'string' || !cursor || cursors.has(cursor) || ++pages > 100)) return {backgroundState: 'unknown', backgroundCount: null};
+        if (cursor) cursors.add(cursor);
+      } while (cursor);
+      return {backgroundState: count ? 'active' : 'empty', backgroundCount: count};
+    } catch { return {backgroundState: 'unknown', backgroundCount: null}; }
+  }
+  async function cleanTerminals() {
+    const client = await ensureThread(false);
+    if (!client || !threadId) fail('OPS_TERMINAL_CLEANUP_UNCONFIRMED');
+    // Interrupting a turn does not stop shell sessions that yielded in the
+    // background. The server owns those sessions; never infer an OS PID or
+    // terminate another goal's process to implement Pause.
+    try {
+      await client.request('thread/backgroundTerminals/clean', {threadId});
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const background = await readBackground();
+        if (background.backgroundState === 'empty') return;
+        if (background.backgroundState === 'unknown') fail('OPS_TERMINAL_CLEANUP_UNCONFIRMED');
+        await pause(options.interruptPollMs || 250);
+      }
+    } catch { /* A terminal cleanup acknowledgement is not proof of exit. */ }
+    throw Object.assign(new Error('The goal’s background commands could not be confirmed stopped.'), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
   }
   async function history(view, text) {
     const client = await connection(), messages = [], seen = new Set();let page = {data: view.turns, nextCursor: view.nextCursor}, allFull = true;
@@ -264,6 +308,7 @@ function createOpsSession(options) {
       const turnStatus = result.found ? turns.get(result.found)?.status || null : null;
       return {threadId, turnId: after.turnId || result.found || null, activeTurnId: after.turnId, deliveryTurnId: result.found || null, state: after.state, delivery, turnStatus,
         outcome: ['completed','failed','interrupted'].includes(turnStatus) ? turnStatus : null, safeToRetry: false,
+        backgroundState: after.backgroundState, backgroundCount: after.backgroundCount,
         items: result.messages};
     } catch (error) {
       if (['OPS_DELIVERY_CONFLICT','OPS_THREAD_MISMATCH','OPS_EVENT_PERSISTENCE_FAILED'].includes(error.code)) throw error;
@@ -276,8 +321,10 @@ function createOpsSession(options) {
     const known = deliveries.get(deliveryId);
     if (known && known.prompt !== text) fail('OPS_DELIVERY_CONFLICT');
     if (known?.state === 'accepted') {
+      const view = await readState();
       const turnStatus = turns.get(known.turnId)?.status || null;
-      return {threadId, turnId: activeTurnId || known.turnId, activeTurnId, deliveryTurnId: known.turnId, state, delivery: 'accepted', deliveredPrompt: text,
+      return {threadId, turnId: view.turnId || known.turnId, activeTurnId: view.turnId, deliveryTurnId: known.turnId, state: view.state, delivery: 'accepted', deliveredPrompt: text,
+        backgroundState: view.backgroundState, backgroundCount: view.backgroundCount,
         turnStatus, outcome: ['completed','failed','interrupted'].includes(turnStatus) ? turnStatus : null};
     }
     if (known?.state === 'unknown') return reconcileInternal({...input, prompt: text});
@@ -317,6 +364,7 @@ function createOpsSession(options) {
         await publish({type: 'delivery', threadId, turnId: acceptedTurn, deliveryId, state: 'accepted', deliveredPrompt: text});await flush();
         const turnStatus = observed?.status || 'inProgress';
         return {threadId, turnId: acceptedTurn, activeTurnId, deliveryTurnId: acceptedTurn, state, delivery: 'accepted', deliveredPrompt: text, turnStatus,
+          ...(terminal ? await readBackground() : {backgroundState: 'unknown', backgroundCount: null}),
           outcome: ['completed','failed','interrupted'].includes(turnStatus) ? turnStatus : null};
       } catch (error) {
         if (error.code === 'OPS_EVENT_PERSISTENCE_FAILED') throw error;
@@ -333,19 +381,23 @@ function createOpsSession(options) {
     interrupt: input => serial(async () => {
       if (input.threadId) bind(input.threadId);
       const view = await readState(), target = input.turnId || view.turnId;
-      if (!target) return {threadId, turnId: null, state: view.state, confirmed: view.state === 'idle'};
+      if (!target) {
+        if (view.state !== 'idle') fail('OPS_INTERRUPT_UNCONFIRMED');
+        await cleanTerminals();await flush();
+        return {threadId, turnId: null, state: view.state, confirmed: true, terminalsStopped: true};
+      }
       id(target);
       let requested = false;
       try { await (await connection()).request('turn/interrupt', {threadId, turnId: target});requested = true; } catch {}
       for (let count = 0; count < 20; count++) {
         const result = await readState(), turn = turns.get(target);
-        if (turn && ['completed','interrupted','failed'].includes(turn.status)) {await flush();return {threadId, turnId: target, activeTurnId: result.turnId, state: result.state, confirmed: true, status: turn.status};}
+        if (turn && ['completed','interrupted','failed'].includes(turn.status)) {await cleanTerminals();await flush();return {threadId, turnId: target, activeTurnId: result.turnId, state: result.state, confirmed: true, terminalsStopped: true, status: turn.status};}
         if (!requested && result.state === 'idle' && !turn) fail('OPS_INTERRUPT_UNCONFIRMED');
         await pause(options.interruptPollMs || 250);
       }
       fail('OPS_INTERRUPT_UNCONFIRMED');
     }),
-    async close() {closed = true;rpc?.close();await sshService?.close();await eventQueue;},
+    async close() {closed = true;rpc?.close();await sshService?.close();await Promise.allSettled([...pendingCompletions]);await eventQueue;},
   });
 }
 

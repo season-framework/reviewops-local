@@ -51,6 +51,11 @@ function fixture(t, settings = {}) {
         return method === 'turn/start' ? {turn: {...turn, status: 'inProgress'}} : {turnId: turn.id};
       }
       if (method === 'turn/interrupt') {if (!server.ackInterruptOnly) this.complete(thread.id, 'interrupted');return {};}
+      if (method === 'thread/backgroundTerminals/clean') {
+        if (server.cleanupDenied) throw Object.assign(new Error('Unsupported cleanup'), {code: -32601});
+        return {};
+      }
+      if (method === 'thread/backgroundTerminals/list') return server.terminalPages?.(params) || {data: [], nextCursor: null};
       throw new Error(`Unexpected method ${method}`);
     }
   }
@@ -87,6 +92,52 @@ test('independent goals run concurrently and interrupt only their own target', a
   const stopped = await f.primary.interrupt({threadId: a.threadId, turnId: a.turnId});assert.equal(stopped.confirmed, true);
   assert.equal(f.threads.get(b.threadId).status.type, 'active');
   assert.deepEqual(f.calls.filter(row => row.method === 'turn/interrupt').map(row => row.params), [{threadId: a.threadId, turnId: a.turnId}]);
+  assert.deepEqual(f.calls.filter(row => row.method === 'thread/backgroundTerminals/clean').map(row => row.params), [{threadId: a.threadId}]);
+  const cleanupIndex = f.calls.findIndex(row => row.method === 'thread/backgroundTerminals/clean');
+  assert.ok(f.calls.slice(cleanupIndex).filter(row => row.method === 'thread/backgroundTerminals/list').every(row => row.params.threadId === a.threadId));
+});
+
+test('interrupt cleans yielded commands even after the model is idle and verifies every terminal page', async t => {
+  const f = fixture(t), started = await f.primary.start({deliveryId: 'background', prompt: 'Owned background work'});
+  f.clients[0].complete(started.threadId);
+  let scans = 0;
+  f.server.terminalPages = params => !f.calls.some(row => row.method === 'thread/backgroundTerminals/clean')
+    ? {data: [{processId: 'owned_process'}], nextCursor: null} : params.cursor
+    ? {data: [{processId: 'owned_process'}], nextCursor: null}
+    : ++scans === 1 ? {data: [], nextCursor: 'more'} : {data: [], nextCursor: null};
+  const stopped = await f.primary.interrupt({threadId: started.threadId});
+  assert.equal(stopped.confirmed, true);assert.equal(stopped.terminalsStopped, true);assert.equal(stopped.turnId, null);
+  assert.equal(f.calls.filter(row => row.method === 'turn/interrupt').length, 0);
+  assert.ok(f.calls.some(row => row.method === 'thread/backgroundTerminals/list' && row.params.cursor === 'more'));
+  assert.ok(scans >= 2);
+});
+
+test('normal model completion reports active, empty and unknown terminal ownership without cleaning it', async t => {
+  const f = fixture(t), started = await f.primary.start({deliveryId: 'terminal_owner', prompt: 'Owned background service'});
+  f.server.terminalPages = params => params.cursor ? {data: [{processId: 'second'}], nextCursor: null} : {data: [{processId: 'first'}], nextCursor: 'more'};
+  f.clients[0].complete(started.threadId);await new Promise(resolve => setImmediate(resolve));
+  const complete = f.events.find(row => row.type === 'turn.completed');assert.equal(complete.backgroundState, 'active');assert.equal(complete.backgroundCount, 2);
+  let view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.state, 'idle');assert.equal(view.backgroundState, 'active');assert.equal(view.backgroundCount, 2);
+  f.server.terminalPages = () => ({data: [], nextCursor: null});view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.backgroundState, 'empty');assert.equal(view.backgroundCount, 0);
+  f.server.terminalPages = () => {throw Object.assign(new Error('Unsupported list'), {code: -32601});};view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.state, 'idle');assert.equal(view.backgroundState, 'unknown');assert.equal(view.backgroundCount, null);
+  assert.equal(f.calls.filter(row => row.method === 'thread/backgroundTerminals/clean').length, 0);
+});
+
+test('a terminal model event never publishes idle ownership before its background query completes', async t => {
+  const f = fixture(t), started = await f.primary.start({deliveryId: 'terminal_probe', prompt: 'Wait for terminal ownership proof'});let finish;
+  f.server.terminalPages = () => new Promise(resolve => {finish = resolve;});f.clients[0].complete(started.threadId);await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.events.some(row => row.type === 'turn.completed'), false);assert.equal(typeof finish, 'function');
+  finish({data: [{processId: 'still_owned'}], nextCursor: null});await new Promise(resolve => setImmediate(resolve));
+  assert.equal(f.events.find(row => row.type === 'turn.completed').backgroundState, 'active');
+});
+
+test('unsupported cleanup and acknowledged cleanup with live terminals never confirm Pause', async t => {
+  const f = fixture(t, {cleanupDenied: true}), started = await f.primary.start({deliveryId: 'cleanup', prompt: 'Owned background work'});
+  await assert.rejects(f.primary.interrupt({threadId: started.threadId, turnId: started.turnId}), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
+  f.server.cleanupDenied = false;f.server.terminalPages = () => ({data: [{processId: 'still_running'}], nextCursor: null});
+  await assert.rejects(f.primary.interrupt({threadId: started.threadId}), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
+  f.server.terminalPages = () => ({data: [], nextCursor: 'repeated'});
+  await assert.rejects(f.primary.interrupt({threadId: started.threadId}), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
 });
 
 test('lost start and steering replies reconcile original user history without replay', async t => {

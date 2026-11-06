@@ -16,9 +16,11 @@ The thread ID is reported to the manager and its persistence callback is awaited
 | Saved thread after connection restart | `thread/resume` using the original ID |
 | Idle thread | `turn/start` on that thread |
 | Active turn | `turn/steer` with its `expectedTurnId` |
-| Pause or finish | `turn/interrupt`, then confirm the target's terminal state |
+| Pause or finish | `turn/interrupt` when active, confirm terminal turn history, then clean and verify this thread's background terminals |
 
-A successful interrupt acknowledgement alone is insufficient. Completion notifications and subsequent thread history distinguish `completed`, `failed` and `interrupted`. A late start response cannot change an already observed completed turn back to running.
+A successful interrupt acknowledgement alone is insufficient. Completion notifications and subsequent thread history distinguish `completed`, `failed` and `interrupted`. Shell commands that yielded into a background session can survive a turn interrupt. Pause and finish therefore also call `thread/backgroundTerminals/clean` for the bound thread and paginate `thread/backgroundTerminals/list` until no terminal remains. This applies to an idle saved thread too. Unsupported cleanup, a lost response, malformed pagination or still-running terminals leave cleanup unconfirmed; the adapter never falls back to an operating-system process kill. A late start response cannot change an already observed completed turn back to running.
+
+Model turn state and background ownership are separate. A normal completion probes the bound thread's terminals before publishing its terminal event. Completion events and idle reconciliation/delivery results carry `backgroundState: "active" | "empty" | "unknown"` and a count only when established by all pages. An idle model with a running service still owns its target; an unavailable query supplies no permission to release that ownership. A normal completion never cleans an intentionally running service. Only explicit pause or finish requests cleanup.
 
 Messages are streamed and finalized by item ID. Recovery includes the final responses following the matching delivery, in conversation order. Response text is preserved up to 4 MiB; overflow is reported explicitly instead of displaying a final tail as the whole response. The original Codex thread remains the source for larger messages.
 
@@ -51,6 +53,8 @@ node --test tests/ops-session.test.cjs tests/codex-backend-rpc.test.cjs
 node --test --test-name-pattern='Ops' tests/ssh.test.cjs tests/config-ssh.test.cjs
 node scripts/e2e-ops-session.mjs --real-codex
 node scripts/e2e-ops-session.mjs --real-codex --ssh
+node scripts/e2e-ops-execution-ui.mjs --real-codex
+node scripts/e2e-ops-execution-ui.mjs --real-codex --stop-only
 ```
 
-The real-CLI script checks same-turn steering, an actual client tool response, exact delivery history and connection restart without replay. Its SSH mode uses an owned loopback server on the same computer. These checks do not establish installed desktop UI, separate physical-PC operation or comprehensive release QA.
+The real-CLI script checks same-turn steering, an actual client tool response, exact delivery history and connection restart without replay. Its SSH mode uses an owned loopback server on the same computer. The UI execution script runs the source Electron application's real main/preload/manager, independent local goal turns, a real cron minute, same-folder waiting and selected-goal interruption. Its `--stop-only` mode limits a causal rerun to two actual A/B commands: pause A and verify its non-zombie process exits before app shutdown, while B's completed model turn retains ownership of its live command. B's command then finishes naturally with its exact fixture result, and the real metadata watcher releases ownership after proving empty terminals. It uses the existing login directly, explicit workspace access settings and temporary folders. These checks do not establish installed desktop UI, separate physical-PC operation or comprehensive release QA.
