@@ -1944,6 +1944,8 @@
   "상세 사용량 갱신 실패 · 이전 값 유지": "Detailed usage refresh failed · previous values retained",
   "이전 등록의 실패 원인과 보호된 신원 항목의 상태를 확인할 수 없습니다. 기존 기록을 보존하고 새 신원을 만들지 마십시오.": "The earlier enrollment failure and protected identity item state are unknown. Preserve the existing records and do not create another identity.",
   "보안 저장소 작업을 완료하지 못했습니다. 아래 실패 단계와 OSStatus를 확인하십시오.": "The protected storage operation did not complete. Check the failure stage and OSStatus below.",
+  "운영체제가 저장된 보호 신원의 읽기를 거부했습니다. 기존 신원과 프로필을 보존하고 앱의 접근 권한과 서명 상태를 확인하십시오.": "The operating system denied access to the saved protected identity. Preserve the existing identity and profile, and check the app's authorization and signing status.",
+  "이 진단만으로 접근 권한이나 앱 서명 문제를 원인으로 확정할 수 없습니다. 신원을 삭제하거나 교체하거나 새로 등록하지 마십시오.": "This diagnostic alone does not establish an access-control or signing cause. Do not delete, replace, or re-enroll the identity.",
   "단계 확인 불가": "Stage unknown",
   "보안 저장소 사전 확인": "Protected storage preflight",
   "인증서 준비": "Certificate preparation",

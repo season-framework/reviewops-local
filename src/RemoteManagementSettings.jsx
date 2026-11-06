@@ -89,12 +89,14 @@ export function IdentityDiagnosticNotice({identity}){
  const diagnostic=identity?.diagnostic;
  if(!identityDiagnosticValid(diagnostic))return null;
  const unknown=diagnostic.source==='legacy-intent'||diagnostic.stage==='unknown'||diagnostic.code==='UNKNOWN';
- const message=unknown?'이전 등록의 실패 원인과 보호된 신원 항목의 상태를 확인할 수 없습니다. 기존 기록을 보존하고 새 신원을 만들지 마십시오.':diagnostic.code==='DEFAULT_LOCKED'?'작업 당시 기본 Keychain 잠금이 확인되었습니다. 현재 잠금 상태를 확인하고, 잠겨 있으면 macOS의 키체인 접근에서 잠금 해제한 뒤 상태를 새로고침하십시오.':'보안 저장소 작업을 완료하지 못했습니다. 아래 실패 단계와 OSStatus를 확인하십시오.';
+ const readDenied=diagnostic.source==='live-operation'&&diagnostic.stage==='verify-protected-item'&&diagnostic.code==='ITEM_READ_FAILED'&&diagnostic.osStatus===-25293;
+ const message=unknown?'이전 등록의 실패 원인과 보호된 신원 항목의 상태를 확인할 수 없습니다. 기존 기록을 보존하고 새 신원을 만들지 마십시오.':readDenied?'운영체제가 저장된 보호 신원의 읽기를 거부했습니다. 기존 신원과 프로필을 보존하고 앱의 접근 권한과 서명 상태를 확인하십시오.':diagnostic.code==='DEFAULT_LOCKED'?'작업 당시 기본 Keychain 잠금이 확인되었습니다. 현재 잠금 상태를 확인하고, 잠겨 있으면 macOS의 키체인 접근에서 잠금 해제한 뒤 상태를 새로고침하십시오.':'보안 저장소 작업을 완료하지 못했습니다. 아래 실패 단계와 OSStatus를 확인하십시오.';
  const stages={'unknown':'단계 확인 불가','backend-preflight':'보안 저장소 사전 확인','certificate-generation':'인증서 준비','write-intent':'등록 시작 기록 저장','create-protected-item':'보호된 신원 저장','verify-protected-item':'저장한 신원 확인','publish-index':'신원 참조 저장','publish-certificate':'인증서 저장','commit-intent':'등록 완료 기록'};
  const cleanup={'unknown':'정리 결과 확인 불가','not-needed':'정리 대상 없음','not-attempted':'정리 미실행','confirmed':'정리 확인됨','unconfirmed':'정리 결과 미확인'};
  const h=React.createElement;
  return h('section',{className:'muted',role:'note','aria-label':t('신원 설정 진단')},
   h('p',null,t(message)),
+  readDenied&&h('p',null,t('이 진단만으로 접근 권한이나 앱 서명 문제를 원인으로 확정할 수 없습니다. 신원을 삭제하거나 교체하거나 새로 등록하지 마십시오.')),
   diagnostic.source==='retained-intent'&&h('p',null,t("이 진단은 보존한 등록 시도의 기록입니다. 현재 보안 저장소 상태를 새로 검사한 결과가 아닙니다.")),
   identity.status==='pending'&&h('p',null,t('미완료 등록 기록은 보존됩니다. 상태 새로고침은 등록을 다시 실행하거나 기록을 삭제하지 않습니다.')),
   diagnostic.mayRemain===true&&h('p',null,t('보호된 신원 항목이 남아 있을 수 있습니다.')),

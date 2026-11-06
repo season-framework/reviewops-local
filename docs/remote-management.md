@@ -34,7 +34,7 @@ macOS stores the identity key through an app-owned native Keychain module, indep
 
 Approved app sessions expire after 24 hours. Saved approved connections can reopen while that approval remains valid. Revocation, a restored dataset epoch, or a changed project birth invalidates access. Lost identity material requires explicit recovery or new pairing; the provider does not silently replace a lost key. Changing an address or expired certificate requires stopping incoming listeners and reissuing the certificate with the same identity key. Port binding errors are shown in Settings. Sleeping or shutting down the working computer makes it unavailable; routing and firewall configuration must allow the selected IP and port.
 
-### Enrollment failure diagnostics
+### Identity failure diagnostics
 
 Settings shows a validated failure stage, an allowed numeric OSStatus when it was
 captured, and the cleanup outcome. It never displays an exception message,
@@ -42,6 +42,20 @@ private-key material, bearer credential, Keychain reference or storage path.
 Earlier unfinished records without matching captured diagnostics remain
 explicitly unknown; present Keychain availability cannot establish their
 original failure.
+
+Preparing an existing identity, opening TLS and reopening saved credentials keep
+only a bounded, in-memory observation of an actual native preflight or protected
+read failure. They do not write an enrollment intent or diagnostic journal. The
+original request and metadata must still be current before that observation is
+published.
+
+For a captured live operation at `verify-protected-item` with `ITEM_READ_FAILED`
+and OSStatus `-25293`, Settings reports that the operating system denied reading
+the saved protected identity. Preserve that identity and its profile, and check
+the app's authorization and signing status. This observation does not establish
+an ACL or signing root cause and does not authorize deletion, replacement or
+re-enrollment. Other stages, codes and statuses retain their own diagnostics;
+OSStatus `-25308` alone is not reported as a locked Keychain.
 
 Only a recorded default-Keychain locked condition offers guidance to check its
 current state and, if still locked, unlock it in macOS Keychain Access and refresh

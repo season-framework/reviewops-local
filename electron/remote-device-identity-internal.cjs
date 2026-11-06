@@ -65,17 +65,17 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
     }catch(e){if(codeOf(e)==='INVALID_REMOTE_ADDRESS')fail('INVALID_REMOTE_ADDRESS');fail('STALE_IDENTITY_REQUEST');}
   }
   function serial(work) {const task=queue.then(work);queue=task.catch(()=>{});return task;}
-  function bindNative(account,guard) {
+  function bindNative(account,guard,onNativeFailure) {
     if(inspectionOnly)fail('IDENTITY_PENDING');
     guard();if(nativeAccount&&nativeAccount!==account)fail('IDENTITY_LOST');
-    if(!nativeUsable){if(nativeAccount)fail('IDENTITY_UNAVAILABLE');nativeAccount=account;native.initialize(account);nativeUsable=true;}
+    if(!nativeUsable){if(nativeAccount)fail('IDENTITY_UNAVAILABLE');nativeAccount=account;try{native.initialize(account);}catch(e){onNativeFailure?.(e,'backend-preflight');throw e;}nativeUsable=true;}
     guard();return native;
   }
   function material(index,guard,onNativeFailure) {
     let raw,ref,der;
     try {
-      ref=base64(index.referenceBase64,4096);const n=bindNative(index.accountUUID,guard);guard();
-      try{raw=n.read(ref);}catch(e){onNativeFailure?.(e);const d=e&&Object.getOwnPropertyDescriptor(e,'osStatus');if(d?.value===-25300)fail('IDENTITY_LOST');throw e;}
+      ref=base64(index.referenceBase64,4096);const n=bindNative(index.accountUUID,guard,onNativeFailure);guard();
+      try{raw=n.read(ref);}catch(e){onNativeFailure?.(e,'verify-protected-item');const d=e&&Object.getOwnPropertyDescriptor(e,'osStatus');if(d?.value===-25300)fail('IDENTITY_LOST');throw e;}
       guard();if(!Buffer.isBuffer(raw)||raw.length<1||raw.length>65536||sha(raw)!==index.payloadSHA256)fail('IDENTITY_LOST');
       const v=canonical({bytes:raw});if(!exact(v,['version','deviceId','privateKeyDERbase64'])||v.version!==1||v.deviceId!==index.deviceId)fail('IDENTITY_LOST');
       der=base64(v.privateKeyDERbase64,16384);if(keyValue(der).keyFingerprint!==index.keyFingerprint)fail('IDENTITY_LOST');
@@ -98,6 +98,14 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
     } catch(e){pending?.bytes.fill(0);index?.bytes.fill(0);certificate?.bytes.fill(0);throw e;}
   }
   function currentBundle(bundle,guard) {guard();files.assertDirectory();files.unchanged(bundle.index,'index.json');files.unchanged(bundle.certificate,'certificate.json');files.unchanged(null,'pending.json');}
+  function operationalFailure(code,detail,bundle,guard) {
+    if(detail)try{currentBundle(bundle,guard);}catch(changed){
+      // A retired request cannot alter its successor. A current owner whose
+      // files changed must stop exposing ready identity, without the old cause.
+      guard();const changedCode=codeOf(changed);if(changedCode==='STALE_IDENTITY_REQUEST')fail(changedCode);set(changedCode);return changedCode;
+    }
+    set(code,detail);return code;
+  }
   function publishPublic(value) {if(!publicIdentity||publicIdentity.certificateFingerprint!==value.certificateFingerprint||publicIdentity.deviceId!==value.deviceId)identityVersion++;publicIdentity=Object.freeze(value);status='ready';errorCode=null;diagnostic=null;}
   async function enroll(address,guard) {
     let generated,der,payload,reference,digest,pending,indexSnapshot,certificateSnapshot,nativeFailure,committed=false,owned=false,pendingAttempted=false,createAttempted=false,stage='certificate-generation';
@@ -136,10 +144,10 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
   async function initialize(options) {
     const {address,guard}=request(options);
     return serial(async()=>{
-      let bundle,der,certificateCommitted=false;
+      let bundle,der,nativeFailure,certificateCommitted=false;
       try {
         guard();bundle=readBundle(guard);if(!bundle)return await enroll(address,guard);
-        der=material(bundle.parsed,guard);currentBundle(bundle,guard);
+        der=material(bundle.parsed,guard,(error,stage)=>{nativeFailure=captureIdentityDiagnostic({stage,error,mayRemain:true,cleanup:'not-attempted'});});currentBundle(bundle,guard);
         let identity=null;
         if(bundle.pub){
           try{identity=certificateValue({certificatePEM:bundle.pub.certificatePEM,identity:{address:bundle.pub.address,keyFingerprint:bundle.pub.keyFingerprint,certificateFingerprint:bundle.pub.certificateFingerprint,validUntil:bundle.pub.validUntil,certificatePEM:bundle.pub.certificatePEM}},der,bundle.pub.address,now,true);}catch(e){if(codeOf(e)!=='CERTIFICATE_REISSUE_REQUIRED')throw e;}
@@ -151,7 +159,7 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
           currentBundle(bundle,guard);const written=files.write('certificate.json',{schema:1,deviceId:bundle.parsed.deviceId,...identity},bundle.certificate,guard);certificateCommitted=true;written.bytes.fill(0);
         }
         guard();publishPublic({deviceId:bundle.parsed.deviceId,...identity});return state();
-      } catch(e){const code=codeOf(e);if(code==='STALE_IDENTITY_REQUEST'){if(certificateCommitted)set('IDENTITY_NOT_INITIALIZED');throw e;}set(code);guard();return state();}
+      } catch(e){const code=codeOf(e);if(code==='STALE_IDENTITY_REQUEST'){if(certificateCommitted)set('IDENTITY_NOT_INITIALIZED');throw e;}operationalFailure(code,nativeFailure,bundle,guard);guard();return state();}
       finally {der?.fill(0);bundle?.index.bytes.fill(0);bundle?.certificate?.bytes.fill(0);}
     });
   }
@@ -227,16 +235,20 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
   async function acquireServerTLS(options) {
     const {address,guard}=request(options);
     return serial(async()=>{
-      let bundle,der,lease;
+      let bundle,der,lease,nativeFailure;
       try{
-        guard();bundle=readBundle(guard);if(!bundle)fail('IDENTITY_NOT_INITIALIZED');if(!bundle.pub)fail('CERTIFICATE_REISSUE_REQUIRED');der=material(bundle.parsed,guard);currentBundle(bundle,guard);
+        guard();bundle=readBundle(guard);if(!bundle)fail('IDENTITY_NOT_INITIALIZED');if(!bundle.pub)fail('CERTIFICATE_REISSUE_REQUIRED');der=material(bundle.parsed,guard,(error,stage)=>{nativeFailure=captureIdentityDiagnostic({stage,error,mayRemain:true,cleanup:'not-attempted'});});currentBundle(bundle,guard);
         const identity=certificateValue({certificatePEM:bundle.pub.certificatePEM,identity:{address:bundle.pub.address,keyFingerprint:bundle.pub.keyFingerprint,certificateFingerprint:bundle.pub.certificateFingerprint,validUntil:bundle.pub.validUntil,certificatePEM:bundle.pub.certificatePEM}},der,address,now);
         if(publicIdentity&&bundle.parsed.deviceId!==publicIdentity.deviceId)fail('IDENTITY_LOST');
         guard();publishPublic({deviceId:bundle.parsed.deviceId,...identity});
         guard();lease=tls.createRemoteTLSLease({address,certificatePEM:identity.certificatePEM,privateKeyDER:der});guard();
         if(!lease||typeof lease.createServer!=='function'||typeof lease.release!=='function'||!exact(lease.identity,Object.keys(identity))||!Object.keys(identity).every(k=>lease.identity[k]===identity[k]))fail('IDENTITY_UNAVAILABLE');
         return wrapLease(lease,guard);
-      }catch(e){if(lease){try{await lease.release();}catch{}}const code=codeOf(e);if(code!=='STALE_IDENTITY_REQUEST')set(code);throw Object.assign(new Error('The remote identity request was refused.'),{code});}
+      }catch(e){if(lease){try{await lease.release();}catch{}}let code=codeOf(e);if(code!=='STALE_IDENTITY_REQUEST'){
+        // Operational reads never create an intent or persist a cause. Publish
+        // only the bounded native-call observation for this original bundle.
+        code=operationalFailure(code,nativeFailure,bundle,guard);
+      }throw Object.assign(new Error('The remote identity request was refused.'),{code});}
       finally{der?.fill(0);bundle?.index.bytes.fill(0);bundle?.certificate?.bytes.fill(0);}
     });
   }
@@ -259,10 +271,10 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
   async function credential(options,seal) {
     const {scope,value,guard}=credentialRequest(options,seal?'secret':'ciphertext');
     return serial(async()=>{
-      let bundle,der,key,plain,partial,nonce,tag,data,encoded,verified=false;
+      let bundle,der,key,plain,partial,nonce,tag,data,encoded,nativeFailure,verified=false;
       try {
         guard();bundle=readBundle(guard);if(!bundle)fail('IDENTITY_NOT_INITIALIZED');
-        der=material(bundle.parsed,guard);currentBundle(bundle,guard);verified=true;
+        der=material(bundle.parsed,guard,(error,stage)=>{nativeFailure=captureIdentityDiagnostic({stage,error,mayRemain:true,cleanup:'not-attempted'});});currentBundle(bundle,guard);verified=true;diagnostic=null;
         key=Buffer.from(crypto.hkdfSync('sha256',der,Buffer.from('kr.co.season.reviewops.remote-device-identity.v1'),Buffer.from('ReviewOps remote app client credentials v1'),32));
         guard();
         if(seal){
@@ -281,7 +293,7 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
         partial=decipher.update(data);plain=Buffer.concat([partial,decipher.final()]);
         if(plain.length!==32)fail('IDENTITY_UNAVAILABLE');
         currentBundle(bundle,guard);return plain.toString('base64url');
-      } catch(e){const code=codeOf(e);if(!verified&&code!=='STALE_IDENTITY_REQUEST')set(code);fail(code);}
+      } catch(e){let code=codeOf(e);if(!verified&&code!=='STALE_IDENTITY_REQUEST')code=operationalFailure(code,nativeFailure,bundle,guard);fail(code);}
       finally{[der,key,plain,partial,nonce,tag,data,encoded,bundle?.index?.bytes,bundle?.certificate?.bytes].forEach(wipe);}
     });
   }

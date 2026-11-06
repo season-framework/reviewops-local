@@ -21,9 +21,9 @@ function nativeFixture(records=new Map(),trace=[]) {
   let initialized=null,closed=false;const calls={initialize:0,create:0,read:0,remove:0,close:0};
   const rawReads=[];
   const native={
-    initialize(account){calls.initialize++;if(native.initializeError&&typeof native.initializeError==='object')throw native.initializeError;if(closed||initialized||native.initializeError)throw{code:'PROVIDER_FAILED',osStatus:null,mayRemain:false};initialized=account;trace.push('native:initialize');},
+    initialize(account){calls.initialize++;native.beforeInitialize?.();if(native.initializeError&&typeof native.initializeError==='object')throw native.initializeError;if(closed||initialized||native.initializeError)throw{code:'PROVIDER_FAILED',osStatus:null,mayRemain:false};initialized=account;trace.push('native:initialize');},
     create(payload){calls.create++;trace.push('native:create');native.beforeCreate?.();if(native.createError)throw native.createError;const ref=Buffer.from(crypto.randomUUID());records.set(ref.toString('base64'),Buffer.from(payload));native.afterCreate?.();return native.badReference?Buffer.from(native.badReference):ref;},
-    read(ref){calls.read++;trace.push('native:read');if(native.readError)throw native.readError;const value=records.get(ref.toString('base64'));if(!value)throw{code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};const answer=Buffer.from(native.readOverride||value);rawReads.push(answer);return answer;},
+    read(ref){calls.read++;trace.push('native:read');native.beforeRead?.(ref);if(native.readError)throw native.readError;const value=records.get(ref.toString('base64'));if(!value)throw{code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};const answer=Buffer.from(native.readOverride||value);rawReads.push(answer);return answer;},
     remove(ref,digest){calls.remove++;trace.push('native:remove');if(native.removeError)throw native.removeError;const key=ref.toString('base64'),value=records.get(key);if(!value||!crypto.createHash('sha256').update(value).digest().equals(digest))throw{code:'DIGEST_MISMATCH',osStatus:null,mayRemain:true};value.fill(0);records.delete(key);},
     close(){calls.close++;trace.push('native:close');closed=true;}
   };
@@ -36,6 +36,7 @@ function fixture(options={}) {
     async createRemoteCertificate(input){certificateCalls++;return options.create?options.create(input):realTLS.createRemoteCertificate(input);},
     async reissueRemoteCertificate(input){reissueCalls++;return options.reissue?options.reissue(input):realTLS.reissueRemoteCertificate(input);},
     createRemoteTLSLease(input){
+      if(options.createLease)return options.createLease(input);
       const verified=realTLS.createRemoteTLSLease(input); // Software validation only; this returned server is never created/listened.
       verified.release();
       const socketGate=deferred(),closeGate=deferred();let server;
@@ -50,6 +51,8 @@ function fixture(options={}) {
   return{owner,files,n,trace,leases,request,setLive:v=>{live=v;},setCurrent:v=>{current=v;},counts:()=>({certificateCalls,reissueCalls,loads})};
 }
 async function enrolled(options){const f=fixture(options);assert.equal((await f.owner.initialize(f.request(A))).status,'ready');return f;}
+const storedBytes=f=>[...f.files.store.records].map(([name,record])=>[name,record.version,record.bytes.toString('base64')]);
+const operationalRequest=(f,operation)=>operation==='tls'?f.owner.acquireServerTLS(f.request(A)):operation==='seal'?f.owner.sealCredential({scope:'remote-app-client:'+crypto.randomUUID()+':'+'a'.repeat(64),secret:crypto.randomBytes(32).toString('base64url'),assertCurrent(){if(f.stale)throw new Error('synthetic retired request');}}):f.owner.openCredential({scope:'remote-app-client:'+crypto.randomUUID()+':'+'a'.repeat(64),ciphertext:'malformed',assertCurrent(){if(f.stale)throw new Error('synthetic retired request');}});
 
 test('constructor loads once but never enrolls; public state is a closed DTO',async()=>{
   const f=fixture();assert.deepEqual(f.owner.state(),{status:'not_initialized',backend:'macos-default-file-keychain',identity:null,errorCode:null});assert.equal(f.counts().loads,1);assert.equal(f.n.calls.initialize,0);assert.equal(f.n.calls.create,0);await f.owner.closeAndDrain();assert.equal(f.n.calls.close,1);
@@ -64,6 +67,95 @@ test('coordinator null-prototype request records preserve exact guarded provider
 test('unavailable backend setup creates neither a private profile nor a permanent pending intent',async()=>{const f=fixture();f.n.native.initializeError=true;assert.equal((await f.owner.initialize(f.request(A))).status,'unavailable');assert.equal(f.files.store.exists,false);assert.equal(f.n.calls.create,0);await f.owner.closeAndDrain();});
 test('fresh synthetic process acquire verifies existing key without generating or replacing it',async()=>{
   const first=await enrolled(),pub=first.owner.publicCertificate();await first.owner.closeAndDrain();const f=fixture({store:first.files.store,records:first.n.records});assert.equal(f.owner.state().status,'not_initialized');const lease=await f.owner.acquireServerTLS(f.request(A));assert.equal(f.owner.state().status,'ready');assert.equal(f.owner.publicCertificate().deviceId,pub.deviceId);assert.equal(f.n.calls.create,0);assert.equal(f.counts().certificateCalls,0);await lease.release();await f.owner.closeAndDrain();
+});
+test('operational native reads retain only the fixed actual cause without intent writes or replacement',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const operation of ['tls','seal','open']){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f),secret='Synthetic private reference and native error text';let causeReads=0,reference;
+  const error=Object.assign(new Error(secret),{code:'ITEM_READ_FAILED',osStatus:-25293,mayRemain:false,reference:Buffer.from(secret),account:secret});Object.defineProperty(error,'cause',{get(){causeReads++;return secret;},enumerable:true});
+  f.n.native.readError=error;f.n.native.beforeRead=ref=>{reference=ref;};
+  try{
+   await assert.rejects(operationalRequest(f,operation),error=>{assert.equal(isCode('IDENTITY_UNAVAILABLE')(error),true);assert.deepEqual(Object.keys(error),['code']);return true;});
+   assert.deepEqual(f.owner.state(),{status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic:{version:1,source:'live-operation',stage:'verify-protected-item',code:'ITEM_READ_FAILED',osStatus:-25293,mayRemain:true,cleanup:'not-attempted'}});
+   assert.equal(causeReads,0);assert.equal(JSON.stringify(f.owner.state()).includes(secret),false);assert.ok(reference.every(value=>value===0));assert.deepEqual(storedBytes(f),before);assert.equal(f.trace.some(item=>item.startsWith('write:')||item.startsWith('remove:')),false);
+   assert.deepEqual(f.n.calls,{initialize:1,create:0,read:1,remove:0,close:0});assert.deepEqual(f.counts(),{certificateCalls:0,reissueCalls:0,loads:1});assert.equal(f.leases.length,0);
+  }finally{await f.owner.closeAndDrain();}
+  const next=fixture({store:first.files.store,records:first.n.records});assert.equal(Object.hasOwn(next.owner.state(),'diagnostic'),false);assert.equal(next.n.calls.read,0);await next.owner.closeAndDrain();
+ }
+});
+test('operational preflight failure is distinct from a protected read and does not retry initialization',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const operation of ['tls','seal','open']){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f);f.n.native.initializeError={code:'DEFAULT_KEYCHAIN_FAILED',osStatus:-25307,mayRemain:false};
+  try{
+   await assert.rejects(operationalRequest(f,operation),isCode('IDENTITY_UNAVAILABLE'));assert.deepEqual(f.owner.state().diagnostic,{version:1,source:'live-operation',stage:'backend-preflight',code:'DEFAULT_KEYCHAIN_FAILED',osStatus:-25307,mayRemain:true,cleanup:'not-attempted'});
+   assert.equal(f.n.calls.initialize,1);assert.equal(f.n.calls.read,0);assert.deepEqual(storedBytes(f),before);assert.equal(f.trace.some(item=>item.startsWith('write:')||item.startsWith('remove:')),false);
+   await assert.rejects(operationalRequest(f,operation),isCode('IDENTITY_UNAVAILABLE'));assert.equal(f.n.calls.initialize,1);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.read,0);assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);
+  }finally{await f.owner.closeAndDrain();}
+ }
+});
+test('native missing-record mapping preserves its safe read status while unknown statuses stay null',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const [nativeCode,status,publicCode]of [['REFERENCE_RESOLVE_FAILED',-25300,'IDENTITY_LOST'],['ITEM_READ_FAILED',12345678,'IDENTITY_UNAVAILABLE']]){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f);f.n.native.readError={code:nativeCode,osStatus:status,mayRemain:true};
+  try{await assert.rejects(f.owner.acquireServerTLS(f.request(A)),isCode(publicCode));assert.equal(f.owner.state().diagnostic.code,nativeCode);assert.equal(f.owner.state().diagnostic.osStatus,status===-25300?-25300:null);assert.deepEqual(storedBytes(f),before);assert.equal(f.n.calls.create,0);}finally{await f.owner.closeAndDrain();}
+ }
+});
+test('retired operational requests cannot publish a native failure onto the original owner state',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const operation of ['tls','seal','open'])for(const boundary of ['initialize','read']){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f),retire=()=>{if(operation==='tls')f.setLive(false);else f.stale=true;};
+  if(boundary==='initialize'){f.n.native.beforeInitialize=retire;f.n.native.initializeError={code:'DEFAULT_LOCKED',osStatus:null};}else{f.n.native.beforeRead=retire;f.n.native.readError={code:'ITEM_READ_FAILED',osStatus:-25293};}
+  try{await assert.rejects(operationalRequest(f,operation),isCode('STALE_IDENTITY_REQUEST'));assert.equal(f.owner.state().status,'not_initialized');assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);assert.deepEqual(storedBytes(f),before);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);}finally{await f.owner.closeAndDrain();}
+ }
+});
+test('replaced identity metadata cannot receive a cause captured from a different native read',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const operation of ['tls','seal','open'])for(const ready of [false,true])for(const target of ['index.json','certificate.json']){
+  const f=fixture({store:{exists:true,records:new Map([...first.files.store.records].map(([name,record])=>[name,{bytes:Buffer.from(record.bytes),version:record.version}])),version:first.files.store.version,locked:false},records:first.n.records});
+  if(ready){assert.equal((await f.owner.initialize(f.request(A))).status,'ready');assert.ok(f.owner.state().identity);}
+  f.n.native.beforeRead=()=>{const current=f.files.store.records.get(target);if(target==='index.json'){const index=JSON.parse(current.bytes);index.deviceId=crypto.randomUUID();current.bytes=Buffer.from(JSON.stringify(index));}current.version++;};f.n.native.readError={code:'ITEM_READ_FAILED',osStatus:-25293};
+  try{await assert.rejects(operationalRequest(f,operation),isCode('IDENTITY_UNAVAILABLE'));assert.equal(f.owner.state().status,'unavailable');assert.equal(f.owner.state().identity,null);assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);assert.equal(f.trace.some(item=>item.startsWith('write:')||item.startsWith('remove:')),false);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);}finally{await f.owner.closeAndDrain();}
+ }
+});
+test('TLS, certificate and malformed native payload failures do not impersonate a native-call refusal',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const mode of ['tls','certificate','payload']){
+  const f=fixture({store:first.files.store,records:first.n.records,...(mode==='tls'?{createLease(){throw{code:'ITEM_READ_FAILED',osStatus:-25293};}}:{})});if(mode==='payload')f.n.native.readOverride=Buffer.from('malformed protected payload');
+  try{await assert.rejects(f.owner.acquireServerTLS(f.request(mode==='certificate'?B:A)),isCode(mode==='certificate'?'CERTIFICATE_REISSUE_REQUIRED':mode==='payload'?'IDENTITY_LOST':'IDENTITY_UNAVAILABLE'));assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);assert.equal(f.counts().reissueCalls,0);}finally{await f.owner.closeAndDrain();}
+ }
+});
+test('a verified subsequent credential read clears an earlier native cause before a ciphertext refusal',async()=>{
+ const f=await enrolled();f.n.native.readError={code:'ITEM_READ_FAILED',osStatus:-25293};await assert.rejects(operationalRequest(f,'open'),isCode('IDENTITY_UNAVAILABLE'));assert.equal(f.owner.state().diagnostic.code,'ITEM_READ_FAILED');delete f.n.native.readError;
+ try{await assert.rejects(operationalRequest(f,'open'),isCode('IDENTITY_UNAVAILABLE'));assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);assert.equal(f.n.calls.create,1);assert.equal(f.n.calls.remove,0);assert.equal(f.files.store.records.has('diagnostic.json'),false);}finally{await f.owner.closeAndDrain();}
+});
+test('Settings preparation of an existing index returns native preflight/read diagnostics without enrollment or writes',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const boundary of ['initialize','read']){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f),secret='Synthetic private operational setup detail',error=Object.assign(new Error(secret),{code:boundary==='initialize'?'DEFAULT_KEYCHAIN_FAILED':'ITEM_READ_FAILED',osStatus:boundary==='initialize'?-25307:-25293,mayRemain:false,reference:secret});
+  f.n.native[boundary==='initialize'?'initializeError':'readError']=error;
+  try{
+   const state=await f.owner.initialize(f.request(A));assert.deepEqual(state,{status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic:{version:1,source:'live-operation',stage:boundary==='initialize'?'backend-preflight':'verify-protected-item',code:error.code,osStatus:error.osStatus,mayRemain:true,cleanup:'not-attempted'}});
+   assert.equal(JSON.stringify(state).includes(secret),false);assert.deepEqual(storedBytes(f),before);assert.equal(f.n.calls.initialize,1);assert.equal(f.n.calls.read,boundary==='read'?1:0);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);assert.deepEqual(f.counts(),{certificateCalls:0,reissueCalls:0,loads:1});assert.equal(f.trace.some(item=>item.startsWith('write:')||item.startsWith('remove:')),false);
+  }finally{await f.owner.closeAndDrain();}
+ }
+});
+test('existing-index preparation returns unavailable after same-owner metadata replacement without the former native cause',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const boundary of ['initialize','read'])for(const ready of boundary==='read'?[false,true]:[false])for(const target of ['index.json','certificate.json']){
+  const f=fixture({store:{exists:true,records:new Map([...first.files.store.records].map(([name,record])=>[name,{bytes:Buffer.from(record.bytes),version:record.version}])),version:first.files.store.version,locked:false},records:first.n.records});
+  if(ready)assert.equal((await f.owner.initialize(f.request(A))).status,'ready');
+  f.n.native[boundary==='initialize'?'beforeInitialize':'beforeRead']=()=>{const current=f.files.store.records.get(target);if(target==='index.json'){const changed=JSON.parse(current.bytes);changed.deviceId=crypto.randomUUID();current.bytes=Buffer.from(JSON.stringify(changed));}current.version++;};f.n.native[boundary==='initialize'?'initializeError':'readError']={code:boundary==='initialize'?'DEFAULT_LOCKED':'ITEM_READ_FAILED',osStatus:-25293};
+  try{const state=await f.owner.initialize(f.request(A));assert.deepEqual(state,{status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE'});assert.equal(f.trace.some(item=>item.startsWith('write:')||item.startsWith('remove:')),false);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);assert.equal(f.counts().reissueCalls,0);}finally{await f.owner.closeAndDrain();}
+ }
+});
+test('existing-index preparation throws only a fixed stale refusal when request, owner or epoch retires during native access',async()=>{
+ const first=await enrolled();await first.owner.closeAndDrain();
+ for(const boundary of ['initialize','read'])for(const authority of ['request','owner','epoch']){
+  const f=fixture({store:first.files.store,records:first.n.records}),before=storedBytes(f);let closed;
+  f.n.native[boundary==='initialize'?'beforeInitialize':'beforeRead']=()=>{if(authority==='request')f.setLive(false);else if(authority==='owner')f.setCurrent(false);else closed=f.owner.closeAndDrain();};f.n.native[boundary==='initialize'?'initializeError':'readError']={code:'ITEM_READ_FAILED',osStatus:-25293};
+  try{await assert.rejects(f.owner.initialize(f.request(A)),isCode('STALE_IDENTITY_REQUEST'));if(authority==='owner')f.setCurrent(true);assert.equal(f.owner.state().status,authority==='epoch'?'unavailable':'not_initialized');assert.equal(Object.hasOwn(f.owner.state(),'diagnostic'),false);assert.deepEqual(storedBytes(f),before);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.remove,0);assert.equal(f.counts().reissueCalls,0);}finally{await(closed||f.owner.closeAndDrain());}
+ }
 });
 test('missing protected record is identity_lost with no automatic replacement',async()=>{const first=await enrolled();await first.owner.closeAndDrain();first.n.records.clear();const f=fixture({store:first.files.store,records:first.n.records});assert.equal((await f.owner.initialize(f.request(A))).status,'identity_lost');assert.equal(f.n.calls.create,0);assert.equal(f.counts().certificateCalls,0);await f.owner.closeAndDrain();});
 test('profile disappearance in the same original owner is lost and never reenrolled',async()=>{const f=await enrolled();f.files.store.exists=false;assert.equal((await f.owner.initialize(f.request(A))).status,'identity_lost');assert.equal(f.n.calls.create,1);assert.equal(f.counts().certificateCalls,1);await f.owner.closeAndDrain();});
