@@ -81,7 +81,7 @@ async function fixture(t, options = {}) {
     for (const socket of sockets) socket.destroy(); for (const client of clients) { client.end(); client._sock?.destroy(); }
     await new Promise(resolve => server.close(resolve)); await fs.rm(base, { recursive: true, force: true });
   });
-  return { base, root, manager, ssh, configPath, known, snapshotRoot, forwards: () => forwards, rejectNextRead:()=>{rejectNextRead=true;}, config: { id: 'alias-project', kind: 'ssh', hostAlias: 'fixture', sshConfigPath: configPath, rootPath: root }, settings: { binary: 'codex', model: 'fixture-model' } };
+  return { base, root, manager, ssh, configPath, known, snapshotRoot, port:server.address().port, forwards: () => forwards, rejectNextRead:()=>{rejectNextRead=true;}, config: { id: 'alias-project', kind: 'ssh', hostAlias: 'fixture', sshConfigPath: configPath, rootPath: root }, settings: { binary: 'codex', model: 'fixture-model' } };
 }
 
 test('SSH alias validation reads host and user from config while preserving direct SSH requirements', () => {
@@ -248,4 +248,24 @@ test('SSH config copies reject Include directives that point at private keys or 
   await fs.writeFile(f.source, `Include "${auth}"\n`);
   await assert.rejects(createConfigSnapshot(f.source, f.options), /인증 파일/);
   assert.deepEqual(await fs.readdir(f.snapshots), []);
+});
+
+test('Ops SSH identities resolve aliases through the original immutable connection config', async t => {
+  const f=await configFixture(t);
+  await fs.writeFile(f.source,'Host first second\n HostName 192.0.2.45\n User owned-user\n Port 2222\n');
+  const first=await connectConfig({hostAlias:'first',sshConfigPath:f.source},{snapshotOptions:f.options});t.after(()=>first.destroy());
+  const second=await connectConfig({hostAlias:'second',sshConfigPath:f.source},{snapshotOptions:f.options});t.after(()=>second.destroy());
+  const identity=await first.effectiveIdentity();assert.deepEqual(identity,{kind:'openssh-endpoint',host:'192.0.2.45',username:'owned-user',port:2222});
+  assert.deepEqual(await second.effectiveIdentity(),identity);
+  await fs.writeFile(f.source,'Host first second\n HostName 192.0.2.46\n User changed-user\n Port 22\n');
+  assert.deepEqual(await first.effectiveIdentity(),identity);
+  assert.deepEqual(Object.keys(identity).sort(),['host','kind','port','username']);
+});
+
+test('Ops direct and OpenSSH targets claim a shared endpoint lock namespace', async t => {
+  const f=await fixture(t),fingerprint='SHA256:'+crypto.createHash('sha256').update(publicKey).digest('base64').replace(/=+$/,'');
+  const direct=await f.ssh.inspectAppServerTarget({kind:'ssh',host:'127.0.0.1',port:f.port,username:'fixture',authType:'password',password:'owned-fixture',rootPath:f.root,hostFingerprint:fingerprint},{workPath:f.root});
+  const alias=await f.ssh.inspectAppServerTarget(f.config,{workPath:f.root});
+  assert.equal(direct.canonicalWorkPath,alias.canonicalWorkPath);assert.notEqual(direct.identity,alias.identity);
+  assert.ok(direct.lockIdentities.some(value=>alias.lockIdentities.includes(value)));
 });

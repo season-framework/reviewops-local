@@ -8,6 +8,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { Server, utils } = require('ssh2');
 const { createSshService, fingerprintOf, validateConfig } = require('../electron/ssh.cjs');
+const {RpcClient} = require('../electron/codex/rpc-client.cjs');
 
 const hostKey = crypto.generateKeyPairSync('rsa', { modulusLength: 2048, privateKeyEncoding: { type: 'pkcs1', format: 'pem' }, publicKeyEncoding: { type: 'pkcs1', format: 'pem' } }).privateKey;
 const hostFingerprint = fingerprintOf(utils.parseKey(hostKey).getPublicSSH());
@@ -45,7 +46,7 @@ async function fixture(t, limits = {}) {
     client.on('close', () => { clients.delete(client); active -= 1; });
     client.on('authentication', context => {
       authenticationCount += 1;
-      if (context.method === 'password' && context.username === 'tester' && context.password === 'secret') context.accept();
+      if (context.method === 'password' && (context.username === 'tester' || limits.allowOtherUser && context.username === 'other') && context.password === 'secret') context.accept();
       else if (context.method === 'publickey' && context.username === 'tester' && context.key.data.equals(utils.parseKey(hostKey).getPublicSSH()) && (!context.signature || utils.parseKey(hostKey).verify(context.blob, context.signature, context.hashAlgo) === true)) context.accept();
       else context.reject();
     });
@@ -120,6 +121,18 @@ async function fixture(t, limits = {}) {
         commands.push(info.command);
         const stream = acceptExec();
         stream.on('error', () => {});
+        if (limits.appServerRpc && info.command.includes('app-server')) {
+          let pending = '';
+          stream.on('data', chunk => {
+            pending += chunk;let end;
+            while ((end = pending.indexOf('\n')) >= 0) {
+              const line = pending.slice(0, end);pending = pending.slice(end + 1);if (!line.trim()) continue;
+              const message = JSON.parse(line);
+              if (message.id != null) stream.write(JSON.stringify({id: message.id, result: {method: message.method}}) + '\n');
+            }
+          });
+          return;
+        }
         if (info.command.endsWith('hang')) return;
         if (info.command.endsWith('large-output')) {
           stream.write('x'.repeat(512));
@@ -167,6 +180,36 @@ test('SSH requires explicit key trust before authentication and refuses a change
   assert.equal(result.host, f.config.host);
   assert.equal(result.rootPath, await fs.realpath(f.root));
   assert.ok(f.authenticationCount() > 0);
+});
+
+test('Ops inspects a verified canonical SSH target before opening its persistent app-server stream', async t => {
+  const f = await fixture(t, {appServerRpc: true});
+  const target = await f.service.inspectAppServerTarget(f.config, {workPath: f.root});
+  assert.equal(target.canonicalWorkPath, await fs.realpath(f.root));assert.match(target.identity, /^ssh:[a-f0-9]{64}$/);assert.match(target.lockIdentity, /^ssh:[a-f0-9]{64}$/);
+  assert.equal(f.commands.length, 0);
+  await assert.rejects(f.service.openAppServer(f.config, {workPath: target.canonicalWorkPath, targetIdentity: 'ssh:' + '0'.repeat(64)}), {code: 'SSH_TARGET_CHANGED'});
+  assert.equal(f.commands.length, 0);
+  const opened = await f.service.openAppServer(f.config, {workPath: target.canonicalWorkPath, targetIdentity: target.identity});
+  assert.equal(opened.identity, target.identity);assert.equal(opened.canonicalWorkPath, target.canonicalWorkPath);
+  const rpc = new RpcClient({command: 'owned-ssh-stream', spawnImpl: () => opened.child, timeoutMs: 1500});t.after(() => rpc.close());
+  assert.deepEqual(await rpc.request('firstProbe'), {method: 'firstProbe'});assert.deepEqual(await rpc.request('secondProbe'), {method: 'secondProbe'});
+  assert.equal(f.commands.length, 1);
+  rpc.close();
+});
+
+test('Ops rejects a changed remote canonical directory before starting app-server', async t => {
+  const f = await fixture(t), alias = path.join(f.root, 'directory-alias');await fs.symlink(path.join(f.root, 'nested'), alias);
+  const target = await f.service.inspectAppServerTarget(f.config, {workPath: alias});
+  assert.equal(target.canonicalWorkPath, await fs.realpath(path.join(f.root, 'nested')));
+  await assert.rejects(f.service.openAppServer(f.config, {workPath: alias, targetIdentity: target.identity}), {code: 'SSH_TARGET_CHANGED'});
+  assert.equal(f.commands.length, 0);
+});
+
+test('Ops binds the SSH account but locks shared paths across accounts on the same host key', async t => {
+  const f = await fixture(t, {allowOtherUser: true});
+  const first = await f.service.inspectAppServerTarget(f.config, {workPath: f.root});
+  const second = await f.service.inspectAppServerTarget({...f.config, username: 'other'}, {workPath: f.root});
+  assert.notEqual(first.identity, second.identity);assert.equal(first.lockIdentity, second.lockIdentity);assert.equal(first.canonicalWorkPath, second.canonicalWorkPath);
 });
 
 test('SSH reads real SFTP directory pages and text, image, and PDF files', async t => {

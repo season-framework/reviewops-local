@@ -4,6 +4,8 @@ const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { TextDecoder } = require('node:util');
+const { EventEmitter } = require('node:events');
+const { PassThrough } = require('node:stream');
 
 const DEFAULTS = Object.freeze({
   timeoutMs: 20000,
@@ -277,7 +279,47 @@ function createSshService(options = {}) {
     }
   }
 
+  async function appServerTarget(client, config, connection, workPath) {
+    if (typeof workPath !== 'string' || !path.posix.isAbsolute(workPath) || /[\0\r\n]/.test(workPath) || workPath.length > 4096) throw new SshError('SSH_PATH_INVALID', '서버 작업 폴더를 확인하십시오.');
+    const canonicalWorkPath = await withSftp(client, {...config, rootPath: workPath}, '.', async (sftp, root) => {
+      const attrs = await callbackPromise(done => sftp.stat(root, done));
+      if (!attrs.isDirectory()) throw new SshError('SSH_NOT_DIRECTORY', '서버 작업 폴더가 디렉터리가 아닙니다.');
+      return root;
+    });
+    const endpoint = config.hostAlias ? await client.effectiveIdentity() : {kind: 'ssh-host-key', fingerprint: connection.fingerprint, username: config.username};
+    if (!config.hostAlias && !validFingerprint(endpoint.fingerprint)) throw new SshError('SSH_TRUST_REQUIRED', '서버 키를 확인하십시오.');
+    const identity = 'ssh:' + crypto.createHash('sha256').update(JSON.stringify(endpoint)).digest('hex');
+    const {username: _username, ...serverIdentity} = endpoint;
+    const lockIdentity = 'ssh:' + crypto.createHash('sha256').update(JSON.stringify(serverIdentity)).digest('hex');
+    const endpointIdentity = {kind: 'ssh-endpoint', host: (config.hostAlias ? endpoint.host : config.host).toLowerCase(), port: config.hostAlias ? endpoint.port : config.port};
+    const endpointLockIdentity = 'ssh:' + crypto.createHash('sha256').update(JSON.stringify(endpointIdentity)).digest('hex');
+    return {canonicalWorkPath, identity, lockIdentity, lockIdentities: [...new Set([lockIdentity, endpointLockIdentity])], identityKind: endpoint.kind};
+  }
+
   return {
+    async inspectAppServerTarget(config, {workPath}) {
+      return connect(config, (client, normalized, connection) => appServerTarget(client, normalized, connection, workPath));
+    },
+    async openAppServer(config, {workPath, binary = 'codex', targetIdentity}) {
+      if (typeof binary !== 'string' || binary.length > 4096 || /[\0\r\n]/.test(binary) || !(path.posix.isAbsolute(binary) || /^[A-Za-z0-9_][A-Za-z0-9_.-]*$/.test(binary))) throw new SshError('SSH_CONFIG_INVALID', '서버 Codex 실행 파일을 확인하십시오.');
+      if (typeof targetIdentity !== 'string' || !/^ssh:[a-f0-9]{64}$/.test(targetIdentity)) throw new SshError('SSH_TARGET_CHANGED', '서버 작업 대상을 다시 확인하십시오.');
+      return connect(config, async (client, normalized, connection) => {
+        const target = await appServerTarget(client, normalized, connection, workPath);
+        if (target.identity !== targetIdentity || target.canonicalWorkPath !== path.posix.normalize(workPath)) throw new SshError('SSH_TARGET_CHANGED', '서버 또는 작업 폴더가 변경되었습니다.');
+        const script = `export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"\ncd -- ${shellQuote(target.canonicalWorkPath)} || exit 125\nexec ${shellQuote(binary)} app-server`;
+        const stream = await callbackPromise(done => client.exec(`exec bash -lc ${shellQuote(script)}`, {pty: false}, done));
+        const child = new EventEmitter();child.stdin = new PassThrough();child.stdout = new PassThrough();child.stderr = new PassThrough();child.exitCode = null;
+        let finished = false;
+        const finish = (code, signal) => {
+          if (finished) return;finished = true;child.exitCode = Number.isInteger(code) ? code : null;
+          child.stdin.destroy();child.stdout.end();child.stderr.end();client.end();client.destroy();child.emit('close', child.exitCode, signal || null);
+        };
+        child.stdin.on('error', () => {});stream.on('error', () => finish(null, null));client.on('close', () => finish(null, null));
+        stream.on('close', finish);child.stdin.pipe(stream);stream.pipe(child.stdout);stream.stderr.pipe(child.stderr);
+        child.kill = signal => {if (!finished) {try {stream.signal(signal === 'SIGKILL' ? 'KILL' : 'TERM');stream.close();} catch {}finish(null, signal);}return true;};
+        return {...target, child};
+      }, limits.timeoutMs, true);
+    },
     async test(config) {
       return connect(config, async (client, normalized, connection) => withSftp(client, normalized, '.', async (sftp, root, target) => {
         const attrs = await callbackPromise(done => sftp.stat(target, done));
