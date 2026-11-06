@@ -96,6 +96,18 @@ export function packagedRuntimeIdentity({app}){
  }catch{throw Object.assign(new Error('Packaged main identity observation was refused.'),{code:'PACKAGED_RUNTIME_UNAVAILABLE'});}
 }
 
+export async function requestProduct({action,payload}){
+ // The preload invoke helper throws in the renderer; Playwright preserves its
+ // message/stack but not custom error codes. Keep a fixed envelope instead.
+ const codes=['IDENTITY_UNAVAILABLE','IDENTITY_NOT_INITIALIZED','IDENTITY_LOST','IDENTITY_PENDING','CERTIFICATE_REISSUE_REQUIRED','INVALID_REMOTE_ADDRESS','STALE_IDENTITY_REQUEST',
+  'ACCESS_DENIED','AUTH_REQUIRED','INVALID_REMOTE_REQUEST','TARGET_MISMATCH','STALE_REMOTE_REQUEST','REMOTE_MANAGEMENT_CLOSED','WEB_ACCESS_ACTIVE','WEB_DRAIN_UNCONFIRMED','APP_DRAIN_UNCONFIRMED'];
+ try{
+  const reply=await window.reviewops.request(action,payload);
+  if(reply?.ok===true)return{ok:true,data:reply.data};
+  return{ok:false,error:{code:codes.includes(reply?.error?.code)?reply.error.code:'PRODUCT_OPERATION_REFUSED',message:'Owned product operation refused.'}};
+ }catch{return{ok:false,error:{code:'PRODUCT_OPERATION_REFUSED',message:'Owned product operation refused.'}};}
+}
+
 export async function main(args=process.argv.slice(2)){
  assert.ok(args.length===2&&args[0]==='--plan','Usage: node scripts/e2e-packaged-identity-continuity.mjs --plan /absolute/plan.json');
  assert.ok(path.isAbsolute(args[1]));const planBytes=fs.readFileSync(args[1]);assert.ok(planBytes.length<=16384);
@@ -145,7 +157,7 @@ export async function main(args=process.argv.slice(2)){
   for(const name of ['ELECTRON_RUN_AS_NODE','NODE_OPTIONS','NODE_PATH','ELECTRON_EXTRA_LAUNCH_ARGS','SSH_AUTH_SOCK','OPENAI_API_KEY','CODEX_API_KEY'])delete env[name];
   const port=await freePort();report.fixture={root:scratch,profile:dataPath,install,port,socketPreflight:paths.socketPreflight};persist();
   const invoke=async(action,payload={})=>{
-   const value=await active.page.evaluate(({action,payload})=>window.reviewops.invoke(action,payload),{action,payload});
+   const value=await active.page.evaluate(requestProduct,{action,payload});
    if(value?.ok===false)throw Object.assign(new Error('Owned product operation refused.'),{code:value.error?.code||'PRODUCT_OPERATION_REFUSED'});
    return value?.ok===true?value.data:value;
   };

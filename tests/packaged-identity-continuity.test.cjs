@@ -124,6 +124,20 @@ test('native private paths satisfy the production socket budget before any appli
  assert.equal(fs.existsSync(path.join(paths.data,'remote-device-identity')),false,'Path admission never enrolls an identity');
 });
 
+test('renderer request envelopes retain only fixed product refusal codes before Playwright serialization',async()=>{
+ const {requestProduct}=await import('../scripts/e2e-packaged-identity-continuity.mjs'),secret='PRIVATE_BEARER_MUST_NEVER_CROSS_THE_BOUNDARY';
+ for(const mode of ['known-code','unknown-code','throw']){
+  const request=vm.runInNewContext('('+requestProduct.toString()+')',{window:{reviewops:{request:async(action,payload)=>{
+   assert.equal(action,'remoteManagement.state');assert.deepEqual(JSON.parse(JSON.stringify(payload)),{});
+   if(mode==='throw')throw Object.assign(new Error(secret),{code:'IDENTITY_UNAVAILABLE'});
+   return{ok:false,error:{code:mode==='known-code'?'IDENTITY_UNAVAILABLE':secret,message:secret}};
+  }}}});
+  const result=JSON.parse(JSON.stringify(await request({action:'remoteManagement.state',payload:{}})));
+  assert.deepEqual(result,{ok:false,error:{code:mode==='known-code'?'IDENTITY_UNAVAILABLE':'PRODUCT_OPERATION_REFUSED',message:'Owned product operation refused.'}});
+  assert.equal(JSON.stringify(result).includes(secret),false);
+ }
+});
+
 function inertWindowsObserver(observeWindowsOriginalMain){
  const child=new EventEmitter();Object.assign(child,{pid:9001,stdout:new PassThrough(),stderr:new PassThrough()});
  const identity={platform:'win32',expectedPlatform:'win32',pid:123,ppid:456,childPID:456},executable='C:\\Private\\ReviewOps\\ReviewOps.exe';
