@@ -1,7 +1,7 @@
 {
   "name": "reviewops-local",
   "productName": "ReviewOps",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Review websites, organize projects, and run Codex on your computer or SSH hosts.",
   "author": "SEASON",
   "license": "MIT",
@@ -78,7 +78,7 @@
     "@playwright/test": "1.64.1",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/xterm": "6.0.0",
-    "electron": "44.9.0",
+    "electron": "44.9.1",
     "electron-builder": "26.15.3",
     "react": "19.3.1",
     "react-dom": "19.3.1",

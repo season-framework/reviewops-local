@@ -14,7 +14,9 @@ const { fingerprintOf } = require('../electron/ssh.cjs');
 const remoteAgent = require('../electron/remote-agent.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-async function eventually(check) {for(let attempt=0;attempt<200;attempt++){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
+// Readiness includes real CLI/SSH process startup; cancellation deadlines are
+// asserted separately and must not inherit this fixture-startup allowance.
+async function eventually(check) {const deadline=Date.now()+10000;while(Date.now()<deadline){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
 async function completed(manager,id){return eventually(()=>{const job=manager.read(id);return ['completed','failed','cancelled'].includes(job.status)?job:null;});}
 async function updateReady(manager,id){return eventually(()=>{const job=manager.read(id);return job.status==='running'&&job.remoteExecution?.ready&&manager.hasBlockingJobs===false?job:null;});}
 function killFixtureProcess(pid,group=false,kill=process.kill){
@@ -59,7 +61,12 @@ let input='';process.stdin.on('data',chunk=>input+=chunk);process.stdin.on('end'
  fs.appendFileSync(cwd+'/request-starts','1');
  const send=event=>process.stdout.write(JSON.stringify(event)+'\\n');
  send({type:'thread.started',thread_id:'synthetic-thread'});send({type:'turn.started'});
- if(input.includes('WAIT_FOR_CANCEL')){const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writePid('child.pid',child.pid);if(input.includes('FINAL_ON_CANCEL'))process.on('SIGTERM',()=>{fs.writeSync(1,JSON.stringify({type:'item.completed',item:{id:'last-answer',type:'agent_message',text:'중지 직전 마지막 응답'}})+'\\n');process.exit(0);});setInterval(()=>{},1000);return;}
+ if(input.includes('DETACHED_TOOL_CANCEL')){
+  const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{detached:true,stdio:'ignore'});writePid('child.pid',child.pid);
+  process.on('SIGINT',()=>{fs.writeFileSync(cwd+'/interrupt-received','');child.once('close',()=>process.exit(0));process.kill(-child.pid,'SIGTERM');});
+  process.on('SIGTERM',()=>process.exit(0));setInterval(()=>{},1000);return;
+ }
+ if(input.includes('WAIT_FOR_CANCEL')){const child=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"],{stdio:'ignore'});writePid('child.pid',child.pid);if(input.includes('FINAL_ON_CANCEL'))for(const signal of ['SIGINT','SIGTERM'])process.on(signal,()=>{fs.writeSync(1,JSON.stringify({type:'item.completed',item:{id:'last-answer',type:'agent_message',text:'중지 직전 마지막 응답'}})+'\\n');process.exit(0);});setInterval(()=>{},1000);return;}
  if(input.includes('FAIL_TURN')){send({type:'turn.failed',error:{message:'Synthetic request failure'}});process.exitCode=1;return;}
  send({type:'item.started',item:{id:'command-1',type:'command_execution',command:'echo secret',status:'in_progress'}});
  send({type:'item.completed',item:{id:'command-1',type:'command_execution',status:'completed',exit_code:0}});
@@ -491,6 +498,16 @@ test('SSH cancellation confirms process group termination instead of only closin
  await pause(150);const result=await f.manager.cancel(job.id);assert.equal(result.status,'cancelled');assert.equal(result.terminationConfirmed,true);
  await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
  const image=JSON.parse(await fs.readFile(path.join(f.root,'last-input.json'),'utf8')).images[0];await assert.rejects(fs.access(image.path));
+});
+
+for(const kind of ['local','ssh'])test(`${kind} cancellation interrupts the CLI before stopping it so detached tool groups are drained`,async t=>{
+ const f=kind==='ssh'?await remoteFixture(t):await fixture(t),job=f.manager.start({config:f.config,settings:f.settings,prompt:'DETACHED_TOOL_CANCEL'});
+ const pid=await eventually(async()=>{try{return Number(await fs.readFile(path.join(f.root,'child.pid'),'utf8'));}catch{return false;}});
+ assert.doesNotThrow(()=>process.kill(pid,0));
+ const stopped=await f.manager.cancel(job.id);
+ assert.equal(stopped.status,'cancelled');assert.equal(stopped.terminationConfirmed,true);
+ assert.equal(await fs.readFile(path.join(f.root,'interrupt-received'),'utf8'),'');
+ await eventually(()=>{try{process.kill(pid,0);return false;}catch(error){return error.code==='ESRCH';}});
 });
 
 test('SSH requests keep running during an app update and restore finished UTF8 output without duplicate execution',async t=>{

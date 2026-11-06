@@ -148,6 +148,14 @@ export function AccountDetails({ account, bridge }) {
     return () => { request.current += 1; };
   }, [read]);
 
+  useEffect(() => {
+    let live = true;
+    bridge.getAccountDetails(account.id).then(value => {
+      if (live && value?.accountId === account.id && String(value.email || '').trim().toLowerCase() === String(account.email || '').trim().toLowerCase()) setDetails(value);
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [account.id, account.email, account.lastUpdated, account.usageDetailsUpdatedAt, account.usageDetailsError, bridge]);
+
   const buckets = details?.tokenUsage?.dailyUsageBuckets;
   const tokenPoints = useMemo(() => aggregateDailyUsage(buckets, days, grouping), [buckets, days, grouping]);
   const hasTokens = tokenPoints.some(item => finite(item.tokens));
@@ -176,6 +184,8 @@ export function AccountDetails({ account, bridge }) {
   return <div className="account-details" aria-busy={refreshing}>
     <div className="details-topline"><span className="details-email">{details?.email || account.email}</span><ActionButton label={t("통계 새로고침")} icon={RefreshCw} busy={refreshing} disabled={refreshing || account.requiresLogin} onClick={() => read(false)}/></div>
     {account.requiresLogin && <p className="details-note">{t("저장된 통계입니다. 새로 조회하려면 다시 로그인하십시오.")}</p>}
+    {account.lastUpdated && <p className="details-updated">{t("마지막 성공: {0}",[dateTime(account.lastUpdated)])}</p>}
+    {account.error && <p className="details-error" role="alert">{t(account.error)}</p>}
     {error && <p className="details-error" role="alert">{t("통계를 조회하지 못했습니다.")+" "}{error}</p>}
     {details?.usageError && <p className="details-error" role="alert">{t("사용량을 조회하지 못했습니다.")+" "}{details.usageError}</p>}
     {!details && refreshing ? <p className="details-empty" role="status">{t("통계를 조회하고 있습니다.")}</p> : !details ? <p className="details-empty">{t("통계 기록이 없습니다.")}</p> : <>

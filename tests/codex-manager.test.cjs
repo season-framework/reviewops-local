@@ -78,7 +78,7 @@ test('a detected bundled CLI stays available for signed-out accounts and login r
 
 test('account and host IPC reject untrusted renderer frames and are removed on close', async t => {
   const h = await setup(t);
-  const required = ['accounts:getState', 'accounts:getAccountDetails', 'accounts:refreshAccountDetails', 'accounts:addAccount', 'accounts:renameAccount', 'accounts:login', 'accounts:cancelLogin', 'accounts:refreshAccounts', 'accounts:resetAccounts', 'accounts:removeAccount', 'accounts:openLogin', 'accounts:openUsagePage', 'accounts:chooseCodexBinary', 'accounts:recheckCodexRuntime', 'hosts:getState', 'hosts:reloadHosts', 'hosts:saveHost', 'hosts:deleteHost', 'hosts:deleteHosts', 'hosts:reorderHosts', 'hosts:saveGroup', 'hosts:deleteGroup', 'hosts:setGroupCollapsed', 'hosts:moveHostToGroup', 'hosts:refreshHosts', 'hosts:cancelRefresh', 'hosts:getHostDetails', 'hosts:generateKey', 'hosts:inspectKeys', 'hosts:registerKey', 'hosts:upgradeCodex', 'hosts:upgradeCodexBatch', 'hosts:startCodexLogin', 'hosts:cancelCodexLogin', 'hosts:openCodexLogin', 'hosts:copyCodexLoginCode', 'hosts:openSshTerminal', 'hosts:listFiles', 'hosts:readTextFile', 'hosts:openFileLink', 'hosts:createDirectory', 'hosts:renameFile', 'hosts:moveFiles', 'hosts:deleteFiles', 'hosts:uploadFiles', 'hosts:downloadFiles', 'hosts:getFileTransfers', 'hosts:cancelFileTransfer'];
+  const required = ['accounts:getState', 'accounts:getAccountDetails', 'accounts:refreshAccountDetails', 'accounts:addAccount', 'accounts:renameAccount', 'accounts:login', 'accounts:cancelLogin', 'accounts:refreshAccounts', 'accounts:configureUsageRefresh', 'accounts:resetAccounts', 'accounts:removeAccount', 'accounts:openLogin', 'accounts:openUsagePage', 'accounts:chooseCodexBinary', 'accounts:recheckCodexRuntime', 'hosts:getState', 'hosts:reloadHosts', 'hosts:saveHost', 'hosts:deleteHost', 'hosts:deleteHosts', 'hosts:reorderHosts', 'hosts:saveGroup', 'hosts:deleteGroup', 'hosts:setGroupCollapsed', 'hosts:moveHostToGroup', 'hosts:refreshHosts', 'hosts:cancelRefresh', 'hosts:getHostDetails', 'hosts:generateKey', 'hosts:inspectKeys', 'hosts:registerKey', 'hosts:upgradeCodex', 'hosts:upgradeCodexBatch', 'hosts:startCodexLogin', 'hosts:cancelCodexLogin', 'hosts:openCodexLogin', 'hosts:copyCodexLoginCode', 'hosts:openSshTerminal', 'hosts:listFiles', 'hosts:readTextFile', 'hosts:openFileLink', 'hosts:createDirectory', 'hosts:renameFile', 'hosts:moveFiles', 'hosts:deleteFiles', 'hosts:uploadFiles', 'hosts:downloadFiles', 'hosts:getFileTransfers', 'hosts:cancelFileTransfer'];
   assert.deepEqual([...h.handlers.keys()].sort(), required.sort());
   for (const handler of h.handlers.values()) await assert.rejects(handler({ allowed: false }), /허용되지 않은 요청/);
   await h.manager.close();
@@ -211,4 +211,48 @@ test('explicit recheck has strict parameters, global trust, and a server-owned t
   await assert.rejects(h.invoke('accounts:recheckCodexRuntime'), /진행 중인 작업/); assert.equal(calls.length, 3);
   h.manager.accountService.refresh.running = false;
   await assert.rejects(fs.readFile(path.join(h.directory, 'reviewops/codex-manager/runtime.json')), { code: 'ENOENT' });
+});
+
+test('account interval IPC persists immediately and power resume refreshes overdue profiles once', async t => {
+  const powerMonitor = new EventEmitter(), calls = [];
+  let holdDetails = false, releaseDetails;
+  class Client extends EventEmitter {
+    constructor(config) { super(); this.id = path.basename(config.env.CODEX_HOME); }
+    async start() { return this; }
+    async request(method) {
+      calls.push(method);
+      if (method === 'account/read') return { account: { type: 'chatgpt', email: 'resume@example.invalid', planType: 'pro' } };
+      if (method === 'account/rateLimits/read') return { rateLimits: null };
+      if (method === 'account/usage/read') { if (holdDetails) await new Promise(resolve => { releaseDetails = resolve; }); return { summary: null, dailyUsageBuckets: [] }; }
+      return {};
+    }
+    close() { this.closed = true; this.emit('close'); }
+  }
+  const h = await setup(t, { powerMonitor, accountOptions: { clientFactory: config => new Client(config) } });
+  assert.equal(h.manager.accountState().usageRefresh.intervalMinutes, 30);
+  await assert.rejects(h.invoke('accounts:configureUsageRefresh', 0), /1~1440/);
+  const configured = await h.invoke('accounts:configureUsageRefresh', 5);
+  assert.equal(configured.usageRefresh.intervalMinutes, 5);
+  const saved = JSON.parse(await fs.readFile(path.join(h.directory, 'reviewops/codex-manager/accounts.json')));
+  assert.equal(saved.usageRefreshIntervalMinutes, 5);
+  const id = (await h.invoke('accounts:addAccount', 'Resume account')).accounts[0].id;
+  const service = h.manager.accountService;
+  await service.refreshUsage(id);
+  calls.length = 0;
+  const account = service.accounts[0];
+  const previous = new Date(Date.now() - 12 * 60 * 60_000).toISOString();
+  account.lastUpdated = account.lastUsageRefreshAttemptAt = account.statistics.usageFetchedAt = previous;
+  holdDetails = true;
+  powerMonitor.emit('resume'); powerMonitor.emit('resume');
+  while (!releaseDetails) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(service.snapshot().accounts[0].status, 'ready');
+  await assert.rejects(h.invoke('accounts:recheckCodexRuntime'), /진행 중인 작업/);
+  releaseDetails(); await service.usageTasks.get(id);
+  assert.equal(calls.filter(method => method === 'account/rateLimits/read').length, 1);
+  assert.equal(calls.filter(method => method === 'account/usage/read').length, 1);
+  powerMonitor.emit('resume');
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(calls.filter(method => method === 'account/rateLimits/read').length, 1);
+  await h.manager.close();
+  assert.equal(powerMonitor.listenerCount('resume'), 0);
 });

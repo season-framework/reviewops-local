@@ -42,12 +42,14 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '24'
           cache: npm
       - run: npm ci
-      - run: npm run build
+      - name: Build renderer with reviewed dependency notices
+        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; await buildRenderer({generateLicenses:false});"
       - run: node --test --test-concurrency=4 --test-timeout=90000 tests/*.test.cjs
 
   windows:
@@ -89,7 +91,8 @@ jobs:
           architecture: x64
           cache: false
       - run: npm ci
-      - run: npm run build
+      - name: Build renderer with reviewed dependency notices
+        run: node --input-type=module -e "import {buildRenderer} from './scripts/test-build.mjs'; await buildRenderer({generateLicenses:false});"
       - name: Run Windows-compatible unit tests
         shell: pwsh
         run: |
@@ -114,7 +117,9 @@ jobs:
           node --test --test-concurrency=4 --test-timeout=90000 --test-reporter=spec @testFiles 2>&1 | Tee-Object -FilePath test-results/windows-unit-tests.txt
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build Windows installer
-        run: npm run package:windows
+        run: |
+          node scripts/build-info.mjs --clear
+          node node_modules/electron-builder/cli.js --win nsis --x64 --publish never
       - name: Verify package and installed application
         run: npm run test:windows-release
       - name: Upload verified Windows files to the existing stable draft

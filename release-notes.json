@@ -1,70 +1,29 @@
 {
   "schema": 1,
-  "version": "1.5.0",
+  "version": "1.6.0",
   "entries": [
     {
       "category": "features",
-      "title": "Read user-comment attachment metadata through the local shared query",
-      "description": "Read file names, declared types, sizes and SHA-256 digests for one ordinary user comment within its granted project and review, including attachment-only comments. Agent responses, run-linked prompts and system/history entries are excluded. Storage paths and file contents are omitted; results above 1,000 files or 512 KiB of complete JSON are rejected in full.",
+      "title": "Refresh account usage automatically",
+      "description": "Collect account limits and supported detailed usage every 30 minutes in the background, including while the window is minimized. Choose a 1–1440 minute interval in Settings → Automatic checks and keep it after restarting. Overdue startup and resume refresh once; failures retain the last successful values and retry on the chosen interval.",
       "commits": [
-        "63cf1bf632eb2da1c1e3b98229ac61e3273c472e"
+        "3226739b48d863c81527efae7d1c6d895f29512c"
       ]
     },
     {
       "category": "fixes",
-      "title": "Confirm temporary build-artifact deletions",
-      "description": "Temporary build-artifact cleanup now follows each deletion with at most five read-only checks. Only HTTP 404 confirms absence; API errors and artifacts still visible at the limit remain failures with an artifact ID in the diagnostic.",
+      "title": "Stop agent tools before ending their runner",
+      "description": "Interrupt local and SSH agent execution gracefully before escalating termination, allowing Codex to stop its detached tool processes. Bounded termination fallback remains available when the runner does not exit.",
       "commits": [
-        "3ec28112ca8c7d73d7e48f8c93c10dd08e330fa0"
+        "2cd458210691168725fa72948608786d30bc1554"
       ]
     },
     {
       "category": "fixes",
-      "title": "Reject outdated review-version checks",
-      "description": "Saved review-version lists now reject checks whose original window or project QA scope changed, whose dataset was replaced, or whose review was replaced or moved. Dataset and review refusals ask you to reload the list. Normal missing, changed and unreadable file results are preserved.",
+      "title": "Update desktop certificate validation",
+      "description": "Update the desktop runtime to Electron 44.9.1, including its certificate validation fixes.",
       "commits": [
-        "dba5230be2a99964b2b011ba7b641ea47dfe9a26",
-        "c74e21f1ab2e9298252406df02174e5f2af79c5a"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "List review attachment metadata within its project",
-      "description": "List the names, declared file types, sizes and SHA-256 digests of files attached directly to a review through local project queries. Comment-linked files, storage paths and file contents are excluded. Lists above the 1,000-file or 512 KiB JSON limit are rejected in full.",
-      "commits": [
-        "1471925493bbe4480f5f4146517e1a5a0555d5b2"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Read user comments through local project queries",
-      "description": "Read a review's user comments through local queries confined to its project, preserving text and order. Prompts linked to agent runs, agent responses and structured evidence are excluded. Results above the comment or JSON size limit fail explicitly.",
-      "commits": [
-        "71315523d5a214bb927fbbdd4df1b41eb444c9f7"
-      ]
-    },
-    {
-      "category": "fixes",
-      "title": "Select all text before document-bound QA input on macOS",
-      "description": "Meta+A in the observed-document key tool now carries Chromium's Select All editing command on macOS. The matching key-up stays on the original surface, and a page can cancel the editing action. Text input still uses the actual focus and selection.",
-      "commits": [
-        "e94be0b717898f96e58d20bb30a8dbba1b4f2b09"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Tie opt-in QA input to the observed web document",
-      "description": "The new optional QA document tool lets agents observe an in-app web view or owned popup and send input with its app-issued document ID. Navigation, renderer loss and target replacement invalidate old observations. Stale requests are rejected before input starts; later failure warns that input may have applied and must not be replayed. Paired releases stay on the original contents, and failed cleanup quarantines the window. The eleven legacy QA tools remain unchanged.",
-      "commits": [
-        "b8eb6e1562aa93e0654f58f2fe37a5c963021a9b"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Connect a fresh MCP process to a running app",
-      "description": "On macOS and Linux, a fresh MCP process can find one privately registered running app using a custom data folder when no explicit connection is selected and the default connection file is absent. The session stays tied to that app instance. Multiple or stale records require explicit selection. Windows automatic discovery is unsupported.",
-      "commits": [
-        "209bb9fe7b090df578bca250c48da4d55ddcb341"
+        "85cc055f633e8d960e412dea01b8cf11af7f3a38"
       ]
     }
   ]

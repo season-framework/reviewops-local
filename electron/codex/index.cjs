@@ -10,6 +10,7 @@ const { HostFileService } = require('./host-files.cjs');
 const { createHostFileHandlers } = require('./host-file-handlers.cjs');
 const { openSshTerminal } = require('./host-terminal.cjs');
 const { atomicWrite } = require('../vault.cjs');
+const { AccountUsageRefresher } = require('./usage-refresh.cjs');
 
 async function createCodexManager(options = {}) {
   const dataPath = options.dataPath;
@@ -25,7 +26,8 @@ async function createCodexManager(options = {}) {
     if (typeof options.trusted !== 'function') throw new Error('허용되지 않은 요청입니다.');
     if (options.trusted(event) === false) throw new Error('허용되지 않은 요청입니다.');
   };
-  let service, hostService, fileService, runtime;
+  let service, hostService, fileService, runtime, usageRefresher;
+  let managerReady = false;
   let selection = {}, runtimeDiagnostics = { records: [], omitted: 0 }, lastRecheckAt = -Infinity;
   let changingRuntime = false, registered = false, closed = false;
   const channels = [];
@@ -35,7 +37,7 @@ async function createCodexManager(options = {}) {
   function state() {
     return { ...service.snapshot(), runtime: { available: runtime.available, path: runtime.path, version: runtime.version, error: runtime.error, errorKind: runtime.errorKind || null, diagnostics: structuredClone(runtimeDiagnostics) } };
   }
-  function publish() { if (service) send('accounts:state', state()); }
+  function publish() { if (service) send('accounts:state', state()); usageRefresher?.schedule(); }
   function publishHosts() {
     if (!hostService) return;
     const snapshot = hostService.snapshot();
@@ -80,12 +82,16 @@ function copyCodexLoginCode(id) {
   return true;
 }
 async function setupService(command) {
+  usageRefresher?.close();
   service = new AccountService({ ...(options.accountOptions || {}), dataDir, command: command.command || '', args: [...(command.args || []), 'app-server'], onChange: publish });
   await service.init();
+  usageRefresher = command.available ? new AccountUsageRefresher({ service, ...(options.usageRefreshOptions || {}) }) : null;
+  if (managerReady) void usageRefresher?.run();
 }
 function requireRuntimeIdle() {
   const active = service.snapshot();
-  if (changingRuntime || active.refresh?.running || active.accounts.some(a => a.status === 'loading' || a.status === 'loggingIn' || a.resetAttempt?.status === 'pending')) throw new Error('진행 중인 작업이 끝난 뒤 변경하십시오.');
+  if (changingRuntime || service.usageTasks.size || service.detailTasks.size || service.refreshTasks.size || service.resetTasks.size
+    || active.refresh?.running || active.accounts.some(a => a.status === 'loading' || a.status === 'loggingIn' || a.resetAttempt?.status === 'pending')) throw new Error('진행 중인 작업이 끝난 뒤 변경하십시오.');
 }
 async function selectedRuntime(bypassCooldown = false) {
   const source = typeof selection.sourcePath === 'string' && path.isAbsolute(selection.sourcePath)
@@ -122,6 +128,11 @@ function registerHandlers(ipcMain = options.ipcMain) {
     },
     cancelLogin: async id => { await service.cancelLogin(accountId(id)); return state(); },
     refreshAccounts: async selected => { await service.refreshAccounts(ids(selected, true)); return state(); },
+    configureUsageRefresh: async minutes => {
+      await service.configureUsageRefresh(minutes);
+      void usageRefresher?.run();
+      return state();
+    },
     resetAccounts: async (selected, selections = null) => {
       const selectedIds = ids(selected);
       if (service.snapshot().accounts.some(account=>selectedIds.includes(account.id)&&account.requiresLogin)) throw new Error('다시 로그인한 뒤 초기화권을 사용하십시오.');
@@ -231,6 +242,11 @@ function registerHandlers(ipcMain = options.ipcMain) {
     fileService = new HostFileService({ ...(options.fileOptions || {}), hostService, onChange: publishFileTransfers });
   } catch (error) { await Promise.allSettled([service.close(), hostService.close()]); throw error; }
 
+  managerReady = true;
+  const resumeUsage = () => { void usageRefresher?.run(); };
+  options.powerMonitor?.on('resume', resumeUsage);
+  resumeUsage();
+
   return {
     registerHandlers,
     accountState: state,
@@ -257,6 +273,8 @@ function registerHandlers(ipcMain = options.ipcMain) {
     async close() {
       if (closed) return;
       closed = true;
+      usageRefresher?.close();
+      options.powerMonitor?.removeListener('resume', resumeUsage);
       for (const [ipcMain, channel] of channels) ipcMain.removeHandler(channel);
       await Promise.allSettled([service.close(), fileService.close(), hostService.close()]);
     },
