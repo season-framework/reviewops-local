@@ -70,11 +70,15 @@ function traceSQL(db, action) {
     statements.push(text);
     const statement = Reflect.apply(prepare, this, [sql, ...args]);
     if (/^SELECT\b/i.test(text) && /\bFROM (projects|reviews)\b/i.test(text) && !/peer_project_births/i.test(text)) {
-      const item = {sql: text, allCalls: 0, rowCounts: []}; rows.push(item);
-      const all = statement.all;
+      const item = {sql: text, allCalls: 0, rowCounts: [], fields: [], getCalls: 0, getValues: []}; rows.push(item);
+      const all = statement.all, get = statement.get;
       statement.all = function(...parameters) {
         const actual = Reflect.apply(all, this, parameters);
-        item.allCalls++; item.rowCounts.push(actual.length); return actual;
+        item.allCalls++; item.rowCounts.push(actual.length); item.fields.push(actual[0] ? Object.keys(actual[0]).sort() : []); return actual;
+      };
+      statement.get = function(...parameters) {
+        const actual = Reflect.apply(get, this, parameters);
+        item.getCalls++; item.getValues.push(actual); return actual;
       };
     }
     return statement;
@@ -252,8 +256,11 @@ test('content query does not call snapshot or traverse private service/activity/
   } finally { f.db.prepare = prepare; for (const [key, value] of originals) f.store[key] = value; }
   assert.equal(published.review.id, f.reviewId);
   assert.ok(sql.every(text => !/\bFROM\s+(services|activities|attachments|settings|agent_runs)\b/i.test(text)));
-  assert.ok(sql.some(text => /FROM projects ORDER BY createdAt,id LIMIT 100001/.test(text.replace(/\s+/g, ' '))));
-  assert.ok(sql.some(text => /FROM reviews ORDER BY updatedAt DESC,id LIMIT 100001/.test(text.replace(/\s+/g, ' '))));
+  assert.ok(sql.some(text => /COUNT\(\*\) AS count FROM \(SELECT 1 FROM projects LIMIT 100001\)/.test(text.replace(/\s+/g, ' '))));
+  assert.ok(sql.some(text => /COUNT\(\*\) AS count FROM \(SELECT 1 FROM reviews LIMIT 100001\)/.test(text.replace(/\s+/g, ' '))));
+  assert.ok(sql.some(text => /AS _readKey/.test(text) && /FROM projects/.test(text)));
+  assert.ok(sql.some(text => /AS _readKey/.test(text) && /FROM reviews/.test(text)));
+  assert.ok(sql.every(text => !/ORDER BY/i.test(text)), 'Full-body SQL sorters are unnecessary for validated DTO ordering');
 });
 
 test('a caught first kernel error poisons the frame, consumes its query slot, and cannot become manufactured success', t => {
@@ -267,7 +274,9 @@ test('a caught first kernel error poisons the frame, consumes its query slot, an
   });
   traceSQL(f.db, trace => {
     assert.throws(() => bridge.read(), error => error === first);
-    assert.equal(trace.rows.filter(row => row.allCalls).length, 2, 'No second content materialization is allowed');
+    assert.equal(trace.rows.filter(row => row.allCalls).length, 2, 'Only the project and review-key inventories are read');
+    assert.equal(trace.rows.filter(row => row.getCalls && row.getValues.some(value => Object.hasOwn(value || {}, 'count'))).length, 2,
+      'The refused second query cannot repeat the count pipeline');
   });
   assert.equal(secondAttempts, 1); assert.throws(() => retained.dataset());
   assert.equal(bridge.sample().projects.length, 2, 'Confirmed rollback releases the failed frame');
@@ -282,7 +291,8 @@ test('a successful first query followed by a caught budget error still withholds
   });
   traceSQL(f.db, trace => {
     assert.throws(() => { leaked = bridge.read(); }, error => error === firstBudgetError && unavailable(error));
-    assert.equal(trace.rows.filter(row => row.allCalls).length, 2);
+    assert.equal(trace.rows.filter(row => row.allCalls).length, 1, 'projects.list needs only its project-key inventory');
+    assert.equal(trace.rows.filter(row => row.getCalls && row.getValues.some(value => Object.hasOwn(value || {}, 'count'))).length, 2);
   });
   assert.equal(leaked, undefined);
 });
@@ -625,8 +635,10 @@ test('real project content SQL reaches its 100001 sentinel without an eager data
   });
   traceSQL(f.db, trace => {
     assert.throws(() => bridge.read(), errorCode('INVALID_SNAPSHOT'));
-    const projectRead = trace.rows.find(row => /FROM projects ORDER BY createdAt,id LIMIT 100001/.test(row.sql));
-    assert.ok(projectRead); assert.equal(projectRead.allCalls, 1); assert.deepEqual(projectRead.rowCounts, [100001]);
+    const projectRead = trace.rows.find(row => row.getValues.some(value => value?.count === 100001));
+    assert.ok(projectRead); assert.equal(projectRead.getCalls, 1);
+    assert.equal(trace.rows.some(row => row.allCalls), false, 'Overflow is determined without a key or full-content array');
+    assert.equal(trace.rows.some(row => /FROM reviews/.test(row.sql) && row.getCalls), false);
     assert.ok(trace.statements.every(sql => !/peer_project_births|peer_project_birth_counter/.test(sql)),
       'Lazy read query must reach the actual content bound before any dataset() call');
   });
@@ -634,12 +646,13 @@ test('real project content SQL reaches its 100001 sentinel without an eager data
   f.db.prepare('DELETE FROM projects WHERE id=?').run('bounded-project-100001');
   traceSQL(f.db, trace => {
     assert.deepEqual(bridge.read(), {version: 1, projects: []}, 'Empty grants are an actual kernel result below the bound');
-    const projectRead = trace.rows.find(row => /FROM projects ORDER BY createdAt,id LIMIT 100001/.test(row.sql));
-    assert.deepEqual(projectRead.rowCounts, [100000]);
+    const projectRead = trace.rows.find(row => row.allCalls);
+    assert.deepEqual(projectRead.rowCounts, [100000]); assert.deepEqual(projectRead.fields, [['id', 'key']]);
+    assert.ok(trace.rows.some(row => row.getValues.some(value => value?.count === 100000)));
   });
 });
 
-test('projects.list still materializes the real required reviews array and refuses its 100001 sentinel', t => {
+test('projects.list checks the real global review count without materializing review content at its 100001 sentinel', t => {
   const f = setup(t, false), group = f.store.saveGroup({name: 'Owned review limit'});
   const project = f.store.saveProject({groupId: group.id, name: 'One owned project'});
   insertBoundedReviews(f.db, project.id);
@@ -647,9 +660,9 @@ test('projects.list still materializes the real required reviews array and refus
   const bridge = createPeerReadStoreBridge(f.store, view => view.query({projectGrants: [{projectId: project.id, read: true}]}, 'projects.list', {}));
   traceSQL(f.db, trace => {
     assert.throws(() => bridge.read(), error => error.code === 'INVALID_SNAPSHOT' && error.message === 'Shared data is unavailable.');
-    const projects = trace.rows.find(row => /FROM projects ORDER BY createdAt,id LIMIT 100001/.test(row.sql));
-    const reviews = trace.rows.find(row => /FROM reviews ORDER BY updatedAt DESC,id LIMIT 100001/.test(row.sql));
-    assert.ok(projects && reviews); assert.deepEqual(projects.rowCounts, [1]); assert.deepEqual(reviews.rowCounts, [100001]);
+    const counts = trace.rows.filter(row => row.getValues.some(value => Object.hasOwn(value || {}, 'count')));
+    assert.deepEqual(counts.map(row => row.getValues[0].count), [1, 100001]);
+    assert.equal(trace.rows.some(row => row.allCalls), false, 'The real count refuses before any key/content arrays');
     assert.deepEqual(trace.executions, ['BEGIN IMMEDIATE', 'ROLLBACK']);
   });
 });

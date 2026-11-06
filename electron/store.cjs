@@ -9,7 +9,8 @@ const SCHEMA_VERSION = 12;
 const BACKUP_FORMAT_VERSION = 10;
 const sharedWrites = require('./shared-write-core.cjs');
 const peerProjectBirths = require('./peer-project-births.cjs');
-const { querySharedData } = require('./shared-data-query.cjs');
+const { querySharedBrowsing } = require('./shared-data-query.cjs');
+const { encodingByteFactors } = require('./sqlite-read-bounds.cjs');
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
@@ -67,15 +68,57 @@ function peerReadContent(owner, frame, context, operation, payload) {
   if (!['projects.list', 'reviews.list', 'reviews.get'].includes(operation)) {
     fail('Invalid shared-data query.', 'INVALID_QUERY');
   }
-  const projects = owner.db.prepare(`SELECT id,name,description,createdAt,updatedAt
-    FROM projects ORDER BY createdAt,id LIMIT 100001`).all();
-  assertPeerReadFrame(owner, frame, true);
-  if (projects.length > MAX_ITEMS) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
-  const reviews = owner.db.prepare(`SELECT id,projectId,number,title,body,status,priority,category,createdAt,updatedAt
-    FROM reviews ORDER BY updatedAt DESC,id LIMIT 100001`).all();
-  assertPeerReadFrame(owner, frame, true);
-  if (reviews.length > MAX_ITEMS) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
-  const result = querySharedData({projects, reviews}, context, operation, payload);
+  const statements = new Map();
+  let factors;
+  const read = (name, sql, method, parameters = []) => {
+    assertPeerReadFrame(owner, frame, true);
+    if (!statements.has(name)) {
+      const statement = owner.db.prepare(sql);
+      assertPeerReadFrame(owner, frame, true);
+      statements.set(name, statement);
+    }
+    const statement = statements.get(name);
+    const value = Reflect.apply(statement[method], statement, parameters);
+    assertPeerReadFrame(owner, frame, true);
+    return value;
+  };
+  const text = (column, units, ascii = false) => {
+    if (!factors) {
+      factors = encodingByteFactors(read('encoding', 'PRAGMA encoding', 'get')?.encoding);
+      if (!factors) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
+    }
+    const ceiling = units * (ascii ? factors.ascii : factors.general);
+    return `CASE WHEN typeof(${column})='text' AND octet_length(${column})<=${ceiling} THEN ${column} END AS ${column}`;
+  };
+  const key = "CASE WHEN typeof(rowid)='integer' THEN CAST(rowid AS TEXT) END";
+  const source = Object.freeze({
+    count(kind) {
+      if (!['projects', 'reviews'].includes(kind)) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
+      return read(`count-${kind}`, `SELECT COUNT(*) AS count FROM (SELECT 1 FROM ${kind} LIMIT 100001)`, 'get')?.count;
+    },
+    projectKeys() {
+      return read('project-keys', `SELECT ${key} AS key,${text('id', 128, true)} FROM projects LIMIT 100001`, 'all');
+    },
+    project(rowKey) {
+      const columns = [text('id', 128, true), text('name', 120), text('description', 10000),
+        text('createdAt', 24, true), text('updatedAt', 24, true)].join(',');
+      return read('project-row', `SELECT ${key} AS _readKey,${columns} FROM projects WHERE rowid=? LIMIT 1`, 'get', [rowKey]);
+    },
+    reviewProjectKeys() {
+      return read('review-project-keys', `SELECT ${key} AS key,${text('projectId', 128, true)} FROM reviews LIMIT 100001`, 'all');
+    },
+    reviewId(rowKey) {
+      return read('review-id', `SELECT ${key} AS _readKey,${text('id', 128, true)} FROM reviews WHERE rowid=? LIMIT 1`, 'get', [rowKey]);
+    },
+    review(rowKey) {
+      const number = `CASE WHEN typeof(number)='integer' AND number BETWEEN 1 AND ${Number.MAX_SAFE_INTEGER} THEN number END AS number`;
+      const columns = [text('id', 128, true), text('projectId', 128, true), number, text('title', 300), text('body', 100000),
+        text('status', 11, true), text('priority', 8, true), text('category', 128, true),
+        text('createdAt', 24, true), text('updatedAt', 24, true)].join(',');
+      return read('review-row', `SELECT ${key} AS _readKey,${columns} FROM reviews WHERE rowid=? LIMIT 1`, 'get', [rowKey]);
+    }
+  });
+  const result = querySharedBrowsing(source, context, operation, payload);
   assertPeerReadFrame(owner, frame, true);
   return result;
 }
