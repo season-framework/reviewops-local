@@ -66,6 +66,10 @@ case "$pid" in ''|*[!0-9]*) exit 76;; esac
 # A server restart can reuse an old PID. Only signal this job's runner.
 command=$(ps -p "$pid" -o args= 2>/dev/null)
 case "$command" in *"$d/runner"*) ;; *) [ -s "$d/result" ] && exit 0; exit 78;; esac
+# Codex's interrupt handler owns any detached tool process groups. A direct
+# TERM can kill the CLI before that handler stops its tools.
+kill -INT -- "-$pid" 2>/dev/null || true
+for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do kill -0 -- "-$pid" 2>/dev/null || exit 0; sleep .2; done
 kill -TERM -- "-$pid" 2>/dev/null || true
 for attempt in 1 2 3 4 5 6 7 8 9 10; do kill -0 -- "-$pid" 2>/dev/null || exit 0; sleep .2; done
 kill -KILL -- "-$pid" 2>/dev/null || true

@@ -205,6 +205,7 @@ function createAgentManager(options = {}) {
   const { createRuntimeFinder } = require('./codex/runtime.cjs');
   const commandTimeoutMs = options.commandTimeoutMs || 15000;
   const killTimeoutMs = options.killTimeoutMs || 3000;
+  const interruptGraceMs = options.interruptGraceMs || 2000;
   const maxJobs = options.maxJobs || 8;
   const spawnProcess = options.spawn || spawn;
   let closing = false, metadataGeneration = 0;
@@ -308,15 +309,15 @@ function createAgentManager(options = {}) {
     }
     return {...settings, workPath:root};
   }
-  function localRun(settings, args, input = '', onData, timeoutMs = 0) {
+  function localRun(settings, args, input = '', onData, timeoutMs = 0, interruptFirst = false) {
     assertMetadataCurrent(settings);
-    let child, settled = false, timer, killTimer, cancelling = false;
+    let child, settled = false, timer, interruptTimer, killTimer, cancelling = false;
     let resolveDone;
     const done = new Promise(resolve => {resolveDone = resolve;});
     const output = [], errors = []; let bytes = 0;
     const finishProcess = result => {
       if (settled) return;
-      settled = true; clearTimeout(timer); clearTimeout(killTimer); if (cancelling) {try {signal('SIGKILL');} catch {}} controls.delete(control);
+      settled = true; clearTimeout(timer); clearTimeout(interruptTimer); clearTimeout(killTimer); if (cancelling) {try {signal('SIGKILL');} catch {}} controls.delete(control);
       resolveDone({...result, stdout:Buffer.concat(output).toString('utf8'), stderr:Buffer.concat(errors).toString('utf8')});
     };
     let windowsTerminationStarted = false;
@@ -326,7 +327,19 @@ function createAgentManager(options = {}) {
         if (!windowsTerminationStarted) { windowsTerminationStarted = true; terminateProcessGroup(child, platform, spawnProcess); }
       } else try { process.kill(-child.pid, type); } catch(error) {if (error.code !== 'ESRCH') throw error;}
     };
-    const control = {done, cancel:async() => {if (settled) return done; cancelling = true; signal('SIGTERM'); killTimer = setTimeout(() => {try {signal('SIGKILL');} catch {}}, killTimeoutMs); killTimer.unref?.(); return done;}, close:() => {try {signal('SIGKILL');} catch {}return done;}};
+    const terminate = () => {
+      if(settled)return;
+      signal('SIGTERM');killTimer=setTimeout(()=>{try{signal('SIGKILL');}catch{}},killTimeoutMs);killTimer.unref?.();
+    };
+    const control = {done, cancel:async() => {
+      if(settled||cancelling)return done;cancelling=true;
+      // Codex owns tool processes outside its CLI process group. Let its
+      // interrupt handler stop those tools before escalating the CLI itself.
+      if(interruptFirst&&platform!=='win32'){
+        signal('SIGINT');interruptTimer=setTimeout(terminate,interruptGraceMs);interruptTimer.unref?.();
+      }else terminate();
+      return done;
+    }, close:() => {try {signal('SIGKILL');} catch {}return done;}};
     controls.add(control);
     try {
       child = spawnProcess(settings.binary, [...(settings.launchArgs || []), ...args], {cwd:settings.workPath, env, shell:false, detached:platform !== 'win32', windowsHide:true, stdio:['pipe','pipe','pipe']});
@@ -453,7 +466,7 @@ function createAgentManager(options = {}) {
         stopping = true;
         try {
           const active = await connection(true);
-          const result = await remoteSimple(active,`bash -c ${quote(remoteAgent.stop(job.data.id))}`,'',8000);
+          const result = await remoteSimple(active,`bash -c ${quote(remoteAgent.stop(job.data.id))}`,'',10000);
           if (result.code !== 0) throw new Error('원격 에이전트 종료를 확인하지 못했습니다.');
           job.data.error='';delete job.data.errorCode;
           let preserveFiles = false;
@@ -754,7 +767,7 @@ function createAgentManager(options = {}) {
         prompt=filesPrompt(prompt,job.files,filePaths);
       }
       if(job.data.cancelRequested){finish(job,'cancelled');return;}
-      job.control=job.config.kind==='local'?localRun(settings,preparedArgs,prompt,(chunk,stderr)=>collect(job,chunk,stderr)):job.data.kind==='agent'?await durableRemoteRun(job,args,prompt):await remoteRun(job.config,settings,args,prompt,(chunk,stderr)=>collect(job,chunk,stderr),job.data.id,job.images,()=>job.data.cancelRequested,job.files);
+      job.control=job.config.kind==='local'?localRun(settings,preparedArgs,prompt,(chunk,stderr)=>collect(job,chunk,stderr),0,job.data.kind==='agent'):job.data.kind==='agent'?await durableRemoteRun(job,args,prompt):await remoteRun(job.config,settings,args,prompt,(chunk,stderr)=>collect(job,chunk,stderr),job.data.id,job.images,()=>job.data.cancelRequested,job.files);
       job.resolveControlReady(job.control);
       if(job.data.cancelRequested)try{await stopControl(job.control);}catch(error){
         if(error.code!=='AGENT_STOP_UNCONFIRMED')throw error;
