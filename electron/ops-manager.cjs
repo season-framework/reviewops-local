@@ -24,6 +24,7 @@ class OpsManager{
   _open(){if(this.closed)fail('OPS_CLOSED','Ops가 종료되고 있습니다.');}
   _goal(data,id){const goal=data.goals.find(row=>row.id===id);if(!goal)fail('OPS_GOAL_NOT_FOUND','Ops 목표를 찾을 수 없습니다.');return goal;}
   _time(){return new Date(this.now()).toISOString();}
+  _ownsTarget(goal){return this.draining.has(goal.id)||Boolean(goal.turnId)||goal.modelState==='running'||goal.backgroundState==='active'||goal.backgroundCount>0||Boolean(goal.threadId&&goal.backgroundState!=='empty')||['running','starting','unknown'].includes(goal.executionState)||goal.history.some(h=>h.type==='delivery'&&['prepared','accepted','unknown'].includes(h.status));}
   _activity(goal,modelState,backgroundState,backgroundCount){
     goal.modelState=modelState;goal.backgroundState=['active','empty','unknown'].includes(backgroundState)?backgroundState:'unknown';goal.backgroundCount=Number.isSafeInteger(backgroundCount)&&backgroundCount>=0?backgroundCount:null;
     const held=this.draining.has(goal.id)||['paused','finished'].includes(goal.status)&&(this.lifecycle.has(goal.id)||goal.executionState==='unknown');
@@ -61,17 +62,17 @@ class OpsManager{
     const target=await this.resolveTarget(raw);this._open();guard();const timestamp=this._time();
     const result=this._mutate(data=>{
       const goal=raw.id?this._goal(data,raw.id):null;
-      if(goal&&(goal.workPath!==target.workPath||goal.projectId!==(target.projectId||'')||goal.targetIdentity!==(target.targetIdentity||'local')||CONFIG.some(key=>goal[key]!==raw[key]))&&['running','starting','unknown'].includes(goal.executionState))fail('OPS_GOAL_BUSY','실행 또는 전달 결과를 확인한 뒤 작업 대상과 실행 설정을 변경하십시오.');
+      if(goal&&(goal.workPath!==target.workPath||goal.projectId!==(target.projectId||'')||goal.targetIdentity!==(target.targetIdentity||'local')||CONFIG.some(key=>goal[key]!==raw[key]))&&this._ownsTarget(goal))fail('OPS_GOAL_BUSY','실행 또는 전달 결과를 확인한 뒤 작업 대상과 실행 설정을 변경하십시오.');
       if(goal?.threadId&&goal.targetIdentity!==(target.targetIdentity||'local'))fail('OPS_SESSION_TARGET_CHANGED','기존 대화는 원래 작업 서버에 연결됩니다. 다른 서버는 새 목표로 등록하십시오.');
       const saved={...raw,workPath:target.workPath,projectId:target.projectId||'',projectEpoch:target.projectEpoch,projectBirth:target.projectBirth,targetKind:target.targetKind||'local',targetIdentity:target.targetIdentity||'local',targetLockIdentity:target.targetLockIdentity||target.targetIdentity||'local',targetLockIdentities:target.targetLockIdentities||[target.targetLockIdentity||target.targetIdentity||'local'],targetLabel:target.targetLabel||target.workPath,serviceId:target.serviceId||null,id:goal?.id||randomUUID(),updatedAt:timestamp};
       if(goal){Object.assign(goal,saved);this._history(goal,'goal.updated','사용자가 목표 설정을 변경했습니다.');this._rebasePending(goal,'목표 설정 변경으로 미전달 지시를 다시 조립했습니다.');}
       else{if(data.goals.length>=100)fail('OPS_LIMIT','목표는 100개까지 등록할 수 있습니다.');data.goals.push({...saved,status:'draft',executionState:'idle',threadId:null,turnId:null,lastError:null,lastWork:'',waitingReason:null,createdAt:timestamp,schedules:[],history:[],conversation:[],toolReceipts:[]});}
       this._promptBudget(data);
     });
-    if(before){const session=this.sessions.get(before.id);if(session&&!['running','starting','unknown'].includes(before.executionState)){this.sessions.delete(before.id);await session.close?.();}}
+    if(before){const session=this.sessions.get(before.id),current=this._goal(this.store.data,before.id);if(session&&!this._ownsTarget(current)){this.sessions.delete(before.id);await session.close?.();}}
     return result;
   }
-  async deleteGoal(id,guard=()=>{}){const goal=this._goal(this.store.data,id);if(goal.status==='active'||['running','starting','unknown'].includes(goal.executionState))fail('OPS_GOAL_BUSY','목표를 일시정지하고 실행 결과를 확인한 뒤 삭제하십시오.');await this.sessions.get(id)?.close?.();guard();this.sessions.delete(id);return this._mutate(data=>{data.goals=data.goals.filter(g=>g.id!==id);});}
+  async deleteGoal(id,guard=()=>{}){guard();const result=this._mutate(data=>{const goal=this._goal(data,id);if(goal.status==='active'||this._ownsTarget(goal))fail('OPS_GOAL_BUSY','목표를 일시정지하고 실행 결과를 확인한 뒤 삭제하십시오.');data.goals=data.goals.filter(g=>g.id!==id);});const session=this.sessions.get(id);this.sessions.delete(id);await session?.close?.();return result;}
   configure(input){fields(input,['commonPrompt']);string(input.commonPrompt,100000,'공통 실행 지침');return this._mutate(data=>{data.commonPrompt=input.commonPrompt;this._promptBudget(data);for(const goal of data.goals)this._rebasePending(goal,'공통 지침 변경으로 미전달 지시를 다시 조립했습니다.',data.commonPrompt);});}
   _layers(goal,{scheduleIds=[],reason='사용자 요청',instruction='',commonPrompt=this.store.data.commonPrompt}={}){
     const schedules=scheduleIds.map(id=>goal.schedules.find(s=>s.id===id)).filter(Boolean);
@@ -161,7 +162,7 @@ class OpsManager{
     this._mutate(data=>{const goal=this._goal(data,id);if(goal.status!=='active')fail('OPS_GOAL_INACTIVE','활성화된 목표에만 지시를 전달할 수 있습니다.');const assembled=this._compose(goal,{scheduleIds,reason,instruction},deliveryId);this._history(goal,'delivery',reason,{id:deliveryId,status:'queued',scheduleId:scheduleIds[0]||null,scheduleIds,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});
     void this.pump(id);return deliveryId;
   }
-  _blocker(goal){const keys=this._requestKeys(goal);return this.store.data.goals.find(other=>other.id!==goal.id&&['running','starting','unknown'].includes(other.executionState)&&this._requestKeys(other).some(first=>keys.some(second=>conflictingTargets(first,second))));}
+  _blocker(goal){const keys=this._requestKeys(goal);return this.store.data.goals.find(other=>other.id!==goal.id&&this._ownsTarget(other)&&this._requestKeys(other).some(first=>keys.some(second=>conflictingTargets(first,second))));}
   pump(id){if(this.pumps.has(id))return this.pumps.get(id);const task=this._pump(id).catch(error=>this._deliveryError(id,error)).finally(()=>{if(this.pumps.get(id)===task)this.pumps.delete(id);});this.pumps.set(id,task);return task;}
   async _pump(id){
     while(!this.closed&&!this.suspended){
@@ -191,7 +192,11 @@ class OpsManager{
         h.status=completed?terminalStatus(outcome||h.status):'accepted';if(outcome)h.outcome=outcome;g.threadId=h.threadId;g.turnId=completed?null:(result.activeTurnId||result.turnId||g.turnId);g.executionState=this._activity(g,completed||result.state==='idle'?'idle':'running',terminal?.backgroundState||result.backgroundState||g.backgroundState,terminal?.backgroundCount??result.backgroundCount??g.backgroundCount);if(outcome==='failed'&&g.executionState==='idle')g.executionState='error';g.lastError=outcome==='failed'?'Codex 실행이 실패했습니다. 기록을 확인하십시오.':null;for(const sid of h.scheduleIds||[]){const s=g.schedules.find(row=>row.id===sid);if(s)s.lastResult=h.status;}});
     }
   }
-  _deliveryError(id,error,deliveryId){if(this.closed)return;try{this._mutate(data=>{const goal=this._goal(data,id),delivery=deliveryId?goal.history.find(h=>h.id===deliveryId):activeDelivery(goal);goal.lastError=String(error?.message||error);const notSent=error?.deliveryState==='not_sent',ambiguous=goal.executionState==='unknown'||delivery&&['prepared','unknown'].includes(delivery.status)||goal.turnId&&['running','starting','unknown'].includes(goal.executionState);goal.executionState=notSent&&goal.turnId?'running':ambiguous&&!notSent?'unknown':'error';if(delivery){delivery.status=notSent||delivery.status==='queued'?'queued':goal.executionState==='unknown'?'unknown':'failed';delivery.error=goal.lastError;}this._history(goal,'error','실행 상태 확인이 필요합니다.',{message:goal.lastError});});}catch{/* Preserve the original store file if persistence itself failed. */}}
+  _deliveryError(id,error,deliveryId){if(this.closed)return;try{this._mutate(data=>{const goal=this._goal(data,id),delivery=deliveryId?goal.history.find(h=>h.id===deliveryId):goal.history.find(h=>h.type==='delivery'&&h.status==='queued')||activeDelivery(goal);goal.lastError=String(error?.message||error);const notSent=error?.deliveryState==='not_sent';
+    // A rejected new request cannot erase work owned by an earlier turn. For a
+    // definite pre-send failure, exclude only that request's temporary claim.
+    const retained=this._ownsTarget(notSent?{...goal,executionState:'error',history:goal.history.filter(h=>h.id!==delivery?.id)}:goal);
+    goal.executionState=retained?notSent&&goal.turnId?'running':'unknown':'error';if(delivery){delivery.status=notSent||delivery.status==='queued'?'queued':goal.executionState==='unknown'?'unknown':'failed';delivery.error=goal.lastError;}this._history(goal,'error','실행 상태 확인이 필요합니다.',{message:goal.lastError});});}catch{/* Preserve the original store file if persistence itself failed. */}}
   _schedulerError(error){if(this.closed)return;try{this._mutate(data=>{data.lastError=String(error?.message||error);});}catch{/* A failed scheduler checkpoint never changes another goal's state. */}}
   async reconnect(id,pump=true){
     if(this.reconciling.has(id))return this.reconciling.get(id);
@@ -234,7 +239,7 @@ class OpsManager{
     if(this.closed||this.suspended)return;
     // Probe only retained/uncertain owners. These are metadata reads, never new
     // model input, and normal model completion does not terminate a service.
-    const probes=this.store.data.goals.filter(g=>g.threadId&&(g.executionState==='unknown'||g.executionState==='running'&&!g.turnId));
+    const probes=this.store.data.goals.filter(g=>g.threadId&&(g.executionState==='unknown'||this._ownsTarget(g)&&!g.turnId));
     for(const goal of probes)void this.reconnect(goal.id).catch(error=>this._schedulerError(error));
     if(this.closed||this.suspended)return;const due=[];
     for(const goal of this.store.data.goals)if(goal.status==='active'){const ids=goal.schedules.filter(s=>s.enabled&&s.nextRunAt&&new Date(s.nextRunAt).getTime()<=at).map(s=>s.id);if(ids.length)due.push({id:goal.id,ids});}
@@ -247,8 +252,8 @@ class OpsManager{
     await this.pumpAll();
   }
   async pumpAll(){await Promise.allSettled(this.store.data.goals.filter(g=>g.status==='active').map(g=>this.pump(g.id)));}
-  hasActiveWork(){return this.pumps.size>0||this.reconciling.size>0||this.store.data.goals.some(g=>['running','starting','unknown'].includes(g.executionState));}
-  runtimeChanged(){if(this.closed)return;for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!goal.turnId){const session=this.sessions.get(goal.id);this.sessions.delete(goal.id);Promise.resolve(session?.close?.()).catch(()=>{});}this._notify();}
+  hasActiveWork(){return this.pumps.size>0||this.reconciling.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
+  runtimeChanged(){if(this.closed)return;for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal)){const session=this.sessions.get(goal.id);this.sessions.delete(goal.id);Promise.resolve(session?.close?.()).catch(()=>{});}this._notify();}
   exportData(){return this.store.read();}
   validateImport(value){return validateOpsData(value);}
   restore(value,options){if(this.hasActiveWork()&&!(this.suspended&&options?.pause===false))fail('OPS_GOAL_BUSY','실행 중이거나 확인되지 않은 Ops 목표를 정리한 뒤 복원하십시오.');for(const session of this.sessions.values())Promise.resolve(session.close?.()).catch(()=>{});this.sessions.clear();this.store.restore(value,options);this._notify();return this.snapshot();}

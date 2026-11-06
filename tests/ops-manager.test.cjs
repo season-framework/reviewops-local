@@ -16,6 +16,7 @@ async function harness(t,overrides={}){
       async start(input){
         const persisted=JSON.parse(fs.readFileSync(path.join(dataPath,'ops/state.json'))),goal=persisted.goals.find(g=>g.id===options.goalId),record=goal.history.find(h=>h.id===input.deliveryId);
         assert.equal(record.status,'prepared');assert.equal(record.prompt,input.prompt);assert.ok(input.prompt.includes(input.deliveryId));
+        if(overrides.beforeStart)await overrides.beforeStart(input,state);
         calls.push({kind:'start',goalId:options.goalId,...input});state.threadId=input.threadId||'thread-'+options.goalId;state.turnId='turn-'+calls.length;
         await options.onEvent({type:'thread',threadId:state.threadId});await options.onEvent({type:'turn.started',threadId:state.threadId,turnId:state.turnId});
         external.set(input.deliveryId,{threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'});
@@ -25,7 +26,7 @@ async function harness(t,overrides={}){
       async steer(input){calls.push({kind:'steer',goalId:options.goalId,...input});external.set(input.deliveryId,{threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'});return {threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'};},
       async reconcile(input){calls.push({kind:'reconcile',goalId:options.goalId,...input});if(overrides.reconcile)return overrides.reconcile(input,state,external);return external.get(input.deliveryId)||{threadId:input.threadId,state:'unknown',delivery:'unknown'};},
       async interrupt(input){calls.push({kind:'interrupt',goalId:options.goalId,...input});if(overrides.interrupt)return overrides.interrupt(input,state);await options.onEvent({type:'turn.completed',threadId:state.threadId||input.threadId,turnId:state.turnId||input.turnId,status:'interrupted',backgroundState:'empty',backgroundCount:0});return {confirmed:true,state:'idle',turnId:state.turnId||input.turnId};},
-      async close(){}
+      async close(){calls.push({kind:'close',goalId:options.goalId});if(overrides.close)await overrides.close(state);}
     };
   };
   const options={dataPath,createSession,now:()=>clock,schedulerOptions:{setTimer:()=>1,clearTimer:()=>{}}};
@@ -207,4 +208,35 @@ test('one held background metadata probe does not delay an unrelated due schedul
  await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'active',backgroundCount:1,outcome:'completed'});await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});
  await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();h.manager.saveSchedule({goalId:b,name:'Due independently',prompt:'Inspect the current state.',cron:'* * * * *',timezone:'UTC',enabled:true});h.setTime(h.now()+60000);
  await h.manager.tick();await ready;assert.equal(h.calls.filter(c=>c.kind==='steer'&&c.goalId===b).length,1);release();await h.manager.reconnect(a);
+});
+
+
+for(const failureKind of ['target lookup','definite pre-send'])test(`a ${failureKind} failure for a new instruction retains an earlier background owner's target`,async t=>{
+ let rejectNext=false;const h=await harness(t,{beforeStart:async()=>{if(rejectNext&&failureKind==='definite pre-send')throw Object.assign(new Error('SSH unavailable before input'),{deliveryState:'not_sent'});}}),folder=h.folder('failure-retains-owner'),a=await h.add('Live background owner',folder),b=await h.add('Waiting writer',folder);
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'active',backgroundCount:1,outcome:'completed'});await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});
+ await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();const resolve=h.manager.resolveTarget;h.manager.resolveTarget=async input=>{if(rejectNext&&failureKind==='target lookup'&&input.id===a)throw new Error('SSH target unavailable');return resolve(input);};rejectNext=true;
+ await h.manager.goalAction({goalId:a,action:'request',instruction:'Check the running service.'});await h.manager.pumpAll();await h.manager.pumpAll();
+ const owner=h.manager.snapshot().goals.find(g=>g.id===a),peer=h.manager.snapshot().goals.find(g=>g.id===b);assert.equal(owner.executionState,'unknown');assert.equal(owner.backgroundState,'active');assert.equal(owner.backgroundCount,1);assert.ok(owner.lastError.includes('unavailable'));assert.equal(owner.history.find(row=>row.type==='delivery').status,'completed');assert.equal(owner.history.filter(row=>row.type==='delivery').at(-1).status,'queued');assert.equal(peer.executionState,'waiting');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(h.calls.filter(c=>c.kind==='interrupt').length,0);assert.equal(h.manager.hasActiveWork(),true);
+ h.manager.resolveTarget=resolve;rejectNext=false;await assert.rejects(h.manager.saveGoal({id:a,model:'different-model'}),{code:'OPS_GOAL_BUSY'});await assert.rejects(h.manager.deleteGoal(a),{code:'OPS_GOAL_BUSY'});assert.throws(()=>h.manager.restore(h.manager.exportData()),{code:'OPS_GOAL_BUSY'});
+});
+
+test('persisted background facts protect ownership and destructive guards even with an error display label',async t=>{
+ const h=await harness(t),folder=h.folder('legacy-error-owner'),a=await h.add('Legacy background owner',folder),b=await h.add('Waiting peer',folder);await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);
+ await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});
+ // Model the valid persisted shape produced by the earlier error transition.
+ h.manager.store.update(data=>{const owner=data.goals.find(g=>g.id===a);owner.status='paused';owner.executionState='error';});
+ await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();assert.equal(h.manager.snapshot().goals.find(g=>g.id===b).executionState,'waiting');assert.equal(h.manager.hasActiveWork(),true);h.manager.runtimeChanged();assert.equal(h.calls.filter(c=>c.kind==='close'&&c.goalId===a).length,0);
+ await assert.rejects(h.manager.saveGoal({id:a,model:'different-model'}),{code:'OPS_GOAL_BUSY'});await assert.rejects(h.manager.deleteGoal(a),{code:'OPS_GOAL_BUSY'});assert.throws(()=>h.manager.restore(h.manager.exportData()),{code:'OPS_GOAL_BUSY'});
+});
+
+test('a metadata-only save rechecks live ownership before closing a previously idle adapter',async t=>{
+ const h=await harness(t),id=await h.add('Saved during activation');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.complete(id);let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r),resolve=h.manager.resolveTarget;
+ h.manager.resolveTarget=async input=>{if(input.name==='Updated metadata'){entered();await gate;}return resolve(input);};const save=h.manager.saveGoal({id,name:'Updated metadata'});await ready;await h.manager.goalAction({goalId:id,action:'request',instruction:'Continue work.'});await h.manager.pumpAll();release();await save;
+ assert.equal(h.manager.snapshot().goals[0].executionState,'running');assert.equal(h.calls.filter(c=>c.kind==='close').length,0);
+});
+
+
+test('deleting an inactive proven-idle goal cannot reactivate it while its adapter close is pending',async t=>{
+ let release,entered,held=false;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const h=await harness(t,{close:async()=>{if(!held){held=true;entered();await gate;}}}),id=await h.add('Delete before await');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:id,action:'pause'});
+ const deletion=h.manager.deleteGoal(id);await ready;await assert.rejects(h.manager.goalAction({goalId:id,action:'resume'}),{code:'OPS_GOAL_NOT_FOUND'});assert.equal(h.calls.filter(c=>c.kind==='start').length,1);release();await deletion;assert.equal(h.manager.snapshot().goals.length,0);
 });
