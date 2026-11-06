@@ -27,11 +27,12 @@ function safeError(error){const code=String(error?.code||'OPS_QA_FAILED').slice(
 function createOpsQa(options){
   const {goalId,getContext,isCurrent,admit,recordStart,recordOutcome,handle,captureDir}=options;
   if(!/^[A-Za-z0-9_-]{1,128}$/.test(goalId||'')||[getContext,isCurrent,admit,recordStart,recordOutcome,handle].some(value=>typeof value!=='function')||!path.isAbsolute(captureDir||''))throw failure('OPS_QA_CONFIG','The trusted goal QA connection is unavailable.');
-  const instance=randomUUID();let lease=null,generation=0,closed=false,queue=Promise.resolve();
+  const instance=randomUUID();let lease=null,pendingRelease=null,releaseTask=null,generation=0,closed=false,queue=Promise.resolve();
   const tools=[...qaTools,documentTool].map(tool=>({...tool,name:tool.name.replace(/^reviewops_qa_/,'ops_qa_'),inputSchema:withoutBinding(tool.inputSchema)}));
   tools.push({name:'ops_qa_status',action:'status',description:'Read only this goal’s project QA availability and current binding. This does not acquire a window.',inputSchema:schema({})});
   const scope=ctx=>[ctx.projectId,ctx.projectEpoch,ctx.projectBirth,ctx.threadId,ctx.appInstanceId];
   function checkContext(ctx,metadata,expectedGeneration){
+    if(pendingRelease)throw failure('OPS_QA_RELEASE_UNCONFIRMED','The original QA lease is still awaiting cleanup. Reconnect this goal to retry only that lease.');
     if(closed||generation!==expectedGeneration)throw failure('OPS_QA_STALE','This goal’s QA ownership changed. Observe and reconnect through this goal only.');
     if(ctx.goalId!==goalId||ctx.status!=='active'||!ctx.projectId||!ctx.threadId||!ctx.turnId||metadata.threadId!==ctx.threadId||metadata.turnId!==ctx.turnId||typeof metadata.callId!=='string'||!metadata.callId)throw failure('OPS_QA_SCOPE','QA requires this active goal’s registered project and current Codex turn.');
     isCurrent(ctx);
@@ -62,10 +63,22 @@ function createOpsQa(options){
   async function releaseLease(current,reason){
     if(!current)return;
     let status='completed',error;
-    try{await handle('automation.qa.release',requestBinding(current),()=>{if(current.context.appInstanceId!==options.appInstanceId&&options.appInstanceId!==undefined)throw failure('OPS_QA_STALE','The original application is no longer available.');});}
-    catch(cause){status='unknown';error=safeError(cause);}
+    const guard=()=>{if(current.context.appInstanceId!==options.appInstanceId&&options.appInstanceId!==undefined)throw failure('OPS_QA_STALE','The original application is no longer available.');};
+    try{const result=await handle('automation.qa.release',requestBinding(current),guard);if(result?.released!==true||['sessionId','projectId','windowId'].some(key=>result[key]!==current[key]))throw failure('OPS_QA_RELEASE_UNCONFIRMED','QA did not confirm release of the original lease.');}
+    catch(cause){
+      status='unknown';error=safeError(cause);
+      try{const proof=await handle('cleanupStatus',bindingOnly(current),guard);if(proof?.leaseState==='absent'&&bindingKeys.every(key=>proof[key]===current[key])){status='completed';error=undefined;}}
+      catch{/* An unavailable or ambiguous status can never confirm cleanup. */}
+    }
     await recordOutcome({callId:null,status,...(error?{error}: {}),binding:{...privateBinding(current),state:status==='completed'?'released':'unknown',reason}});
     if(error)throw failure('OPS_QA_RELEASE_UNCONFIRMED','Only this goal’s QA release is unconfirmed. Other windows were retained.');
+  }
+  async function retireLease(current,reason){
+    if(current){if(pendingRelease&&bindingKeys.some(key=>pendingRelease[key]!==current[key]))throw failure('OPS_QA_RELEASE_UNCONFIRMED','The original pending lease must be cleaned before another lease can be retired.');pendingRelease??=current;}
+    if(releaseTask)return releaseTask;
+    const original=pendingRelease;if(!original)return;
+    const task=(async()=>{await releaseLease(original,reason);if(pendingRelease===original)pendingRelease=null;})();
+    releaseTask=task.finally(()=>{releaseTask=null;});return releaseTask;
   }
   async function run(tool,args,metadata){
     validate(tool.inputSchema,args);const ctx=await getContext(),epoch=generation;
@@ -100,7 +113,7 @@ function createOpsQa(options){
       return opsToolOutput(result,{images:bytes?[bytes]:[]});
     }catch(error){
       if(recorded)return opsToolOutput({error:safeError(error),originalResult:receipt.result},{success:false});
-      if(candidate&&lease!==candidate)await releaseLease(candidate,'The goal changed while QA was opening.').catch(()=>{});
+      if(candidate&&lease!==candidate)await retireLease(candidate,'The goal changed while QA was opening.').catch(()=>{});
       const unknown=Boolean(error.inputMayHaveApplied)||invoked&&mutation;
       receipt={callId:metadata.callId,status:unknown?'unknown':'failed',error:safeError(error),binding:privateBinding(lease)};
       await recordOutcome(receipt);return output(receipt);
@@ -108,8 +121,8 @@ function createOpsQa(options){
   }
   return Object.freeze({
     tools:tools.map(tool=>({name:tool.name,description:(tool.name==='ops_qa_open'?'Open or reuse only this goal’s registered project window in the background. Its QA client and lease are created internally. An optional review must belong to this project.':tool.description)+' The project, QA client, session and window are fixed by this goal; never supply or substitute their IDs.',inputSchema:tool.inputSchema,execute:(args,metadata)=>{const input=structuredClone(args),original=Object.freeze({...metadata});const operation=queue.then(()=>run(tool,input,original)).catch(error=>opsToolOutput({error:safeError(error)},{success:false}));queue=operation.catch(()=>{});return operation;}})),
-    async release(reason='The goal released QA.') {generation++;const current=lease;lease=null;await releaseLease(current,reason);},
-    async close(){closed=true;generation++;const current=lease;lease=null;await releaseLease(current,'The goal connection closed.');},
+    async release(reason='The goal released QA.') {generation++;const current=lease;lease=null;await retireLease(current,reason);},
+    async close(){closed=true;generation++;const current=lease;lease=null;await retireLease(current,'The goal connection closed.');},
   });
 }
 module.exports={createOpsQa,MAX_OPS_QA_PNG:MAX_PNG};
