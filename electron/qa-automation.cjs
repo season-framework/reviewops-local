@@ -129,6 +129,15 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     else result.bindingState='attached';
     return result;
   }
+  // Private cleanup proof: unlike UI availability, this reads exact lease
+  // membership without pruning, touching, reconnecting or selecting a window.
+  function leaseStatus(payload){
+    const keys=['clientId','sessionId','projectId','windowId'];
+    if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).length!==keys.length||Object.keys(payload).some(key=>!keys.includes(key)))fail('Invalid original QA lease status request.');
+    for(const key of keys)id(payload[key],key);
+    const session=sessions.get(payload.sessionId),leaseState=closed?'unknown':!session?'absent':keys.every(key=>(key==='sessionId'?session.id:session[key])===payload[key])?'attached':'unknown';
+    return {...payload,leaseState};
+  }
   async function open(payload,guard){
     guard();
     const projectId=id(payload.projectId,'프로젝트 ID'),clientId=id(payload.clientId,'클라이언트 ID');
@@ -362,6 +371,6 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,connectionStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,connectionStatus,leaseStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

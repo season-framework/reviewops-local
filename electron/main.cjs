@@ -115,7 +115,7 @@ function createOpsQaBridge(options,appInstanceId){
     if(!qaAutomation)throw Object.assign(new Error('프로젝트 QA 연결이 아직 준비되지 않았습니다.'),{code:'OPS_QA_UNAVAILABLE'});
     // Cleanup uses only the bridge's private live lease. It may release that
     // lease after deletion/restore, but can never acquire or input to a target.
-    if(action==='release')return qaAutomation.handle(action,payload,()=>{guard?.();if(options.appInstanceId&&options.appInstanceId!==appInstanceId)throw new Error('이전 앱의 QA 연결입니다.');});
+    if(action==='release'||action==='cleanupStatus'){const cleanupGuard=()=>{guard?.();if(options.appInstanceId!==appInstanceId)throw new Error('이전 앱의 QA 연결입니다.');};cleanupGuard();if(action==='cleanupStatus'){const result=qaAutomation.leaseStatus(payload);cleanupGuard();return result;}return qaAutomation.handle(action,payload,cleanupGuard);}
     const context=options.getContext(),fence=()=>{guard?.();options.isCurrent(context);if(store!==originalStore||context.appInstanceId!==appInstanceId||payload.projectId!==context.projectId)throw Object.assign(new Error('원래 목표의 QA 프로젝트를 확인하십시오.'),{code:'OPS_QA_PROJECT_CHANGED'});assertOpsQaContext(context);};
     fence();if(action==='status'){const result=qaAutomation.connectionStatus(payload);fence();return result;}return qaAutomation.handle(action,payload,fence);
   }});

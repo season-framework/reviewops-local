@@ -179,7 +179,7 @@ async function harness(t, options = {}) {
     }
     if (name === './qa-automation.cjs') {
       const qa = require('../electron/qa-automation.cjs');
-      return {...qa, createQaAutomation(options) { state.qaOptions = options; return qa.createQaAutomation(options); }};
+      return {...qa, createQaAutomation(options) { state.qaOptions = options;state.qaApi=qa.createQaAutomation(options);return state.qaApi; }};
     }
     if (['./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
@@ -4223,4 +4223,10 @@ test('Ops QA input revalidates committed project birth after readiness waits and
  const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-birth-target'),opened=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'open-birth');assert.equal(opened.success,true,opened.text);const binding=JSON.parse(opened.text),record=h.state.qaOptions.getWindow(binding.windowId),commands=[];let release;const gate=new Promise(r=>release=r);record.host.webContents.debugger={isAttached:()=>true,sendCommand:async(method,params)=>{commands.push({method,params});return {};}};record.browsers={automationTargets:()=>[{browserId:'birth-surface',contents:record.host.webContents,ready:gate}],closeAll(){},async flush(){}};
  const input=qaCall(fixture.sessions,a.id,'ops_qa_type',{browserId:'birth-surface',text:'Must not enter replacement project'},'pending-birth');await new Promise(setImmediate);h.state.liveStore.importData(h.state.liveStore.exportData());release();await input;assert.deepEqual(commands,[]);assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===a.id).qaReceipts.at(-1).status,'unknown');
  fs.mkdirSync(path.join(h.root,'QA-folder'));const folder=await h.ops('saveGoal',{name:'Folder QA unavailable',description:'',prompt:'Inspect folder only.',workPath:path.join(h.root,'QA-folder')},h.event(h.state.primaryWindow)),id=folder.goals.at(-1).id;await h.ops('goalAction',{goalId:id,action:'start'},h.event(h.state.primaryWindow));await h.state.opsManager.pumpAll();await assert.rejects(qaCall(fixture.sessions,id,'ops_qa_open',{},'folder-open'),{code:'OPS_QA_SCOPE'});assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===id).qaBinding.state,'unavailable');
+});
+
+
+test('Ops paused cleanup proves its original lease absent without releasing a replacement client in that project',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-original-cleanup'),opened=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'original-open');assert.equal(opened.success,true,opened.text);const original=JSON.parse(opened.text),originalRequest={sessionId:original.sessionId,projectId:original.projectId,windowId:original.windowId};await h.state.qaApi.handle('release',originalRequest);const replacement=await h.state.qaApi.handle('open',{projectId:a.project.id,clientId:'replacement-qa-client'});
+ await h.ops('goalAction',{goalId:a.id,action:'pause'},h.event(h.state.primaryWindow));const goal=h.state.opsManager.snapshot().goals.find(g=>g.id===a.id);assert.equal(goal.status,'paused');assert.equal(goal.executionState,'idle');assert.equal(goal.qaBinding.state,'released');assert.equal(h.state.qaApi.leaseStatus(replacement).leaseState,'attached');assert.equal(h.state.qaOptions.getWindow(replacement.windowId).qaActive,true);
 });

@@ -397,3 +397,11 @@ test('late selectAll keyUp failure keeps its original timeout without replay',as
   assert.equal(Object.hasOwn(f.commands[1].params,'commands'),false);await assert.rejects(async()=>f.observe(),{code:'QA_TARGET_UNAVAILABLE'});
  }finally{hold.resolve();await pending?.catch(()=>{});}
 });
+
+test('private original-lease cleanup proof distinguishes absent membership from unavailable UI without adopting another lease',async()=>{
+ let present=true;const record={id:'original-window',projectId:'a',host:{isDestroyed:()=>false}},api=createQaAutomation({getProject:()=>present,getWindow:()=>record,openWindow:async()=>record});try{
+ const original=await api.handle('open',{projectId:'a',clientId:'original-client'});assert.equal(api.leaseStatus(original).leaseState,'attached');for(const patch of [{clientId:'other-client'},{projectId:'other-project'},{windowId:'other-window'}])assert.equal(api.leaseStatus({...original,...patch}).leaseState,'unknown');assert.throws(()=>api.leaseStatus({...original,guard:'capability'}),{code:'INVALID_REQUEST'});
+ present=false;assert.equal(api.connectionStatus({projectId:'a',binding:only(original)}).availability,'unavailable');assert.equal(api.leaseStatus(original).leaseState,'attached');assert.throws(()=>api.handle('release',only(original)),{code:'TARGET_CLOSED'});assert.equal(api.leaseStatus(original).leaseState,'absent');
+ present=true;const replacement=await api.handle('open',{projectId:'a',clientId:'replacement-client'});assert.equal(api.leaseStatus(original).leaseState,'absent');assert.equal(api.leaseStatus(replacement).leaseState,'attached');assert.equal(record.qaActive,true);api.close();assert.equal(api.leaseStatus(original).leaseState,'unknown');assert.equal(api.leaseStatus(replacement).leaseState,'unknown');
+ }finally{api.close();}
+});
