@@ -29,7 +29,7 @@ async function harness(t,overrides={}){
       async close(){calls.push({kind:'close',goalId:options.goalId});if(overrides.close)await overrides.close(state);}
     };
   };
-  const options={dataPath,createSession,now:()=>clock,schedulerOptions:{setTimer:()=>1,clearTimer:()=>{}}};
+  const options={dataPath,createSession,...overrides.managerOptions,now:()=>clock,schedulerOptions:{setTimer:()=>1,clearTimer:()=>{}}};
   const manager=new OpsManager(options);t.after(async()=>{await manager.close();fs.rmSync(root,{recursive:true,force:true});});
   const folder=name=>{const p=path.join(root,name);fs.mkdirSync(p,{recursive:true});return p;};
   const add=async(name,workPath=folder(name))=>{const snapshot=await manager.saveGoal({name,description:'Deliver the requested feature',workPath,prompt:'Implement and verify it.'});return snapshot.goals.at(-1).id;};
@@ -268,4 +268,32 @@ test('an in-progress reconciliation preserves accepted steering receipts and inc
  const h=await harness(t),id=await h.add('Active receipt status');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:id,action:'request',instruction:'Continue the active turn.'});await h.manager.pumpAll();for(const value of h.external.values())Object.assign(value,{turnStatus:'inProgress',backgroundState:'empty',backgroundCount:0});
  await h.manager.reconnect(id);let current=h.manager.snapshot().goals[0];assert.equal(current.executionState,'running');assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='accepted').length,2);assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='completed').length,0);
  for(const value of h.external.values())value.state='idle';await h.manager.reconnect(id);current=h.manager.snapshot().goals[0];assert.equal(current.executionState,'unknown');assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='completed').length,0);assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='unknown').length,1);assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+});
+
+
+async function qaHarness(t){
+ const bridges=new Map(),released=[];const h=await harness(t,{managerOptions:{createQaBridge:options=>{bridges.set(options.goalId,options);return {tools:[],release:async reason=>{released.push(options.goalId);const binding=options.getContext?(()=>{try{return h.manager.snapshot().goals.find(g=>g.id===options.goalId)?.qaBinding}catch{return null}})():null;if(binding?.sessionId)await options.recordOutcome({callId:null,status:'completed',binding:{...binding,state:'released',reason}});}};}}});
+ const add=async name=>{const id=await h.add(name);h.manager.store.update(data=>Object.assign(data.goals.find(g=>g.id===id),{projectId:'project-'+id,serviceId:'service-'+id,projectEpoch:'epoch',projectBirth:1,projectConnectionSignature:'a'.repeat(64)}));await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();return id;};
+ const request=(id,callId='qa-call',args={})=>{const tool='ops_qa_open',context=bridges.get(id).getContext(),argsDigest=require('node:crypto').createHash('sha256').update(JSON.stringify({args,tool})).digest('hex');return {callId,tool,args,argsDigest,context};};
+ const binding=id=>({clientId:'client-'+id,sessionId:'session-'+id,windowId:'window-'+id,projectId:'project-'+id,appInstanceId:h.manager.appInstanceId});return {...h,bridges,released,qaAdd:add,request,binding};
+}
+
+test('QA operations checkpoint the original goal/thread before mutation and reject replay or foreign ownership',async t=>{
+ const h=await qaHarness(t),a=await h.qaAdd('QA A'),b=await h.qaAdd('QA B'),bridge=h.bridges.get(a),request=h.request(a);assert.equal(bridge.admit(request).reused,false);await bridge.recordStart(request);const disk=JSON.parse(fs.readFileSync(path.join(h.dataPath,'ops/state.json'))),saved=disk.goals.find(g=>g.id===a).qaReceipts[0];assert.equal(saved.status,'prepared');assert.equal(saved.threadId,request.context.threadId);assert.equal(saved.turnId,request.context.turnId);assert.throws(()=>bridge.admit(request),{code:'OPS_QA_OPERATION_UNKNOWN'});
+ await bridge.recordOutcome({callId:request.callId,status:'completed',binding:h.binding(a),result:{...h.binding(a),data:'MUST_NOT_PERSIST',password:'MUST_NOT_PERSIST',applied:true}});const replay=bridge.admit(request);assert.equal(replay.reused,true);assert.equal(replay.receipt.result.applied,true);assert.equal(JSON.stringify(h.manager.exportData()).includes('MUST_NOT_PERSIST'),false);assert.equal(h.manager.snapshot().goals.find(g=>g.id===b).qaReceipts.length,0);assert.throws(()=>bridge.admit({...request,context:h.bridges.get(b).getContext()}),{code:'INVALID_OPS_TOOL'});
+});
+
+test('pause fences an in-flight QA call before awaits and releases only its own goal lease',async t=>{
+ const h=await qaHarness(t),a=await h.qaAdd('Pause QA A'),b=await h.qaAdd('Keep QA B');for(const id of [a,b]){const req=h.request(id,'open-'+id);await h.bridges.get(id).recordStart(req);await h.bridges.get(id).recordOutcome({callId:req.callId,status:'completed',binding:h.binding(id),result:h.binding(id)});}
+ const bridge=h.bridges.get(a),request=h.request(a,'pending-input');await bridge.recordStart(request);const pause=h.manager.goalAction({goalId:a,action:'pause'});assert.throws(()=>bridge.isCurrent(request.context),{code:'OPS_QA_SCOPE'});await pause;await bridge.recordOutcome({callId:request.callId,status:'completed',result:{applied:true},binding:h.binding(a)});const goals=h.manager.snapshot().goals;assert.equal(goals.find(g=>g.id===a).qaReceipts.at(-1).status,'unknown');assert.equal(goals.find(g=>g.id===a).qaBinding.state,'released');assert.equal(goals.find(g=>g.id===b).qaBinding.state,'attached');assert.deepEqual(h.released,[a]);
+});
+
+test('restart and backup restore keep QA evidence but never adopt old leases or replay a prepared call',async t=>{
+ const h=await qaHarness(t),id=await h.qaAdd('Restored QA'),bridge=h.bridges.get(id),request=h.request(id);await bridge.recordStart({...request,binding:h.binding(id)});const data=h.manager.exportData(),store=new OpsStore({dataPath:path.join(h.root,'restored')});store.restore(data);assert.equal(store.read().goals[0].qaBinding.state,'stale');assert.equal(store.read().goals[0].qaReceipts[0].status,'unknown');
+ await h.manager.close();const recovered=new OpsManager(h.options);t.after(()=>recovered.close());await recovered.init();await recovered.reconnect(id);const goal=recovered.snapshot().goals[0];assert.equal(goal.qaBinding.state,'stale');assert.equal(goal.qaReceipts[0].status,'unknown');assert.notEqual(goal.qaBinding.appInstanceId,recovered.appInstanceId);const current=h.bridges.get(id);assert.throws(()=>current.admit({...request,context:current.getContext()}),{code:'OPS_QA_OPERATION_UNKNOWN'});
+});
+
+test('QA backup validation rejects bulk image data, traversal references and serialized capabilities',async t=>{
+ const h=await qaHarness(t),id=await h.qaAdd('Bounded QA storage'),bridge=h.bridges.get(id),request=h.request(id);await bridge.recordStart(request);await bridge.recordOutcome({callId:request.callId,status:'completed',binding:h.binding(id),result:{applied:true}});const {validateOpsData}=require('../electron/ops-store.cjs'),base=h.manager.exportData();
+ for(const mutate of [g=>{g.qaBinding.guard={capability:true};},g=>{g.qaReceipts[0].result.data='base64';},g=>{g.qaReceipts[0].capture={id:'11111111-1111-4111-8111-111111111111',sha256:'a'.repeat(64),size:100,mimeType:'image/png',width:1,height:1,relativePath:'../capture.png'};}]){const changed=structuredClone(base);mutate(changed.goals[0]);assert.throws(()=>validateOpsData(changed),{code:'OPS_STORAGE_UNAVAILABLE'});}
 });

@@ -20,6 +20,16 @@ Ops uses the existing follow-up request modules from issues #16, #20 and #56: `r
 
 Interactive command/file approval requests are not approved automatically. The default unattended policy is `never`; other policies may produce a visible approval-required error because Ops currently provides no approval dialog. Changing sandbox or approval policy does not broaden permissions in an existing in-flight turn.
 
+## Goal-scoped project QA
+
+QA tools in a new goal conversation use its saved, registered project and committed project birth/epoch. They acquire a private client/session/window lease through the existing project QA controller; tool arguments cannot choose a different project, client, session or window. A folder-only goal reports QA unavailable rather than creating a project. Local and SSH Codex sessions call the same trusted host bridge without forwarding SSH credentials. Existing home-window-only Ops controls and project QA restrictions remain in effect.
+
+Each QA call is saved as prepared before acquiring a lease or changing a screen. The journal retains the original call identifier, argument digest, goal/project/thread/turn identity, lease metadata and completed, failed or unknown outcome. An already-started unknown call is never replayed. Pause, finish, target changes and shutdown invalidate the goal's input fence before awaiting cleanup and release only its own lease. Project replacement is checked again after readiness waits and immediately before input. Another goal's QA lease remains attached.
+
+Captures are returned as actual PNG images to the goal's tool response. Private capture files have bounded sizes and hash-bound references; the state journal contains metadata and coordinate conversion values, without image base64. A duplicate capture reads the original verified file instead of recapturing the screen. Application JSON backups preserve the audit metadata, not the capture cache. If the original image is absent or changed, that duplicate reports unavailable and does not take a replacement photo. Restarted or restored lease records are stale and grant no control of a new app window; the current goal must explicitly open QA again.
+
+Older, unreleased development threads created before QA tools were added retain their original Codex tool definitions. Ops does not replace such a conversation silently to add tools. Use a new goal when those earlier development definitions lack the QA tools; new goal threads retain their QA definitions on resume.
+
 ## Scheduling and recovery
 
 Each goal supports several five-field cron schedules with an IANA timezone. The pinned `cron-parser` implementation handles calendar and daylight-saving transitions. The watcher runs in the main process, independently of the selected screen or minimized windows. On startup or sleep resume, overdue schedules are combined into at most one instruction per goal and their next occurrence advances beyond the current time. It does not replay each missed occurrence. Multiple due schedules retain their identities and instructions in the combined record.

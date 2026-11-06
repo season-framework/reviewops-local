@@ -101,14 +101,33 @@ function opsProjectService(input){
   if(!selected||!ids.includes(selected))throw Object.assign(new Error('목표에서 사용할 프로젝트 연결을 선택하십시오.'),{code:'OPS_TARGET_AMBIGUOUS'});
   return serviceById(selected,true);
 }
+const OPS_CONNECTION_KEYS=['id','kind','host','hostAlias','sshConfigPath','port','username','rootPath','agentWorkPath','hostFingerprint'];
+function opsConnectionSignature(service){return crypto.createHash('sha256').update(JSON.stringify(OPS_CONNECTION_KEYS.map(key=>service?.[key]))).digest('hex');}
+function assertOpsQaContext(context){
+  if(!context.projectId)throw Object.assign(new Error('등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'),{code:'OPS_QA_UNAVAILABLE'});
+  const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===context.projectId)?.birth,service=opsProjectService(context);
+  if(restoring||quitting||updater?.installing||!birth||dataset.epoch!==context.projectEpoch||birth!==context.projectBirth||!context.projectConnectionSignature||opsConnectionSignature(service)!==context.projectConnectionSignature)throw Object.assign(new Error('목표의 원래 프로젝트 또는 연결이 변경되었습니다. 대상 설정을 다시 확인하십시오.'),{code:'OPS_QA_PROJECT_CHANGED'});
+}
+function createOpsQaBridge(options,appInstanceId){
+  const originalStore=store;
+  return require('./ops-qa.cjs').createOpsQa({...options,handle:(action,payload,guard)=>{
+    action=action.replace(/^automation\.qa\./,'');
+    if(!qaAutomation)throw Object.assign(new Error('프로젝트 QA 연결이 아직 준비되지 않았습니다.'),{code:'OPS_QA_UNAVAILABLE'});
+    // Cleanup uses only the bridge's private live lease. It may release that
+    // lease after deletion/restore, but can never acquire or input to a target.
+    if(action==='release')return qaAutomation.handle(action,payload,()=>{guard?.();if(options.appInstanceId&&options.appInstanceId!==appInstanceId)throw new Error('이전 앱의 QA 연결입니다.');});
+    const context=options.getContext(),fence=()=>{guard?.();options.isCurrent(context);if(store!==originalStore||context.appInstanceId!==appInstanceId||payload.projectId!==context.projectId)throw Object.assign(new Error('원래 목표의 QA 프로젝트를 확인하십시오.'),{code:'OPS_QA_PROJECT_CHANGED'});assertOpsQaContext(context);};
+    fence();if(action==='status'){const result=qaAutomation.connectionStatus(payload);fence();return result;}return qaAutomation.handle(action,payload,fence);
+  }});
+}
 async function resolveOpsTarget(input){
   const service=opsProjectService(input),originalStore=store;
   if(!service){if(input.serviceId)throw new Error('폴더 목표에는 프로젝트 연결을 지정할 수 없습니다.');return {projectId:'',workPath:await require('./work-directory.cjs').requireDirectory(input.workPath),targetKind:'local',targetIdentity:'local',targetLabel:input.workPath,serviceId:null};}
   const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===input.projectId)?.birth;
   if(!birth||input.projectEpoch!==undefined&&(input.projectEpoch!==dataset.epoch||input.projectBirth!==birth))throw Object.assign(new Error('목표의 원래 프로젝트가 변경되었습니다. 목표 설정에서 대상을 다시 확인하십시오.'),{code:'OPS_PROJECT_CHANGED'});
-  const keys=['id','kind','host','hostAlias','sshConfigPath','port','username','rootPath','agentWorkPath','hostFingerprint'],signature=JSON.stringify(keys.map(key=>service[key]));
+  const keys=OPS_CONNECTION_KEYS,signature=JSON.stringify(keys.map(key=>service[key]));
   const assertTarget=()=>{const current=store.peerReadDataset(),selected=opsProjectService(input);if(store!==originalStore||current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===input.projectId)?.birth!==birth||JSON.stringify(keys.map(key=>selected?.[key]))!==signature)throw Object.assign(new Error('프로젝트 연결이 확인 중에 변경되었습니다.'),{code:'OPS_PROJECT_CHANGED'});};
-  const scope={projectEpoch:dataset.epoch,projectBirth:birth};
+  const scope={projectEpoch:dataset.epoch,projectBirth:birth,projectConnectionSignature:opsConnectionSignature(service)};
   const workPath=service.agentWorkPath||service.rootPath;
   if(service.kind==='local'){const canonical=await require('./work-directory.cjs').requireDirectory(workPath);assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:canonical,targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};}
   if(typeof ssh.inspectAppServerTarget!=='function')throw Object.assign(new Error('SSH Ops 연결을 준비하고 있습니다. 로컬 실행으로 전환하지 않았습니다.'),{code:'OPS_SSH_UNAVAILABLE'});
@@ -143,7 +162,7 @@ async function waitForQaScope(record){
   record.pendingQaScope=pending;
   try{await ready;}finally{clearTimeout(timer);if(record.pendingQaScope===pending)record.pendingQaScope=null;}
 }
-function dataChanged() { sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
+function dataChanged() { opsManager?.targetsChanged();sendToWindows('reviewops:data-change',{revision:++dataRevision}); }
 function closeWindowResources(host,discardStaged=true) {
   const record=windowContexts.get(host);if(record)viewerSessions.closeOwner(record.id);record?.browsers?.closeAll();if(record)record.browsers=null;
   for(const [id,owner] of terminalOwners)if(owner===host){try{terminals.close(id)}catch{}terminalOwners.delete(id);}
@@ -1639,7 +1658,7 @@ else {
     updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,powerMonitor,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>{modelCache?.reconcile();opsManager?.runtimeChanged();}});
     codexManager.registerHandlers(ipcMain);
-    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,onChange:sendOpsState});}
+    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,onChange:sendOpsState});}
     catch{console.warn('Ops state could not be opened. Existing Ops files were preserved.');}
     const opsResume=()=>{void opsManager?.scheduler.wake();};powerMonitor?.on('resume',opsResume);
     ipcMain.handle('ops:invoke',async(event,method,input)=>{
@@ -1666,14 +1685,15 @@ else {
     qaAutomation=require('./qa-automation.cjs').createQaAutomation({
       getProject:id=>store.snapshot().projects.find(project=>project.id===id),
       getWindow:id=>[...windowContexts.values()].find(record=>record.id===id),
-      openWindow:async({projectId,reviewId})=>{
+      openWindow:async({projectId,reviewId},guard=()=>{})=>{
+        guard();
         if(reviewId&&store.get('reviews',reviewId).projectId!==projectId)throw new Error('리뷰의 프로젝트가 일치하지 않습니다.');
-        const record=projectWindow(projectId,{background:true});
+        guard();const record=projectWindow(projectId,{background:true});
         setQaScope(record,true);
         try {
         if(reviewId)await presentReview(record,{reviewId,projectId,fullscreen:false,focus:false});
         else {await require('./qa-automation.cjs').waitForLoad(record.host.webContents);record.host.showInactive();}
-        await waitForQaScope(record);
+        guard();await waitForQaScope(record);guard();
         return record;
         }catch(error){setQaScope(record,false);throw error;}
       },
