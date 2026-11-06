@@ -24,6 +24,20 @@
       ]
     },
     {
+      "category": "features",
+      "title": "Let each Ops goal inspect its own project window",
+      "description": "Open a QA session bound to the goal’s registered project, window and original Codex conversation. Let Codex inspect screenshots and send scoped input while the Ops view shows the connection and operation receipts. Pausing or changing a goal releases only its own session; uncertain operations remain visible without automatic replay.",
+      "commits": [
+        "24dec2bd4752b298045b7c98335ca22a174ba946",
+        "27d6d84fea4c3cb1362fa6e13d33ac16f827df7b",
+        "49ca5b9792ecf2f0f6ca39951e9e98d122b4e6ba",
+        "e8fa49ddb2196c327bb0e200496383ced5f9ad09",
+        "62ba15106094eeb90dae920cad2a292122d9b5cc",
+        "098b44129897296e913c5381750d2a780d6aaa1e",
+        "5db19dc0a1621115c6194722c061e91cde339701"
+      ]
+    },
+    {
       "category": "improvements",
       "title": "Inspect goal prompts, progress and recovery",
       "description": "Preview common, goal and schedule instructions together, then inspect the exact submitted prompt, reason, originating schedules and outcome in history. Recover the original conversation after restart and restore backups with goals paused. Interactive approval requests appear as errors; Ops has no approval dialog.",
