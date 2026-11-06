@@ -4185,7 +4185,7 @@ test('Ops application backup includes versioned settings and restores session-in
 test('Ops backup restore rolls back its original records when the outer review-data commit fails',async t=>{
  const h=await harness(t),file=path.join(h.root,'ops-rollback.json');
  await h.ops('saveGoal',{name:'Original records',description:'',prompt:'Preserve the original session',workPath:h.root});
- h.state.opsManager.store.update(data=>{data.goals[0].threadId='existing-saved-thread';data.goals[0].status='paused';});
+ h.state.opsManager.store.update(data=>{Object.assign(data.goals[0],{threadId:'existing-saved-thread',status:'paused',modelState:'idle',backgroundState:'empty',backgroundCount:0});});
  h.state.saveResult={canceled:false,filePath:file};await h.success('backup.export');await h.ops('configure',{commonPrompt:'Current instructions that must survive a failed restore'});
  const before=h.state.opsManager.exportData(),restore=h.state.opsManager.restore.bind(h.state.opsManager),db=h.state.liveStore.db,exec=db.exec.bind(db);let armed=false;
  h.state.opsManager.restore=(data,options)=>{const result=restore(data,options);if(options?.pause!==false)armed=true;return result;};
