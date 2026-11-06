@@ -2,6 +2,7 @@
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),os=require('node:os');
 const {createOpsQa}=require('../electron/ops-qa.cjs');
 const png=()=>{const bytes=Buffer.alloc(33);Buffer.from([137,80,78,71,13,10,26,10]).copy(bytes);bytes.write('IHDR',12);bytes.writeUInt32BE(800,16);bytes.writeUInt32BE(600,20);return bytes;};
+async function refused(operation,code){const result=await operation;assert.equal(result.success,false);const error=JSON.parse(result.text).error;if(code)assert.equal(error.code,code);return error;}
 function fixture(t){
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-ops-qa-')),receipts=new Map(),calls=[],outcomes=[];let gate,mutations=0,removed=false;
  let context={goalId:'goal_A',status:'active',threadId:'thread_A',turnId:'turn_A',projectId:'project_A',projectEpoch:'epoch_one',projectBirth:1,serviceId:'service_A',lifecycleToken:{},appInstanceId:'app_one'};
@@ -19,7 +20,7 @@ function fixture(t){
 }
 test('QA schemas derive from public tools but only the trusted goal chooses project, client, session and window',async t=>{
  const f=fixture(t);assert.equal(f.bridge.tools.length,13);for(const tool of f.bridge.tools)for(const name of ['projectId','clientId','sessionId','windowId'])assert.equal(Object.hasOwn(tool.inputSchema.properties,name),false);
- await assert.rejects(f.call('ops_qa_open',{projectId:'other'}));assert.equal(f.calls.length,0);
+ await refused(f.call('ops_qa_open',{projectId:'other'}),'INVALID_REQUEST');assert.equal(f.calls.length,0);
  await f.call('ops_qa_open');const open=f.calls[0];assert.equal(open.payload.projectId,'project_A');assert.match(open.payload.clientId,/^ops_[a-f0-9]{48}$/);
  await f.call('ops_qa_type',{text:'owned'});assert.equal(f.mutations,1);assert.deepEqual(f.calls.at(-1).payload,{text:'owned',sessionId:'session_A',projectId:'project_A',windowId:'window_A'});
  assert.equal(f.receipts.get('ops_qa_type').status,'completed');
@@ -29,7 +30,7 @@ test('capture stores original private PNG bytes and returns transient image cont
  assert.equal(result.images.length,1);assert.deepEqual(result.images[0],png());assert.equal(metadata.data,undefined);assert.equal(JSON.stringify(receipt).includes(png().toString('base64')),false);assert.equal(receipt.capture.size,png().length);assert.equal(receipt.capture.mimeType,'image/png');assert.equal(path.isAbsolute(receipt.capture.relativePath),false);
  assert.equal(fs.statSync(path.join(f.options.captureDir,receipt.capture.relativePath)).mode&0o077,0);
  const duplicate=await f.call('ops_qa_capture');assert.deepEqual(duplicate.images,result.images);assert.equal(f.calls.filter(row=>row.action==='automation.qa.capture').length,1);
- fs.writeFileSync(path.join(f.options.captureDir,receipt.capture.relativePath),'changed');await assert.rejects(f.call('ops_qa_capture'),{code:'OPS_QA_IMAGE_UNAVAILABLE'});assert.equal(f.calls.filter(row=>row.action==='automation.qa.capture').length,1);
+ fs.writeFileSync(path.join(f.options.captureDir,receipt.capture.relativePath),'changed');await refused(f.call('ops_qa_capture'),'OPS_QA_IMAGE_UNAVAILABLE');assert.equal(f.calls.filter(row=>row.action==='automation.qa.capture').length,1);
 });
 test('a restarted bridge returns completed receipts without adopting their old lease or replaying input',async t=>{
  const f=fixture(t);await f.call('ops_qa_open');await f.call('ops_qa_type',{text:'once'});const other=createOpsQa(f.options);t.after(()=>other.close());
@@ -38,8 +39,8 @@ test('a restarted bridge returns completed receipts without adopting their old l
  const state=await run('ops_qa_state',{},'new_state');assert.equal(state.success,false);assert.equal(JSON.parse(state.text).error.code,'OPS_QA_NOT_CONNECTED');assert.equal(f.calls.filter(row=>row.action==='automation.qa.state').length,0);
 });
 test('prepared or unknown receipts are never replayed, and a folder-only goal cannot acquire QA',async t=>{
- const f=fixture(t);await f.call('ops_qa_open');f.receipts.set('uncertain',{status:'unknown',argsDigest:f.receipts.get('ops_qa_open').argsDigest});await assert.rejects(f.call('ops_qa_open',{},'uncertain'),{code:'OPS_QA_UNKNOWN'});assert.equal(f.calls.length,1);
- f.setContext({projectId:''});await assert.rejects(f.call('ops_qa_status',{},'folder'),{code:'OPS_QA_SCOPE'});assert.equal(f.calls.length,1);
+ const f=fixture(t);await f.call('ops_qa_open');f.receipts.set('uncertain',{status:'unknown',argsDigest:f.receipts.get('ops_qa_open').argsDigest});const error=await refused(f.call('ops_qa_open',{},'uncertain'),'OPS_QA_UNKNOWN');assert.match(error.message,/Do not replay this operation/);assert.equal(f.calls.length,1);
+ f.setContext({projectId:''});await refused(f.call('ops_qa_status',{},'folder'),'OPS_QA_SCOPE');assert.equal(f.calls.length,1);
 });
 test('pause invalidates a held operation before GUI input and releases only the captured own lease',async t=>{
  const f=fixture(t);await f.call('ops_qa_open');let release;f.setGate(new Promise(resolve=>release=resolve));const pending=f.call('ops_qa_type',{text:'must not apply'},'held');
@@ -48,6 +49,6 @@ test('pause invalidates a held operation before GUI input and releases only the 
  const cleanup=f.calls.find(row=>row.action==='automation.qa.release');assert.deepEqual(cleanup.payload,{sessionId:'session_A',projectId:'project_A',windowId:'window_A'});assert.equal(f.outcomes.find(row=>row.callId===null).binding.state,'released');
 });
 test('project replacement refuses old input while cleanup uses its own original binding after goal deletion',async t=>{
- const f=fixture(t);await f.call('ops_qa_open');f.setContext({projectBirth:2,projectEpoch:'new',lifecycleToken:{}});await assert.rejects(f.call('ops_qa_state',{},'changed'),{code:'OPS_QA_STALE'});assert.equal(f.calls.length,1);
+ const f=fixture(t);await f.call('ops_qa_open');f.setContext({projectBirth:2,projectEpoch:'new',lifecycleToken:{}});await refused(f.call('ops_qa_state',{},'changed'),'OPS_QA_STALE');assert.equal(f.calls.length,1);
  f.removeGoal();await f.bridge.release('Deleted');assert.equal(f.calls.at(-1).action,'automation.qa.release');assert.equal(f.calls.at(-1).payload.projectId,'project_A');
 });

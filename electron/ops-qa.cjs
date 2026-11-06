@@ -22,7 +22,7 @@ function pngInfo(bytes){
   if(!Buffer.isBuffer(bytes)||bytes.length<33||bytes.length>MAX_PNG||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.toString('ascii',12,16)!=='IHDR')throw failure('OPS_QA_IMAGE_INVALID','The QA capture is not a bounded PNG.');
   const width=bytes.readUInt32BE(16),height=bytes.readUInt32BE(20);if(!width||!height||width>20000||height>20000)throw failure('OPS_QA_IMAGE_INVALID','The QA capture dimensions are invalid.');return {width,height};
 }
-function safeError(error){return {code:String(error?.code||'OPS_QA_FAILED').slice(0,80),message:String(error?.message||'The goal QA operation failed.').slice(0,1000),...(error?.inputMayHaveApplied?{inputMayHaveApplied:true}: {})};}
+function safeError(error){const code=String(error?.code||'OPS_QA_FAILED').slice(0,80),uncertain=['OPS_QA_UNKNOWN','OPS_QA_OPERATION_UNKNOWN'].includes(code);return {code,message:(String(error?.message||'The goal QA operation failed.').slice(0,800)+(uncertain?' Do not replay this operation. Observe this goal’s target again before choosing a new action.':'')).slice(0,1000),...(error?.inputMayHaveApplied?{inputMayHaveApplied:true}: {})};}
 
 function createOpsQa(options){
   const {goalId,getContext,isCurrent,admit,recordStart,recordOutcome,handle,captureDir}=options;
@@ -107,7 +107,7 @@ function createOpsQa(options){
     }
   }
   return Object.freeze({
-    tools:tools.map(tool=>({name:tool.name,description:(tool.name==='ops_qa_open'?'Open or reuse only this goal’s registered project window in the background. Its QA client and lease are created internally. An optional review must belong to this project.':tool.description)+' The project, QA client, session and window are fixed by this goal; never supply or substitute their IDs.',inputSchema:tool.inputSchema,execute:(args,metadata)=>{const input=structuredClone(args),original=Object.freeze({...metadata});const operation=queue.then(()=>run(tool,input,original));queue=operation.catch(()=>{});return operation;}})),
+    tools:tools.map(tool=>({name:tool.name,description:(tool.name==='ops_qa_open'?'Open or reuse only this goal’s registered project window in the background. Its QA client and lease are created internally. An optional review must belong to this project.':tool.description)+' The project, QA client, session and window are fixed by this goal; never supply or substitute their IDs.',inputSchema:tool.inputSchema,execute:(args,metadata)=>{const input=structuredClone(args),original=Object.freeze({...metadata});const operation=queue.then(()=>run(tool,input,original)).catch(error=>opsToolOutput({error:safeError(error)},{success:false}));queue=operation.catch(()=>{});return operation;}})),
     async release(reason='The goal released QA.') {generation++;const current=lease;lease=null;await releaseLease(current,reason);},
     async close(){closed=true;generation++;const current=lease;lease=null;await releaseLease(current,'The goal connection closed.');},
   });
