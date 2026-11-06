@@ -66,7 +66,7 @@ test('account saving flushes file contents before publishing the new file on eve
   try {
     await h.service._save();
     assert.deepEqual(calls, ['file-sync', 'rename', ...(process.platform === 'win32' ? [] : ['directory-sync'])]);
-    assert.deepEqual(JSON.parse(await fs.readFile(h.filename, 'utf8')), { version: 1, accounts: [], activity: [] });
+    assert.deepEqual(JSON.parse(await fs.readFile(h.filename, 'utf8')), { version: 1, usageRefreshIntervalMinutes: 30, accounts: [], activity: [] });
   } finally { t.mock.restoreAll(); }
 });
 
@@ -94,7 +94,7 @@ test('account file write, fsync, and rename failures are not suppressed and a la
         assert.equal(await fs.readFile(h.filename, 'utf8'), original);
       } finally { t.mock.restoreAll(); }
       await h.service._save();
-      assert.deepEqual(JSON.parse(await fs.readFile(h.filename, 'utf8')), { version: 1, accounts: [], activity: [] });
+      assert.deepEqual(JSON.parse(await fs.readFile(h.filename, 'utf8')), { version: 1, usageRefreshIntervalMinutes: 30, accounts: [], activity: [] });
     });
   }
 });

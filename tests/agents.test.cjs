@@ -14,7 +14,9 @@ const { fingerprintOf } = require('../electron/ssh.cjs');
 const remoteAgent = require('../electron/remote-agent.cjs');
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
-async function eventually(check) {for(let attempt=0;attempt<200;attempt++){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
+// Readiness includes real CLI/SSH process startup; cancellation deadlines are
+// asserted separately and must not inherit this fixture-startup allowance.
+async function eventually(check) {const deadline=Date.now()+10000;while(Date.now()<deadline){const result=await check();if(result)return result;await pause(20);}assert.fail('Expected agent state was not received');}
 async function completed(manager,id){return eventually(()=>{const job=manager.read(id);return ['completed','failed','cancelled'].includes(job.status)?job:null;});}
 async function updateReady(manager,id){return eventually(()=>{const job=manager.read(id);return job.status==='running'&&job.remoteExecution?.ready&&manager.hasBlockingJobs===false?job:null;});}
 function killFixtureProcess(pid,group=false,kill=process.kill){

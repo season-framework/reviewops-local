@@ -82,8 +82,8 @@ try{
  await accountRow(accounts[0]).getByRole('button',{name:accounts[0].label+' 상세 통계',exact:true}).click();
  const openDetails=page.getByRole('dialog').locator('.account-details');
  const totalUsage=page.getByRole('dialog').locator('.details-summary > div').filter({has:page.getByText('전체 사용량',{exact:true})}).getByRole('definition');
- await expect(openDetails).toHaveAttribute('aria-busy','false');
  await expect(totalUsage).toContainText('8M');
+ await expect(openDetails).toHaveAttribute('aria-busy','false');
  const beforeAutomaticDetails=calls().filter(row=>row.id===accounts[0].id&&row.method==='account/usage/read').length;
  control.failIds=[];control.usedPercent=60;control.tokens=12000000;updateControl();
  await expect.poll(async()=>(await state()).accounts.find(account=>account.id===accounts[1].id).status,{timeout:80000,intervals:[1000]}).toBe('ready');
@@ -100,5 +100,5 @@ try{
  assert.equal(errors.length,0);assert.equal(quotaCount(accounts[2].id),0);
  fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:true,checks,errors,sourceVersion:JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')).version,sourceCommit:execFileSync('git',['rev-parse','HEAD'],{cwd:root,encoding:'utf8'}).trim(),environment:'Source Electron on macOS; synthetic isolated stdio account API; real main-process1min timers and IPC. Default30min scheduling also tested with an injected clock; physical sleep and production service were not exercised.',calls:calls()},null,2));
  console.log('RESULTS: '+output);
-}catch(error){fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:false,checks,errors,error:error.stack},null,2));if(page)await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});throw error}
+}catch(error){fs.writeFileSync(path.join(output,'results.json'),JSON.stringify({ok:false,checks,errors,calls:calls(),error:error.stack},null,2));if(page)await page.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});throw error}
 finally{await stop();fs.rmSync(directory,{recursive:true,force:true})}
