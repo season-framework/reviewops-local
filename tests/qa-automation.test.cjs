@@ -94,6 +94,20 @@ test('capability descriptions do not open, touch or release a project session',a
 });
 
 const deferred=()=>{let resolve,reject;const promise=new Promise((yes,no)=>{resolve=yes;reject=no;});return{promise,resolve,reject};};
+test('a trusted goal guard is checked after readiness and before native input',async t=>{
+ const f=await documentFixture(t),gate=deferred();let active=true;f.b.ready=gate.promise;
+ const guard=()=>{if(!active)throw Object.assign(new Error('Goal paused'),{code:'OPS_QA_STALE'});};
+ const pending=f.api.handle('type',{...f.bindings.B,browserId:'browser-B',text:'must not apply'},guard);await Promise.resolve();active=false;gate.resolve();await assert.rejects(pending,{code:'OPS_QA_STALE'});assert.equal(f.commands.length,0);
+});
+test('a trusted guard that changes at debugger attach refuses the first input attempt',async t=>{
+ const f=await documentFixture(t);let active=true;f.b.web.attached=false;f.b.web.debugger.attach=()=>{f.b.web.attached=true;active=false;};
+ await assert.rejects(f.api.handle('type',{...f.bindings.B,browserId:'browser-B',text:'must not apply'},()=>{if(!active)throw Object.assign(new Error('Goal changed'),{code:'OPS_QA_STALE'});}),{code:'OPS_QA_STALE'});assert.equal(f.commands.length,0);
+});
+test('a paused goal still releases its original pressed input without sending another press',async t=>{
+ const f=await documentFixture(t);let active=true;f.b.web.onCommand=async(_method,params)=>{if(params.type==='mousePressed')active=false;};
+ await assert.rejects(f.api.handle('click',{...f.bindings.B,browserId:'browser-B',x:1,y:2},()=>{if(!active)throw Object.assign(new Error('Goal paused'),{code:'OPS_QA_STALE'});}),{code:'OPS_QA_STALE'});
+ assert.deepEqual(f.commands.map(row=>row.params.type),['mouseMoved','mousePressed','mouseReleased']);assert.ok(f.commands.every(row=>row.contents===f.b.web));
+});
 async function documentFixture(t,options={},automationFactory=createQaAutomation){
  const {EventEmitter}=require('node:events'),commands=[],records=new Map(),scopes=[];
  class Contents extends EventEmitter{

@@ -121,6 +121,7 @@ async function fixture(t, limits = {}) {
         commands.push(info.command);
         const stream = acceptExec();
         stream.on('error', () => {});
+        if(limits.appServerRpc&&info.command.includes('--version')){stream.write('codex-cli '+(limits.appServerVersion||'0.166.0-alpha.5.1')+'\n');stream.exit(0);stream.end();return;}
         if (limits.appServerRpc && info.command.includes('app-server')) {
           let pending = '';
           stream.on('data', chunk => {
@@ -193,7 +194,7 @@ test('Ops inspects a verified canonical SSH target before opening its persistent
   assert.equal(opened.identity, target.identity);assert.equal(opened.canonicalWorkPath, target.canonicalWorkPath);
   const rpc = new RpcClient({command: 'owned-ssh-stream', spawnImpl: () => opened.child, timeoutMs: 1500});t.after(() => rpc.close());
   assert.deepEqual(await rpc.request('firstProbe'), {method: 'firstProbe'});assert.deepEqual(await rpc.request('secondProbe'), {method: 'secondProbe'});
-  assert.equal(f.commands.length, 1);
+  assert.equal(f.commands.length, 2);assert.equal(opened.runtimeVersion,'0.166.0-alpha.5.1');
   rpc.close();
 });
 
@@ -203,6 +204,11 @@ test('Ops rejects a changed remote canonical directory before starting app-serve
   assert.equal(target.canonicalWorkPath, await fs.realpath(path.join(f.root, 'nested')));
   await assert.rejects(f.service.openAppServer(f.config, {workPath: alias, targetIdentity: target.identity}), {code: 'SSH_TARGET_CHANGED'});
   assert.equal(f.commands.length, 0);
+});
+
+test('Ops refuses an older SSH CLI on the same verified connection before starting app-server',async t=>{
+ const f=await fixture(t,{appServerRpc:true,appServerVersion:'0.165.0'}),target=await f.service.inspectAppServerTarget(f.config,{workPath:f.root});
+ await assert.rejects(f.service.openAppServer(f.config,{workPath:target.canonicalWorkPath,targetIdentity:target.identity}),{code:'OPS_CODEX_PROTOCOL_UNSUPPORTED',deliveryState:'not_sent'});assert.equal(f.commands.length,1);assert.ok(f.commands[0].includes('--version'));assert.equal(f.commands.some(command=>command.includes(' app-server')),false);
 });
 
 test('Ops binds the SSH account but locks shared paths across accounts on the same host key', async t => {

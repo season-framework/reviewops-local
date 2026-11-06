@@ -122,6 +122,7 @@ function previewContent(buffer, name) {
 
 function asSshError(error) {
   if (error instanceof SshError) return error;
+  if(error?.code==='OPS_CODEX_PROTOCOL_UNSUPPORTED')return new SshError(error.code,require('./ops-protocol.cjs').opsProtocolUnsupported().message,{deliveryState:'not_sent'});
   if (error?.level === 'client-authentication') {
     return new SshError('SSH_AUTH_FAILED', 'SSH 인증에 실패했습니다. 사용자 이름과 인증 설정을 확인해 주십시오.');
   }
@@ -306,6 +307,15 @@ function createSshService(options = {}) {
       return connect(config, async (client, normalized, connection) => {
         const target = await appServerTarget(client, normalized, connection, workPath);
         if (target.identity !== targetIdentity || target.canonicalWorkPath !== path.posix.normalize(workPath)) throw new SshError('SSH_TARGET_CHANGED', '서버 또는 작업 폴더가 변경되었습니다.');
+        const versionScript=`export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"\ncd -- ${shellQuote(target.canonicalWorkPath)} || exit 125\nexec ${shellQuote(binary)} --version`;
+        const versionStream=await callbackPromise(done=>client.exec(`exec bash -lc ${shellQuote(versionScript)}`,{pty:false},done));
+        const versionText=await new Promise((resolve,reject)=>{
+          let output='',done=false;const finish=(error,value)=>{if(done)return;done=true;clearTimeout(timer);error?reject(error):resolve(value);};
+          const timer=setTimeout(()=>{versionStream.close();finish(require('./ops-protocol.cjs').opsProtocolUnsupported());},10000);
+          versionStream.on('data',chunk=>{output+=chunk.toString('utf8');if(Buffer.byteLength(output)>4096){versionStream.close();finish(require('./ops-protocol.cjs').opsProtocolUnsupported());}});
+          versionStream.stderr.on('data',()=>{});versionStream.on('error',()=>finish(require('./ops-protocol.cjs').opsProtocolUnsupported()));versionStream.on('close',code=>finish(code===0?null:require('./ops-protocol.cjs').opsProtocolUnsupported(),output));
+        });
+        const runtimeVersion=require('./ops-protocol.cjs').requireOpsVersion(versionText);
         const script = `export PATH="$PATH:$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin"\ncd -- ${shellQuote(target.canonicalWorkPath)} || exit 125\nexec ${shellQuote(binary)} app-server`;
         const stream = await callbackPromise(done => client.exec(`exec bash -lc ${shellQuote(script)}`, {pty: false}, done));
         const child = new EventEmitter();child.stdin = new PassThrough();child.stdout = new PassThrough();child.stderr = new PassThrough();child.exitCode = null;
@@ -317,7 +327,7 @@ function createSshService(options = {}) {
         child.stdin.on('error', () => {});stream.on('error', () => finish(null, null));client.on('close', () => finish(null, null));
         stream.on('close', finish);child.stdin.pipe(stream);stream.pipe(child.stdout);stream.stderr.pipe(child.stderr);
         child.kill = signal => {if (!finished) {try {stream.signal(signal === 'SIGKILL' ? 'KILL' : 'TERM');stream.close();} catch {}finish(null, signal);}return true;};
-        return {...target, child};
+        return {...target, runtimeVersion, child};
       }, limits.timeoutMs, true);
     },
     async test(config) {

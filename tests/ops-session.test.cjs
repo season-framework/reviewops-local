@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {EventEmitter} = require('node:events');
-const {createOpsSession, opsDeliveryPrompt} = require('../electron/ops-session.cjs');
+const {createOpsSession, opsDeliveryPrompt,opsToolOutput} = require('../electron/ops-session.cjs');
 
 function fixture(t, settings = {}) {
   const calls = [], events = [], clients = [], threads = new Map();let nextThread = 0, nextTurn = 0, nextItem = 0;
@@ -19,6 +19,7 @@ function fixture(t, settings = {}) {
     }
     async request(method, params) {
       calls.push({client: this, method, params});
+      if(server.unsupported===method)throw Object.assign(new Error('Unsupported method'),{code:-32601});
       if (method === 'thread/start') {
         const thread = {id: `thread_${++nextThread}`, status: {type: 'idle'}, updatedAt: 1, turns: [], entries: []};threads.set(thread.id, thread);
         this.emit('notification', 'thread/started', {thread});return {thread};
@@ -60,7 +61,7 @@ function fixture(t, settings = {}) {
     }
   }
   const session = extra => createOpsSession({goalId: extra?.goalId || 'goal_one', workPath: '/tmp/ops-owned-project', config: {approvalPolicy: 'never', sandboxMode: 'workspace-write'},
-    runtime: {command: 'trusted-runtime', args: []}, rpcFactory: value => new Client(value), onEvent: event => events.push(event), interruptPollMs: 1, ...extra});
+    runtime: {command: 'trusted-runtime', args: [],version:'0.166.0-alpha.5.1'}, rpcFactory: value => new Client(value), onEvent: event => events.push(event), interruptPollMs: 1, ...extra});
   const primary = session();t.after(() => primary.close());
   return {primary, session, calls, events, clients, threads, server};
 }
@@ -70,6 +71,33 @@ test('delivery markers preserve exact prompt content and reject changed marked i
   assert.equal(opsDeliveryPrompt({deliveryId: 'delivery_one', prompt: value}), value);
   assert.match(value, /^\[ReviewOps Ops delivery delivery_one; sha256=[a-f0-9]{64}\]\n\nOriginal\n\nrequest$/);
   assert.throws(() => opsDeliveryPrompt({deliveryId: 'delivery_one', prompt: value + 'changed'}), {code: 'OPS_DELIVERY_CONFLICT'});
+});
+
+test('a runtime below the validated protocol baseline is rejected before allocating a thread',async t=>{
+  const f=fixture(t),old=f.session({runtime:{command:'trusted-runtime',args:[],version:'0.165.99'}});t.after(()=>old.close());
+  await assert.rejects(old.start({deliveryId:'old',prompt:'Do not send'}),{code:'OPS_CODEX_PROTOCOL_UNSUPPORTED',deliveryState:'not_sent'});assert.equal(f.clients.length,0);assert.equal(f.threads.size,0);
+});
+
+test('missing required protocol methods refuse model input and retain an allocated empty thread for repair',async t=>{
+ for(const method of ['thread/turns/list','thread/backgroundTerminals/list','thread/backgroundTerminals/clean']){
+  const f=fixture(t,{unsupported:method});await assert.rejects(f.primary.start({deliveryId:'preflight',prompt:'Send only after repair'}),{code:'OPS_CODEX_PROTOCOL_UNSUPPORTED',deliveryState:'not_sent'});
+  assert.equal(f.calls.filter(row=>row.method==='turn/start').length,0);assert.equal(new Set(f.events.filter(row=>row.type==='thread').map(row=>row.threadId)).size,1);
+  f.server.unsupported=null;await f.primary.start({deliveryId:'preflight',prompt:'Send only after repair'});assert.equal(f.calls.filter(row=>row.method==='thread/start').length,1);assert.equal(f.calls.filter(row=>row.method==='turn/start').length,1);
+ }
+});
+
+test('protocol compatibility probes never clean a resumed owner',async t=>{
+ const f=fixture(t),started=await f.primary.start({deliveryId:'existing',prompt:'Keep existing work'});await f.primary.close();const before=f.calls.filter(row=>row.method==='thread/backgroundTerminals/clean').length;
+ const resumed=f.session({threadId:started.threadId});t.after(()=>resumed.close());await resumed.reconcile({deliveryId:'existing',prompt:'Keep existing work'});assert.equal(f.calls.filter(row=>row.method==='thread/backgroundTerminals/clean').length,before);
+});
+
+test('trusted QA image results use actual inputImage content and keep PNG bytes outside text and events',async t=>{
+ const f=fixture(t),png=Buffer.alloc(33);Buffer.from([137,80,78,71,13,10,26,10]).copy(png);png.write('IHDR',12);png.writeUInt32BE(10,16);png.writeUInt32BE(10,20);
+ const session=f.session({tools:[{name:'ops_qa_capture',description:'Owned image result',inputSchema:{type:'object'},execute:()=>opsToolOutput({capture:{sha256:'a'.repeat(64)}},{images:[png]})}]});t.after(()=>session.close());
+ const started=await session.start({deliveryId:'image',prompt:'Read only the owned image'}),handler=f.clients[0].options.onServerRequest;
+ const result=await handler({method:'item/tool/call',params:{threadId:started.threadId,turnId:started.turnId,callId:'image_call',tool:'ops_qa_capture',arguments:{}}});
+ assert.equal(result.success,true);assert.deepEqual(result.contentItems.map(row=>row.type),['inputText','inputImage']);assert.equal(result.contentItems[1].imageUrl,'data:image/png;base64,'+png.toString('base64'));assert.equal(result.contentItems[0].text.includes(png.toString('base64')),false);assert.equal(JSON.stringify(f.events).includes(png.toString('base64')),false);
+ assert.throws(()=>opsToolOutput({}, {images:[Buffer.alloc(2*1024*1024+1)]}),{code:'OPS_INVALID_TOOL_IMAGE'});
 });
 
 test('one goal steers its active turn and starts idle work in the same persistent thread and process', async t => {
@@ -89,11 +117,11 @@ test('independent goals run concurrently and interrupt only their own target', a
   const f = fixture(t), other = f.session({goalId: 'goal_two'});t.after(() => other.close());
   const [a,b] = await Promise.all([f.primary.start({deliveryId: 'a', prompt: 'A'}), other.start({deliveryId: 'b', prompt: 'B'})]);
   assert.notEqual(a.threadId, b.threadId);assert.equal(f.clients.length, 2);
-  const stopped = await f.primary.interrupt({threadId: a.threadId, turnId: a.turnId});assert.equal(stopped.confirmed, true);
+  const beforeStop=f.calls.length;const stopped = await f.primary.interrupt({threadId: a.threadId, turnId: a.turnId});assert.equal(stopped.confirmed, true);
   assert.equal(f.threads.get(b.threadId).status.type, 'active');
   assert.deepEqual(f.calls.filter(row => row.method === 'turn/interrupt').map(row => row.params), [{threadId: a.threadId, turnId: a.turnId}]);
-  assert.deepEqual(f.calls.filter(row => row.method === 'thread/backgroundTerminals/clean').map(row => row.params), [{threadId: a.threadId}]);
-  const cleanupIndex = f.calls.findIndex(row => row.method === 'thread/backgroundTerminals/clean');
+  assert.deepEqual(f.calls.slice(beforeStop).filter(row => row.method === 'thread/backgroundTerminals/clean').map(row => row.params), [{threadId: a.threadId}]);
+  const cleanupIndex = beforeStop;
   assert.ok(f.calls.slice(cleanupIndex).filter(row => row.method === 'thread/backgroundTerminals/list').every(row => row.params.threadId === a.threadId));
 });
 
@@ -114,13 +142,14 @@ test('interrupt cleans yielded commands even after the model is idle and verifie
 
 test('normal model completion reports active, empty and unknown terminal ownership without cleaning it', async t => {
   const f = fixture(t), started = await f.primary.start({deliveryId: 'terminal_owner', prompt: 'Owned background service'});
+  const priorCleanCount=f.calls.filter(row=>row.method==='thread/backgroundTerminals/clean').length;
   f.server.terminalPages = params => params.cursor ? {data: [{processId: 'second'}], nextCursor: null} : {data: [{processId: 'first'}], nextCursor: 'more'};
   f.clients[0].complete(started.threadId);await new Promise(resolve => setImmediate(resolve));
   const complete = f.events.find(row => row.type === 'turn.completed');assert.equal(complete.backgroundState, 'active');assert.equal(complete.backgroundCount, 2);
   let view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.state, 'idle');assert.equal(view.backgroundState, 'active');assert.equal(view.backgroundCount, 2);
   f.server.terminalPages = () => ({data: [], nextCursor: null});view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.backgroundState, 'empty');assert.equal(view.backgroundCount, 0);
   f.server.terminalPages = () => {throw Object.assign(new Error('Unsupported list'), {code: -32601});};view = await f.primary.reconcile({deliveryId: 'terminal_owner', prompt: 'Owned background service'});assert.equal(view.state, 'idle');assert.equal(view.backgroundState, 'unknown');assert.equal(view.backgroundCount, null);
-  assert.equal(f.calls.filter(row => row.method === 'thread/backgroundTerminals/clean').length, 0);
+  assert.equal(f.calls.filter(row => row.method === 'thread/backgroundTerminals/clean').length, priorCleanCount);
 });
 
 test('a terminal model event never publishes idle ownership before its background query completes', async t => {
@@ -132,7 +161,7 @@ test('a terminal model event never publishes idle ownership before its backgroun
 });
 
 test('unsupported cleanup and acknowledged cleanup with live terminals never confirm Pause', async t => {
-  const f = fixture(t, {cleanupDenied: true}), started = await f.primary.start({deliveryId: 'cleanup', prompt: 'Owned background work'});
+  const f = fixture(t), started = await f.primary.start({deliveryId: 'cleanup', prompt: 'Owned background work'});f.server.cleanupDenied=true;
   await assert.rejects(f.primary.interrupt({threadId: started.threadId, turnId: started.turnId}), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
   f.server.cleanupDenied = false;f.server.terminalPages = () => ({data: [{processId: 'still_running'}], nextCursor: null});
   await assert.rejects(f.primary.interrupt({threadId: started.threadId}), {code: 'OPS_TERMINAL_CLEANUP_UNCONFIRMED'});
@@ -223,7 +252,7 @@ test('SSH sessions use only their freshly resolved private target and never disc
   const f=fixture(t),opened=[],identity='ssh:'+'a'.repeat(64),privateConfig={password:'private-auth-never-in-events'};
   const remote=f.session({workPath:'/srv/remote-only-project',target:{kind:'ssh',identityKey:identity},resolveRuntime:()=>{throw new Error('Local discovery is forbidden');},
     resolveSessionTarget:async()=>({sshConfig:privateConfig,workPath:'/srv/remote-only-project',binary:'/opt/codex',targetIdentity:identity}),
-    sshServiceFactory:()=>({openAppServer:async(config,options)=>{opened.push({config,options});return {canonicalWorkPath:options.workPath,identity,child:{}};},close:async()=>{}})});t.after(()=>remote.close());
+    sshServiceFactory:()=>({openAppServer:async(config,options)=>{opened.push({config,options});return {canonicalWorkPath:options.workPath,identity,runtimeVersion:'0.166.0-alpha.5.1',child:{}};},close:async()=>{}})});t.after(()=>remote.close());
   const started=await remote.start({deliveryId:'remote',prompt:'Remote target'});await remote.steer({deliveryId:'remote_steer',prompt:'Same remote turn'});
   assert.equal(opened.length,1);assert.equal(opened[0].config,privateConfig);assert.equal(opened[0].options.targetIdentity,identity);
   assert.equal(f.calls.find(row=>row.method==='thread/start').params.cwd,'/srv/remote-only-project');assert.equal(f.clients.length,1);
@@ -239,7 +268,7 @@ test('SSH identity changes fail before app-server or user input is started', asy
 
 test('runtime selection is refreshed only when reopening the same saved thread', async t => {
   const f=fixture(t);let lookups=0;
-  const session=f.session({resolveRuntime:()=>({command:'runtime_'+(++lookups),args:[]})});t.after(()=>session.close());
+  const session=f.session({resolveRuntime:()=>({command:'runtime_'+(++lookups),args:[],version:'0.166.0-alpha.5.1'})});t.after(()=>session.close());
   const first=await session.start({deliveryId:'original',prompt:'Keep this thread'});await session.steer({deliveryId:'extra',prompt:'Same process'});assert.equal(lookups,1);
   f.clients[0].close();const recovered=await session.reconcile({threadId:first.threadId,deliveryId:'original',prompt:'Keep this thread'});
   assert.equal(recovered.delivery,'accepted');assert.equal(lookups,2);assert.equal(f.clients[1].options.command,'runtime_2');assert.equal(f.calls.filter(row=>row.method==='thread/start').length,1);

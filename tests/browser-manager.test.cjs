@@ -207,6 +207,12 @@ test('only the latest navigate request starts after a pending emulation update',
  const first=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/old'}),second=manager.dispatch('browser.navigate',{id:opened.id,url:'https://fixture.invalid/new'});ready();await Promise.all([first,second]);assert.deepEqual(loaded,['https://fixture.invalid/new']);
 });
 
+test('a trusted QA navigation guard is rechecked after emulation before loadURL',async t=>{
+ const h=harness(t);let item;const manager=h.manager(new h.Window(),{onCreated:value=>{item=value;}}),opened=await manager.dispatch('browser.create',{url:'https://fixture.invalid/start'}),contents=h.views[0].webContents;
+ let ready,active=true;item.emulationPromise=new Promise(resolve=>{ready=resolve;});const loaded=[];contents.loadURL=async url=>{loaded.push(url);};
+ const pending=manager.automationTargets().find(target=>target.browserId===opened.id).navigate('https://fixture.invalid/stale',()=>{if(!active)throw Object.assign(new Error('Goal changed'),{code:'OPS_QA_STALE'});});active=false;ready();await assert.rejects(pending,{code:'OPS_QA_STALE'});assert.deepEqual(loaded,[]);
+});
+
 for(const phase of ['about:blank','CDP'])test(`disposing an owner during ${phase} preparation rejects its late create and preserves the fresh owner`,async t=>{
   let entered,release;const started=new Promise(resolve=>{entered=resolve;}),gate=new Promise(resolve=>{release=resolve;});
   let hold=true,heldContents;

@@ -3,9 +3,21 @@
 const path = require('node:path');
 const {createHash} = require('node:crypto');
 const {RpcClient} = require('./codex/rpc-client.cjs');
+const {execFile}=require('node:child_process');
+const {promisify}=require('node:util');
+const {requireOpsVersion,opsProtocolUnsupported}=require('./ops-protocol.cjs');
+const runFile=promisify(execFile);
 const ID = /^[A-Za-z0-9_-]{1,128}$/;
 const MAX_TEXT = 256 * 1024;
 const MAX_RESPONSE = 4 * 1024 * 1024;
+const TOOL_OUTPUT = Symbol('ops trusted tool output');
+const MAX_TOOL_IMAGE = 2 * 1024 * 1024;
+function opsToolOutput(result,{images=[],success=true}={}) {
+  if(!Array.isArray(images)||images.length>1||typeof success!=='boolean')fail('OPS_INVALID_TOOL_RESULT');
+  const copies=images.map(bytes=>{if(!Buffer.isBuffer(bytes)||bytes.length<33||bytes.length>MAX_TOOL_IMAGE||!bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))||bytes.toString('ascii',12,16)!=='IHDR')fail('OPS_INVALID_TOOL_IMAGE');return Buffer.from(bytes);});
+  const text=JSON.stringify(result??null);if(Buffer.byteLength(text)>MAX_TEXT)fail('OPS_TOOL_RESULT_TOO_LARGE');
+  return Object.freeze({[TOOL_OUTPUT]:true,text,images:copies,success});
+}
 const digest = value => createHash('sha256').update(value).digest('hex');
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 function fail(code) { throw Object.assign(new Error('The Codex goal session could not complete this request.'), {code}); }
@@ -45,7 +57,7 @@ function createOpsSession(options) {
     definitions.set(tool.name, {spec: JSON.parse(JSON.stringify(spec)), execute: tool.execute});
   }
   let threadId = options.threadId ? id(options.threadId) : null;
-  let rpc = null, connecting = null, loaded = false, creating = false, creationUnknown = false, closed = false;
+  let rpc = null, connecting = null, loaded = false, creating = false, creationUnknown = false, closed = false,protocolChecked=false,newEmptyThread=false;
   let sshService = null, sessionWorkPath = workPath, targetIdentity = target.identityKey || null;
   let activeTurnId = null, state = 'unknown', queue = Promise.resolve(), eventQueue = Promise.resolve(), persistenceFailed = false;
   const turns = new Map(), deliveries = new Map(), toolCalls = new Map(), partials = new Map(), overflowed = new Set(), pendingCompletions = new Set();
@@ -139,6 +151,7 @@ function createOpsSession(options) {
       }
       await flush();current();
       const result = await tool.execute(JSON.parse(bytes), Object.freeze({callId: params.callId, threadId, turnId: params.turnId}));
+      if(result?.[TOOL_OUTPUT])return {success:result.success,contentItems:[{type:'inputText',text:result.text},...result.images.map(bytes=>({type:'inputImage',imageUrl:'data:image/png;base64,'+bytes.toString('base64')}))]};
       const text = JSON.stringify(result ?? null);
       if (Buffer.byteLength(text) > MAX_TEXT) return denied('OPS_TOOL_RESULT_TOO_LARGE');
       return {success: true, contentItems: [{type: 'inputText', text}]};
@@ -162,6 +175,7 @@ function createOpsSession(options) {
         if (!resolved.sshConfig || resolved.workPath !== workPath || targetIdentity && resolved.targetIdentity !== targetIdentity) fail('OPS_TARGET_CHANGED');
         sshService = (options.sshServiceFactory || (() => require('./ssh.cjs').createSshService()))();
         const opened = await sshService.openAppServer(resolved.sshConfig, {workPath, binary: resolved.binary || 'codex', targetIdentity: expectedIdentity});
+        requireOpsVersion(opened.runtimeVersion);
         current();sessionWorkPath = opened.canonicalWorkPath;targetIdentity = opened.identity;
         transport = {command: 'trusted-ssh-app-server', args: [], spawnImpl: () => opened.child};
       } else {
@@ -169,12 +183,15 @@ function createOpsSession(options) {
         current();
         const command = runtime?.command || runtime?.path;
         if (!command || runtime.available === false) fail('OPS_CODEX_UNAVAILABLE');
+        let version=runtime.version;
+        if(!version){const observed=await runFile(command,[...(runtime.args||[]),'--version'],{env,cwd:sessionWorkPath,timeout:10000,maxBuffer:4096,windowsHide:true});version=observed.stdout;}
+        requireOpsVersion(version);
         const args = [...(runtime.args || [])];if (!args.includes('app-server')) args.push('app-server');
         transport = {command, args, env, cwd: sessionWorkPath};
       }
       const selected = (options.rpcFactory || (value => new RpcClient(value)))({...transport, timeoutMs: options.timeoutMs || 60000,
         clientInfo: {name: 'reviewops_ops', title: 'ReviewOps Ops', version: require('../package.json').version}, onServerRequest: serverRequest});
-      rpc = selected;loaded = false;
+      rpc = selected;loaded = false;protocolChecked=false;newEmptyThread=false;
       selected.on('notification', (method, params) => {
         try {notify(method, params);} catch {publish({type: 'error', threadId, code: 'OPS_PROTOCOL_ERROR', message: 'Codex returned an invalid session event.'}).catch(() => {});}
       });
@@ -197,22 +214,33 @@ function createOpsSession(options) {
   }
   async function ensureThread(allowCreate) {
     const client = await connection();
-    if (loaded) return client;
+    if (loaded) {await checkProtocol(client);return client;}
     if (threadId) {
       const result = await client.request('thread/resume', {threadId, excludeTurns: true, ...threadOptions()});
       bind(result.thread?.id);loaded = true;
-      await publish({type: 'thread', threadId, state: result.thread?.status?.type === 'active' ? 'running' : 'idle', canonicalWorkPath: sessionWorkPath, targetIdentity});await flush();return client;
+      await publish({type: 'thread', threadId, state: result.thread?.status?.type === 'active' ? 'running' : 'idle', canonicalWorkPath: sessionWorkPath, targetIdentity});await flush();await checkProtocol(client);return client;
     }
     if (!allowCreate || creationUnknown) return null;
     creating = true;creationUnknown = true;
     try {
       const result = await client.request('thread/start', {...threadOptions(), ephemeral: false, historyMode: 'paginated', dynamicTools: [...definitions.values()].map(value => value.spec)});
-      bind(result.thread?.id);loaded = true;creationUnknown = false;
-      await publish({type: 'thread', threadId, state: 'idle', canonicalWorkPath: sessionWorkPath, targetIdentity});await flush();return client;
+      bind(result.thread?.id);loaded = true;creationUnknown = false;newEmptyThread=true;
+      await publish({type: 'thread', threadId, state: 'idle', canonicalWorkPath: sessionWorkPath, targetIdentity});await flush();await checkProtocol(client);return client;
     } catch (error) {
       if (error.code === -32602 && !threadId) creationUnknown = false;
       throw error;
     } finally {creating = false;}
+  }
+  async function checkProtocol(client){
+    if(protocolChecked)return;
+    try{
+      const view=await client.request('thread/read',{threadId,includeTurns:false});
+      try{const history=await client.request('thread/turns/list',{threadId,limit:1,sortDirection:'desc',itemsView:'full'});if(!Array.isArray(history.data)||history.nextCursor!=null&&typeof history.nextCursor!=='string')throw opsProtocolUnsupported();}
+      catch(error){if(error.code!==-32600||view.thread?.status?.type!=='idle')throw error;/* The validated CLI reports an unmaterialized empty history this way. */}
+      const background=await readBackground();if(background.backgroundState==='unknown')throw opsProtocolUnsupported();
+      if(newEmptyThread){if(view.thread?.status?.type!=='idle'||background.backgroundState!=='empty')throw opsProtocolUnsupported();await client.request('thread/backgroundTerminals/clean',{threadId});if((await readBackground()).backgroundState!=='empty')throw opsProtocolUnsupported();}
+      protocolChecked=true;
+    }catch{throw opsProtocolUnsupported();}
   }
   async function readState({allowIdleMetadata = false} = {}) {
     const client = await ensureThread(false);
@@ -311,7 +339,7 @@ function createOpsSession(options) {
         backgroundState: after.backgroundState, backgroundCount: after.backgroundCount,
         items: result.messages};
     } catch (error) {
-      if (['OPS_DELIVERY_CONFLICT','OPS_THREAD_MISMATCH','OPS_EVENT_PERSISTENCE_FAILED'].includes(error.code)) throw error;
+      if (['OPS_DELIVERY_CONFLICT','OPS_THREAD_MISMATCH','OPS_EVENT_PERSISTENCE_FAILED','OPS_CODEX_PROTOCOL_UNSUPPORTED'].includes(error.code)) throw error;
       return {threadId, turnId: activeTurnId, activeTurnId, state: 'unknown', delivery: 'unknown', errorCode: 'OPS_RECONCILIATION_UNAVAILABLE'};
     }
   }
@@ -333,6 +361,7 @@ function createOpsSession(options) {
       client = await ensureThread(true);
       if (client) view = await readState({allowIdleMetadata: true});
     } catch (error) {
+      if(error.code==='OPS_CODEX_PROTOCOL_UNSUPPORTED')throw error;
       // Queries/resume and target preparation do not submit a user prompt.
       // An unidentified thread creation is the sole pre-turn ambiguous case.
       if (!threadId && creationUnknown) return {threadId: null, turnId: null, state: 'unknown', delivery: 'unknown', errorCode: 'OPS_THREAD_CREATION_UNKNOWN'};
@@ -352,6 +381,7 @@ function createOpsSession(options) {
       if (method === 'turn/steer') params.expectedTurnId = view.turnId;
       else if (config.reasoningEffort) params.effort = config.reasoningEffort;
       deliveries.set(deliveryId, {prompt: text, state: 'unknown'});
+      newEmptyThread=false;
       await publish({type: 'delivery', threadId, turnId: view.turnId, deliveryId, state: 'unknown', deliveredPrompt: text});
       try {
         const result = await client.request(method, params), acceptedTurn = method === 'turn/steer' ? result.turnId : result.turn?.id;
@@ -401,4 +431,4 @@ function createOpsSession(options) {
   });
 }
 
-module.exports = {createOpsSession, opsDeliveryPrompt};
+module.exports = {createOpsSession, opsDeliveryPrompt, opsToolOutput};
