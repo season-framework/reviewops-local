@@ -10,6 +10,7 @@ const BACKUP_FORMAT_VERSION = 10;
 const sharedWrites = require('./shared-write-core.cjs');
 const peerProjectBirths = require('./peer-project-births.cjs');
 const { querySharedBrowsing } = require('./shared-data-query.cjs');
+const {projectReviewTimeline} = require('./shared-review-timeline.cjs');
 const { encodingByteFactors } = require('./sqlite-read-bounds.cjs');
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
@@ -65,7 +66,7 @@ function peerReadContent(owner, frame, context, operation, payload) {
   assertPeerReadFrame(owner, frame, true);
   if (frame.queried) throw peerReadError();
   frame.queried = true;
-  if (!['projects.list', 'reviews.list', 'reviews.get'].includes(operation)) {
+  if (!['projects.list', 'reviews.list', 'reviews.get', 'reviews.timeline'].includes(operation)) {
     fail('Invalid shared-data query.', 'INVALID_QUERY');
   }
   const statements = new Map();
@@ -118,7 +119,27 @@ function peerReadContent(owner, frame, context, operation, payload) {
       return read('review-row', `SELECT ${key} AS _readKey,${columns} FROM reviews WHERE rowid=? LIMIT 1`, 'get', [rowKey]);
     }
   });
-  const result = querySharedBrowsing(source, context, operation, payload);
+  const selected = querySharedBrowsing(source, context, operation === 'reviews.timeline' ? 'reviews.get' : operation, payload);
+  let result = selected;
+  if (operation === 'reviews.timeline') {
+    // Project/review ownership is established before reading any child content.
+    // SQL bounds apply before SQLite materializes text; the projector also
+    // enforces the complete encoded response limit before releasing the DTO.
+    const selectedReview = selected.review.id;
+    const where = {
+      activities: "reviewId=? AND NOT (role='user' AND agentRunId!='')",
+      attachments: 'reviewId=? AND (activityId IS NULL OR activityId IN (SELECT id FROM activities WHERE reviewId=? AND NOT (role=\'user\' AND agentRunId!=\'\')))',
+      agent_runs: 'reviewId=?'
+    };
+    for (const [table, column] of [['activities','body'], ['agent_runs','response']]) {
+      const size = read(`timeline-size-${table}`, `SELECT COUNT(*) AS count,COALESCE(SUM(octet_length(${column})),0) AS bytes FROM (SELECT ${column} FROM ${table} WHERE ${where[table]} LIMIT 1001)`, 'get', [selectedReview]);
+      if (size.count > 1000 || size.bytes > 1024 * 1024) fail('Shared browsing response exceeds the read limit.', 'BROWSING_QUERY_LIMIT_EXCEEDED');
+    }
+    const activities = read('timeline-activities', `SELECT ${[text('id',128,true),text('reviewId',128,true),text('type',11,true),text('role',6,true),text('body',100000),text('fromStatus',11,true),text('toStatus',11,true),text('createdAt',24,true),text('updatedAt',24,true)].join(',')} FROM activities WHERE ${where.activities} ORDER BY createdAt,id LIMIT 1001`, 'all', [selectedReview]);
+    const attachments = read('timeline-attachments', `SELECT ${[text('id',128,true),text('reviewId',128,true),'activityId',text('name',255),text('mimeType',255),'size',text('sha256',64,true),text('createdAt',24,true),text('updatedAt',24,true)].join(',')} FROM attachments WHERE ${where.attachments} ORDER BY createdAt,id LIMIT 1001`, 'all', [selectedReview,selectedReview]);
+    const agentRuns = read('timeline-agents', `SELECT ${[text('id',128,true),text('reviewId',128,true),text('status',11,true),text('response',100000),text('startedAt',24,true),'finishedAt',text('createdAt',24,true),text('updatedAt',24,true)].join(',')} FROM agent_runs WHERE reviewId=? ORDER BY createdAt,id LIMIT 1001`, 'all', [selectedReview]);
+    result = projectReviewTimeline(payload.projectId, selectedReview, {activities, attachments, agentRuns});
+  }
   assertPeerReadFrame(owner, frame, true);
   return result;
 }
