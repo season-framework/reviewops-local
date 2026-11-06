@@ -25,11 +25,11 @@ test('schedule editing preserves its goal, prompt, cron and IANA zone without se
 
 test('goal editing preserves explicit connection and Codex settings while excluding session ownership',async()=>{
  const {goalDraft}=await helpers();
- const saved={id:'A',name:'Goal A',description:'Work',projectId:'P',serviceId:'SSH',workPath:'/workspace',prompt:'Do the work',model:'chosen-model',reasoningEffort:'ultra',sandboxMode:'read-only',approvalPolicy:'on-request',threadId:'protected-thread',status:'paused'};
+ const saved={id:'A',name:'Goal A',description:'Work',projectId:'P',serviceId:'SSH',workPath:'/workspace',prompt:'Do the work',model:'chosen-model',reasoningEffort:'ultra',sandboxMode:'read-only',approvalPolicy:'on-request',threadId:'protected-thread',status:'paused',qaBinding:{state:'attached',projectId:'other-project',sessionId:'protected-qa-session'},qaReceipts:[{callId:'protected-call'}]};
  const draft=goalDraft(saved);
  assert.equal(draft.projectId,'P');assert.equal(draft.serviceId,'SSH');assert.equal(draft.model,'chosen-model');assert.equal(draft.reasoningEffort,'ultra');assert.equal(draft.approvalPolicy,'on-request');
  assert.equal(goalDraft({...saved,approvalPolicy:'on-failure'}).approvalPolicy,'on-failure','Unsupported persisted values must not be silently rewritten.');
- assert.equal('threadId'in draft,false);assert.equal('status'in draft,false);
+ assert.equal('threadId'in draft,false);assert.equal('status'in draft,false);assert.equal('qaBinding'in draft,false);assert.equal('qaReceipts'in draft,false);
 });
 
 test('prepared and unknown delivery states are not labeled as delivered',async()=>{
