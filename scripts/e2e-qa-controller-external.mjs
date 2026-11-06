@@ -237,12 +237,23 @@ process.stdout.write('OWNED_READY\n');process.stdin.setEncoding('utf8');process.
       });
       const streamShell = accept => {
         const quote = value => "'" + value.replaceAll("'", "'\\''") + "'";
-        // A real owned PTY supplies the actual tty framing expected by the
-        // product's OpenSSH adapter; no remote request command is evaluated.
+        // BSD script requires a real pipe/TTY for stdin, while Node's stdio
+        // pipe is a socket. The owned cat pipeline supplies the real pipe.
+        // No remote request command is evaluated.
         const command = "printf '\\036REVIEWOPS_TTY:%s\\037' \"$(tty)\"; exec " + quote(process.execPath) + ' ' + quote(stream);
-        const channel = accept(), child = spawn('/usr/bin/script', ['-q', '/dev/null', '/bin/sh', '-c', command], {env: {PATH: '/usr/bin:/bin'}, stdio: ['pipe', 'pipe', 'pipe']});
-        const record = {channel: sshSessions.length + 1, childPID: child.pid, startedAt: new Date().toISOString(), exit: null};sshSessions.push(record);sshChildren.add(child);
-        channel.on('error', () => {});child.stdin.on('error', () => {});child.stderr.on('data', () => {});child.on('error', () => {failure ||= new Error('An owned SSH stream failed.');});
+        const pipeline = '/bin/cat | /usr/bin/script -q /dev/null /bin/sh -c ' + quote(command);
+        const channel = accept(), child = spawn('/bin/sh', ['-c', pipeline], {env: {PATH: '/usr/bin:/bin'}, stdio: ['pipe', 'pipe', 'pipe']});
+        const record = {channel: sshSessions.length + 1, childPID: child.pid, process: 'Owned cat/script/Node stream pipeline', startedAt: new Date().toISOString(), exit: null};sshSessions.push(record);sshChildren.add(child);
+        channel.on('error', error => {record.channelErrorCode = typeof error.code === 'string' ? error.code : 'OWNED_CHANNEL_ERROR';});child.stdin.on('error', () => {});
+        child.stderr.on('data', bytes => {record.ptyStderr = ((record.ptyStderr || '') + bytes.toString('utf8').replaceAll(owned, '<owned>').replaceAll(process.execPath, '<node>').replace(/\/dev\/(?:ttys?\w*|pts\/\d+)/g, '<owned-tty>').replace(/[\x00-\x1f\x7f]/g, ' ')).slice(-1024);});
+        child.on('error', () => {failure ||= new Error('An owned SSH stream failed.');});
+        let outputTail = '';
+        child.stdout.on('data', bytes => {
+          outputTail = (outputTail + bytes.toString('utf8')).slice(-128);
+          // After the actual owned application says goodbye, EOF also drains
+          // cat so the whole original pipeline can exit without a signal.
+          if (/(?:^|[\r\n])OWNED_BYE(?:[\r\n]|$)/.test(outputTail)) {record.inputEndedAfterOwnedBye = true;channel.unpipe(child.stdin);if (!child.stdin.writableEnded) child.stdin.end();}
+        });
         channel.pipe(child.stdin);child.stdout.pipe(channel, {end: false});channel.on('end', () => child.stdin.end());channel.on('close', () => child.stdin.end());
         child.once('close', (code, signal) => {record.exit = {code, signal};record.closedAt = new Date().toISOString();sshChildren.delete(child);if (!channel.destroyed) {channel.exit(code ?? 1);channel.end();}});
       };
