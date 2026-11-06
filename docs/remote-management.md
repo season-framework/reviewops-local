@@ -16,6 +16,20 @@ The remote workspace distinguishes its working computer from local projects. It 
 
 ## Identity and recovery
 
+Internal diagnostics can inspect the labels for an unfinished enrollment in the
+current default macOS Keychain. The operation derives the account and digest
+from the original canonical pending file, fences that file and its owner before
+and after the lookup, and permanently restricts its native instance to metadata
+inspection and close. It requests attributes only, with no protected data or
+item references, and writes no profile files. There is no renderer or network
+endpoint for this private diagnostic operation.
+
+Finding a matching label does not verify its key or recover the enrollment.
+Not finding it in the current default Keychain does not establish historical or
+global absence: older pending files do not identify their original Keychain.
+Both outcomes preserve the original pending state and unknown historical cause.
+Neither permits automatic reset, replacement, deletion or re-enrollment.
+
 macOS stores the identity key through an app-owned native Keychain module, independent of the existing Chromium browser-cookie policy. Windows uses Electron safeStorage with DPAPI and refuses unavailable or plaintext storage. Private identity material and saved connection credentials are excluded from project backups. Client bearer credentials are sealed using a separate scope-bound key derived from the OS-protected device identity. Host approval files contain token hashes, never replayable bearer credentials.
 
 Approved app sessions expire after 24 hours. Saved approved connections can reopen while that approval remains valid. Revocation, a restored dataset epoch, or a changed project birth invalidates access. Lost identity material requires explicit recovery or new pairing; the provider does not silently replace a lost key. Changing an address or expired certificate requires stopping incoming listeners and reissuing the certificate with the same identity key. Port binding errors are shown in Settings. Sleeping or shutting down the working computer makes it unavailable; routing and firewall configuration must allow the selected IP and port.

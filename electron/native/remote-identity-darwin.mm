@@ -2,6 +2,7 @@
 #include <Security/SecAccess.h>
 #include <Security/SecKeychain.h>
 #include <Security/SecKeychainItem.h>
+#include <Security/SecItem.h>
 #include <Security/SecTrustedApplication.h>
 #include <CommonCrypto/CommonDigest.h>
 #include <node_api.h>
@@ -65,13 +66,16 @@ struct Output {
 };
 struct EnvTag { napi_env env; std::thread::id thread; napi_ref emergency = nullptr; };
 enum class Phase { New, Ready, Failed, Closed };
+enum class Mode { Unbound, Operational, InspectionOnly };
 struct Singleton {
   std::mutex mutex;
   Phase phase = Phase::New;
+  Mode mode = Mode::Unbound;
   EnvTag* owner = nullptr;
   std::atomic<EnvTag*> ownerSignal{nullptr};
   std::atomic<bool> closedSignal{false};
   std::array<char, 37> account{};
+  std::array<unsigned char, CC_SHA256_DIGEST_LENGTH> pendingDigest{};
 };
 Singleton g;
 
@@ -126,6 +130,10 @@ struct Resources {
   SecAccessRef access = nullptr;
   SecKeychainItemRef item = nullptr;
   CFDataRef reference = nullptr;
+  CFStringRef metadataService = nullptr, metadataAccount = nullptr;
+  CFArrayRef metadataSearchList = nullptr;
+  CFDictionaryRef metadataQuery = nullptr;
+  CFTypeRef metadataResult = nullptr;
   SecKeychainAttributeList* attributes = nullptr;
   void* payload = nullptr;
   UInt32 payloadLength = 0;
@@ -145,6 +153,11 @@ void FreeRead(Resources& resources, Outcome& outcome) noexcept {
 }
 void Cleanup(Resources& resources, Outcome& outcome) noexcept {
   FreeRead(resources, outcome);
+  Release(resources.metadataResult, outcome);
+  Release(resources.metadataQuery, outcome);
+  Release(resources.metadataSearchList, outcome);
+  Release(resources.metadataAccount, outcome);
+  Release(resources.metadataService, outcome);
   Release(resources.reference, outcome);
   Release(resources.finalDefault, outcome);
   Release(resources.actual, outcome);
@@ -277,16 +290,100 @@ bool FinalDefault(Resources& resources, Outcome& outcome) {
   return true;
 }
 
-enum class Operation { Initialize, Create, Read, Remove, Close };
+bool MetadataDefaultUnchanged(Resources& resources, Outcome& outcome) {
+  if (!Target(outcome, "FINAL_DEFAULT_FAILED", [&] { return SecKeychainCopyDefault(&resources.finalDefault); }) ||
+      !Type(outcome, resources.finalDefault, SecKeychainGetTypeID())) return false;
+  if (!CFEqual(resources.target, resources.finalDefault)) { outcome.Fail("METADATA_DEFAULT_CHANGED"); return false; }
+  SecKeychainStatus flags = 0;
+  if (!Target(outcome, "DEFAULT_STATUS_FAILED", [&] { return SecKeychainGetStatus(resources.finalDefault, &flags); })) return false;
+  if (!(flags & kSecUnlockStateStatus)) { outcome.Fail("DEFAULT_LOCKED"); return false; }
+  return true;
+}
+bool PrepareMetadata(napi_env env, bool found, Output& output, Outcome& outcome) {
+  constexpr char hex[] = "0123456789abcdef";
+  std::array<char, CC_SHA256_DIGEST_LENGTH * 2 + 1> digest{};
+  for (size_t i = 0; i < g.pendingDigest.size(); ++i) {
+    digest[i * 2] = hex[g.pendingDigest[i] >> 4]; digest[i * 2 + 1] = hex[g.pendingDigest[i] & 15];
+  }
+  napi_value object = nullptr, version = nullptr, state = nullptr, hash = nullptr, status = nullptr;
+  if (!Napi(outcome, napi_create_object(env, &object)) ||
+      !Napi(outcome, napi_create_int32(env, 1, &version)) ||
+      !Napi(outcome, napi_create_string_utf8(env, found ? "found_current_default" : "not_found_current_default", NAPI_AUTO_LENGTH, &state)) ||
+      !Napi(outcome, napi_create_string_utf8(env, digest.data(), digest.size() - 1, &hash)) ||
+      !Napi(outcome, napi_create_int32(env, found ? errSecSuccess : errSecItemNotFound, &status))) return false;
+  const napi_property_descriptor fields[] = {
+    {"version", nullptr, nullptr, nullptr, nullptr, version, napi_enumerable, nullptr},
+    {"state", nullptr, nullptr, nullptr, nullptr, state, napi_enumerable, nullptr},
+    {"pendingSHA256", nullptr, nullptr, nullptr, nullptr, hash, napi_enumerable, nullptr},
+    {"osStatus", nullptr, nullptr, nullptr, nullptr, status, napi_enumerable, nullptr}
+  };
+  if (!Napi(outcome, napi_define_properties(env, object, sizeof(fields) / sizeof(fields[0]), fields)) ||
+      !Napi(outcome, napi_object_freeze(env, object))) return false;
+  output.value = object; return true;
+}
+void InspectMetadata(napi_env env, Resources& resources, Output& output, Outcome& outcome) {
+  if (!CaptureDefault(resources, outcome)) return;
+  resources.metadataService = CFStringCreateWithCString(kCFAllocatorDefault, kService, kCFStringEncodingUTF8);
+  resources.metadataAccount = CFStringCreateWithCString(kCFAllocatorDefault, g.account.data(), kCFStringEncodingUTF8);
+  if (!Type(outcome, resources.metadataService, CFStringGetTypeID()) || !Type(outcome, resources.metadataAccount, CFStringGetTypeID())) return;
+  const void* keychains[] = {resources.target};
+  resources.metadataSearchList = CFArrayCreate(kCFAllocatorDefault, keychains, 1, &kCFTypeArrayCallBacks);
+  if (!Type(outcome, resources.metadataSearchList, CFArrayGetTypeID()) || CFArrayGetCount(resources.metadataSearchList) != 1 ||
+      CFArrayGetValueAtIndex(resources.metadataSearchList, 0) != resources.target) { outcome.Fail("METADATA_QUERY_REFUSED"); return; }
+  // This is a file-keychain attributes-only query. No data, item reference,
+  // persistent reference, alternate keychain or search-all path is requested.
+  const void* keys[] = {kSecClass, kSecAttrService, kSecAttrAccount, kSecMatchSearchList,
+    kSecMatchLimit, kSecMatchCaseInsensitive, kSecReturnAttributes, kSecUseAuthenticationUI};
+  const void* values[] = {kSecClassGenericPassword, resources.metadataService, resources.metadataAccount,
+    resources.metadataSearchList, kSecMatchLimitOne, kCFBooleanFalse, kCFBooleanTrue, kSecUseAuthenticationUIFail};
+  resources.metadataQuery = CFDictionaryCreate(kCFAllocatorDefault, keys, values, sizeof(keys) / sizeof(keys[0]),
+    &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+  if (!Type(outcome, resources.metadataQuery, CFDictionaryGetTypeID())) return;
+  OSStatus status = errSecInternalComponent;
+  if (!Target(outcome, "METADATA_QUERY_FAILED", [&] {
+    status = SecItemCopyMatching(resources.metadataQuery, &resources.metadataResult);
+    return status == errSecItemNotFound ? errSecSuccess : status;
+  })) return;
+  if (status == errSecSuccess) {
+    if (!Type(outcome, resources.metadataResult, CFDictionaryGetTypeID())) return;
+    const auto attributes = static_cast<CFDictionaryRef>(resources.metadataResult);
+    const auto service = static_cast<CFTypeRef>(CFDictionaryGetValue(attributes, kSecAttrService));
+    const auto account = static_cast<CFTypeRef>(CFDictionaryGetValue(attributes, kSecAttrAccount));
+    const auto itemClass = static_cast<CFTypeRef>(CFDictionaryGetValue(attributes, kSecClass));
+    if (CFDictionaryGetCount(attributes) > 64 || !Type(outcome, service, CFStringGetTypeID()) ||
+        !Type(outcome, account, CFStringGetTypeID()) || !CFEqual(service, resources.metadataService) ||
+        !CFEqual(account, resources.metadataAccount) || (itemClass && !CFEqual(itemClass, kSecClassGenericPassword)) ||
+        CFDictionaryContainsKey(attributes, kSecValueData) || CFDictionaryContainsKey(attributes, kSecValueRef) ||
+        CFDictionaryContainsKey(attributes, kSecValuePersistentRef)) { outcome.Fail("METADATA_SHAPE_REFUSED"); return; }
+  } else if (resources.metadataResult) { outcome.Fail("METADATA_SHAPE_REFUSED"); return; }
+  if (MetadataDefaultUnchanged(resources, outcome)) PrepareMetadata(env, status == errSecSuccess, output, outcome);
+}
+
+enum class Operation { Initialize, Create, Read, Remove, InspectPendingMetadata, Close };
 void Perform(napi_env env, EnvTag* tag, Operation operation, const napi_value* args, Resources& resources, Output& output, Outcome& outcome) {
   if (g.closedSignal.load() || g.phase == Phase::Closed) { outcome.Fail("PROVIDER_CLOSED"); return; }
   if (g.owner && (g.owner != tag || tag->env != env || tag->thread != std::this_thread::get_id())) { outcome.Fail("OWNER_CONTEXT_REFUSED"); return; }
   if (operation == Operation::Close) { g.closedSignal.store(true); g.phase = Phase::Closed; Undefined(env, output, outcome); return; }
+  if (operation == Operation::InspectPendingMetadata) {
+    std::array<char, 37> account{}; Snapshot<CC_SHA256_DIGEST_LENGTH> digest;
+    if (!Account(env, args[0], account, outcome) ||
+        !Buffer(env, args[1], CC_SHA256_DIGEST_LENGTH, CC_SHA256_DIGEST_LENGTH, digest, outcome)) return;
+    if (g.phase == Phase::Failed) { outcome.Fail("PROVIDER_FAILED"); return; }
+    if (g.phase == Phase::New && g.mode == Mode::Unbound) {
+      g.owner = tag; g.ownerSignal.store(tag); g.account = account;
+      std::memcpy(g.pendingDigest.data(), digest.bytes.data(), g.pendingDigest.size());
+      g.mode = Mode::InspectionOnly; g.phase = Phase::Ready;
+    }
+    if (g.mode != Mode::InspectionOnly || g.account != account ||
+        !EqualBytes(g.pendingDigest.data(), digest.bytes.data(), g.pendingDigest.size())) { outcome.Fail("METADATA_BINDING_REFUSED"); return; }
+    InspectMetadata(env, resources, output, outcome); return;
+  }
+  if (g.mode == Mode::InspectionOnly) { outcome.Fail("INSPECTION_ONLY_REFUSED"); return; }
   if (operation == Operation::Initialize) {
     std::array<char, 37> account{};
     if (!Account(env, args[0], account, outcome)) return;
     if (g.phase == Phase::Failed) { outcome.Fail("PROVIDER_FAILED"); return; }
-    if (g.phase == Phase::New) { g.owner = tag; g.ownerSignal.store(tag); g.account = account; }
+    if (g.phase == Phase::New) { g.owner = tag; g.ownerSignal.store(tag); g.account = account; g.mode = Mode::Operational; }
     else if (g.account != account) { outcome.Fail("ACCOUNT_IMMUTABLE"); return; }
     // Observe the current default vault before JS publishes a new pending
     // intent. Create still repeats this check: preflight cannot prevent a later
@@ -393,7 +490,7 @@ napi_value Dispatch(napi_env env, napi_callback_info info, Operation operation) 
     size_t count = 3; napi_value args[3] = {}; void* data = nullptr;
     if (!Napi(outcome, napi_get_cb_info(env, info, &count, args, nullptr, &data))) return Throw(env, nullptr, outcome);
     tag = static_cast<EnvTag*>(data);
-    const size_t wanted = operation == Operation::Close ? 0 : operation == Operation::Remove ? 2 : 1;
+    const size_t wanted = operation == Operation::Close ? 0 : operation == Operation::Remove || operation == Operation::InspectPendingMetadata ? 2 : 1;
     if (!tag || tag->env != env || count != wanted) { outcome.Fail("ARGUMENTS_REFUSED"); return Throw(env, tag, outcome); }
     lock = std::unique_lock<std::mutex>(g.mutex, std::try_to_lock);
     if (!lock.owns_lock()) { outcome.Fail("PROVIDER_BUSY"); return Throw(env, tag, outcome); }
@@ -417,6 +514,8 @@ napi_value Initialize(napi_env env, napi_callback_info info) { return Dispatch(e
 napi_value Create(napi_env env, napi_callback_info info) { return Dispatch(env, info, Operation::Create); }
 napi_value Read(napi_env env, napi_callback_info info) { return Dispatch(env, info, Operation::Read); }
 napi_value Remove(napi_env env, napi_callback_info info) { return Dispatch(env, info, Operation::Remove); }
+
+napi_value InspectPendingMetadata(napi_env env, napi_callback_info info) { return Dispatch(env, info, Operation::InspectPendingMetadata); }
 napi_value Close(napi_env env, napi_callback_info info) { return Dispatch(env, info, Operation::Close); }
 napi_value Module(napi_env env, napi_value exports) {
   Outcome emergency; emergency.Fail("NAPI_FAILURE"); emergency.itemMayRemain = true;
@@ -433,6 +532,7 @@ napi_value Module(napi_env env, napi_value exports) {
     {"create", nullptr, Create, nullptr, nullptr, nullptr, napi_default, tag},
     {"read", nullptr, Read, nullptr, nullptr, nullptr, napi_default, tag},
     {"remove", nullptr, Remove, nullptr, nullptr, nullptr, napi_default, tag},
+    {"inspectPendingMetadata", nullptr, InspectPendingMetadata, nullptr, nullptr, nullptr, napi_default, tag},
     {"close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, tag}
   };
   if (napi_define_properties(env, exports, sizeof(methods) / sizeof(methods[0]), methods) != napi_ok || napi_object_freeze(env, exports) != napi_ok)

@@ -6,6 +6,10 @@ const {captureIdentityDiagnostic,legacyIdentityDiagnostic,identityDiagnosticReco
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const HEX=/^[a-f0-9]{64}$/;
 const CODES=new Set(['IDENTITY_UNAVAILABLE','IDENTITY_NOT_INITIALIZED','IDENTITY_LOST','IDENTITY_PENDING','CERTIFICATE_REISSUE_REQUIRED','INVALID_REMOTE_ADDRESS','STALE_IDENTITY_REQUEST']);
+const METADATA_CODES=new Set(['METADATA_UNAVAILABLE','METADATA_UNSUPPORTED','PENDING_EVIDENCE_UNAVAILABLE','PENDING_CHANGED','METADATA_BINDING_REFUSED','METADATA_RESULT_REFUSED','INSPECTION_ONLY_REFUSED',
+ 'DEFAULT_KEYCHAIN_FAILED','DEFAULT_LOCKED','DEFAULT_STATUS_FAILED','FINAL_DEFAULT_FAILED','METADATA_DEFAULT_CHANGED','METADATA_QUERY_FAILED','METADATA_QUERY_REFUSED','METADATA_SHAPE_REFUSED',
+ 'NO_UI_GET_FAILED','NO_UI_SET_FAILED','NO_UI_VERIFY_FAILED','NO_UI_NOT_ENFORCED','PROVIDER_BUSY','PROVIDER_CLOSED','PROVIDER_FAILED','OWNER_CONTEXT_REFUSED','NAPI_FAILURE','NATIVE_EXCEPTION','NATIVE_SHAPE_REFUSED','CF_RELEASE_FAILED']);
+const METADATA_OS_STATUSES=new Set([-50,-128,-25291,-25293,-25294,-25295,-25300,-25307,-25308,-25315,-34018,-67068,-67062,-67054,-67050,-67034,-67022]);
 const wipe=value=>{if(Buffer.isBuffer(value))Buffer.prototype.fill.call(value,0);};
 function fail(code) {throw Object.assign(new Error('The remote identity request was refused.'),{code});}
 function codeOf(error) {try{const d=error&&Object.getOwnPropertyDescriptor(error,'code');return d&&CODES.has(d.value)?d.value:'IDENTITY_UNAVAILABLE';}catch{return'IDENTITY_UNAVAILABLE';}}
@@ -42,9 +46,9 @@ function parseCertificate(snapshot,index) {
 function parsePending(snapshot) {const v=canonical(snapshot);if(!exact(v,['schema','operationId','deviceId','accountUUID','keyFingerprint'])||v.schema!==1||![v.operationId,v.deviceId,v.accountUUID].every(x=>UUID.test(x))||!HEX.test(v.keyFingerprint))fail('IDENTITY_LOST');return v;}
 function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uuid=crypto.randomUUID,backend='macos-default-file-keychain'}) {
   let status='not_initialized',errorCode=null,publicIdentity=null,diagnostic=null,closing=false,closePromise=null;
-  let epoch=0,identityVersion=0,queue=Promise.resolve(),native=null,nativeAccount=null,nativeUsable=false,everProfileObserved=false;
+  let epoch=0,identityVersion=0,queue=Promise.resolve(),native=null,nativeAccount=null,nativeUsable=false,everProfileObserved=false,inspectionOnly=false,metadataBinding=null;
   const leases=new Set();
-  try{const original=loadNative(),names=['initialize','create','read','remove','close'];if(!original)fail('IDENTITY_UNAVAILABLE');const captured={};for(const name of names){const d=Object.getOwnPropertyDescriptor(original,name);if(!d||typeof d.value!=='function')fail('IDENTITY_UNAVAILABLE');captured[name]=d.value.bind(original);}native=Object.freeze(captured);}catch{fail('IDENTITY_UNAVAILABLE');}
+  try{const original=loadNative(),names=['initialize','create','read','remove','close'];if(!original)fail('IDENTITY_UNAVAILABLE');const captured={};for(const name of names){const d=Object.getOwnPropertyDescriptor(original,name);if(!d||typeof d.value!=='function')fail('IDENTITY_UNAVAILABLE');captured[name]=d.value.bind(original);}const inspect=Object.getOwnPropertyDescriptor(original,'inspectPendingMetadata');if(inspect){if(!Object.hasOwn(inspect,'value')||typeof inspect.value!=='function')fail('IDENTITY_UNAVAILABLE');captured.inspectPendingMetadata=inspect.value.bind(original);}native=Object.freeze(captured);}catch{fail('IDENTITY_UNAVAILABLE');}
   function state() {let current=false;try{current=ownerCurrent()===true&&!closing;}catch{}if(!current)return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'IDENTITY_UNAVAILABLE'});if(status==='ready'&&publicIdentity&&Date.parse(publicIdentity.validUntil)<=now())return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'CERTIFICATE_REISSUE_REQUIRED'});return Object.freeze({status,backend,identity:status==='ready'&&publicIdentity?Object.freeze({deviceId:publicIdentity.deviceId,address:publicIdentity.address,keyFingerprint:publicIdentity.keyFingerprint,certificateFingerprint:publicIdentity.certificateFingerprint,validUntil:publicIdentity.validUntil}):null,errorCode,...(diagnostic?{diagnostic}:{})});}
   function set(code,detail) {if(closing)code='IDENTITY_UNAVAILABLE';if(detail!==undefined)diagnostic=detail;else if(code!=='IDENTITY_PENDING')diagnostic=null;errorCode=code;status=code==='IDENTITY_PENDING'?'pending':code==='IDENTITY_LOST'?'identity_lost':code==='IDENTITY_NOT_INITIALIZED'?'not_initialized':'unavailable';publicIdentity=null;}
   function originalGuard(assertCurrent) {
@@ -62,6 +66,7 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
   }
   function serial(work) {const task=queue.then(work);queue=task.catch(()=>{});return task;}
   function bindNative(account,guard) {
+    if(inspectionOnly)fail('IDENTITY_PENDING');
     guard();if(nativeAccount&&nativeAccount!==account)fail('IDENTITY_LOST');
     if(!nativeUsable){if(nativeAccount)fail('IDENTITY_UNAVAILABLE');nativeAccount=account;native.initialize(account);nativeUsable=true;}
     guard();return native;
@@ -148,6 +153,47 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
         guard();publishPublic({deviceId:bundle.parsed.deviceId,...identity});return state();
       } catch(e){const code=codeOf(e);if(code==='STALE_IDENTITY_REQUEST'){if(certificateCommitted)set('IDENTITY_NOT_INITIALIZED');throw e;}set(code);guard();return state();}
       finally {der?.fill(0);bundle?.index.bytes.fill(0);bundle?.certificate?.bytes.fill(0);}
+    });
+  }
+  function metadataFailure(code){throw Object.assign(new Error('The pending metadata observation was refused.'),{code});}
+  function metadataReason(error){
+    let code='METADATA_UNAVAILABLE',osStatus=null;
+    try{const d=error&&Object.getOwnPropertyDescriptors(error);if(d&&Object.hasOwn(d.code||{},'value')&&METADATA_CODES.has(d.code.value)){code=d.code.value;if(Object.hasOwn(d.osStatus||{},'value')&&METADATA_OS_STATUSES.has(d.osStatus.value))osStatus=d.osStatus.value;}}catch{}
+    return {code,osStatus};
+  }
+  function metadataObservation(state,pendingSHA256,code,osStatus){
+    // A current observation is separate from state()/diagnostic and is never
+    // written to the runtime profile or interpreted as recovery authority.
+    return Object.freeze({version:1,kind:'current-pending-metadata',scope:'current-default',state,pendingSHA256,code,osStatus});
+  }
+  async function inspectPendingMetadata(options){
+    let guard;
+    try{if(!exact(options,['assertCurrent']))fail('STALE_IDENTITY_REQUEST');const d=Object.getOwnPropertyDescriptor(options,'assertCurrent');if(!d||!Object.hasOwn(d,'value')||typeof d.value!=='function')fail('STALE_IDENTITY_REQUEST');guard=originalGuard(d.value);guard();}catch{fail('STALE_IDENTITY_REQUEST');}
+    return serial(async()=>{
+      let pending,digest,pendingSHA256=null,fence;
+      try{
+        guard();if(backend!=='macos-default-file-keychain'||!native.inspectPendingMetadata)metadataFailure('METADATA_UNSUPPORTED');
+        if(nativeAccount||nativeUsable||leases.size)metadataFailure('INSPECTION_ONLY_REFUSED');
+        if(!files.probe())metadataFailure('PENDING_EVIDENCE_UNAVAILABLE');files.open(false);files.assertDirectory();guard();
+        pending=files.read('pending.json');if(!pending)metadataFailure('PENDING_EVIDENCE_UNAVAILABLE');const value=parsePending(pending);pendingSHA256=sha(pending.bytes);
+        fence=()=>{guard();files.assertDirectory();files.unchanged(pending,'pending.json');if(sha(pending.bytes)!==pendingSHA256)metadataFailure('PENDING_CHANGED');};
+        fence();
+        if(metadataBinding&&(metadataBinding.pendingSHA256!==pendingSHA256||metadataBinding.accountUUID!==value.accountUUID||metadataBinding.fileIdentity!==pending.identity))metadataFailure('PENDING_CHANGED');
+        metadataBinding??=Object.freeze({pendingSHA256,accountUUID:value.accountUUID,fileIdentity:pending.identity});inspectionOnly=true;
+        digest=crypto.createHash('sha256').update(pending.bytes).digest();fence();
+        const result=await native.inspectPendingMetadata(value.accountUUID,digest);
+        fence();
+        if(!exact(result,['version','state','pendingSHA256','osStatus']))metadataFailure('METADATA_RESULT_REFUSED');
+        const d=Object.getOwnPropertyDescriptors(result);if(Object.values(d).some(field=>!Object.hasOwn(field,'value')))metadataFailure('METADATA_RESULT_REFUSED');
+        const observed=Object.fromEntries(Object.entries(d).map(([key,field])=>[key,field.value]));
+        if(observed.version!==1||observed.pendingSHA256!==pendingSHA256||
+          !(observed.state==='found_current_default'&&observed.osStatus===0||observed.state==='not_found_current_default'&&observed.osStatus===-25300))metadataFailure('METADATA_RESULT_REFUSED');
+        return metadataObservation(observed.state,pendingSHA256,observed.state==='found_current_default'?'OK':'ITEM_NOT_FOUND',observed.osStatus);
+      }catch(error){
+        if(codeOf(error)==='STALE_IDENTITY_REQUEST')throw error;guard();
+        if(fence){try{fence();}catch(changed){if(codeOf(changed)==='STALE_IDENTITY_REQUEST')throw changed;return metadataObservation('unavailable',null,'PENDING_CHANGED',null);}}
+        const reason=metadataReason(error);return metadataObservation('unavailable',pendingSHA256,reason.code,reason.osStatus);
+      }finally{wipe(pending?.bytes);wipe(digest);}
     });
   }
   function wrapLease(lease,guard) {
@@ -247,6 +293,6 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
       if(!failed){try{files.close();}catch{failed=true;}}if(failed)fail('IDENTITY_UNAVAILABLE');
     })();return closePromise;
   }
-  return Object.freeze({state,initialize,acquireServerTLS,publicCertificate,sealCredential,openCredential,closeAndDrain});
+  return Object.freeze({state,initialize,inspectPendingMetadata,acquireServerTLS,publicCertificate,sealCredential,openCredential,closeAndDrain});
 }
 module.exports={createIdentityOwner};
