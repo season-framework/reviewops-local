@@ -113,7 +113,7 @@ async function resolveOpsTarget(input){
   if(service.kind==='local'){const canonical=await require('./work-directory.cjs').requireDirectory(workPath);assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:canonical,targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};}
   if(typeof ssh.inspectAppServerTarget!=='function')throw Object.assign(new Error('SSH Ops 연결을 준비하고 있습니다. 로컬 실행으로 전환하지 않았습니다.'),{code:'OPS_SSH_UNAVAILABLE'});
   const result=await ssh.inspectAppServerTarget(service,{workPath});
-  assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:result.canonicalWorkPath,targetKind:'ssh',targetIdentity:result.identity,targetLockIdentity:result.lockIdentity||result.identity,targetLabel:service.name||service.hostAlias||service.host};
+  assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:result.canonicalWorkPath,targetKind:'ssh',targetIdentity:result.identity,targetLockIdentity:result.lockIdentity||result.identity,targetLockIdentities:result.lockIdentities||[result.lockIdentity||result.identity],targetLabel:service.name||service.hostAlias||service.host};
 }
 async function resolveOpsSessionTarget(goal){
   const target=await resolveOpsTarget(goal);

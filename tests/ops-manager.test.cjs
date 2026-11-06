@@ -24,7 +24,7 @@ async function harness(t,overrides={}){
       },
       async steer(input){calls.push({kind:'steer',goalId:options.goalId,...input});external.set(input.deliveryId,{threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'});return {threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'};},
       async reconcile(input){calls.push({kind:'reconcile',goalId:options.goalId,...input});return external.get(input.deliveryId)||{threadId:input.threadId,state:'unknown',delivery:'unknown'};},
-      async interrupt(input){calls.push({kind:'interrupt',goalId:options.goalId,...input});await options.onEvent({type:'turn.completed',threadId:state.threadId||input.threadId,turnId:state.turnId||input.turnId,status:'interrupted'});},
+      async interrupt(input){calls.push({kind:'interrupt',goalId:options.goalId,...input});if(overrides.interrupt)return overrides.interrupt(input,state);await options.onEvent({type:'turn.completed',threadId:state.threadId||input.threadId,turnId:state.turnId||input.turnId,status:'interrupted'});return {confirmed:true,state:'idle',turnId:state.turnId||input.turnId};},
       async close(){}
     };
   };
@@ -150,6 +150,17 @@ test('unknown delivery results and idle marker absence cannot become accepted wo
  assert.equal(goal.executionState,'unknown');assert.equal(delivery.status,'unknown');assert.equal(delivery.deliveredAt,undefined);
  h.external.set(delivery.id,{threadId:goal.threadId,state:'idle',delivery:'not_found',safeToRetry:false});await h.manager.reconnect(id);await h.manager.pumpAll();
  goal=h.manager.snapshot().goals[0];assert.equal(goal.executionState,'unknown');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+});
+
+test('an unconfirmed interruption retains the original directory claim instead of releasing a running target',async t=>{
+ const h=await harness(t,{interrupt:async()=>({confirmed:false,state:'unknown'})}),folder=h.folder('unconfirmed-stop'),a=await h.add('Original turn',folder),b=await h.add('Waiting writer',folder);
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:a,action:'pause'});await h.manager.pumpAll();
+ const goals=h.manager.snapshot().goals;assert.equal(goals.find(g=>g.id===a).status,'paused');assert.equal(goals.find(g=>g.id===a).executionState,'unknown');assert.equal(goals.find(g=>g.id===b).executionState,'waiting');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+});
+
+test('direct and OpenSSH goals claim their shared endpoint alias for one remote canonical folder',async t=>{
+ const h=await harness(t);h.manager.resolveTarget=async input=>({projectId:'project',workPath:'/shared/repo',targetKind:'ssh',targetIdentity:'session:'+input.name,targetLockIdentity:input.name==='direct'?'server-key':'endpoint',targetLockIdentities:input.name==='direct'?['server-key','endpoint']:['endpoint']});
+ const a=await h.add('direct'),b=await h.add('openssh');await Promise.all([a,b].map(goalId=>h.manager.goalAction({goalId,action:'start'})));await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(h.manager.snapshot().goals.filter(g=>g.executionState==='waiting').length,1);
 });
 
 test('cron is exactly five fields, validates IANA zones, and preserves DST wall-clock recurrence',()=>{

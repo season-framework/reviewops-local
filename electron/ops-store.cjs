@@ -20,6 +20,7 @@ function validateOpsData(value){
       !['draft','active','paused','finished'].includes(g.status)||!['idle','starting','running','waiting','unknown','error'].includes(g.executionState)||!Array.isArray(g.schedules)||g.schedules.length>100||!Array.isArray(g.history)||!Array.isArray(g.conversation)||
       g.threadId!==null&&(!text(g.threadId,256)||!g.threadId||threads.has(g.threadId))||g.turnId!==null&&!text(g.turnId,256))fail();
     ids.add(g.id);
+    if(g.targetLockIdentities!==undefined&&(!Array.isArray(g.targetLockIdentities)||g.targetLockIdentities.length<1||g.targetLockIdentities.length>8||g.targetLockIdentities.some(value=>!text(value,512)||!value)))fail();
     if(g.threadId)threads.add(g.threadId);
     for(const s of g.schedules){if(!s||!UUID.test(s.id)||schedules.has(s.id)||s.goalId!==g.id||!text(s.name,200)||!s.name.trim()||!text(s.prompt,100000)||typeof s.enabled!=='boolean')fail();validateSchedule(s.cron,s.timezone);schedules.add(s.id);}
     for(const h of g.history)if(!h||!UUID.test(h.id)||!text(h.type,80)||!text(h.reason||'',100000)||h.prompt!==undefined&&!text(h.prompt,2*1024*1024))fail();
