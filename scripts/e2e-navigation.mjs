@@ -197,7 +197,7 @@ try {
   await expect(detailTabs.getByRole('tab', { name: '에이전트', exact: true })).toBeFocused();
   await page.keyboard.press('Home');
   await expect(detailTabs.getByRole('tab', { name: '작업이력', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await home.getByRole('button', { name: '작업메모.md', exact: true }).click();
+  await home.getByRole('button', { name: '작업메모.md 열기', exact: true }).click();
   await expect(page.locator('.source-preview')).toContainText('검색어를 유지하고 파일 이름 전체를 표시합니다.');
   await page.getByRole('dialog').getByRole('button', { name: '닫기', exact: true }).click();
   passed('작업이력·정보·로그·에이전트 키보드 전환과 첨부파일 미리보기');
@@ -213,9 +213,10 @@ try {
   assert.equal((await invoke('snapshot')).attachments.length, 1, '선택한 파일은 보내기 전까지 자료에 추가하지 않음');
   await home.getByRole('button', { name: '작업이력 보내기', exact: true }).click();
   await expect.poll(async () => (await invoke('snapshot')).attachments.length).toBe(2);
-  await expect(home.locator('.original-review-history-scroll').getByRole('img', { name: '검색 화면 검토.png', exact: true })).toBeVisible();
+  await expect(home.getByRole('button', { name: '검색 화면 검토.png 열기', exact: true })).toBeVisible();
   await home.getByRole('button', { name: '검색 화면 검토.png 열기', exact: true }).click();
   await expect(page.getByRole('dialog').getByRole('img')).toBeVisible();
+  await expect.poll(() => page.getByRole('dialog').getByRole('img').evaluate(image => image.complete && image.naturalWidth > 0)).toBe(true);
   await page.getByRole('dialog').getByRole('button', { name: '닫기', exact: true }).click();
   await expect(page.locator('.toast[role="status"]')).toHaveCount(0, { timeout: 5000 });
   await home.locator('.original-review-history-scroll').evaluate(element => { element.scrollTop = element.scrollHeight; });
