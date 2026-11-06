@@ -9,6 +9,7 @@ const SCHEMA_VERSION = 12;
 const BACKUP_FORMAT_VERSION = 10;
 const sharedWrites = require('./shared-write-core.cjs');
 const peerProjectBirths = require('./peer-project-births.cjs');
+const { querySharedData } = require('./shared-data-query.cjs');
 const {REQUEST_SCHEMA,listSavedRequests,importRequests} = require('./agent-requests.cjs');
 const {executionSettings,reportedSettings} = require('./agent-execution-settings.cjs');
 const STATUSES = ['open', 'in_progress', 'in_review', 'resolved', 'recheck', 'closed'];
@@ -25,6 +26,176 @@ const AGENT_METADATA = ['cancelRequested', 'terminationConfirmed', 'errorCode', 
 const LOG_FIELDS = ['navigation_log','input_log','network_log','console_log','fingerprint_log'];
 const SECRET_KEY = /^(password|passphrase|private[_-]?key|ssh[_-]?password|ssh[_-]?private[_-]?key|access[_-]?token|api[_-]?key|secret|credential)$/i;
 const MAX_ITEMS = 100000;
+
+// Only successfully constructed originals enter this registry. Neither the
+// registration operation nor an ownership/guard bypass is exported.
+const peerReadStores = new WeakMap();
+const PEER_READ_MESSAGE = 'Committed peer read state is unavailable.';
+function peerReadError(cause) {
+  const error = Object.assign(new Error(PEER_READ_MESSAGE), {code: 'PEER_READ_UNAVAILABLE'});
+  if (arguments.length) Object.defineProperty(error, 'cause', {value: cause});
+  return error;
+}
+function poisonPeerRead(frame, error) {
+  frame.poisoned = true;
+  if (!frame.hasFailure) { frame.hasFailure = true; frame.failure = error; }
+  return frame.failure;
+}
+function assertPeerReadWritable(store) {
+  const owner = peerReadStores.get(store)?.owner;
+  if (!owner || (!owner.frame && !owner.retired)) return;
+  const error = peerReadError();
+  throw owner.frame ? poisonPeerRead(owner.frame, error) : error;
+}
+function assertPeerReadOwner(owner) {
+  const db = Object.getOwnPropertyDescriptor(owner.store, 'db');
+  const closed = Object.getOwnPropertyDescriptor(owner.store, 'closed');
+  if (peerReadStores.get(owner.store) !== owner.registration || owner.registration.owner !== owner ||
+      !db || !Object.hasOwn(db, 'value') || db.value !== owner.db ||
+      !closed || !Object.hasOwn(closed, 'value') || closed.value !== false || owner.retired) throw peerReadError();
+}
+function assertPeerReadFrame(owner, frame, callable = false) {
+  if (frame.poisoned) throw frame.failure;
+  assertPeerReadOwner(owner);
+  if (owner.frame !== frame ||
+      callable && (!frame.callable || frame.phase !== 'callback')) throw peerReadError();
+}
+function peerReadContent(owner, frame, context, operation, payload) {
+  assertPeerReadFrame(owner, frame, true);
+  if (frame.queried) throw peerReadError();
+  frame.queried = true;
+  if (!['projects.list', 'reviews.list', 'reviews.get'].includes(operation)) {
+    fail('Invalid shared-data query.', 'INVALID_QUERY');
+  }
+  const projects = owner.db.prepare(`SELECT id,name,description,createdAt,updatedAt
+    FROM projects ORDER BY createdAt,id LIMIT 100001`).all();
+  assertPeerReadFrame(owner, frame, true);
+  if (projects.length > MAX_ITEMS) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
+  const reviews = owner.db.prepare(`SELECT id,projectId,number,title,body,status,priority,category,createdAt,updatedAt
+    FROM reviews ORDER BY updatedAt DESC,id LIMIT 100001`).all();
+  assertPeerReadFrame(owner, frame, true);
+  if (reviews.length > MAX_ITEMS) fail('Shared data is unavailable.', 'INVALID_SNAPSHOT');
+  const result = querySharedData({projects, reviews}, context, operation, payload);
+  assertPeerReadFrame(owner, frame, true);
+  return result;
+}
+function runPeerRead(owner, content) {
+  assertPeerReadOwner(owner);
+  const transaction = Object.getOwnPropertyDescriptor(owner.store, 'inTransaction');
+  if (owner.frame || transaction && (!Object.hasOwn(transaction, 'value') || transaction.value)) throw peerReadError();
+  const frame = {phase: 'begin', callable: false, queried: false, poisoned: false, hasFailure: false,
+    disposition: 'unknown', dataset: null};
+  owner.frame = frame;
+  let began = false, committed = false;
+  try {
+    owner.db.exec('BEGIN IMMEDIATE');
+    began = true;
+    frame.phase = 'callback'; frame.callable = true;
+    assertPeerReadFrame(owner, frame, true);
+    const dataset = () => {
+      assertPeerReadFrame(owner, frame, true);
+      if (!frame.dataset) frame.dataset = peerProjectBirths.readDataset(owner.db);
+      assertPeerReadFrame(owner, frame, true);
+      return frame.dataset;
+    };
+    const view = Object.freeze({
+      dataset() {
+        try {
+          if (arguments.length) throw peerReadError();
+          return dataset();
+        } catch (error) { throw poisonPeerRead(frame, error); }
+      },
+      query(context, operation, payload) {
+        try {
+          if (arguments.length !== 3) throw peerReadError();
+          return peerReadContent(owner, frame, context, operation, payload);
+        } catch (error) { throw poisonPeerRead(frame, error); }
+      }
+    });
+    let result;
+    try { result = content ? Reflect.apply(owner.reader, undefined, [view]) : dataset(); }
+    finally { frame.callable = false; frame.phase = 'validation'; }
+    if (result !== null && ['object', 'function'].includes(typeof result) && typeof result.then === 'function') {
+      throw peerReadError();
+    }
+    assertPeerReadFrame(owner, frame);
+    frame.phase = 'commit';
+    owner.db.exec('COMMIT');
+    committed = true; frame.disposition = 'committed';
+    assertPeerReadFrame(owner, frame);
+    return result;
+  } catch (primary) {
+    frame.callable = false;
+    const failure = frame.hasFailure ? frame.failure : primary;
+    if (!began) {
+      // A throwing BEGIN seam does not prove that no SQL transaction exists.
+      // In particular, never roll back a transaction owned by a raw caller.
+      frame.phase = 'quarantined'; frame.disposition = 'unknown-begin';
+      throw peerReadError(failure);
+    }
+    if (committed) throw failure;
+    frame.phase = 'rollback';
+    try {
+      owner.db.exec('ROLLBACK');
+      frame.disposition = 'rolled-back';
+    } catch (cleanup) {
+      frame.phase = 'quarantined'; frame.disposition = 'unknown-rollback';
+      throw Object.assign(new AggregateError([failure, cleanup], PEER_READ_MESSAGE, {cause: failure}),
+        {code: 'PEER_READ_UNAVAILABLE'});
+    }
+    throw failure;
+  } finally {
+    frame.callable = false;
+    if (owner.frame === frame) {
+      if (['committed', 'rolled-back'].includes(frame.disposition)) {
+        frame.phase = 'expired'; owner.frame = null;
+      } else frame.phase = 'quarantined';
+    }
+  }
+}
+
+// This is an application bootstrap API, not an IPC or peer request operation.
+function createPeerReadStoreBridge(originalStore, fixedReader) {
+  if (arguments.length !== 2) throw peerReadError();
+  const registration = peerReadStores.get(originalStore);
+  if (!registration || registration.owner) throw peerReadError();
+  const owner = {store: originalStore, db: registration.db, registration, reader: null,
+    frame: null, retired: false, closeAttempted: false, closed: false};
+  registration.owner = owner;
+  assertPeerReadOwner(owner);
+  if (typeof fixedReader !== 'function') throw peerReadError();
+  owner.reader = fixedReader;
+  return Object.freeze({
+    sample() {
+      if (arguments.length) throw peerReadError();
+      return runPeerRead(owner, false);
+    },
+    read() {
+      if (arguments.length) throw peerReadError();
+      return runPeerRead(owner, true);
+    },
+    retireAndClose() {
+      if (arguments.length) throw peerReadError();
+      if (owner.closed) return;
+      if (owner.frame && owner.frame.phase !== 'quarantined') {
+        throw poisonPeerRead(owner.frame, peerReadError());
+      }
+      owner.retired = true;
+      const db = Object.getOwnPropertyDescriptor(originalStore, 'db');
+      if (owner.closeAttempted || peerReadStores.get(originalStore) !== registration ||
+          registration.owner !== owner || !db || !Object.hasOwn(db, 'value') || db.value !== owner.db) throw peerReadError();
+      owner.closeAttempted = true;
+      try {
+        // No checkpoint/retry can run against an unconfirmed transaction.
+        owner.db.close();
+        owner.closed = true; originalStore.closed = true;
+        if (owner.frame) owner.frame.phase = 'retired';
+      } catch (cause) {
+        throw peerReadError(cause);
+      }
+    }
+  });
+}
 
 function fail(message, code = 'INVALID_INPUT') {
   const error = new Error(message);
@@ -275,9 +446,11 @@ class LocalStore {
     } catch (error) {
       this.db.close(); this.closed = true; throw error;
     }
+    peerReadStores.set(this, {db: this.db, owner: null});
   }
 
   migrate() {
+    assertPeerReadWritable(this);
     const current = Number(this.db.prepare('PRAGMA user_version').get().user_version);
     if (current > SCHEMA_VERSION) fail('새 버전에서 저장한 자료입니다. 앱을 업데이트하십시오.', 'NEWER_DATABASE');
     if (current === 0) this.transaction(() => {
@@ -482,6 +655,7 @@ class LocalStore {
   }
 
   transaction(fn) {
+    assertPeerReadWritable(this);
     if (this.closed) fail('데이터베이스가 닫혀 있습니다.', 'STORE_CLOSED');
     const invoke = () => {
       const result = fn();
@@ -534,6 +708,7 @@ class LocalStore {
     return row;
   }
   upsert(table, row) {
+    assertPeerReadWritable(this);
     const values=sqlRow(row),columns = Object.keys(values);
     const insert = columns.map(key => `:${key}`).join(',');
     const update = columns.filter(key => key !== 'id' && key !== 'createdAt').map(key => `${key}=excluded.${key}`).join(',');
@@ -692,6 +867,7 @@ class LocalStore {
     });
   }
   insertActivity(reviewId, body, type, fromStatus = '', toStatus = '', author = {}) {
+    assertPeerReadWritable(this);
     const role = choice(author.role,['user','agent','system'],'user','작성자 종류');
     const agentRunId = author.agentRunId ? id(author.agentRunId,'에이전트 실행') : '';
     if (agentRunId && this.get('agent_runs',agentRunId).reviewId !== reviewId) fail('같은 리뷰의 에이전트 실행 기록만 연결할 수 있습니다.');
@@ -928,6 +1104,7 @@ class LocalStore {
   exportData() { return this.transaction(() => ({ format: 'reviewops-local', version: BACKUP_FORMAT_VERSION, ...this.snapshot(), agentRuns:this.listAgentRuns(),agentRequests:listSavedRequests(this.db) })); }
 
   importData(payload) {
+    assertPeerReadWritable(this);
     object(payload, '백업 파일');
     if (payload.format !== 'reviewops-local' || ![1,2,3,4,5,6,7,8,9,BACKUP_FORMAT_VERSION].includes(payload.version)) fail('지원하지 않는 백업 파일입니다.');
     const backupKeys = ['format', 'version', 'groups', 'projects', 'services', 'reviews', 'activities', 'attachments', 'settings', 'agentRuns', 'agentRequests'];
@@ -1050,6 +1227,7 @@ class LocalStore {
   }
 
   backup(destination) {
+    assertPeerReadWritable(this);
     const target = path.resolve(text(destination, '백업 경로', 4096, true));
     if ([this.dbPath, `${this.dbPath}-wal`, `${this.dbPath}-shm`].includes(target)) fail('다른 경로에 백업을 저장하십시오.');
     if (fs.existsSync(target)) fail('같은 이름의 백업 파일이 이미 있습니다.');
@@ -1060,9 +1238,17 @@ class LocalStore {
   }
   close() {
     if (this.closed) return;
-    if (this.dbPath !== ':memory:') this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
-    this.db.close(); this.closed = true;
+    assertPeerReadWritable(this);
+    const db = this.db;
+    if (this.dbPath !== ':memory:') db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.close();
+    const registration = peerReadStores.get(this), owner = registration?.owner;
+    if (owner && owner.store === this && owner.registration === registration &&
+        registration.db === db && owner.db === db) {
+      owner.retired = true; owner.closed = true;
+    }
+    this.closed = true;
   }
 }
 
-module.exports = { LocalStore, createStore: options => new LocalStore(options), SCHEMA_VERSION, BACKUP_FORMAT_VERSION, STATUSES, PRIORITIES, CATEGORIES };
+module.exports = { LocalStore, createStore: options => new LocalStore(options), createPeerReadStoreBridge, SCHEMA_VERSION, BACKUP_FORMAT_VERSION, STATUSES, PRIORITIES, CATEGORIES };
