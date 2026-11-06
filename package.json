@@ -68,7 +68,9 @@
     "build:remote-identity": "node scripts/build-remote-identity.cjs"
   },
   "dependencies": {
+    "@peculiar/asn1-schema": "3.0.0",
     "@peculiar/x509": "3.1.0",
+    "asn1js": "4.0.0",
     "github-markdown-css": "5.9.0",
     "lucide-react": "0.577.0",
     "react-markdown": "10.1.0",
