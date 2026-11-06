@@ -75,7 +75,7 @@ export async function protectedSummary({app},{dataPath,install,phase,connectionI
   throw Object.assign(new Error('Protected identity continuity check was refused.'),{code:'PROTECTED_CONTINUITY_REFUSED',operation,providerCode,osStatus});
  }finally{secret=null;}
 }
-async function removeOriginalFixture({app},{dataPath,install}){
+export async function removeOriginalFixture({app},{dataPath,install}){
  const fs=process.getBuiltinModule('fs'),path=process.getBuiltinModule('path'),crypto=process.getBuiltinModule('crypto'),assert=process.getBuiltinModule('assert/strict');
  assert.equal(app.getPath('userData'),dataPath);assert.equal(app.isPackaged,true);
  assert.equal(app.getAppPath(),path.join(install,...(process.platform==='darwin'?['Contents','Resources']:['resources']),'app.asar'));

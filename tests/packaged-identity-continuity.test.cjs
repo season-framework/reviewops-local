@@ -73,6 +73,43 @@ test('forged embedded source metadata cannot hide runtime code that differs from
  await assert.rejects(inspectPrivateBundle({entry:{appPath:app,source:a},privateRoot:root,repository:root,platform:'win32',arch:'x64',asar,run}),/Packaged runtime differs from source/);
 });
 
+test('bundle admission reads the replaced real ASAR at the same installation path',async t=>{
+ // Real temporary archives and admission logic; Git/signature responses are
+ // inert fixtures. No application, native addon or OS credential API runs.
+ const {inspectPrivateBundle}=await helper,asar=require('@electron/asar');
+ const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-identity-inputs-replaced-')));fs.chmodSync(root,0o700);
+ const app=path.join(root,'ReviewOps'),archive=path.join(app,'resources/app.asar');
+ const originals=[path.join(root,'baseline.asar'),path.join(root,'candidate.asar')];
+ t.after(()=>{for(const file of [archive,...originals])asar.uncache(file);fs.rmSync(root,{recursive:true,force:true});});
+ fs.mkdirSync(path.dirname(archive),{recursive:true});
+ const pe=Buffer.alloc(128);pe.write('MZ');pe.writeUInt32LE(64,60);pe.write('PE\0\0',64);pe.writeUInt16LE(0x8664,68);
+ fs.writeFileSync(path.join(app,'ReviewOps.exe'),pe);
+ const pkg={name:'reviewops-local',version:'1.6.0'},sources={};
+ for(const [index,source] of [a,b].entries()){
+  const directory=path.join(root,'source-'+index);fs.mkdirSync(path.join(directory,'electron'),{recursive:true});
+  const modules={'electron/remote-device-identity.cjs':'identity '+source,'electron/remote-app-connections.cjs':'connections '+source};
+  sources[source]=modules;
+  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify(pkg));
+  fs.writeFileSync(path.join(directory,'electron/reviewops-build.json'),JSON.stringify({channel:'test',version:pkg.version,buildNumber:1005+index,commit:source,builtAt:'2026-11-07T00:00:00.000Z'}));
+  for(const [name,bytes] of Object.entries(modules))fs.writeFileSync(path.join(directory,name),bytes);
+  // A changed real archive layout makes stale cached offsets observably wrong.
+  if(index)fs.writeFileSync(path.join(directory,'000-padding.txt'),'candidate layout '.repeat(300));
+  await asar.createPackage(directory,originals[index]);
+ }
+ const run=async(command,args)=>{
+  if(command==='powershell.exe')return{stdout:JSON.stringify({status:'NotSigned',thumbprint:null})};
+  assert.equal(command,'git','Only inert Git/signature responses are admitted');
+  if(args[0]==='ls-tree')return{stdout:Object.keys(sources[args[3]]).join('\n')+'\n'};
+  assert.equal(args[0],'show');const source=args[1].slice(0,40),name=args[1].slice(41);
+  assert.ok(sources[source]);return{stdout:name==='package.json'?JSON.stringify(pkg):Buffer.from(sources[source][name])};
+ };
+ const inspect=source=>inspectPrivateBundle({entry:{appPath:app,source},privateRoot:root,repository:root,platform:'win32',arch:'x64',asar,run});
+ fs.copyFileSync(originals[0],archive);const baseline=await inspect(a);assert.equal(baseline.build.buildNumber,1005);
+ fs.copyFileSync(originals[1],archive);const candidate=await inspect(b);
+ assert.equal(candidate.build.commit,b);assert.equal(candidate.build.buildNumber,1006);
+ assert.notEqual(candidate.archive.sha256,baseline.archive.sha256);assert.notEqual(candidate.runtimeSourceSHA256,baseline.runtimeSourceSHA256);
+});
+
 test('protected main observation never serializes a malformed credential or provider error plaintext',async()=>{
  // Execute the actual serialized evaluate function against inert boundary
  // fixtures. No real provider, application or protected OS storage is opened.

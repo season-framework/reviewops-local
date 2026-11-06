@@ -139,6 +139,8 @@ export async function inspectPrivateBundle({entry,privateRoot,repository,platfor
  const executable=path.join(app,...(platform==='darwin'?['Contents','MacOS','ReviewOps']:['ReviewOps.exe']));
  const archive=path.join(resources,'app.asar');
  for(const file of [executable,archive]){const stat=fs.lstatSync(file);assert.ok(stat.isFile()&&!stat.isSymbolicLink()&&stat.size>0);}
+ // A validated replacement can reuse this path; cached header offsets cannot.
+ asar.uncache?.(archive);
  const pkg=boundedJSON(asar.extractFile(archive,'package.json'));
  assert.equal(pkg.name,'reviewops-local');
  const build=validateBuildInfo(boundedJSON(asar.extractFile(archive,'electron/reviewops-build.json')),pkg.version);
