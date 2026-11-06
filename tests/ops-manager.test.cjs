@@ -57,7 +57,7 @@ test('overlapping canonical folders wait while unrelated folders remain parallel
 test('same-goal due schedules coalesce once and steer without creating another session',async t=>{
   const h=await harness(t),id=await h.add('Scheduled');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();
   for(const name of ['Issue review','CI check'])h.manager.saveSchedule({goalId:id,name,prompt:name,cron:'* * * * *',timezone:'Asia/Seoul',enabled:true});
-  h.setTime(h.now()+8*60*60*1000);await Promise.all([h.manager.tick(),h.manager.tick()]);
+  h.setTime(h.now()+8*60*60*1000);await Promise.all([h.manager.tick(),h.manager.tick()]);await h.manager.pumpAll();
   assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(h.calls.filter(c=>c.kind==='steer').length,1);
   const delivery=h.manager.snapshot().goals[0].history.filter(h=>h.type==='delivery').at(-1);assert.equal(delivery.scheduleIds.length,2);assert.ok(delivery.prompt.includes('Issue review'));assert.ok(delivery.prompt.includes('CI check'));
   await h.manager.tick();assert.equal(h.calls.filter(c=>c.kind==='steer').length,1);
@@ -74,7 +74,7 @@ test('pause persists before interrupt and paused or finished goals never auto-st
 test('unknown acknowledgement is reconciled against original delivery after restart without replay',async t=>{
   const h=await harness(t,{start:async()=>{throw new Error('Lost acknowledgement');}}),id=await h.add('Recover');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();
   assert.equal(h.manager.snapshot().goals[0].executionState,'unknown');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
-  await h.manager.close();const recovered=new OpsManager(h.options);t.after(()=>recovered.close());await recovered.init();assert.equal(recovered.snapshot().goals[0].executionState,'running');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(recovered.snapshot().goals[0].threadId,'thread-'+id);
+  await h.manager.close();const recovered=new OpsManager(h.options);t.after(()=>recovered.close());await recovered.init();await recovered.reconnect(id);assert.equal(recovered.snapshot().goals[0].executionState,'running');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(recovered.snapshot().goals[0].threadId,'thread-'+id);
 });
 
 test('bound model tools cannot select another goal and repeated server call IDs do not duplicate schedule changes',async t=>{
@@ -207,7 +207,7 @@ test('one held background metadata probe does not delay an unrelated due schedul
  const h=await harness(t,{reconcile:async(input,session,external)=>{if(session.options.goalId===heldGoal){entered();await gate;}return external.get(input.deliveryId);}}),a=await h.add('Slow metadata'),b=await h.add('Independent due');heldGoal=a;
  await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'active',backgroundCount:1,outcome:'completed'});await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});
  await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();h.manager.saveSchedule({goalId:b,name:'Due independently',prompt:'Inspect the current state.',cron:'* * * * *',timezone:'UTC',enabled:true});h.setTime(h.now()+60000);
- await h.manager.tick();await ready;assert.equal(h.calls.filter(c=>c.kind==='steer'&&c.goalId===b).length,1);release();await h.manager.reconnect(a);
+ await h.manager.tick();await ready;await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='steer'&&c.goalId===b).length,1);release();await h.manager.reconnect(a);
 });
 
 
@@ -239,4 +239,33 @@ test('a metadata-only save rechecks live ownership before closing a previously i
 test('deleting an inactive proven-idle goal cannot reactivate it while its adapter close is pending',async t=>{
  let release,entered,held=false;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const h=await harness(t,{close:async()=>{if(!held){held=true;entered();await gate;}}}),id=await h.add('Delete before await');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:id,action:'pause'});
  const deletion=h.manager.deleteGoal(id);await ready;await assert.rejects(h.manager.goalAction({goalId:id,action:'resume'}),{code:'OPS_GOAL_NOT_FOUND'});assert.equal(h.calls.filter(c=>c.kind==='start').length,1);release();await deletion;assert.equal(h.manager.snapshot().goals.length,0);
+});
+
+
+test('startup returns with durable held claims while a slow original thread reconciles and unrelated goals proceed',async t=>{
+ let held=false,release,entered;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);let ownerId;const h=await harness(t,{reconcile:async(input,session,external)=>{if(held&&session.options.goalId===ownerId){const persisted=JSON.parse(fs.readFileSync(path.join(h.dataPath,'ops/state.json')));assert.equal(persisted.goals.find(g=>g.id===ownerId).executionState,'unknown');entered();await gate;}return external.get(input.deliveryId);}}),folder=h.folder('restored-owner'),a=await h.add('Original thread',folder),b=await h.add('Overlapping restored peer',folder),c=await h.add('Independent goal');ownerId=a;
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.close();held=true;const recovered=new OpsManager(h.options);t.after(async()=>{release();await recovered.close();});let initialized=false;const init=recovered.init().then(()=>{initialized=true;});await ready;await new Promise(setImmediate);assert.equal(initialized,true);await init;
+ await recovered.goalAction({goalId:b,action:'start'});await recovered.goalAction({goalId:c,action:'start'});await recovered.pumpAll();assert.equal(recovered.snapshot().goals.find(g=>g.id===a).executionState,'unknown');assert.equal(recovered.snapshot().goals.find(g=>g.id===b).executionState,'waiting');assert.equal(recovered.snapshot().goals.find(g=>g.id===c).executionState,'running');assert.equal(h.calls.filter(c=>c.kind==='start').length,2);
+ for(const value of h.external.values())if(value.threadId==='thread-'+a)Object.assign(value,{state:'idle',backgroundState:'empty',backgroundCount:0,outcome:'completed'});release();await recovered.reconnect(a);await recovered.pumpAll();assert.equal(recovered.snapshot().goals.find(g=>g.id===b).executionState,'running');assert.equal(h.calls.filter(c=>c.kind==='start').length,3);
+});
+
+test('startup connection errors remain visible per goal without blocking independent work',async t=>{
+ let unavailable=false;const h=await harness(t,{reconcile:async(input,_session,external)=>{if(unavailable)throw new Error('Original SSH unavailable');return external.get(input.deliveryId);}}),a=await h.add('Offline restored target'),b=await h.add('Usable goal');await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.close();unavailable=true;const recovered=new OpsManager(h.options);t.after(()=>recovered.close());await recovered.init();await recovered.reconnect(a);await recovered.goalAction({goalId:b,action:'start'});await recovered.pumpAll();const owner=recovered.snapshot().goals.find(g=>g.id===a);assert.equal(owner.executionState,'unknown');assert.match(owner.lastError,/Original SSH unavailable/);assert.equal(recovered.snapshot().goals.find(g=>g.id===b).executionState,'running');
+});
+
+test('one authoritative completed-turn proof terminalizes its accepted steering receipts without false retained claims',async t=>{
+ const h=await harness(t),folder=h.folder('shared-receipts'),a=await h.add('Accepted receipts',folder),b=await h.add('Waiting after receipts',folder);await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:a,action:'request',instruction:'First extra requirement.'});await h.manager.pumpAll();await h.manager.goalAction({goalId:a,action:'request',instruction:'Second extra requirement.'});await h.manager.pumpAll();await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();const owner=h.manager.snapshot().goals.find(g=>g.id===a);assert.equal(owner.history.filter(r=>r.type==='delivery'&&r.status==='accepted').length,3);
+ for(const value of h.external.values())if(value.threadId===owner.threadId)Object.assign(value,{state:'idle',backgroundState:'empty',backgroundCount:0,outcome:'completed'});await h.manager.reconnect(a);await h.manager.pumpAll();assert.equal(h.manager.snapshot().goals.find(g=>g.id===a).history.filter(r=>r.type==='delivery'&&r.status==='completed').length,3);assert.equal(h.manager.snapshot().goals.find(g=>g.id===b).executionState,'running');
+});
+
+
+test('a held target lookup does not keep the scheduler wake open or block an unrelated due instruction',async t=>{
+ const h=await harness(t),a=await h.add('Slow first connection'),b=await h.add('Independent scheduled target');await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();h.manager.saveSchedule({goalId:b,name:'Independent poll',prompt:'Inspect current progress.',cron:'* * * * *',timezone:'UTC',enabled:true});let release,entered;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r),resolve=h.manager.resolveTarget;t.after(()=>release());h.manager.resolveTarget=async input=>{if(input.id===a){entered();await gate;}return resolve(input);};
+ await h.manager.goalAction({goalId:a,action:'start'});await ready;h.setTime(h.now()+60000);let woke=false;const wake=h.manager.scheduler.wake().then(()=>{woke=true;});await new Promise(setImmediate);assert.equal(woke,true);await wake;await h.manager.pump(b);assert.equal(h.calls.filter(c=>c.kind==='steer'&&c.goalId===b).length,1);release();await h.manager.pumpAll();
+});
+
+test('an in-progress reconciliation preserves accepted steering receipts and inconsistent idle metadata stays unknown',async t=>{
+ const h=await harness(t),id=await h.add('Active receipt status');await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:id,action:'request',instruction:'Continue the active turn.'});await h.manager.pumpAll();for(const value of h.external.values())Object.assign(value,{turnStatus:'inProgress',backgroundState:'empty',backgroundCount:0});
+ await h.manager.reconnect(id);let current=h.manager.snapshot().goals[0];assert.equal(current.executionState,'running');assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='accepted').length,2);assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='completed').length,0);
+ for(const value of h.external.values())value.state='idle';await h.manager.reconnect(id);current=h.manager.snapshot().goals[0];assert.equal(current.executionState,'unknown');assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='completed').length,0);assert.equal(current.history.filter(h=>h.type==='delivery'&&h.status==='unknown').length,1);assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
 });

@@ -48,9 +48,12 @@ class OpsManager{
       conversation:[...goal.conversation.filter(row=>!this.messages.has(goal.id+':'+row.id)),...[...this.messages].filter(([key])=>key.startsWith(goal.id+':')).map(([,value])=>value)]}))};}
   nextDue(){if(this.suspended||this.closed)return null;return this.store.data.goals.filter(g=>g.status==='active').flatMap(g=>g.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt)).filter(Boolean).sort()[0]||null;}
   async init(){
-    const goals=this.store.read().goals;
-    await Promise.allSettled(goals.filter(g=>g.threadId||activeDelivery(g)).map(g=>this.reconnect(g.id,false)));
-    await this.scheduler.wake();return this.snapshot();
+    const goals=this.store.read().goals.filter(g=>g.threadId||activeDelivery(g));
+    // Restore ownership before opening any connection. One unavailable server
+    // must not delay the window or independently owned goals.
+    if(goals.length)this._mutate(data=>{for(const goal of data.goals)if(goals.some(g=>g.id===goal.id)){goal.executionState='unknown';if(goal.threadId){goal.backgroundState='unknown';goal.backgroundCount=null;}goal.waitingReason='원래 Codex 세션과 작업 소유권을 확인하고 있습니다.';}});
+    for(const goal of goals)void this.reconnect(goal.id).catch(error=>this._schedulerError(error));
+    void this.scheduler.wake();return this.snapshot();
   }
   async saveGoal(input,guard=()=>{}){
     this._open();fields(input,GOAL_FIELDS);const before=input.id?this._goal(this.store.data,input.id):null;
@@ -202,8 +205,11 @@ class OpsManager{
     if(this.reconciling.has(id))return this.reconciling.get(id);
     const task=(async()=>{const goal=this._goal(this.store.data,id),delivery=activeDelivery(goal)||[...goal.history].reverse().find(h=>h.type==='delivery'&&h.threadId);if(!goal.threadId&&!delivery){if(pump)await this.pump(id);return;}
       let result;try{result=await this._session(id).reconcile({threadId:goal.threadId,turnId:goal.turnId,deliveryId:delivery?.id,prompt:delivery?.prompt});}catch(error){this._mutate(data=>{const g=this._goal(data,id);g.executionState='unknown';g.backgroundState='unknown';g.backgroundCount=null;g.lastError=String(error?.message||error);this._history(g,'error','기존 세션과 작업 소유권을 확인하지 못했습니다.',{message:g.lastError});});return;}
-      this._mutate(data=>{const g=this._goal(data,id),h=delivery&&g.history.find(row=>row.id===delivery.id);if(result.threadId)g.threadId=result.threadId;g.turnId=result.state==='running'?(result.activeTurnId||result.turnId||null):null;g.executionState=this._activity(g,result.state,result.backgroundState,result.backgroundCount);g.lastError=g.executionState==='unknown'?'기존 세션과 백그라운드 작업 상태를 아직 확인하지 못했습니다.':null;
-        if(h&&['prepared','unknown','accepted'].includes(h.status)){if(result.delivery==='accepted'){h.status=result.state==='idle'?terminalStatus(result.outcome||result.turnStatus):'accepted';h.outcome=result.outcome||result.turnStatus||null;h.threadId=g.threadId;h.turnId=result.deliveryTurnId||result.turnId||h.turnId;if(result.outcome==='failed'){if(g.executionState==='idle')g.executionState='error';g.lastError='Codex 실행이 실패했습니다. 기록을 확인하십시오.';}}else if(result.delivery==='not_found'&&result.state==='idle'&&result.safeToRetry===true){h.status='queued';}else{h.status='unknown';g.executionState='unknown';}}
+      this._mutate(data=>{const g=this._goal(data,id),h=delivery&&g.history.find(row=>row.id===delivery.id),finishedTurn=result.deliveryTurnId||result.turnId,outcome=result.outcome||result.turnStatus,terminal=['completed','failed','interrupted'].includes(outcome);if(result.threadId)g.threadId=result.threadId;g.turnId=result.state==='running'?(result.activeTurnId||result.turnId||null):null;g.executionState=this._activity(g,result.state,result.backgroundState,result.backgroundCount);g.lastError=g.executionState==='unknown'?'기존 세션과 백그라운드 작업 상태를 아직 확인하지 못했습니다.':null;
+        if(h&&['prepared','unknown','accepted'].includes(h.status)){if(result.delivery==='accepted'){h.status=terminal?terminalStatus(outcome):result.state==='idle'?'unknown':'accepted';h.outcome=terminal?outcome:null;h.threadId=g.threadId;h.turnId=finishedTurn||h.turnId;if(h.status==='unknown')g.executionState='unknown';if(outcome==='failed'){if(g.executionState==='idle')g.executionState='error';g.lastError='Codex 실행이 실패했습니다. 기록을 확인하십시오.';}}else if(result.delivery==='not_found'&&result.state==='idle'&&result.safeToRetry===true){h.status='queued';}else{h.status='unknown';g.executionState='unknown';}}
+        if(result.state==='idle'&&outcome&&!terminal)g.executionState='unknown';
+        if(result.delivery==='accepted'&&finishedTurn&&terminal)for(const row of g.history)if(row.type==='delivery'&&row.status==='accepted'&&row.threadId===g.threadId&&row.turnId===finishedTurn){row.status=terminalStatus(outcome);row.outcome=outcome;row.completedAt=this._time();}
+        if(g.executionState!=='unknown')g.waitingReason=null;else if(!g.lastError)g.lastError='기존 실행의 종료 결과를 아직 확인하지 못했습니다.';
         this._history(g,'session.reconciled','원래 Codex 세션과 전달 기록을 확인했습니다.',{threadId:g.threadId,turnId:g.turnId,status:g.executionState});
       });
       const current=this._goal(this.store.data,id);if(current.status!=='active'&&current.threadId)await this._interrupt(id);
@@ -249,7 +255,7 @@ class OpsManager{
       const assembled=this._compose(goal,{scheduleIds:combined,reason},id);
       for(const schedule of goal.schedules)if(item.ids.includes(schedule.id)){schedule.lastRunAt=this._time();schedule.lastResult='queued';schedule.nextRunAt=nextOccurrence(schedule.cron,schedule.timezone,at);}
       this._history(goal,'delivery',reason,{id,status:'queued',scheduleId:combined[0],scheduleIds:combined,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});}catch(error){this._deliveryError(item.id,error);}}
-    await this.pumpAll();
+    for(const goal of this.store.data.goals)if(goal.status==='active')void this.pump(goal.id);
   }
   async pumpAll(){await Promise.allSettled(this.store.data.goals.filter(g=>g.status==='active').map(g=>this.pump(g.id)));}
   hasActiveWork(){return this.pumps.size>0||this.reconciling.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}

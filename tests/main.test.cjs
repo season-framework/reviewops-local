@@ -193,7 +193,7 @@ async function harness(t, options = {}) {
     if (name === './files.cjs') return files;
     if (name === './agent-files.cjs') return require('../electron/agent-files.cjs');
     if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},localRuntime(){return state.codexRuntime;},async close(){state.codexClosed=true;if(state.codexCloseError)throw new Error('synthetic close failure');},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
-    if(name==='./ops-manager.cjs')return {createOpsManager:async config=>{state.opsOptions=config;const {createOpsManager}=require('../electron/ops-manager.cjs');state.opsManager=await createOpsManager({...config,resolveTarget:async input=>{await options.opsTargetGate?.();return config.resolveTarget(input);}});return state.opsManager;}};
+    if(name==='./ops-manager.cjs')return {createOpsManager:async config=>{state.opsOptions=config;const {createOpsManager}=require('../electron/ops-manager.cjs');await options.opsBeforeCreate?.(config);state.opsManager=await createOpsManager({...config,...(options.opsCreateSession?{createSession:options.opsCreateSession}:{}),resolveTarget:async input=>{await options.opsTargetGate?.();return config.resolveTarget(input);}});return state.opsManager;}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
       if (state.seasonError) throw new Error(state.seasonError);
@@ -4200,4 +4200,10 @@ test('Ops project targets retain committed birth and require confirmation after 
  const saved=await h.ops('saveGoal',input),goal=saved.goals[0];assert.ok(Number.isSafeInteger(goal.projectBirth));assert.equal((await h.state.opsOptions.resolveTarget(goal)).workPath,fs.realpathSync(h.root));
  h.state.liveStore.importData(h.state.liveStore.exportData());await assert.rejects(h.state.opsOptions.resolveTarget(goal),{code:'OPS_PROJECT_CHANGED'});
  const confirmed=await h.ops('saveGoal',{...input,id:goal.id});assert.notEqual(confirmed.goals[0].projectEpoch,goal.projectEpoch);assert.equal((await h.state.opsOptions.resolveTarget(confirmed.goals[0])).workPath,fs.realpathSync(h.root));
+});
+
+
+test('Ops startup opens the main window and IPC while an original SSH-like thread reconciliation is held',async t=>{
+ let release,entered;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const pending=harness(t,{opsBeforeCreate:async config=>{const {OpsManager}=require('../electron/ops-manager.cjs');const seed=new OpsManager({dataPath:config.dataPath});await seed.saveGoal({name:'Saved unavailable target',description:'',prompt:'Continue original work',workPath:path.dirname(config.dataPath)});seed.store.update(data=>{Object.assign(data.goals[0],{status:'active',executionState:'running',threadId:'saved-original-thread',turnId:'saved-original-turn',modelState:'running',backgroundState:'active',backgroundCount:1});});await seed.close();},opsCreateSession:()=>({reconcile:async()=>{entered();await gate;return {threadId:'saved-original-thread',state:'idle',backgroundState:'empty',backgroundCount:0,delivery:'unknown'};},close:async()=>{}})});let h,timer;
+ try{await ready;h=await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('A held Ops connection prevented the main window from opening.')),1500);})]);assert.ok(h.state.primaryWindow);const state=await h.ops('snapshot');assert.equal(state.goals[0].executionState,'unknown');assert.equal(state.goals[0].threadId,'saved-original-thread');assert.equal(h.state.opsManager.hasActiveWork(),true);}finally{clearTimeout(timer);release();h||=await pending;if(h?.state.opsManager)await h.state.opsManager.reconnect(h.state.opsManager.snapshot().goals[0].id);}
 });
