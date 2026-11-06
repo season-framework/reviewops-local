@@ -87,7 +87,7 @@ test('protected main observation never serializes a malformed credential or prov
    if(name.endsWith('/electron/remote-device-identity.cjs'))return{createRemoteDeviceIdentity:()=>provider};
    return require(name);
   };
-  const observe=vm.runInNewContext('('+protectedSummary.toString()+')',{require:fakeRequire,Buffer,process:{platform:'darwin'}});
+  const observe=vm.runInNewContext('('+protectedSummary.toString()+')',{Buffer,process:{platform:'darwin',getBuiltinModule:name=>fakeRequire('node:'+name),mainModule:{require:fakeRequire}}});
   const app={isPackaged:true,getPath:name=>name==='userData'?dataPath:path.posix.join(install,'Contents/MacOS/ReviewOps'),getAppPath:()=>path.posix.join(install,'Contents/Resources/app.asar')};
   await assert.rejects(observe({app},{dataPath,install,phase:'baseline-enrollment',connectionId:'fixture-connection'}),error=>{
    assert.equal(error.code,'PROTECTED_CONTINUITY_REFUSED');
@@ -96,6 +96,32 @@ test('protected main observation never serializes a malformed credential or prov
    assert.equal(Object.hasOwn(error,'cause'),false);return true;
   });
  }
+});
+
+test('packaged runtime observation uses the original main loader without a global require and sanitizes loader failures',async()=>{
+ const {packagedRuntimeIdentity}=await import('../scripts/e2e-packaged-identity-continuity.mjs');
+ const appPath='/fixture/ReviewOps.app/Contents/Resources/app.asar',executable='/fixture/ReviewOps.app/Contents/MacOS/ReviewOps';
+ const build={channel:'test',version:'1.5.0',buildNumber:1001,commit:a,builtAt:'2026-11-07T00:00:00.000Z'};
+ for(const denied of [false,true]){
+  const observe=vm.runInNewContext('('+packagedRuntimeIdentity.toString()+')',{process:{platform:'darwin',pid:123,ppid:456,mainModule:{require(name){
+   assert.equal(name,appPath+'/electron/build-info.cjs');if(denied)throw new Error('private-loader-diagnostic');
+   return{getBuildInfo:version=>{assert.equal(version,'1.5.0');return build;}};
+  }}}});
+  const app={isPackaged:true,getPath:()=>executable,getAppPath:()=>appPath,getVersion:()=>'1.5.0'};
+  if(denied)assert.throws(()=>observe({app}),error=>error.code==='PACKAGED_RUNTIME_UNAVAILABLE'&&!error.stack.includes('private-loader-diagnostic'));
+  else assert.equal(JSON.stringify(observe({app})),JSON.stringify({platform:'darwin',pid:123,ppid:456,packaged:true,executable,appPath,build}));
+ }
+});
+
+test('native private paths satisfy the production socket budget before any application launch',async t=>{
+ const {createPrivatePaths}=await import('../scripts/native-adapters.mjs');
+ const paths=createPrivatePaths(path.resolve(__dirname,'..'));t.after(()=>fs.rmSync(paths.root,{recursive:true,force:true}));
+ assert.equal(paths.socketPreflight.productionHelper,true);
+ if(process.platform==='darwin'){
+  assert.ok(paths.root.startsWith('/private/tmp/ro-owned-ui-'));
+  assert.ok(paths.socketPreflight.bytes<=103);
+ }
+ assert.equal(fs.existsSync(path.join(paths.data,'remote-device-identity')),false,'Path admission never enrolls an identity');
 });
 
 function inertWindowsObserver(observeWindowsOriginalMain){

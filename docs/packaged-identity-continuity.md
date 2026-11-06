@@ -77,6 +77,12 @@ The isolated profile contains its normal product ciphertext and opaque reference
 Protected main observations replace failures with one fixed error before they
 cross the Playwright boundary, including malformed decrypted credentials and
 provider errors.
+Reports retain fixed startup steps and error categories; protected failures can
+include only known provider codes and a small allowlist of OSStatus values that
+the actual product returns. Missing native detail remains unknown. Runtime and
+provider imports use the original packaged main module loader. Before launch,
+the shared native path helper checks the production socket limit; macOS uses a
+short owned directory under `/private/tmp`.
 
 On macOS, the actual main PID must match the retained direct child. On Windows,
 Playwright retains `cmd.exe`: the actual main must be its distinct direct child,
