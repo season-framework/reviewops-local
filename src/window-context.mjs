@@ -26,8 +26,8 @@ export function restoreWindowTabs(serialized,projectId='') {
  try{const value=JSON.parse(serialized||'[]');if(Array.isArray(value))saved=value}catch{}
  const seen=new Set(['home']);
  const tabs=[HOME_TAB,...saved.filter(tab=>{
-  if(!tab||!['groups','group','project','service','settings','accounts','hosts'].includes(tab.kind)||typeof tab.id!=='string'||!tab.id||seen.has(tab.id))return false;
-  if(projectId&&(tab.kind==='service'||tab.kind==='project'&&tab.entityId!==projectId))return false;
+  if(!tab||!['groups','group','project','service','settings','accounts','hosts','ops'].includes(tab.kind)||typeof tab.id!=='string'||!tab.id||seen.has(tab.id))return false;
+  if(projectId&&(tab.kind==='ops'||tab.kind==='service'||tab.kind==='project'&&tab.entityId!==projectId))return false;
   seen.add(tab.id);return true;
  }).slice(0,30)];
  let project=tabs.find(tab=>tab.kind==='project'&&tab.entityId===projectId);

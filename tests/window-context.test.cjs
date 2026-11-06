@@ -88,3 +88,16 @@ test('active QA exposes only its project tabs and records while retaining the un
  assert.deepEqual(scoped.tabs.map(item=>item.id),['home','pa']);assert.equal(scoped.active,'pa');assert.deepEqual(scoped.data.projects.map(item=>item.id),['A']);assert.deepEqual(scoped.data.attachments.map(item=>item.id),['fa']);
  const unbound=qaWindowView(data,tabs,'hosts');assert.equal(unbound.tabs,tabs);assert.equal(unbound.data,data);assert.equal(unbound.active,'hosts');
 });
+
+test('Ops tabs survive normal restore and remain hidden in project-scoped QA',async()=>{
+ const {restoreWindowTabs,qaWindowView}=await helpers();
+ const saved=JSON.stringify([{id:'ops',kind:'ops'},{id:'project-A',kind:'project',entityId:'A'}]);
+ const restored=restoreWindowTabs(saved);
+ assert.equal(restored.tabs.find(tab=>tab.id==='ops').kind,'ops');
+ assert.equal(restoreWindowTabs(saved,'A').tabs.some(tab=>tab.kind==='ops'),false);
+ const data={groups:[],projects:[{id:'A',serviceIds:[]}],services:[],reviews:[],activities:[],attachments:[]};
+ const scoped=qaWindowView(data,restored.tabs,'ops','A');
+ assert.equal(scoped.tabs.some(tab=>tab.kind==='ops'),false);
+ assert.equal(scoped.active,'project-A');
+ assert.equal(restored.tabs.some(tab=>tab.kind==='ops'),true);
+});
