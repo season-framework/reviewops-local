@@ -88,7 +88,7 @@ function state(f) {
 }
 function sql(f, hooks, action) {
   const exec = f.db.exec, prepare = f.db.prepare;
-  const trace = {exec: [], commits: 0, begins: 0, content: [], birthReads: 0};
+  const trace = {exec: [], commits: 0, begins: 0, content: [], points: [], birthReads: 0};
   f.db.exec = function(statement, ...args) {
     trace.exec.push(statement);
     if (statement === 'BEGIN IMMEDIATE') trace.begins++;
@@ -102,15 +102,16 @@ function sql(f, hooks, action) {
     const text = statement.replace(/\s+/g, ' ').trim();
     if (hooks.beforePrepare) hooks.beforePrepare(text, trace);
     const prepared = Reflect.apply(prepare, this, [statement, ...args]);
-    if (/^SELECT id,name,description,createdAt,updatedAt FROM projects\b/.test(text) ||
-        /^SELECT id,projectId,number,title,body,status,priority,category,createdAt,updatedAt FROM reviews\b/.test(text)) {
-      const item = {sql: text, allCalls: 0, lengths: []}; trace.content.push(item);
-      const all = prepared.all;
-      prepared.all = function(...parameters) {
-        const rows = Reflect.apply(all, this, parameters);
-        item.allCalls++; item.lengths.push(rows.length); return rows;
-      };
-    }
+    const count = /COUNT\(\*\) AS count FROM \(SELECT 1 FROM (projects|reviews) LIMIT 100001\)/.test(text);
+    const item = count ? {sql: text, getCalls: 0, counts: []} : null;
+    if (item) trace.content.push(item);
+    const get = prepared.get;
+    prepared.get = function(...parameters) {
+      const row = Reflect.apply(get, this, parameters);
+      if (item) { item.getCalls++; item.counts.push(row.count); }
+      if (row && Object.hasOwn(row, '_readKey')) trace.points.push({key: row._readKey, fields: Object.keys(row).sort()});
+      return row;
+    };
     if (/FROM projects p LEFT JOIN peer_project_births\b/.test(text)) {
       const all = prepared.all;
       prepared.all = function(...parameters) {
@@ -395,7 +396,7 @@ test('empty grants never fall back to local all-project access and foreign resou
   assert.equal(queryProjects(f, cap).projects[0].id, f.projectId);
 });
 
-test('a successful query has one real content SELECT pair and one fresh release sample, without public snapshot fallback', t => {
+test('a successful query has one real count pipeline, bounded point reads and one fresh release sample, without public snapshot fallback', t => {
   const f = setup(t), {cap} = active(f), before = expected(f, 'reviews.list', {projectId: f.projectId});
   const snapshot = f.store.snapshot, dataset = f.store.peerReadDataset;
   f.store.snapshot = () => { throw new Error('Public snapshot fallback is forbidden'); };
@@ -404,8 +405,9 @@ test('a successful query has one real content SELECT pair and one fresh release 
     sql(f, {}, trace => {
       assert.deepEqual(f.api.query(cap, 'reviews.list', {projectId: f.projectId}), before);
       assert.equal(trace.begins, 2); assert.equal(trace.commits, 2); assert.equal(trace.birthReads, 2);
-      assert.equal(trace.content.length, 2); assert.ok(trace.content.every(row => row.allCalls === 1));
-      assert.deepEqual(trace.content.map(row => row.lengths), [[2], [3]]);
+      assert.equal(trace.content.length, 2); assert.ok(trace.content.every(row => row.getCalls === 1));
+      assert.deepEqual(trace.content.map(row => row.counts), [[2], [3]]);
+      assert.equal(trace.points.length, 4, 'One selected project and three owned review point rows');
     });
   } finally { f.store.snapshot = snapshot; f.store.peerReadDataset = dataset; }
 });
@@ -418,7 +420,7 @@ test('an ordinary review edit after content COMMIT returns the old content DTO w
   }}, trace => {
     assert.deepEqual(f.api.query(cap, 'reviews.get', {projectId: f.projectId, reviewId: f.reviewId}), before);
     assert.equal(trace.commits, 2); assert.equal(trace.content.length, 2);
-    assert.ok(trace.content.every(row => row.allCalls === 1));
+    assert.ok(trace.content.every(row => row.getCalls === 1));
   }));
   assert.equal(f.store.get('reviews', f.reviewId).title, 'Committed later title');
   assert.equal(f.api.query(cap, 'reviews.get', {projectId: f.projectId, reviewId: f.reviewId}).review.title, 'Committed later title');
@@ -436,7 +438,7 @@ for (const stage of [1, 2]) for (const restriction of ['revoke', 'close', 'disab
     }}, trace => {
       assert.throws(() => queryProjects(f, session.cap), denied);
       assert.equal(restrictions, 1); assert.equal(trace.commits, stage); assert.equal(trace.content.length, 2);
-      assert.ok(trace.content.every(row => row.allCalls === 1));
+      assert.ok(trace.content.every(row => row.getCalls === 1));
     });
     sql(f, {}, trace => { assert.throws(() => queryProjects(f, session.cap), denied); assert.deepEqual(trace.exec, []); });
     if (restriction === 'revoke') approve(f, [f.projectId], session.peer);
@@ -457,7 +459,7 @@ for (const verifierStage of [1, 2, 3, 4])
       sql(f, {}, trace => {
         assert.throws(() => queryProjects(f, session.cap), denied);
         assert.equal(calls, verifierStage); assert.equal(trace.content.length, verifierStage === 1 ? 0 : 2);
-        assert.ok(trace.content.every(row => row.allCalls === 1));
+        assert.ok(trace.content.every(row => row.getCalls === 1));
       });
     } finally { f.verifyHook = null; }
     sql(f, {}, trace => { assert.throws(() => queryProjects(f, session.cap), denied); assert.deepEqual(trace.exec, []); });
@@ -494,7 +496,7 @@ test('a second genuine Store logical import after content COMMIT is seen by the 
     }}, trace => {
       assert.throws(() => f.api.query(session.cap, 'reviews.get', {projectId: f.projectId, reviewId: f.reviewId}), denied);
       assert.equal(imports, 1); assert.equal(trace.commits, 2); assert.equal(trace.content.length, 2);
-      assert.ok(trace.content.every(row => row.allCalls === 1));
+      assert.ok(trace.content.every(row => row.getCalls === 1));
     });
     assert.notEqual(other.peerReadDataset().epoch, epoch, 'The independent Store committed a real logical import');
   });
@@ -685,7 +687,7 @@ for (const verifierStage of [2, 3, 4])
       sql(f, {}, trace => {
         assert.throws(() => queryProjects(f, session.cap), denied);
         assert.equal(calls, verifierStage); assert.equal(trace.content.length, 2);
-        assert.ok(trace.content.every(row => row.allCalls === 1));
+        assert.ok(trace.content.every(row => row.getCalls === 1));
       });
     } finally { f.verifyHook = null; }
     sql(f, {}, trace => { assert.throws(() => queryProjects(f, session.cap), denied); assert.deepEqual(trace.exec, []); });

@@ -54,10 +54,24 @@ The fixed module-owned reader must not publish, log, emit or serialize pending c
 
 ## Scope and compatibility
 
-The Store bridge, birth bookkeeping, authority core, six-operation query kernel, local adapter, main/preload, schema and logical-backup format are unchanged. This internal composition is not installed-app, TLS, remote-input, service transport or two-PC acceptance. Row bounds inherited from the Store/kernel do not establish a network byte/time budget. Live integration requires separate identity/transport, credential, approval UI, request/response budget and delivery-boundary review.
+The public Store bridge API, authority core, existing six-operation local query API, local adapter, main/preload, schema and logical-backup format are unchanged. The bridge's separate bounded internal entry uses real finite key inventories and selected point reads; no loader or source override is added to the facade API. This internal composition is not installed-app, TLS, remote-input, service transport or two-PC acceptance. Live integration requires separate identity/transport, credential, approval UI, framed request/response time/byte budgets and delivery-boundary review.
 
-## Validation and remaining test limitation
+## Bounded browsing results
+
+The three browsing results have a fixed complete JSON limit of 1,048,576 UTF-8 bytes. The loader SQL-masks consumed text and unsafe numeric fields before JavaScript conversion, using actual UTF-8/UTF-16 storage factors. Real global count sentinels and bounded identifier arrays retain the existing integrity checks; only selected full rows are read. An empty project grant never loads unrelated review bodies, and `reviews.get` does not materialize other own review bodies. Input key inventories remain finite independently of the response cap.
+
+The existing project/review validators and output fields are reused. Validated DTOs are ordered by the same ASCII date/ID binary ordering as ordinary snapshots. An exact numeric JSON-escaping counter includes the envelope, property names, separators and Unicode costs before retaining a row, without encoding or publishing pending content. Exact equality is admitted; cap+1 yields fixed `BROWSING_QUERY_LIMIT_EXCEEDED` and no partial array. A later corruption may remain unobserved after an early resource refusal. The existing local six-operation entry keeps its earlier contracts.
+
+A C-interval size/domain/driver failure remains the first view failure, rolls back under the existing bridge rules and never starts R or retries content. A normal size refusal with confirmed rollback can recover on a later smaller request without inventing birth revocation. No iterator, cursor cleanup flag or runner bypass is introduced. The one-MiB DTO cap does not establish a one-MiB heap/RSS ceiling, CPU deadline or complete future network packet limit.
+
+## Earlier browsing validation and remaining test limitation
 
 The 55 focused browsing cases passed. The renderer build passed with the existing large-chunk warning. A complete run with `node --test --test-concurrency=2 tests/*.test.cjs` passed 1,767 tests with one Windows-only named-pipe/path-casing case skipped (1,768 total).
 
 The first default `npm test` run failed one existing agent model-timeout assertion: `modelSource` was undefined instead of `cache` (1,766 passed, one failed, one Windows-only skip). The unchanged case then passed once in isolation. Source inspection points to an earlier version-probe refusal path, but the specific original process outcome and cause were not recorded. The later configured full pass does not establish that the default-concurrency failure is fixed. No production or test code was changed to hide that failure. These are local automated checks; installed-app, network and two-PC behavior has not been validated here.
+
+## Current C bounded-browsing local validation
+
+The C focused run passed all 141 cases with no failures or skips. The build completed with exit code 0 and the existing chunk-size warning. The first C full run explicitly used `node --test --test-concurrency=2 tests/*.test.cjs`: 1,794 total, 1,793 passed, one Windows-only skip and no failures. The focused cases are a subset of that full run, not additional acceptance counts.
+
+These are local Source/owned-SQLite checks covering encoding, row/cell, complete DTO-byte and failure/recovery cases. They establish no installed-app, cryptographic-provider, network, two-PC, CPU-deadline or heap/RSS outcome. This configured-concurrency C result does not convert the historical B default-concurrency failure into a pass or establish its cause; the earlier validation records above remain separate.

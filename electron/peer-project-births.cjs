@@ -1,5 +1,7 @@
 'use strict';
 
+const {encodingByteFactors} = require('./sqlite-read-bounds.cjs');
+
 // Internal Store bookkeeping. These values are neither peer grants nor wire IDs.
 const MAX_BIRTH = Number.MAX_SAFE_INTEGER;
 const MAX_PROJECTS = 100000;
@@ -69,12 +71,25 @@ function migrate(db) {
 // This raw reader does not confer committed-state or application ownership.
 // Only Store.peerReadDataset() supplies its top-level transaction boundary.
 function readDataset(db) {
-  const currentEpoch = epoch(db), current = counter(db);
+  const factors = encodingByteFactors(db.prepare('PRAGMA encoding').get()?.encoding);
+  if (!factors) fail();
+  const epochRow = db.prepare(`SELECT CASE WHEN typeof(epoch)='text' AND octet_length(epoch)<=${36 * factors.ascii}
+    THEN epoch END AS epoch FROM dataset_meta WHERE singleton=1`).get();
+  if (!epochRow || typeof epochRow.epoch !== 'string' || !EPOCH.test(epochRow.epoch)) fail();
+  const currentEpoch = epochRow.epoch;
+  const controls = db.prepare(`SELECT CASE WHEN singleton=1 THEN 1 END AS singleton,
+    CASE WHEN typeof(epoch)='text' AND octet_length(epoch)<=${36 * factors.ascii} THEN epoch END AS epoch,
+    CASE WHEN typeof(value)='integer' AND value BETWEEN 0 AND ${MAX_BIRTH} THEN value END AS value
+    FROM peer_project_birth_counter LIMIT 2`).all();
+  if (controls.length !== 1 || controls[0].singleton !== 1 || typeof controls[0].epoch !== 'string' ||
+      !EPOCH.test(controls[0].epoch) || !Number.isSafeInteger(controls[0].value) || controls[0].value < 0) fail();
+  const current = controls[0];
   if (current.epoch !== currentEpoch) fail();
-  const rows = db.prepare(`SELECT p.id AS projectId,
+  const rows = db.prepare(`SELECT CASE WHEN typeof(p.id)='text' AND octet_length(p.id)<=${128 * factors.ascii} THEN p.id END AS projectId,
     CASE WHEN typeof(b.birth)='integer' AND b.birth BETWEEN 1 AND ${MAX_BIRTH} THEN b.birth END AS birth FROM projects p
-    LEFT JOIN peer_project_births b ON b.projectId=p.id ORDER BY p.id LIMIT ${MAX_PROJECTS + 1}`).all();
-  if (rows.length > MAX_PROJECTS || db.prepare('SELECT COUNT(*) AS count FROM peer_project_births').get().count !== rows.length) fail();
+    LEFT JOIN peer_project_births b ON b.projectId=p.id ORDER BY projectId LIMIT ${MAX_PROJECTS + 1}`).all();
+  if (rows.length > MAX_PROJECTS || db.prepare(`SELECT COUNT(*) AS count FROM
+    (SELECT 1 FROM peer_project_births LIMIT ${MAX_PROJECTS + 1})`).get().count !== rows.length) fail();
   const seen = new Set();
   for (const row of rows) {
     if (typeof row.projectId !== 'string' || !ID.test(row.projectId) || !Number.isSafeInteger(row.birth) ||

@@ -1,6 +1,7 @@
 'use strict';
 
 const MAX_ROWS = 100000;
+const MAX_BROWSING_BYTES = 1024 * 1024;
 const MAX_COMMENTS = 1000;
 const MAX_COMMENT_BYTES = 4 * 1024 * 1024;
 const MAX_ATTACHMENTS = 1000;
@@ -15,6 +16,7 @@ const MESSAGES = Object.freeze({
   ACCESS_DENIED: 'A valid server-owned read grant context is required.',
   NOT_FOUND: 'Shared resource not found.',
   INVALID_SNAPSHOT: 'Shared data is unavailable.',
+  BROWSING_QUERY_LIMIT_EXCEEDED: 'Shared browsing response exceeds the read limit.',
   QUERY_LIMIT_EXCEEDED: 'Shared comments exceed the local query limit.',
   ATTACHMENT_QUERY_LIMIT_EXCEEDED: 'Shared review attachments exceed the local query limit.',
   COMMENT_ATTACHMENT_QUERY_LIMIT_EXCEEDED: 'Shared comment attachments exceed the local query limit.'
@@ -253,4 +255,124 @@ function querySharedData(snapshot, callerContext, operation, payload) {
   return { version: 1, projectId, review };
 }
 
-module.exports = { querySharedData };
+// Count JSON UTF-8 bytes without producing an encoded pending result or calling
+// user serializers. Projectors below supply only bounded primitive fields.
+function jsonStringBytes(value) {
+  let bytes = 2;
+  for (let index = 0; index < value.length; index++) {
+    const unit = value.charCodeAt(index);
+    if (unit === 34 || unit === 92 || unit === 8 || unit === 9 || unit === 10 || unit === 12 || unit === 13) bytes += 2;
+    else if (unit < 32) bytes += 6;
+    else if (unit >= 0xd800 && unit <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) { bytes += 4; index++; }
+      else bytes += 6;
+    } else if (unit >= 0xdc00 && unit <= 0xdfff) bytes += 6;
+    else bytes += unit <= 0x7f ? 1 : unit <= 0x7ff ? 2 : 3;
+  }
+  return bytes;
+}
+function primitiveObjectBytes(value) {
+  let bytes = 2, count = 0;
+  for (const key of Object.keys(value)) {
+    const item = field(value, key, 'INVALID_SNAPSHOT');
+    bytes += (count++ ? 1 : 0) + jsonStringBytes(key) + 1;
+    if (typeof item === 'string') bytes += jsonStringBytes(item);
+    else if (Number.isSafeInteger(item)) bytes += String(item).length;
+    else fail('INVALID_SNAPSHOT');
+  }
+  return bytes;
+}
+function boundedRowKey(value) {
+  if (typeof value !== 'string' || !/^-?(?:0|[1-9][0-9]{0,18})$/.test(value)) fail('INVALID_SNAPSHOT');
+  const number = BigInt(value);
+  if (number < -9223372036854775808n || number > 9223372036854775807n) fail('INVALID_SNAPSHOT');
+  return value;
+}
+function pointRow(value, key) {
+  if (boundedRowKey(field(value, '_readKey', 'INVALID_SNAPSHOT')) !== key) fail('INVALID_SNAPSHOT');
+  return value;
+}
+function compareASCII(left, right) { return left < right ? -1 : left > right ? 1 : 0; }
+
+// Internal Store-owned projections only. This is not a source/grant override
+// accepted by the bridge, facade, IPC or a future network request.
+function querySharedBrowsing(source, callerContext, operation, payload) {
+  const permitted = grants(callerContext);
+  if (!['projects.list', 'reviews.list', 'reviews.get'].includes(operation)) fail('INVALID_QUERY');
+  queryPayload(operation, payload);
+  const names = ['count', 'projectKeys', 'project', 'reviewProjectKeys', 'reviewId', 'review'];
+  closed(source, names, 'INVALID_SNAPSHOT');
+  const methods = Object.create(null);
+  for (const name of names) {
+    methods[name] = field(source, name, 'INVALID_SNAPSHOT');
+    if (typeof methods[name] !== 'function') fail('INVALID_SNAPSHOT');
+  }
+  const call = (name, ...args) => Reflect.apply(methods[name], undefined, args);
+  const count = kind => {
+    const value = call('count', kind);
+    if (!Number.isSafeInteger(value) || value < 0 || value > MAX_ROWS) fail('INVALID_SNAPSHOT');
+    return value;
+  };
+  const projectCount = count('projects'), reviewCount = count('reviews');
+  if (operation !== 'projects.list' && !permitted.has(payload.projectId)) fail('NOT_FOUND');
+  const projects = rows(call('projectKeys'), 'INVALID_SNAPSHOT');
+  if (projects.length !== projectCount) fail('INVALID_SNAPSHOT');
+  const selected = [];
+  for (const item of projects) {
+    const id = storedId(item, 'id');
+    if (operation === 'projects.list' ? permitted.has(id) : id === payload.projectId)
+      selected.push({key: boundedRowKey(field(item, 'key', 'INVALID_SNAPSHOT')), id});
+  }
+  if (operation === 'projects.list') {
+    const result = {version: 1, projects: []}, seen = new Set();
+    let bytes = primitiveObjectBytes({version: 1}) + 1 + jsonStringBytes('projects') + 1 + 2;
+    for (const item of selected) {
+      const dto = projectDto(pointRow(call('project', item.key), item.key));
+      if (dto.id !== item.id || seen.has(dto.id)) fail('INVALID_SNAPSHOT');
+      seen.add(dto.id);
+      const next = bytes + primitiveObjectBytes(dto) + (result.projects.length ? 1 : 0);
+      if (next > MAX_BROWSING_BYTES) fail('BROWSING_QUERY_LIMIT_EXCEEDED');
+      bytes = next; result.projects.push(dto);
+    }
+    result.projects.sort((left, right) => compareASCII(left.createdAt, right.createdAt) || compareASCII(left.id, right.id));
+    return result;
+  }
+  if (!selected.length) fail('NOT_FOUND');
+  if (selected.length !== 1) fail('INVALID_SNAPSHOT');
+  const project = projectDto(pointRow(call('project', selected[0].key), selected[0].key));
+  if (project.id !== payload.projectId) fail('INVALID_SNAPSHOT');
+  const reviews = rows(call('reviewProjectKeys'), 'INVALID_SNAPSHOT');
+  if (reviews.length !== reviewCount) fail('INVALID_SNAPSHOT');
+  const own = [];
+  for (const item of reviews) if (storedId(item, 'projectId') === payload.projectId)
+    own.push(boundedRowKey(field(item, 'key', 'INVALID_SNAPSHOT')));
+  if (operation === 'reviews.list') {
+    const result = {version: 1, projectId: payload.projectId, reviews: []}, seen = new Set();
+    let bytes = primitiveObjectBytes({version: 1, projectId: payload.projectId}) + 1 + jsonStringBytes('reviews') + 1 + 2;
+    for (const key of own) {
+      const dto = reviewDto(pointRow(call('review', key), key));
+      if (dto.projectId !== payload.projectId || seen.has(dto.id)) fail('INVALID_SNAPSHOT');
+      seen.add(dto.id);
+      const next = bytes + primitiveObjectBytes(dto) + (result.reviews.length ? 1 : 0);
+      if (next > MAX_BROWSING_BYTES) fail('BROWSING_QUERY_LIMIT_EXCEEDED');
+      bytes = next; result.reviews.push(dto);
+    }
+    result.reviews.sort((left, right) => compareASCII(right.updatedAt, left.updatedAt) || compareASCII(left.id, right.id));
+    return result;
+  }
+  const matches = [];
+  for (const key of own) {
+    const id = storedId(pointRow(call('reviewId', key), key), 'id');
+    if (id === payload.reviewId) matches.push({key, id});
+  }
+  if (!matches.length) fail('NOT_FOUND');
+  if (matches.length !== 1) fail('INVALID_SNAPSHOT');
+  const review = reviewDto(pointRow(call('review', matches[0].key), matches[0].key));
+  if (review.id !== matches[0].id || review.projectId !== payload.projectId) fail('INVALID_SNAPSHOT');
+  const bytes = primitiveObjectBytes({version: 1, projectId: payload.projectId}) + 1 + jsonStringBytes('review') + 1 + primitiveObjectBytes(review);
+  if (bytes > MAX_BROWSING_BYTES) fail('BROWSING_QUERY_LIMIT_EXCEEDED');
+  return {version: 1, projectId: payload.projectId, review};
+}
+
+module.exports = { querySharedData, querySharedBrowsing };
