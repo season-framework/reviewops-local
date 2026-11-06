@@ -42,7 +42,9 @@ Use the actual version for each release. Do not put application data, credential
 
 ## Automated stable draft preparation
 
-The chat's daily **04:00 Asia/Seoul** release task prepares a stable release only when reviewed changes have not already been released. The workflow has no separate schedule. The issue monitor and two-hour test-build task continue to use `test-release.yml` and its single `test-latest` prerelease; neither requires a new stable version for each test build.
+The chat checks new issues and comments hourly and resumes known development, integration, validation and pending test delivery every 30 minutes. A ready, reviewed change batch can proceed to release checks immediately; the daily **04:00 Asia/Seoul** task is a fallback for deferred QA and delivery. These schedules do not create a build or version when no actionable changes exist. The workflows have no separate schedule. Test delivery uses `test-release.yml` and its single `test-latest` prerelease without requiring a new stable version for each test build.
+
+Comprehensive product QA is limited to one ready candidate per Korean calendar day, immediately before publication of either a test or stable release. Record the date, version, source and outcome before starting, and reuse valid evidence for that same candidate. A different candidate or changed source after that day's QA waits until the next eligible day for full QA and publication; implementation, integration, package preparation and necessary unit, integration or feature checks can continue. All required platform and installation checks still apply. Reuse the existing candidate, build allocation and live CI run for the same product source instead of dispatching duplicate builds or publishing each commit separately.
 
 Choose the version change explicitly after reviewing the included changes:
 
@@ -186,7 +188,7 @@ Compatibility filenames include the global build number; development filenames i
 
 A 404 for a removed older test file stops installation and clears the old download target. The user must select **Check for updates** again to discover the current build. A hash failure preserves the selected build so the same file can be downloaded again. Neither condition automatically rechecks or installs, and the installed app is retained.
 
-The test-update feature does not change the database storage format. However, database format 10 already used by this development branch cannot be opened by stable 1.2.9; existing protection rejects it. Use a separate data folder for QA. Returning to a stable app does not delete QA data or restore an older backup automatically. Disabling **Get test versions** changes only future update checks; it does not downgrade the app or database.
+The test-update feature itself does not change the database storage format. This source upgrades the local database to schema 12 for project incarnations; stable 1.5.0 supports at most schema 11 and refuses to open that upgraded database. Logical backup format 10 remains unchanged, but this does not provide an automatic physical-database downgrade. Use a separate data folder for QA and preserve a backup before updating existing data. Returning to an older app does not delete QA data or restore an older backup automatically. Disabling **Get test versions** changes only future update checks; it does not downgrade the app or database.
 
 ## Publish the website
 
