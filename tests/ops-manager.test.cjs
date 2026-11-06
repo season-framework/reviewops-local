@@ -23,8 +23,8 @@ async function harness(t,overrides={}){
         return {threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'};
       },
       async steer(input){calls.push({kind:'steer',goalId:options.goalId,...input});external.set(input.deliveryId,{threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'});return {threadId:state.threadId,turnId:state.turnId,state:'running',delivery:'accepted'};},
-      async reconcile(input){calls.push({kind:'reconcile',goalId:options.goalId,...input});return external.get(input.deliveryId)||{threadId:input.threadId,state:'unknown',delivery:'unknown'};},
-      async interrupt(input){calls.push({kind:'interrupt',goalId:options.goalId,...input});if(overrides.interrupt)return overrides.interrupt(input,state);await options.onEvent({type:'turn.completed',threadId:state.threadId||input.threadId,turnId:state.turnId||input.turnId,status:'interrupted'});return {confirmed:true,state:'idle',turnId:state.turnId||input.turnId};},
+      async reconcile(input){calls.push({kind:'reconcile',goalId:options.goalId,...input});if(overrides.reconcile)return overrides.reconcile(input,state,external);return external.get(input.deliveryId)||{threadId:input.threadId,state:'unknown',delivery:'unknown'};},
+      async interrupt(input){calls.push({kind:'interrupt',goalId:options.goalId,...input});if(overrides.interrupt)return overrides.interrupt(input,state);await options.onEvent({type:'turn.completed',threadId:state.threadId||input.threadId,turnId:state.turnId||input.turnId,status:'interrupted',backgroundState:'empty',backgroundCount:0});return {confirmed:true,state:'idle',turnId:state.turnId||input.turnId};},
       async close(){}
     };
   };
@@ -32,7 +32,7 @@ async function harness(t,overrides={}){
   const manager=new OpsManager(options);t.after(async()=>{await manager.close();fs.rmSync(root,{recursive:true,force:true});});
   const folder=name=>{const p=path.join(root,name);fs.mkdirSync(p,{recursive:true});return p;};
   const add=async(name,workPath=folder(name))=>{const snapshot=await manager.saveGoal({name,description:'Deliver the requested feature',workPath,prompt:'Implement and verify it.'});return snapshot.goals.at(-1).id;};
-  const complete=async id=>{const s=sessions.get(id);for(const state of external.values())if(state.threadId===s.threadId)state.state='idle';await s.options.onEvent({type:'turn.completed',threadId:s.threadId,turnId:s.turnId,status:'completed'});await manager.pumpAll();};
+  const complete=async id=>{const s=sessions.get(id);for(const state of external.values())if(state.threadId===s.threadId){state.state='idle';state.backgroundState='empty';state.backgroundCount=0;}await s.options.onEvent({type:'turn.completed',threadId:s.threadId,turnId:s.turnId,status:'completed',backgroundState:'empty',backgroundCount:0});await manager.pumpAll();};
   return {root,dataPath,manager,options,calls,sessions,external,folder,add,complete,setTime:at=>{clock=at;},now:()=>clock};
 }
 
@@ -100,7 +100,7 @@ test('a failed goal target does not change an independently running goal',async 
 });
 
 test('a terminal event before a delayed start acknowledgement cannot restore a running directory claim',async t=>{
-  const h=await harness(t,{start:async(_input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'completed'});}}),id=await h.add('Fast turn');
+  const h=await harness(t,{start:async(_input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'completed',backgroundState:'empty',backgroundCount:0});}}),id=await h.add('Fast turn');
   await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();
   const goal=h.manager.snapshot().goals[0];assert.equal(goal.executionState,'idle');assert.equal(goal.turnId,null);assert.equal(goal.history.find(r=>r.type==='delivery').status,'completed');
 });
@@ -132,7 +132,7 @@ test('repeated due scans while a target waits retain only one unsent scheduled f
 });
 
 test('failed turns remain failed in the delivery result and do not retain a running claim',async t=>{
- const h=await harness(t,{start:async(_input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'failed'});}}),id=await h.add('Actual failure');
+ const h=await harness(t,{start:async(_input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'failed',backgroundState:'empty',backgroundCount:0});}}),id=await h.add('Actual failure');
  await h.manager.goalAction({goalId:id,action:'start'});await h.manager.pumpAll();const goal=h.manager.snapshot().goals[0];assert.equal(goal.executionState,'error');assert.equal(goal.turnId,null);assert.equal(goal.history.find(r=>r.type==='delivery').status,'failed');
 });
 
@@ -165,7 +165,7 @@ test('direct and OpenSSH goals claim their shared endpoint alias for one remote 
 
 test('pause keeps its target claim after turn completion until background cleanup is confirmed',async t=>{
  let entered,release;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);
- const h=await harness(t,{interrupt:async(input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'interrupted'});entered();await gate;return {confirmed:true,state:'idle',turnId:input.turnId,status:'interrupted'};}}),folder=h.folder('held-terminal-cleanup'),a=await h.add('Stopping owner',folder),b=await h.add('Waiting target',folder);
+ const h=await harness(t,{interrupt:async(input,state)=>{await state.options.onEvent({type:'turn.completed',threadId:state.threadId,turnId:state.turnId,status:'interrupted',backgroundState:'empty',backgroundCount:0});entered();await gate;return {confirmed:true,state:'idle',turnId:input.turnId,status:'interrupted'};}}),folder=h.folder('held-terminal-cleanup'),a=await h.add('Stopping owner',folder),b=await h.add('Waiting target',folder);
  await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();
  const stopping=h.manager.goalAction({goalId:a,action:'pause'});await ready;await h.manager.pumpAll();assert.equal(h.manager.snapshot().goals.find(g=>g.id===a).executionState,'unknown');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
  release();await stopping;await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='start').length,2);assert.equal(h.manager.snapshot().goals.find(g=>g.id===a).executionState,'idle');
@@ -180,4 +180,31 @@ test('cron is exactly five fields, validates IANA zones, and preserves DST wall-
   assert.throws(()=>validateSchedule('0 * * * * *','UTC'));assert.throws(()=>validateSchedule('* * * * *','Moon/Base'));assert.throws(()=>validateSchedule('H * * * *','UTC'));
   assert.equal(nextOccurrence('0 9 * * *','America/New_York',Date.parse('2026-03-07T15:00:00Z')),'2026-03-08T13:00:00.000Z');
   assert.equal(nextOccurrence('0 4 * * *','Asia/Seoul',Date.parse('2026-11-06T20:00:00Z')),'2026-11-07T19:00:00.000Z');
+});
+
+test('normal model completion retains its folder while a background terminal is active and releases only after empty proof',async t=>{
+ const h=await harness(t),folder=h.folder('live-background'),a=await h.add('Background owner',folder),b=await h.add('Waiting peer',folder);
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();
+ const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'active',backgroundCount:1,outcome:'completed'});
+ await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});await h.manager.pumpAll();
+ let owner=h.manager.snapshot().goals.find(g=>g.id===a);assert.equal(owner.modelState,'idle');assert.equal(owner.turnId,null);assert.equal(owner.executionState,'running');assert.equal(owner.backgroundCount,1);assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+ await h.manager.tick();await h.manager.reconnect(a);assert.equal(h.calls.filter(c=>c.kind==='start').length,1);assert.equal(h.calls.filter(c=>c.kind==='interrupt').length,0);
+ for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{backgroundState:'empty',backgroundCount:0});
+ await h.manager.tick();await h.manager.reconnect(a);await h.manager.pumpAll();owner=h.manager.snapshot().goals.find(g=>g.id===a);assert.equal(owner.executionState,'idle');assert.equal(owner.backgroundCount,0);assert.equal(h.calls.filter(c=>c.kind==='start').length,2);assert.equal(h.calls.filter(c=>c.kind==='interrupt').length,0);
+});
+
+test('unknown background proof and failed metadata reads retain a completed model target claim',async t=>{
+ let failed=false;const h=await harness(t,{reconcile:async(input,_session,external)=>{if(failed)throw new Error('Metadata unavailable');return external.get(input.deliveryId);}}),folder=h.folder('unknown-background'),a=await h.add('Unknown background',folder),b=await h.add('Blocked peer',folder);
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'unknown',backgroundCount:null,outcome:'completed'});
+ await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'unknown',backgroundCount:null});await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();
+ failed=true;await h.manager.reconnect(a);await h.manager.pumpAll();let owner=h.manager.snapshot().goals.find(g=>g.id===a);assert.equal(owner.executionState,'unknown');assert.equal(owner.history.find(r=>r.type==='delivery').status,'completed');assert.equal(h.calls.filter(c=>c.kind==='start').length,1);
+ failed=false;for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{backgroundState:'empty',backgroundCount:0});await h.manager.reconnect(a);await h.manager.pumpAll();assert.equal(h.calls.filter(c=>c.kind==='start').length,2);
+});
+
+test('one held background metadata probe does not delay an unrelated due schedule',async t=>{
+ let release,entered;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);let heldGoal;
+ const h=await harness(t,{reconcile:async(input,session,external)=>{if(session.options.goalId===heldGoal){entered();await gate;}return external.get(input.deliveryId);}}),a=await h.add('Slow metadata'),b=await h.add('Independent due');heldGoal=a;
+ await h.manager.goalAction({goalId:a,action:'start'});await h.manager.pumpAll();const session=h.sessions.get(a);for(const value of h.external.values())if(value.threadId===session.threadId)Object.assign(value,{state:'idle',backgroundState:'active',backgroundCount:1,outcome:'completed'});await session.options.onEvent({type:'turn.completed',threadId:session.threadId,turnId:session.turnId,status:'completed',backgroundState:'active',backgroundCount:1});
+ await h.manager.goalAction({goalId:b,action:'start'});await h.manager.pumpAll();h.manager.saveSchedule({goalId:b,name:'Due independently',prompt:'Inspect the current state.',cron:'* * * * *',timezone:'UTC',enabled:true});h.setTime(h.now()+60000);
+ await h.manager.tick();await ready;assert.equal(h.calls.filter(c=>c.kind==='steer'&&c.goalId===b).length,1);release();await h.manager.reconnect(a);
 });
