@@ -244,4 +244,4 @@ function createRequestQueue({store,targetForReview,targetForRun,start,admitStart
   };
 }
 
-module.exports={REQUEST_SCHEMA,listSavedRequests,importRequests,createRequestQueue,requestState,requestTargetKey,conflictingTargets};
+module.exports={REQUEST_SCHEMA,listSavedRequests,importRequests,createRequestQueue,requestState,requestTargetKey,conflictingTargets,executionIdentity};
