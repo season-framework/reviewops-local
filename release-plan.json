@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.4.1",
-  "version": "1.5.0",
+  "previousVersion": "1.5.0",
+  "version": "1.6.0",
   "bump": "minor",
-  "reason": "Add private running-instance discovery so a fresh MCP process can connect to one running app without restarting it.",
-  "baseCommit": "209bb9fe7b090df578bca250c48da4d55ddcb341"
+  "reason": "Add configurable automatic account usage refresh, improve agent tool cancellation, and update certificate validation.",
+  "baseCommit": "d8190336156d27054e7de838967defb0b34ef7b8"
 }

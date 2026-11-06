@@ -270,8 +270,9 @@ export function AccountApp() {
     </tr></thead><tbody>{accounts.map(account => <tr key={account.id} className={selected.has(account.id) ? 'selected' : ''}>
       <td><input type="checkbox" aria-label={t("{0} 선택",[account.label])} checked={selected.has(account.id)} onChange={() => setSelected(previous => { const next = new Set(previous); next.has(account.id) ? next.delete(account.id) : next.add(account.id); return next; })}/></td>
       <td className="account-col"><button className="account-info" aria-label={t("{0} 상세 통계",[account.label])} onClick={() => { setMenu(null); setModal({ type: 'details', id: account.id }); }}><span className="account-name"><strong>{account.label}</strong>{account.planType && <span className="plan">{account.planType}</span>}</span><span className="email">{account.email || t("로그인 전")}</span></button>
-        <small className="account-status">{account.status === 'loggingIn' ? t("로그인 중") : account.requiresLogin ? t("다시 로그인 필요") : account.status === 'loading' ? t("조회 중") : account.status === 'signedOut' ? t("로그인 필요") : account.lastUpdated ? t("{0} 조회",[dateText(account.lastUpdated)]) : t("조회 전")}</small>
+        <small className="account-status">{account.status === 'loggingIn' ? t("로그인 중") : account.requiresLogin ? t("다시 로그인 필요") : account.status === 'loading' ? t("조회 중") : account.status === 'signedOut' ? t("로그인 필요") : account.lastUpdated ? t("마지막 성공: {0}",[dateText(account.lastUpdated)]) : t("조회 전")}</small>
         {(account.error || account.warning) && <p className="row-error">{account.error || account.warning}</p>}
+        {account.usageDetailsError && <p className="row-error">{t("상세 사용량 갱신 실패 · 이전 값 유지")}</p>}
         {account.resetAttempt?.message && <p className="row-result" role="status">{account.resetAttempt.message}</p>}
       </td>
       <td className="numeric"><Usage account={account}/></td>

@@ -117,7 +117,8 @@ send({type:'turn.completed'});
  const manager=createAgentManager({env:{...process.env,HOME:directory,CODEX_HOME:path.join(directory,'empty-home')},commandTimeoutMs:3000});
  t.after(async()=>{await manager.closeAll();fs.rmSync(directory,{recursive:true,force:true});});
  const settings={binary,workPath:directory,model:'sent-model',reasoningEffort:'high'},config={kind:'local',rootPath:directory};
- async function complete(id,prompt){manager.start({id,prompt,config,settings,executionSettings:explicit()});for(let count=0;count<200;count++){const run=manager.read(id);if(run.status==='completed')return run;if(run.status==='failed')assert.fail(run.error);await new Promise(resolve=>setTimeout(resolve,10));}assert.fail('검사용 CLI가 종료되지 않았습니다.');}
+ // Metadata probes each have their own 3s budget before the fixture task starts.
+ async function complete(id,prompt){manager.start({id,prompt,config,settings,executionSettings:explicit()});const deadline=Date.now()+15000;while(Date.now()<deadline){const run=manager.read(id);if(run.status==='completed')return run;if(run.status==='failed')assert.fail(run.error);await new Promise(resolve=>setTimeout(resolve,10));}assert.fail('검사용 CLI가 종료되지 않았습니다. '+JSON.stringify(manager.read(id)));}
  const missing=await complete('missing-actual','NO_VALUES');assert.equal(missing.reportedSettings,undefined);
  const reported=await complete('reported-actual','REPORT');assert.equal(reported.reportedSettings.model,'reported-runtime');assert.equal(reported.reportedSettings.reasoningEffort,'medium');assert.equal(reported.reportedSettings.source,'cli_event');assert.equal(reported.reportedSettings.eventType,'turn.started');
  assert.equal(reported.model,'sent-model');assert.deepEqual(reported.executionSettings,explicit());assert.equal(reported.progress.length,100);assert.equal(reported.progressOmitted,27);assert.equal(reported.progress[0].sequence,28);assert.equal(reported.response,' \n원문 응답\n ');assert.ok(reported.finishedAt);

@@ -188,7 +188,7 @@ Compatibility filenames include the global build number; development filenames i
 
 A 404 for a removed older test file stops installation and clears the old download target. The user must select **Check for updates** again to discover the current build. A hash failure preserves the selected build so the same file can be downloaded again. Neither condition automatically rechecks or installs, and the installed app is retained.
 
-The test-update feature does not change the database storage format. However, database format 10 already used by this development branch cannot be opened by stable 1.2.9; existing protection rejects it. Use a separate data folder for QA. Returning to a stable app does not delete QA data or restore an older backup automatically. Disabling **Get test versions** changes only future update checks; it does not downgrade the app or database.
+The test-update feature itself does not change the database storage format. This source upgrades the local database to schema 12 for project incarnations; stable 1.5.0 supports at most schema 11 and refuses to open that upgraded database. Logical backup format 10 remains unchanged, but this does not provide an automatic physical-database downgrade. Use a separate data folder for QA and preserve a backup before updating existing data. Returning to an older app does not delete QA data or restore an older backup automatically. Disabling **Get test versions** changes only future update checks; it does not downgrade the app or database.
 
 ## Publish the website
 
