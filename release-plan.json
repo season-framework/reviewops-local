@@ -3,6 +3,6 @@
   "previousVersion": "1.5.0",
   "version": "1.6.0",
   "bump": "minor",
-  "reason": "Add configurable automatic account usage refresh, improve agent tool cancellation, and update certificate validation.",
+  "reason": "Add persistent Ops goals with parallel local and SSH execution, goal-owned schedules, project-window QA and recoverable history, alongside configurable account usage refresh, improved agent cancellation and updated certificate validation.",
   "baseCommit": "d8190336156d27054e7de838967defb0b34ef7b8"
 }

@@ -21,6 +21,9 @@ readline.createInterface({input:process.stdin}).on('line', (line) => {
   } else if (message.method === 'serverProbe') {
     waiting = message.id;
     send({ id: 'server-request', method: 'item/commandExecution/requestApproval', params: {} });
+  } else if (message.method === 'toolProbe') {
+    waiting = message.id;
+    for(let n=0;n<2;n++)send({ id: 'server-request', method: 'item/tool/call', params: {callId:'owned-call'} });
   } else if (message.id === 'server-request') {
     send({ id: waiting, result: message });
   } else if (message.method === 'secretError') {
@@ -53,6 +56,22 @@ test('server-side approval requests are refused without executing anything', asy
   const result = await rpc.request('serverProbe');
   assert.equal(result.id, 'server-request');
   assert.equal(result.error.code, -32601);
+});
+
+test('private dynamic-tool handlers stay asynchronous and deduplicate server request IDs', async t => {
+  let invoked=0;
+  const rpc=new RpcClient({command:process.execPath,args:['-e',fakeServer],timeoutMs:1000,onServerRequest:async request=>{
+    if(request.method!=='item/tool/call')return undefined;
+    invoked++;await new Promise(resolve=>setTimeout(resolve,25));return {success:true,contentItems:[{type:'inputText',text:'Owned tool result'}]};
+  }});t.after(()=>rpc.close());
+  const [tool,ordinary]=await Promise.all([rpc.request('toolProbe'),rpc.request('probe',{stillResponsive:true})]);
+  assert.equal(invoked,1);assert.equal(tool.result.success,true);assert.equal(ordinary.params.stillResponsive,true);
+  const denied=await rpc.request('serverProbe');assert.equal(denied.error.code,-32600);
+});
+
+test('private handler failures do not return exception diagnostics to the server', async t => {
+  const rpc=new RpcClient({command:process.execPath,args:['-e',fakeServer],timeoutMs:1000,onServerRequest:()=>{throw new Error('sk-private-credential');}});t.after(()=>rpc.close());
+  const result=await rpc.request('toolProbe');assert.equal(result.error.code,-32603);assert.equal(JSON.stringify(result).includes('private'),false);
 });
 
 test('RPC errors keep the safe code and discard potentially sensitive diagnostics', async (t) => {

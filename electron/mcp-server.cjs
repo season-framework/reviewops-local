@@ -312,5 +312,5 @@ function main(args = process.argv.slice(2)) {
   process.stdout.on('error',stop);
   return server;
 }
-module.exports = { createMcpServer, invokeSocket, createConnectionInvoker, options, toolResult, tools, qaTools, connectionInfoResult, main };
+module.exports = { createMcpServer, invokeSocket, createConnectionInvoker, options, toolResult, tools, qaTools, documentTool, connectionInfoResult, main };
 if (require.main === module) { try { main(); } catch (failure) { process.stderr.write(String(failure.message) + '\n'); process.exitCode = 1; } }

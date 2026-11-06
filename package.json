@@ -67,6 +67,7 @@
     "mcp": "node electron/mcp-server.cjs"
   },
   "dependencies": {
+    "cron-parser": "5.10.4",
     "github-markdown-css": "5.9.0",
     "lucide-react": "0.577.0",
     "react-markdown": "10.1.0",

@@ -54,8 +54,8 @@ const snapshotScript = `(() => {
   return {url:location.href,title:document.title,text:(document.body?.innerText||'').slice(0,30000),elements,viewport:{width:innerWidth,height:innerHeight,scrollX,scrollY}};
 })()`;
 
-async function capture(record,contents,browserId,nativeImage) {
-  const image=await contents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+async function capture(record,contents,browserId,nativeImage,guard=()=>{}) {
+  guard();const image=await contents.capturePage(undefined,{stayHidden:true,stayAwake:true});guard();
   if(image.isEmpty())fail('화면을 촬영하지 못했습니다.','CAPTURE_FAILED');
   let result=image;
   // The website is a child native view, absent from a host capture. Composite
@@ -65,7 +65,7 @@ async function capture(record,contents,browserId,nativeImage) {
     const sx=size.width/width,sy=size.height/height,pixels=image.toBitmap();
     for(const target of record.browsers?.automationTargets()||[]){
       if(!target.visible||!target.bounds||!target.clip)continue;
-      const shot=await target.contents.capturePage(undefined,{stayHidden:true,stayAwake:true});
+      guard();const shot=await target.contents.capturePage(undefined,{stayHidden:true,stayAwake:true});guard();
       if(shot.isEmpty())continue;
       const source=shot.toBitmap(),sourceSize=shot.getSize(),bounds=target.bounds,clip=target.clip;
       const left=Math.max(0,Math.ceil(Math.max(bounds.x,clip.x)*sx)),top=Math.max(0,Math.ceil(Math.max(bounds.y,clip.y)*sy));
@@ -80,7 +80,7 @@ async function capture(record,contents,browserId,nativeImage) {
     result=nativeImage.createFromBitmap(pixels,{width:size.width,height:size.height,scaleFactor:1});
   }
   const png=result.toPNG();
-  const viewport=await contents.executeJavaScript('({width:innerWidth,height:innerHeight})');
+  guard();const viewport=await contents.executeJavaScript('({width:innerWidth,height:innerHeight})');guard();
   return {mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
 }
 function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiveChange=()=>{},now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
@@ -129,7 +129,17 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     else result.bindingState='attached';
     return result;
   }
-  async function open(payload){
+  // Private cleanup proof: unlike UI availability, this reads exact lease
+  // membership without pruning, touching, reconnecting or selecting a window.
+  function leaseStatus(payload){
+    const keys=['clientId','sessionId','projectId','windowId'];
+    if(!payload||typeof payload!=='object'||Array.isArray(payload)||Object.keys(payload).length!==keys.length||Object.keys(payload).some(key=>!keys.includes(key)))fail('Invalid original QA lease status request.');
+    for(const key of keys)id(payload[key],key);
+    const session=sessions.get(payload.sessionId),leaseState=closed?'unknown':!session?'absent':keys.every(key=>(key==='sessionId'?session.id:session[key])===payload[key])?'attached':'unknown';
+    return {...payload,leaseState};
+  }
+  async function open(payload,guard){
+    guard();
     const projectId=id(payload.projectId,'프로젝트 ID'),clientId=id(payload.clientId,'클라이언트 ID');
     if(payload.reviewId!==undefined)id(payload.reviewId,'리뷰 ID');
     if(!getProject(projectId))fail('프로젝트를 찾을 수 없습니다.','NOT_FOUND');
@@ -138,7 +148,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     let session=projects.get(projectId);
     if(session){
       if(session.clientId!==clientId)fail('다른 QA가 이 프로젝트 창에 연결되어 있습니다. 연결을 해제한 뒤 다시 시도하십시오.','PROJECT_BUSY');
-      await session.opening;check(session,{projectId,windowId:session.windowId});
+      await session.opening;guard();check(session,{projectId,windowId:session.windowId});
       if(payload.reviewId!==undefined&&payload.reviewId!==session.reviewId)fail('연결된 QA의 리뷰가 다릅니다. 연결을 해제한 뒤 대상 리뷰로 다시 연결하십시오.','REVIEW_MISMATCH');
       return binding(session);
     }
@@ -146,7 +156,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     session={id:crypto.randomUUID(),projectId,clientId,reviewId:payload.reviewId||'',windowId:null,touched:now(),queue:Promise.resolve(),active:1};
     sessions.set(session.id,session);projects.set(projectId,session);
     session.opening=(async()=>{
-      try{const record=await openWindow(payload);if(!record||record.projectId!==projectId||record.host.isDestroyed())fail('연결할 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');if(closed)fail('QA 연결이 종료되었습니다.','CLOSED');session.windowId=record.id;onActiveChange(record,true);record.qaActive=true;session.touched=now();return binding(session);}
+      try{guard();const record=await openWindow(payload,guard);guard();if(!record||record.projectId!==projectId||record.host.isDestroyed())fail('연결할 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');if(closed)fail('QA 연결이 종료되었습니다.','CLOSED');session.windowId=record.id;onActiveChange(record,true);record.qaActive=true;session.touched=now();return binding(session);}
       catch(error){forget(session);throw error;}finally{session.active--;}
     })();
     return session.opening;
@@ -181,10 +191,10 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     if(target.documentReady!==true||entry.state.crashed||entry.contents.isDestroyed()||entry.contents.isCrashed?.()||entry.contents.isLoadingMainFrame())fail('The selected web document is not ready. Observe it after loading or recovery.','QA_DOCUMENT_NOT_READY');
     if(target.ready!==entry.ready||(target.inputScale||entry.contents.getZoomFactor?.()||1)!==entry.scale)fail('The selected web surface changed readiness or scale. Observe it again.','QA_DOCUMENT_NOT_READY');
   }
-  async function performDocument(payload,session,entry){
+  async function performDocument(payload,session,entry,guard){
     let deliveryBegun=false,release,primary,cleanupFailure,result;
     entry.deliveryBegun=false;
-    const fence=()=>assertDocument(payload,session,entry);
+    const fence=()=>{guard();assertDocument(payload,session,entry);};
     const send=async(method,params,matchingRelease)=>{
       fence();
       const value=await command(entry.contents,method,params,()=>{
@@ -256,23 +266,29 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     }
     return result;
   }
-  async function perform(action,payload,session){
+  async function perform(action,payload,session,guard){
     const record=check(session,payload),metadata=binding(session);
-    const assertActive=()=>{if(session.failed)fail('QA 응답 시간이 초과되었습니다.','QA_TIMEOUT');};
+    const assertActive=()=>{guard();if(session.failed)fail('QA 응답 시간이 초과되었습니다.','QA_TIMEOUT');};
+    guard();
     if(action==='release'){forget(session);return {...metadata,released:true};}
+    assertActive();
     const targets=record.browsers?.automationTargets()||[];
     if(payload.browserId!==undefined)id(payload.browserId,'검사 화면 ID');
     const target=payload.browserId&&targets.find(item=>item.browserId===payload.browserId);
     if(payload.browserId&&!target)fail('이 프로젝트 창의 검사 화면을 지정하십시오.','TARGET_MISMATCH');
     const contents=target?.contents||record.host.webContents;
-    const send=async(method,params)=>{if(session.failed)fail('QA 응답 시간이 초과되었습니다.','QA_TIMEOUT');const result=await command(contents,method,params);if(session.failed)fail('QA 응답 시간이 초과되었습니다.','QA_TIMEOUT');return result;};
+    const send=async(method,params,begun)=>{assertActive();const result=await command(contents,method,params,()=>{assertActive();begun?.();});assertActive();return result;};
+    const releaseInput=async(method,params)=>{
+      try{if(contents.isDestroyed()||!contents.debugger.isAttached())fail('The original pressed QA surface is unavailable.','QA_RELEASE_TARGET_GONE');await contents.debugger.sendCommand(method,params);}
+      catch(error){session.failed=true;session.failureKind??='document-release';quarantined.add(record.id);throw Object.assign(error,{inputMayHaveApplied:true});}
+    };
     if(target?.ready)await target.ready;
     assertActive();
     const inputScale=target?.inputScale||contents.getZoomFactor?.()||1;
     if(contents.isDestroyed())fail('검사 화면이 닫혔습니다.','TARGET_CLOSED');
     if(payload.browserId)metadata.browserId=payload.browserId;
-    if(action==='state')return {...metadata,...await contents.executeJavaScript(snapshotScript),browsers:targets.map(({browserId,url,title,visible,bounds,clip})=>{const zoom=record.host.webContents.getZoomFactor?.()||1;const css=rect=>rect&&Object.fromEntries(Object.entries(rect).map(([key,value])=>[key,value/zoom]));return {browserId,url,title,visible,bounds:css(bounds)||null,clip:css(clip)||null};})};
-    if(action==='capture')return {...metadata,...await capture(record,contents,payload.browserId,nativeImage)};
+    if(action==='state'){const value=await contents.executeJavaScript(snapshotScript);assertActive();return {...metadata,...value,browsers:targets.map(({browserId,url,title,visible,bounds,clip})=>{const zoom=record.host.webContents.getZoomFactor?.()||1;const css=rect=>rect&&Object.fromEntries(Object.entries(rect).map(([key,value])=>[key,value/zoom]));return {browserId,url,title,visible,bounds:css(bounds)||null,clip:css(clip)||null};})};}
+    if(action==='capture'){const value=await capture(record,contents,payload.browserId,nativeImage,assertActive);assertActive();return {...metadata,...value};}
     if(action==='close'){
       if(payload.browserId)fail('창 종료는 검사 화면 ID 없이 요청하십시오.');
       const dirty=await contents.executeJavaScript('document.documentElement.dataset.reviewopsDirty === "true"');
@@ -283,29 +299,37 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
         const closed=()=>finish(true);record.host.once?.('closed',closed);
         record.host.close();if(record.host.isDestroyed())finish(true);else timer=setTimeout(()=>finish(record.host.isDestroyed()),1500);
       });
-      if(didClose)forget(session);return {...metadata,closed:didClose};
+      guard();if(didClose)forget(session);return {...metadata,closed:didClose};
     }
     if(action==='reload'){
       if(!payload.browserId&&await contents.executeJavaScript('document.documentElement.dataset.reviewopsDirty === "true"'))fail('작성 중인 내용을 저장한 뒤 화면을 다시 불러오십시오.','UNSAVED_INPUT');
-      assertActive();contents.reload();await waitForLoad(contents);return {...metadata,reloaded:true};
+      assertActive();contents.reload();await waitForLoad(contents);assertActive();return {...metadata,reloaded:true};
     }
     if(action==='navigate'){
       if(!payload.browserId)fail('주소 이동은 검사 화면 ID가 필요합니다.');
-      assertActive();if(target.navigate)await target.navigate(payload.url);else {
+      let nativeState=true;
+      assertActive();if(target.navigate){const scheduled=await target.navigate(payload.url,assertActive);nativeState=scheduled?.id===payload.browserId;}else {
         await record.browsers.dispatch('browser.navigate',{id:payload.browserId,url:payload.url});
-        await waitForLoad(contents);
+      }
+      // Native UI navigation only schedules loadURL; QA completes after loading.
+      // Popup callbacks await loadURL themselves and have no browser-manager ID.
+      await waitForLoad(contents);assertActive();
+      if(nativeState){
         const state=await record.browsers.dispatch('browser.state',{id:payload.browserId});
+        assertActive();
         if(state.error)fail(state.error,'NAVIGATION_FAILED');
       }
-      return {...metadata,url:contents.getURL()};
+      assertActive();return {...metadata,url:contents.getURL()};
     }
     if(action==='click'){
       const x=number(payload.x,'가로 위치')*inputScale,y=number(payload.y,'세로 위치')*inputScale,button=payload.button||'left',clickCount=payload.clickCount||1;
       if(x<0||y<0||!['left','right'].includes(button)||![1,2].includes(clickCount))fail('클릭할 위치와 버튼을 지정하십시오.');
       await send('Input.dispatchMouseEvent',{type:'mouseMoved',x,y});
       for(let count=1;count<=clickCount;count++){
-        await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button,clickCount:count});
-        await send('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button,clickCount:count});
+        let pressed=false;
+        try{await send('Input.dispatchMouseEvent',{type:'mousePressed',x,y,button,clickCount:count},()=>{pressed=true;});}
+        finally{if(pressed)await releaseInput('Input.dispatchMouseEvent',{type:'mouseReleased',x,y,button,clickCount:count});}
+        assertActive();
       }
     }else if(action==='type'){
       if(typeof payload.text!=='string'||payload.text.length>100000||payload.text.includes('\0'))fail('입력할 내용을 지정하십시오.');
@@ -319,18 +343,21 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
       const code=keys[key]||(/^[a-z0-9]$/i.test(key)?key.toUpperCase().charCodeAt(0):0);
       if(!code)fail('지원하지 않는 키입니다.');
       const params={key,modifiers:mask,windowsVirtualKeyCode:code,nativeVirtualKeyCode:code,...(key==='Enter'?{text:'\r'}:{})};
-      await send('Input.dispatchKeyEvent',{type:'keyDown',...params});
-      await send('Input.dispatchKeyEvent',{type:'keyUp',...params});
+      let pressed=false;
+      try{await send('Input.dispatchKeyEvent',{type:'keyDown',...params},()=>{pressed=true;});}
+      finally{if(pressed)await releaseInput('Input.dispatchKeyEvent',{type:'keyUp',...params});}
+      assertActive();
     }else if(action==='scroll'){
       await send('Input.dispatchMouseEvent',{type:'mouseWheel',x:number(payload.x,'가로 위치')*inputScale,y:number(payload.y,'세로 위치')*inputScale,deltaX:number(payload.deltaX??0,'가로 이동')*inputScale,deltaY:number(payload.deltaY,'세로 이동')*inputScale});
     }else fail('지원하지 않는 QA 요청입니다.','UNKNOWN_ACTION');
     return {...metadata,applied:true};
   }
-  function handle(action,payload={}){
+  function handle(action,payload={},guard=()=>{}){
+    if(typeof guard!=='function')fail('Invalid trusted QA guard.');guard();
     if(closed)return Promise.reject(Object.assign(new Error('QA 연결이 종료되었습니다.'),{code:'CLOSED'}));
     if(!payload||typeof payload!=='object'||Array.isArray(payload))fail('JSON 객체로 요청하십시오.');
     action=action.replace(/^automation\.qa\./,'');
-    if(action==='open')return open(payload);
+    if(action==='open')return open(payload,guard);
     id(payload.sessionId,'QA 세션 ID');id(payload.projectId,'프로젝트 ID');id(payload.windowId,'창 ID');
     const session=sessions.get(payload.sessionId);check(session,payload);
     if(session.failed&&action!=='release')fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
@@ -340,15 +367,16 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     // wait for one another's input, capture, navigation, or page loading.
     session.active++;
     const result=session.queue.then(async()=>{
+      guard();
       if(sessions.get(session.id)!==session)fail('QA 연결이 해제되었습니다.','SESSION_EXPIRED');
       if(session.failed&&action!=='release')fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
       let timer;
-      try{return await Promise.race([action==='document'?performDocument(payload,session,documentEntry):perform(action,payload,session),new Promise((_,reject)=>{timer=setTimeout(()=>{session.failed=true;session.failureKind??='timeout';quarantined.add(session.windowId);const error=Object.assign(new Error(action==='document'?'The document request timed out. Close and reopen this window; do not replay input.':'QA 응답 시간이 초과되었습니다. 프로젝트 창을 닫고 다시 연결하십시오.'),{code:'QA_TIMEOUT'});if(documentEntry)error.inputMayHaveApplied=Boolean(documentEntry.deliveryBegun);reject(error);},operationTimeoutMs);})]);}
+      try{return await Promise.race([action==='document'?performDocument(payload,session,documentEntry,guard):perform(action,payload,session,guard),new Promise((_,reject)=>{timer=setTimeout(()=>{session.failed=true;session.failureKind??='timeout';quarantined.add(session.windowId);const error=Object.assign(new Error(action==='document'?'The document request timed out. Close and reopen this window; do not replay input.':'QA 응답 시간이 초과되었습니다. 프로젝트 창을 닫고 다시 연결하십시오.'),{code:'QA_TIMEOUT'});if(documentEntry)error.inputMayHaveApplied=Boolean(documentEntry.deliveryBegun);reject(error);},operationTimeoutMs);})]);}
       finally{clearTimeout(timer);}
     });
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,connectionStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  return {handle,connectionStatus,leaseStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

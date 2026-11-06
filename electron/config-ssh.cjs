@@ -9,7 +9,7 @@ const path = require('node:path');
 const fs = require('node:fs/promises');
 const syncFs = require('node:fs');
 const os = require('node:os');
-const { buildSshArgs, secureProxyCommand, runProcess, terminateProcessGroup, assertAlias, shellQuote, SSH_OPTIONS } = require('./codex/host-ssh.cjs');
+const { buildSshArgs, secureProxyCommand, runProcess, terminateProcessGroup, assertAlias, shellQuote, SSH_OPTIONS, parseEffectiveConfig } = require('./codex/host-ssh.cjs');
 const { sshExecutable } = require('./codex/local-commands.cjs');
 const { connectSftp, FLAGS, CHUNK_SIZE } = require('./codex/sftp-client.cjs');
 
@@ -253,6 +253,18 @@ class ConfigClient extends EventEmitter {
     await this.prepareSnapshot();
     this.proxy ||= (this.options.proxyResolver || secureProxyCommand)(this.options.runCommand || runProcess, this.configPath, this.host, { signal: this.abort.signal });
     return this.proxy;
+  }
+  async effectiveIdentity() {
+    await this.prepareSnapshot();
+    const result = await (this.options.runCommand || runProcess)(sshExecutable(), ['-F', this.configPath, '-G', '--', this.host.alias], {
+      signal: this.abort.signal, timeoutMs: 5000,
+    });
+    if (this.destroyed || result.code !== 0) throw configError('SSH 연결 대상 정보를 확인하지 못했습니다.');
+    const effective = parseEffectiveConfig(result.stdout), port = Number(effective.port);
+    if (!effective.hostName || !effective.user || !Number.isInteger(port) || port < 1 || port > 65535 || /[\0\r\n]/.test(effective.hostName + effective.user)) throw configError('SSH 연결 대상 정보를 확인하지 못했습니다.');
+    // This uses the same immutable Host/Include snapshot as this client's
+    // strict-known-hosts connections. No authentication material is returned.
+    return {kind: 'openssh-endpoint', host: effective.hostName.toLowerCase(), username: effective.user, port};
   }
   exec(command, settings, done) {
     if (typeof settings === 'function') { done = settings; settings = {}; }

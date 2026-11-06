@@ -106,7 +106,7 @@ async function harness(t, options = {}) {
   const electron = {
     app, BrowserWindow: FakeBrowserWindow, safeStorage,
     screen: { getAllDisplays: () => [{id:1,bounds:{x:0,y:0,width:1440,height:940}},{id:2,bounds:{x:1440,y:0,width:1920,height:1080}}], getPrimaryDisplay: () => ({id:1}) },
-    ipcMain: { handle(name, callback) { handlers.set(name, callback); } },
+    ipcMain: { handle(name, callback) { handlers.set(name, callback); },removeHandler(name){handlers.delete(name);} },
     dialog: {
       async showOpenDialog(host,options) { state.dialogCalls.push({kind:'open',host,options});if(state.openHandler)return state.openHandler(host,options);return state.openResult || { canceled: true, filePaths: [] }; },
       async showSaveDialog(host,options) { state.dialogCalls.push({kind:'save',host,options});return state.saveResult || { canceled: true }; },
@@ -179,9 +179,9 @@ async function harness(t, options = {}) {
     }
     if (name === './qa-automation.cjs') {
       const qa = require('../electron/qa-automation.cjs');
-      return {...qa, createQaAutomation(options) { state.qaOptions = options; return qa.createQaAutomation(options); }};
+      return {...qa, createQaAutomation(options) { state.qaOptions = options;state.qaApi=qa.createQaAutomation(options);return state.qaApi; }};
     }
-    if (['./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -193,6 +193,7 @@ async function harness(t, options = {}) {
     if (name === './files.cjs') return files;
     if (name === './agent-files.cjs') return require('../electron/agent-files.cjs');
     if (name === './codex/index.cjs') return {createCodexManager:async options=>{state.codexOptions=options;return {registerHandlers(){state.codexRegistered=true;},localRuntime(){return state.codexRuntime;},async close(){state.codexClosed=true;if(state.codexCloseError)throw new Error('synthetic close failure');},async resolveHost(alias){if(!state.codexHost||state.codexHost.alias!==alias)throw new Error('SSH 호스트를 찾을 수 없습니다.');return state.codexHost;}};}};
+    if(name==='./ops-manager.cjs')return {createOpsManager:async config=>{state.opsOptions=config;const {createOpsManager}=require('../electron/ops-manager.cjs');await options.opsBeforeCreate?.(config);state.opsManager=await createOpsManager({...config,...(options.opsCreateSession?{createSession:options.opsCreateSession}:{}),resolveTarget:async input=>{await options.opsTargetGate?.();return config.resolveTarget(input);}});return state.opsManager;}};
     if (name === './season-integration.cjs') return { createSeasonIntegration: async options => {
       state.seasonIntegration = options;
       if (state.seasonError) throw new Error(state.seasonError);
@@ -242,7 +243,8 @@ async function harness(t, options = {}) {
   await success('modelCache.refresh');
   state.windowMessages=[];
   const forWindow=host=>({event:()=>event(host),invoke:(action,payload)=>invoke(action,payload,event(host)),success:(action,payload)=>success(action,payload,event(host))});
-  return { root, dataPath, state, invoke, success, event, forWindow, appEvents };
+  const ops=(method,input,sender=event())=>handlers.get('ops:invoke')(sender,method,input);
+  return { root, dataPath, state, invoke, success, event, forWindow, appEvents,ops };
 }
 
 async function seed(h) {
@@ -4150,4 +4152,82 @@ test('local shared comment attachments observe queued deletion without widening 
     try { await unblock(); }
     finally { await Promise.allSettled([removeReview, removeProject, pending]); }
   }
+});
+
+test('Ops IPC permits the trusted home frame and denies project, QA and foreign frames',async t=>{
+ const h=await harness(t),main=h.state.primaryWindow,a=await seed(h);
+ const saved=await h.ops('saveGoal',{name:'Isolated Ops goal',description:'',prompt:'Inspect this target',workPath:h.root},h.event(main));
+ assert.equal(saved.goals.length,1);assert.equal(saved.goals[0].workPath,fs.realpathSync(h.root));
+ await h.forWindow(main).success('window.openProject',{projectId:a.project.id});const project=await projectHost(h,a.project.id);
+ await assert.rejects(h.ops('snapshot',undefined,h.event(project)),{code:'OPS_ACCESS_DENIED'});
+ const foreign={sender:main.webContents,senderFrame:{url:'https://example.invalid'}};
+ await assert.rejects(h.ops('snapshot',undefined,foreign),{code:'OPS_ACCESS_DENIED'});
+ assert.equal((await h.ops('snapshot',undefined,h.event(main))).goals.length,1);
+});
+
+test('Ops goal save revalidates its original window after asynchronous target resolution',async t=>{
+ let release,entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const h=await harness(t,{opsTargetGate:async()=>{entered();await gate;}}),host=h.state.primaryWindow;
+ const pending=h.ops('saveGoal',{name:'Late target',description:'',prompt:'Inspect',workPath:h.root},h.event(host));
+ await ready;host.webContents.mainFrame={url:'reviewops://app/index.html'};release();
+ await assert.rejects(pending,{code:'OPS_ACCESS_DENIED'});assert.equal(h.state.opsManager.snapshot().goals.length,0);
+});
+
+test('Ops application backup includes versioned settings and restores session-independent goals paused',async t=>{
+ const h=await harness(t),file=path.join(h.root,'ops-backup.json');
+ await h.ops('saveGoal',{name:'Saved Ops goal',description:'Description',prompt:'Preserve data',workPath:h.root});
+ await h.ops('configure',{commonPrompt:'Original shared instructions'});h.state.saveResult={canceled:false,filePath:file};
+ await h.success('backup.export');const bundle=JSON.parse(fs.readFileSync(file));assert.equal(bundle.ops.version,1);assert.equal(bundle.ops.goals.length,1);
+ await h.ops('configure',{commonPrompt:'Changed instructions'});h.state.openResult={canceled:false,filePaths:[file]};
+ assert.equal((await h.success('backup.import')).imported,true);const restored=await h.ops('snapshot');assert.equal(restored.commonPrompt,'Original shared instructions');assert.equal(restored.goals[0].status,'paused');
+});
+
+test('Ops backup restore rolls back its original records when the outer review-data commit fails',async t=>{
+ const h=await harness(t),file=path.join(h.root,'ops-rollback.json');
+ await h.ops('saveGoal',{name:'Original records',description:'',prompt:'Preserve the original session',workPath:h.root});
+ h.state.opsManager.store.update(data=>{Object.assign(data.goals[0],{threadId:'existing-saved-thread',status:'paused',modelState:'idle',backgroundState:'empty',backgroundCount:0});});
+ h.state.saveResult={canceled:false,filePath:file};await h.success('backup.export');await h.ops('configure',{commonPrompt:'Current instructions that must survive a failed restore'});
+ const before=h.state.opsManager.exportData(),restore=h.state.opsManager.restore.bind(h.state.opsManager),db=h.state.liveStore.db,exec=db.exec.bind(db);let armed=false;
+ h.state.opsManager.restore=(data,options)=>{const result=restore(data,options);if(options?.pause!==false)armed=true;return result;};
+ db.exec=sql=>{if(armed&&sql==='COMMIT'){armed=false;throw new Error('Injected outer commit failure after Ops restoration');}return exec(sql);};
+ h.state.openResult={canceled:false,filePaths:[file]};try{const result=await h.invoke('backup.import');assert.equal(result.ok,false);assert.match(result.error.message,/Injected outer commit failure/);}finally{db.exec=exec;}
+ const after=h.state.opsManager.exportData();assert.equal(after.commonPrompt,before.commonPrompt);assert.deepEqual(after.goals,before.goals);
+});
+
+test('Ops project targets retain committed birth and require confirmation after dataset replacement',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentWorkPath:''});
+ const input={name:'Project-bound Ops',description:'',prompt:'Inspect this project',projectId:a.project.id,serviceId:a.service.id,workPath:''};
+ const saved=await h.ops('saveGoal',input),goal=saved.goals[0];assert.ok(Number.isSafeInteger(goal.projectBirth));assert.equal((await h.state.opsOptions.resolveTarget(goal)).workPath,fs.realpathSync(h.root));
+ h.state.liveStore.importData(h.state.liveStore.exportData());await assert.rejects(h.state.opsOptions.resolveTarget(goal),{code:'OPS_PROJECT_CHANGED'});
+ const confirmed=await h.ops('saveGoal',{...input,id:goal.id});assert.notEqual(confirmed.goals[0].projectEpoch,goal.projectEpoch);assert.equal((await h.state.opsOptions.resolveTarget(confirmed.goals[0])).workPath,fs.realpathSync(h.root));
+});
+
+
+test('Ops startup opens the main window and IPC while an original SSH-like thread reconciliation is held',async t=>{
+ let release,entered;const ready=new Promise(r=>entered=r),gate=new Promise(r=>release=r);const pending=harness(t,{opsBeforeCreate:async config=>{const {OpsManager}=require('../electron/ops-manager.cjs');const seed=new OpsManager({dataPath:config.dataPath});await seed.saveGoal({name:'Saved unavailable target',description:'',prompt:'Continue original work',workPath:path.dirname(config.dataPath)});seed.store.update(data=>{Object.assign(data.goals[0],{status:'active',executionState:'running',threadId:'saved-original-thread',turnId:'saved-original-turn',modelState:'running',backgroundState:'active',backgroundCount:1});});await seed.close();},opsCreateSession:()=>({reconcile:async()=>{entered();await gate;return {threadId:'saved-original-thread',state:'idle',backgroundState:'empty',backgroundCount:0,delivery:'unknown'};},close:async()=>{}})});let h,timer;
+ try{await ready;h=await Promise.race([pending,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('A held Ops connection prevented the main window from opening.')),1500);})]);assert.ok(h.state.primaryWindow);const state=await h.ops('snapshot');assert.equal(state.goals[0].executionState,'unknown');assert.equal(state.goals[0].threadId,'saved-original-thread');assert.equal(h.state.opsManager.hasActiveWork(),true);}finally{clearTimeout(timer);release();h||=await pending;if(h?.state.opsManager)await h.state.opsManager.reconnect(h.state.opsManager.snapshot().goals[0].id);}
+});
+
+function controlledOpsSessions(){const sessions=new Map();return {sessions,create:options=>{const threadId='thread-'+options.goalId,turnId='turn-'+options.goalId;let state='running';sessions.set(options.goalId,{options,threadId,turnId});return {start:async()=>{await options.onEvent({type:'thread',threadId});await options.onEvent({type:'turn.started',threadId,turnId});return {delivery:'accepted',state:'running',threadId,turnId};},interrupt:async()=>{state='idle';await options.onEvent({type:'turn.completed',threadId,turnId,status:'interrupted',backgroundState:'empty',backgroundCount:0});return {confirmed:true,state:'idle',threadId,turnId};},reconcile:async()=>({delivery:'accepted',state,threadId,turnId,backgroundState:state==='idle'?'empty':'unknown',backgroundCount:state==='idle'?0:null,...(state==='idle'?{outcome:'interrupted'}:{})}),close:async()=>{}};}};}
+async function mainQaGoal(h,name){const project=await seed(h),workPath=path.join(h.root,name);fs.mkdirSync(workPath);await h.success('service.save',{id:project.service.id,kind:'local',rootPath:workPath,agentWorkPath:''});const saved=await h.ops('saveGoal',{name,description:'',prompt:'Inspect this registered project.',projectId:project.project.id,serviceId:project.service.id,workPath:''}),id=saved.goals.at(-1).id;await h.ops('goalAction',{goalId:id,action:'start'});await h.state.opsManager.pumpAll();assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===id).executionState,'running',h.state.opsManager.snapshot().goals.find(g=>g.id===id).lastError);return {id,...project};}
+const qaCall=(sessions,id,name,args,callId)=>{const session=sessions.get(id);return session.options.tools.find(tool=>tool.name===name).execute(args,{callId,threadId:session.threadId,turnId:session.turnId});};
+async function qaRefused(operation,code){const result=await operation;assert.equal(result.success,false);assert.equal(JSON.parse(result.text).error.code,code);return result;}
+
+test('Ops QA tools bind two original projects and pause fences queued input while retaining the other lease',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-main-A'),b=await mainQaGoal(h,'QA-main-B');const openedA=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'open-A'),openedB=await qaCall(fixture.sessions,b.id,'ops_qa_open',{},'open-B');assert.equal(openedA.success,true,openedA.text);assert.equal(openedB.success,true,openedB.text);const bindingA=JSON.parse(openedA.text),bindingB=JSON.parse(openedB.text);assert.equal(bindingA.projectId,a.project.id);assert.equal(bindingB.projectId,b.project.id);assert.notEqual(bindingA.clientId,bindingB.clientId);assert.notEqual(bindingA.sessionId,bindingB.sessionId);assert.notEqual(bindingA.windowId,bindingB.windowId);
+ await qaRefused(qaCall(fixture.sessions,a.id,'ops_qa_open',{projectId:b.project.id},'foreign-project'),'INVALID_REQUEST');
+ const record=h.state.qaOptions.getWindow(bindingA.windowId),commands=[];let release;const gate=new Promise(r=>release=r);record.host.webContents.debugger={isAttached:()=>true,sendCommand:async(method,params)=>{commands.push({method,params});return {};}};record.browsers={automationTargets:()=>[{browserId:'held-surface',contents:record.host.webContents,ready:gate}],closeAll(){},async flush(){}};
+ const input=qaCall(fixture.sessions,a.id,'ops_qa_type',{browserId:'held-surface',text:'Must not enter after pause'},'pending-A');await new Promise(setImmediate);assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===a.id).qaReceipts.at(-1).status,'prepared');const pause=h.ops('goalAction',{goalId:a.id,action:'pause'},h.event(h.state.primaryWindow));release();await qaRefused(input,'OPS_QA_RELEASE_UNCONFIRMED');await pause;assert.deepEqual(commands,[]);const goals=h.state.opsManager.snapshot().goals;assert.equal(goals.find(g=>g.id===a.id).qaBinding.state,'released');assert.equal(goals.find(g=>g.id===a.id).qaReceipts.at(-1).status,'unknown');assert.equal(goals.find(g=>g.id===b.id).qaBinding.state,'attached');assert.equal(h.state.qaOptions.getWindow(bindingB.windowId).qaActive,true);
+});
+
+test('Ops QA input revalidates committed project birth after readiness waits and folder goals cannot acquire QA',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-birth-target'),opened=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'open-birth');assert.equal(opened.success,true,opened.text);const binding=JSON.parse(opened.text),record=h.state.qaOptions.getWindow(binding.windowId),commands=[];let release;const gate=new Promise(r=>release=r);record.host.webContents.debugger={isAttached:()=>true,sendCommand:async(method,params)=>{commands.push({method,params});return {};}};record.browsers={automationTargets:()=>[{browserId:'birth-surface',contents:record.host.webContents,ready:gate}],closeAll(){},async flush(){}};
+ const input=qaCall(fixture.sessions,a.id,'ops_qa_type',{browserId:'birth-surface',text:'Must not enter replacement project'},'pending-birth');await new Promise(setImmediate);h.state.liveStore.importData(h.state.liveStore.exportData());release();await qaRefused(input,'OPS_QA_PROJECT_CHANGED');assert.deepEqual(commands,[]);assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===a.id).qaReceipts.at(-1).status,'unknown');
+ fs.mkdirSync(path.join(h.root,'QA-folder'));const folder=await h.ops('saveGoal',{name:'Folder QA unavailable',description:'',prompt:'Inspect folder only.',workPath:path.join(h.root,'QA-folder')},h.event(h.state.primaryWindow)),id=folder.goals.at(-1).id;await h.ops('goalAction',{goalId:id,action:'start'},h.event(h.state.primaryWindow));await h.state.opsManager.pumpAll();await qaRefused(qaCall(fixture.sessions,id,'ops_qa_open',{},'folder-open'),'OPS_QA_SCOPE');assert.equal(h.state.opsManager.snapshot().goals.find(g=>g.id===id).qaBinding.state,'unavailable');
+});
+
+
+test('Ops paused cleanup proves its original lease absent without releasing a replacement client in that project',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-original-cleanup'),opened=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'original-open');assert.equal(opened.success,true,opened.text);const original=JSON.parse(opened.text),originalRequest={sessionId:original.sessionId,projectId:original.projectId,windowId:original.windowId};await h.state.qaApi.handle('release',originalRequest);const replacement=await h.state.qaApi.handle('open',{projectId:a.project.id,clientId:'replacement-qa-client'});
+ await h.ops('goalAction',{goalId:a.id,action:'pause'},h.event(h.state.primaryWindow));const goal=h.state.opsManager.snapshot().goals.find(g=>g.id===a.id);assert.equal(goal.status,'paused');assert.equal(goal.executionState,'idle');assert.equal(goal.qaBinding.state,'released');assert.equal(h.state.qaApi.leaseStatus(replacement).leaseState,'attached');assert.equal(h.state.qaOptions.getWindow(replacement.windowId).qaActive,true);
 });
