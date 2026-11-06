@@ -5,13 +5,14 @@ const id = (value, label) => { if(typeof value!=='string'||!/^[a-zA-Z0-9_-]{1,12
 const number = (value, label, max=100000) => { if(!Number.isFinite(value)||Math.abs(value)>max)fail(`${label}가 올바르지 않습니다.`);return value; };
 const DOCUMENT_CONTRACT='observed-web-document-v1';
 const documentId=value=>typeof value==='string'&&/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value);
-function documentRequest(payload){
+function documentRequest(payload,allowHost=false){
   const fields={state:[],capture:[],click:['x','y','button','clickCount'],type:['text'],key:['key','modifiers'],scroll:['x','y','deltaX','deltaY']};
   if(!Object.hasOwn(fields,payload.operation))fail('Choose a supported document operation.');
   const input=!['state','capture'].includes(payload.operation),allowed=['sessionId','projectId','windowId','browserId','operation',...fields[payload.operation],...(input?['documentId']:[])];
   if(Object.keys(payload).some(key=>!allowed.includes(key)))fail('Unexpected document operation field.');
   const value={operation:payload.operation};
-  for(const key of ['sessionId','projectId','windowId','browserId'])value[key]=id(payload[key],key);
+  for(const key of ['sessionId','projectId','windowId'])value[key]=id(payload[key],key);
+  if(payload.browserId!==undefined)value.browserId=id(payload.browserId,'browserId');else if(!allowHost)fail('Select an existing web surface.');
   if(input){if(!documentId(payload.documentId))fail('Use the documentId returned by a document observation.');value.documentId=payload.documentId;}
   for(const key of fields[value.operation])if(Object.hasOwn(payload,key))value[key]=payload[key];
   if(['click','scroll'].includes(value.operation)){
@@ -83,9 +84,9 @@ async function capture(record,contents,browserId,nativeImage,guard=()=>{}) {
   guard();const viewport=await contents.executeJavaScript('({width:innerWidth,height:innerHeight})');guard();
   return {mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
 }
-function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiveChange=()=>{},now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
+function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiveChange=()=>{},onControllerChange=()=>{},captureControllerTarget,appInstanceId=crypto.randomUUID(),now=Date.now,sessionTimeoutMs=30*60*1000,operationTimeoutMs=20000}) {
   const sessions=new Map(),projects=new Map(),quarantined=new Set(),documents=new Map();
-  let closed=false;
+  let closed=false;const controllerAccess=Symbol('private controller lease');let controllers;
   const expiry=setInterval(()=>{if(!closed)prune();},Math.max(1,Math.min(sessionTimeoutMs,60000)));expiry.unref?.();
   const binding=session=>({sessionId:session.id,projectId:session.projectId,windowId:session.windowId,clientId:session.clientId});
   function forget(session){const record=session.windowId&&getWindow(session.windowId);if(record){onActiveChange(record,quarantined.has(record.id));record.qaActive=quarantined.has(record.id);}sessions.delete(session.id);if(projects.get(session.projectId)===session)projects.delete(session.projectId);}
@@ -138,7 +139,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     const session=sessions.get(payload.sessionId),leaseState=closed?'unknown':!session?'absent':keys.every(key=>(key==='sessionId'?session.id:session[key])===payload[key])?'attached':'unknown';
     return {...payload,leaseState};
   }
-  async function open(payload,guard){
+  async function open(payload,guard,access){
     guard();
     const projectId=id(payload.projectId,'프로젝트 ID'),clientId=id(payload.clientId,'클라이언트 ID');
     if(payload.reviewId!==undefined)id(payload.reviewId,'리뷰 ID');
@@ -147,13 +148,14 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     if([...quarantined].some(windowId=>getWindow(windowId)?.projectId===projectId))fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
     let session=projects.get(projectId);
     if(session){
+      if(session.controllerOwned&&access!==controllerAccess)fail('Use the original controller proof.','QA_CONTROLLER_PROOF_REQUIRED');
       if(session.clientId!==clientId)fail('다른 QA가 이 프로젝트 창에 연결되어 있습니다. 연결을 해제한 뒤 다시 시도하십시오.','PROJECT_BUSY');
       await session.opening;guard();check(session,{projectId,windowId:session.windowId});
       if(payload.reviewId!==undefined&&payload.reviewId!==session.reviewId)fail('연결된 QA의 리뷰가 다릅니다. 연결을 해제한 뒤 대상 리뷰로 다시 연결하십시오.','REVIEW_MISMATCH');
       return binding(session);
     }
     if(sessions.size>=64)fail('QA 연결이 많습니다. 사용하지 않는 연결을 해제하십시오.','SESSION_LIMIT');
-    session={id:crypto.randomUUID(),projectId,clientId,reviewId:payload.reviewId||'',windowId:null,touched:now(),queue:Promise.resolve(),active:1};
+    session={id:crypto.randomUUID(),projectId,clientId,reviewId:payload.reviewId||'',windowId:null,touched:now(),queue:Promise.resolve(),active:1,...(access===controllerAccess?{controllerOwned:true}:{})};
     sessions.set(session.id,session);projects.set(projectId,session);
     session.opening=(async()=>{
       try{guard();const record=await openWindow(payload,guard);guard();if(!record||record.projectId!==projectId||record.host.isDestroyed())fail('연결할 프로젝트 창이 닫혔습니다.','TARGET_CLOSED');if(closed)fail('QA 연결이 종료되었습니다.','CLOSED');session.windowId=record.id;onActiveChange(record,true);record.qaActive=true;session.touched=now();return binding(session);}
@@ -174,19 +176,23 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     for(const [event,listener]of listeners)contents.on(event,listener);
     documents.set(contents,state);return state;
   }
-  function documentTarget(payload,session){
-    const record=check(session,payload),target=record.browsers?.automationTargets().find(item=>item.browserId===payload.browserId);
+  function documentSurface(record,payload,allowHost){
+    if(payload.browserId)return record.browsers?.automationTargets().find(item=>item.browserId===payload.browserId);
+    if(allowHost)return {contents:record.host.webContents,documentReady:true};
+  }
+  function documentTarget(payload,session,allowHost=false){
+    const record=check(session,payload),target=documentSurface(record,payload,allowHost);
     if(!target)fail('Select an existing web surface in this project.','TARGET_MISMATCH');
     const state=watchDocument(target.contents),scope=[payload.projectId,payload.windowId,payload.browserId].join('\0');
     if(!state.tokens.has(scope))state.tokens.set(scope,crypto.randomUUID());
-    const entry={record,contents:target.contents,state,scope,generation:state.id,id:state.tokens.get(scope),ready:target.ready,scale:target.inputScale||target.contents.getZoomFactor?.()||1};
+    const entry={record,allowHost,contents:target.contents,state,scope,generation:state.id,id:state.tokens.get(scope),ready:target.ready,scale:target.inputScale||target.contents.getZoomFactor?.()||1};
     if(payload.documentId!==undefined&&payload.documentId!==entry.id)fail('The observed document changed before input. Read this same surface again.','QA_DOCUMENT_STALE');
     assertDocument(payload,session,entry);return entry;
   }
   function assertDocument(payload,session,entry){
     if(closed||sessions.get(session.id)!==session)fail('The QA session is no longer attached.','SESSION_EXPIRED');
     if(session.failed)fail('This QA window is quarantined. Close and reopen it before further QA.','QA_TARGET_UNAVAILABLE');
-    const record=check(session,payload),target=record.browsers?.automationTargets().find(item=>item.browserId===payload.browserId);
+    const record=check(session,payload),target=documentSurface(record,payload,entry.allowHost);
     if(record!==entry.record||!target||target.contents!==entry.contents||entry.state.dead||entry.state.id!==entry.generation||entry.state.tokens.get(entry.scope)!==entry.id||payload.documentId!==undefined&&payload.documentId!==entry.id)fail('The observed document changed before input. Read this same surface again.','QA_DOCUMENT_STALE');
     if(target.documentReady!==true||entry.state.crashed||entry.contents.isDestroyed()||entry.contents.isCrashed?.()||entry.contents.isLoadingMainFrame())fail('The selected web document is not ready. Observe it after loading or recovery.','QA_DOCUMENT_NOT_READY');
     if(target.ready!==entry.ready||(target.inputScale||entry.contents.getZoomFactor?.()||1)!==entry.scale)fail('The selected web surface changed readiness or scale. Observe it again.','QA_DOCUMENT_NOT_READY');
@@ -222,14 +228,18 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     };
     try{
       fence();if(entry.ready){await entry.ready;fence();}
-      const metadata={...binding(session),browserId:payload.browserId,contract:DOCUMENT_CONTRACT,documentId:entry.id};
+      const metadata={...binding(session),...(payload.browserId?{browserId:payload.browserId}:{}),contract:DOCUMENT_CONTRACT,documentId:entry.id};
       if(payload.operation==='state'){
         const value=await entry.contents.executeJavaScript(snapshotScript);fence();result={...value,...metadata};
+        if(!payload.browserId)result.browsers=(entry.record.browsers?.automationTargets()||[]).map(({browserId,url,title,visible,bounds,clip})=>{const zoom=entry.record.host.webContents.getZoomFactor?.()||1,css=rect=>rect&&Object.fromEntries(Object.entries(rect).map(([key,value])=>[key,value/zoom]));return {browserId,url,title,visible,bounds:css(bounds)||null,clip:css(clip)||null};});
       }else if(payload.operation==='capture'){
-        const image=await entry.contents.capturePage(undefined,{stayHidden:true,stayAwake:true});fence();
-        if(image.isEmpty())fail('The selected document could not be captured.','CAPTURE_FAILED');
-        const png=image.toPNG(),viewport=await entry.contents.executeJavaScript('({width:innerWidth,height:innerHeight})');fence();
-        result={...metadata,mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
+        if(!payload.browserId)result={...metadata,...await capture(entry.record,entry.contents,undefined,nativeImage,fence)};
+        else {
+          const image=await entry.contents.capturePage(undefined,{stayHidden:true,stayAwake:true});fence();
+          if(image.isEmpty())fail('The selected document could not be captured.','CAPTURE_FAILED');
+          const png=image.toPNG(),viewport=await entry.contents.executeJavaScript('({width:innerWidth,height:innerHeight})');fence();
+          result={...metadata,mimeType:'image/png',data:png.toString('base64'),width:png.readUInt32BE(16),height:png.readUInt32BE(20),viewport,imageToCss:{scaleX:viewport.width/png.readUInt32BE(16),scaleY:viewport.height/png.readUInt32BE(20)},capturedAt:new Date().toISOString()};
+        }
       }else{
         const x=payload.x*entry.scale,y=payload.y*entry.scale;
         if(payload.operation==='type')await send('Input.insertText',{text:payload.text});
@@ -352,17 +362,18 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     }else fail('지원하지 않는 QA 요청입니다.','UNKNOWN_ACTION');
     return {...metadata,applied:true};
   }
-  function handle(action,payload={},guard=()=>{}){
+  function handle(action,payload={},guard=()=>{},access){
     if(typeof guard!=='function')fail('Invalid trusted QA guard.');guard();
     if(closed)return Promise.reject(Object.assign(new Error('QA 연결이 종료되었습니다.'),{code:'CLOSED'}));
     if(!payload||typeof payload!=='object'||Array.isArray(payload))fail('JSON 객체로 요청하십시오.');
     action=action.replace(/^automation\.qa\./,'');
-    if(action==='open')return open(payload,guard);
+    if(action==='controller')return controllerManager().handle(payload,guard);
+    if(action==='open')return open(payload,guard,access);
     id(payload.sessionId,'QA 세션 ID');id(payload.projectId,'프로젝트 ID');id(payload.windowId,'창 ID');
-    const session=sessions.get(payload.sessionId);check(session,payload);
+    const session=sessions.get(payload.sessionId);if(session?.controllerOwned&&access!==controllerAccess)fail('Use the original controller proof.','QA_CONTROLLER_PROOF_REQUIRED');check(session,payload);
     if(session.failed&&action!=='release')fail('응답이 중단된 프로젝트 창을 닫고 다시 연결하십시오.','QA_TARGET_UNAVAILABLE');
     let documentEntry;
-    if(action==='document'){payload=documentRequest(payload);documentEntry=documentTarget(payload,session);}
+    if(action==='document'){payload=documentRequest(payload,access===controllerAccess);documentEntry=documentTarget(payload,session,access===controllerAccess);}
     // Serialize only operations on the same project. Different windows never
     // wait for one another's input, capture, navigation, or page loading.
     session.active++;
@@ -377,6 +388,7 @@ function createQaAutomation({getProject,getWindow,openWindow,nativeImage,onActiv
     session.queue=result.catch(()=>{});
     return result.finally(()=>{session.active--;session.touched=now();});
   }
-  return {handle,connectionStatus,leaseStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
+  function controllerManager(){return controllers ||= require('./qa-controllers.cjs').createQaControllers({appInstanceId,now,sessionTimeoutMs,qa:(action,payload,guard)=>handle(action,payload,guard,controllerAccess),status:connectionStatus,leaseStatus,captureTarget:captureControllerTarget||(({projectId})=>()=>{if(!getProject(projectId))fail('The original QA project changed.','QA_CONTROLLER_STALE');}),onPublicChange:onControllerChange});}
+  return {handle,connectionStatus,leaseStatus,capabilities(){return {protocolVersion:1,actions:['open','state','click','type','key','scroll','capture','navigate','reload','close','release'],bindingFields:['sessionId','projectId','windowId'],optionalBrowserId:true,documentGeneration:false};},close(){closed=true;controllers?.close();clearInterval(expiry);for(const state of documents.values())state.detach();documents.clear();for(const session of sessions.values())forget(session);sessions.clear();projects.clear();quarantined.clear();}};
 }
 module.exports={createQaAutomation,waitForLoad};

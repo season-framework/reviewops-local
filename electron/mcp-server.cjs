@@ -7,7 +7,7 @@ const os = require('node:os');
 const net = require('node:net');
 const crypto = require('node:crypto');
 const discovery = require('./instance-discovery.cjs');
-const { dataTools, validate, schema, ID, string } = require('./automation-api.cjs');
+const { dataTools, validate, schema, ID, string, qaControllerSchema, validateQaControllerArguments } = require('./automation-api.cjs');
 
 const MAX_INPUT = 512 * 1024, MAX_RESPONSE = 32 * 1024 * 1024, MAX_CONNECTION_INFO = 16 * 1024, MAX_QA_CONNECTION_STATUS = 2048;
 const versions = ['2025-11-25','2025-06-18','2025-03-26','2024-11-05'];
@@ -34,7 +34,8 @@ const qaConnectionTool = { name: 'reviewops_qa_connection_status', action: 'conn
 const documentOperations=['state','capture','click','type','key','scroll'];
 const documentFields=Object.assign({},...qaTools.filter(tool=>documentOperations.includes(tool.action.slice('automation.qa.'.length))).map(tool=>tool.inputSchema.properties));
 const documentTool={name:'reviewops_qa_document',action:'automation.qa.document',description:'Opt in to observed-web-document-v1 for one browserId. First request operation state or capture and retain its app-issued documentId; click/type/key/scroll require that exact ID. A stale observation is refused. If input may have started, observe again and never automatically replay. This does not reconnect a controller or clear timeout quarantine. Main host/composite captures are unsupported.',inputSchema:schema({...documentFields,operation:{type:'string',enum:documentOperations},documentId:{type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'},key:{...string(30),minLength:1}},[...required,'browserId','operation']),annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}};
-const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool,documentTool];
+const controllerTool={name:'reviewops_qa_controller',action:'automation.qa.controller',description:'Opt in to logical-qa-controller-v1. Open creates an app-issued controller proof for this exact project/review; retain appInstanceId/controllerId/controllerProof. Other operations require that proof. Status does not renew or reconnect. Detach/reconnect/release affect only this controller and never restart or refresh the shared MCP. Physical MCP EOF does not release these opt-in leases; app expiry still applies. After reconnect or navigation, observe this same host/browser with state or capture and use its observationId before input. Never automatically replay uncertain input or fall back to another surface, legacy QA, system input or app restart. Labels and MCP client names are not ownership.',inputSchema:qaControllerSchema,annotations:{readOnlyHint:false,destructiveHint:false,openWorldHint:true}};
+const tools = [...dataTools, ...qaTools, connectionTool, qaConnectionTool,documentTool,controllerTool];
 const error = (message, code = 'CLIENT_ERROR') => Object.assign(new Error(message), { code });
 function documentArguments(args){
   const {operation,documentId,...fields}=args,tool=qaTools.find(tool=>tool.action==='automation.qa.'+operation);
@@ -44,6 +45,30 @@ function documentArguments(args){
 }
 function documentResult(value,args){
   if(!value||value.contract!=='observed-web-document-v1'||!/^([a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12})$/.test(value.documentId||'')||['sessionId','projectId','windowId','browserId'].some(key=>value[key]!==args[key])||args.documentId!==undefined&&value.documentId!==args.documentId)throw error('The app did not confirm the selected document contract. No legacy input will be substituted.','QA_DOCUMENT_UNSUPPORTED');
+  return value;
+}
+function controllerResult(value,args){
+  const invalid=()=>{throw error('The app did not confirm this exact logical controller operation. No legacy action was substituted or retried.','INVALID_QA_CONTROLLER_RESULT');};
+  const uuid={type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'},proof={type:'string',pattern:'^[A-Za-z0-9_-]{43}$'};
+  const base={contract:{type:'string',enum:['logical-qa-controller-v1']},operation:{type:'string',enum:[args.operation]},appInstanceId:uuid,controllerId:uuid,projectId:ID,reviewId:string(128),state:{type:'string',enum:['attached','detached','released','unknown']},generation:{type:'integer',minimum:1},expiresAt:string(40),sessionId:{},windowId:{},clientId:{}};
+  const metadata={status:['availability','bindingState'],state:['browserId','observationId','url','title','text','elements','viewport','browsers'],capture:['browserId','observationId','mimeType','data','width','height','viewport','imageToCss','capturedAt'],click:['browserId','observationId','applied'],type:['browserId','observationId','applied'],key:['browserId','observationId','applied'],scroll:['browserId','observationId','applied'],navigate:['browserId','url'],reload:['browserId','reloaded']}[args.operation]||[];
+  const properties={...base,...Object.fromEntries(metadata.map(key=>[key,{}])),...(args.operation==='open'?{controllerProof:proof}:{})};
+  try{
+    validate(schema(properties,[...Object.keys(base),...(args.operation==='open'?['controllerProof']:[])]),value);
+    if(value.projectId!==args.projectId||args.operation==='open'&&value.reviewId!==(args.reviewId||'')||args.operation!=='open'&&(value.appInstanceId!==args.appInstanceId||value.controllerId!==args.controllerId))invalid();
+    if(value.reviewId!=='')validate(ID,value.reviewId);
+    if(!Number.isFinite(Date.parse(value.expiresAt))||new Date(value.expiresAt).toISOString()!==value.expiresAt)invalid();
+    if(args.operation==='status'){validate({type:'string',enum:['available','busy','quarantined','unavailable']},value.availability);validate({type:'string',enum:['not_supplied','attached','expired','target_closed','timed_out','unavailable']},value.bindingState);}
+    for(const key of ['sessionId','windowId','clientId'])if(value[key]!==null)validate(ID,value[key]);
+    const state={open:'attached',detach:'detached',reconnect:'attached',release:'released'}[args.operation]||(args.operation==='status'?null:'attached');if(state&&value.state!==state)invalid();
+    if(value.state==='attached'&&['sessionId','windowId','clientId'].some(key=>value[key]===null))invalid();
+    if(Object.hasOwn(value,'browserId')){validate(ID,value.browserId);if(value.browserId!==args.browserId)invalid();}else if(args.browserId!==undefined)invalid();
+    if(['state','capture'].includes(args.operation))validate(uuid,value.observationId);
+    else if(Object.hasOwn(value,'observationId')){validate(uuid,value.observationId);if(value.observationId!==args.observationId)invalid();}
+    if(['click','type','key','scroll'].includes(args.operation)&&value.applied!==true||args.operation==='reload'&&value.reloaded!==true)invalid();
+    if(args.operation==='capture'&&(value.mimeType!=='image/png'||typeof value.data!=='string'||!Number.isSafeInteger(value.width)||value.width<1||!Number.isSafeInteger(value.height)||value.height<1))invalid();
+    if(Buffer.byteLength(JSON.stringify(value))>MAX_RESPONSE)invalid();
+  }catch{invalid();}
   return value;
 }
 function connectionInfoResult(value, selection, projectId) {
@@ -229,6 +254,7 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
           const args = params.arguments === undefined ? {} : params.arguments;
           validate(tool.inputSchema,args);
           if(tool.action==='automation.qa.document')documentArguments(args);
+          if(tool.action==='automation.qa.controller')validateQaControllerArguments(args);
           if (projectId && args.projectId !== undefined && args.projectId !== projectId) throw error('This MCP connection is bound to another project.', 'TARGET_MISMATCH');
           let invocation=args,bindingSource;
           if(tool.action==='connection.qa.status'){
@@ -246,11 +272,13 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
             if (tool.action === 'connection.info' && failure.code === 'UNKNOWN_ACTION') throw error('The connected app does not report connection identity or capabilities. Check the configured app and MCP paths; no project connection was changed.', 'CONNECTION_INFO_UNSUPPORTED');
             if (tool.action === 'connection.qa.status' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not provide QA connection status. Inspect reviewops_connection_info; no QA connection was changed.','QA_CONNECTION_STATUS_UNSUPPORTED');
             if (tool.action === 'automation.qa.document' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not support observed-web-document-v1. No legacy input was substituted or retried.','QA_DOCUMENT_UNSUPPORTED');
+            if (tool.action === 'automation.qa.controller' && failure.code === 'UNKNOWN_ACTION') throw error('The selected app does not support logical-qa-controller-v1. Check the selected app/tool connection; no controller, shared MCP or legacy QA action was changed.','QA_CONTROLLER_UNSUPPORTED');
             throw failure;
           }
           if (tool.action === 'connection.info') value = connectionInfoResult(value, connectionSelection, projectId);
           if (tool.action === 'connection.qa.status') value = qaConnectionStatusResult(value,args.projectId,bindingSource,projectId);
           if (tool.action === 'automation.qa.document') value = documentResult(value,args);
+          if (tool.action === 'automation.qa.controller') value = controllerResult(value,args);
           if (tool.action === 'automation.projects.list' && projectId) value = { ...value, projects: value.projects.filter(project => (project.projectId || project.id) === projectId) };
           if (tool.action === 'automation.qa.open' && value?.sessionId) {
             const binding = { sessionId: value.sessionId, projectId: value.projectId, windowId: value.windowId };
@@ -285,7 +313,8 @@ function createMcpServer({ invoke, projectId, connectionSelection, input = proce
   function close() {
     if (closePromise) return closePromise;
     closing = true; input.off('data',onData); input.pause();
-    // A disconnected client relinquishes its QA windows; active work is retained.
+    // Legacy sessions relinquish their QA leases on physical disconnect. Opt-in
+    // logical controllers are app-owned, proof-bound and bounded by app expiry.
     closePromise = Promise.allSettled([...sessions.values()].map(binding => Promise.race([Promise.resolve().then(() => invoke('automation.qa.release',binding)), new Promise(resolve => { const timer = setTimeout(resolve,1000); timer.unref?.(); })]))).then(() => { sessions.clear(); });
     return closePromise;
   }
@@ -312,5 +341,5 @@ function main(args = process.argv.slice(2)) {
   process.stdout.on('error',stop);
   return server;
 }
-module.exports = { createMcpServer, invokeSocket, createConnectionInvoker, options, toolResult, tools, qaTools, documentTool, connectionInfoResult, main };
+module.exports = { createMcpServer, invokeSocket, createConnectionInvoker, options, toolResult, tools, qaTools, documentTool, controllerTool, controllerResult, connectionInfoResult, main };
 if (require.main === module) { try { main(); } catch (failure) { process.stderr.write(String(failure.message) + '\n'); process.exitCode = 1; } }
