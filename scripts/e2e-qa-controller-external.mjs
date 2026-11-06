@@ -75,21 +75,23 @@ const ipc = (page, action, payload = {}) => page.evaluate(({action, payload}) =>
 let app, main, appClosed, webServer, sshServer, tapServer, admin, draftA, aHeartbeat, failure, phase = 'admission', originalInventory;
 const chats = {}, terminalIds = [], sshConnections = new Set(), sshChildren = new Set();
 const tapToken = randomBytes(32).toString('base64url'), tapPath = path.join(owned, 'chat-tap.sock'), tapWrapper = path.join(owned, 'mcp-tap.cjs');
-const protocolPending = new Map(), physicalMcp = new Map();
+const protocolPending = new Map(), physicalMcp = new Map(), lifecycleDirectory = path.join(owned, 'mcp-lifecycle');
+fs.mkdirSync(lifecycleDirectory, {mode: 0o700});
 
-function observeMcp(key, message, direction) {
+function observeMcp(key, message, direction, transportPID) {
   if (direction === 'client' && message.method === 'tools/call') {
     const args = message.params?.arguments;
     assert.equal(message.params?.name, 'reviewops_qa_controller', 'The genuine chat attempted an unapproved MCP tool.');
     assert.equal(args?.projectId, projects[key].id, 'The genuine chat attempted another project.');
     if (args.operation === 'open') assert.equal(args.reviewId, reviews[key].id);
-    protocolPending.set(key + ':' + message.id, {operation: args.operation, args, at: new Date().toISOString()});
+    const transport = physicalMcp.get(transportPID);assert.ok(transport);transport.modelToolCalls++;
+    protocolPending.set(transportPID + ':' + message.id, {key, operation: args.operation, args, at: new Date().toISOString()});
   }
   if (direction !== 'server' || !Object.hasOwn(message, 'id')) return;
-  const request = protocolPending.get(key + ':' + message.id);if (!request) return;protocolPending.delete(key + ':' + message.id);
+  const request = protocolPending.get(transportPID + ':' + message.id);if (!request) return;protocolPending.delete(transportPID + ':' + message.id);
   const reply = message.result, text = reply?.content?.find(item => item.type === 'text')?.text;
   let value;try {value = reply.structuredContent ?? JSON.parse(text);} catch {throw new Error('Invalid actual MCP response.');}
-  const call = {key, operation: request.operation, at: request.at, completedAt: new Date().toISOString(), isError: Boolean(reply.isError), code: reply.isError ? value.code : null};
+  const call = {key, transportPID, operation: request.operation, at: request.at, completedAt: new Date().toISOString(), isError: Boolean(reply.isError), code: reply.isError ? value.code : null};
   if (!reply.isError) {
     assert.equal(value.projectId, projects[key].id);assert.equal(value.reviewId, reviews[key].id);call.binding = fixedBinding(value);
     if (request.operation === 'open') {assert.ok(!controllers[key]);assert.match(value.controllerProof, /^[A-Za-z0-9_-]{43}$/);controllers[key] = value;}
@@ -109,21 +111,53 @@ async function startTap() {
     pending += chunk;if (pending.length > 48 * 1024 ** 2) {failure ||= new Error('Owned tap packet exceeded its bound.');socket.end();return;}
     let offset;while ((offset = pending.indexOf('\n')) >= 0) {const line = pending.slice(0, offset);pending = pending.slice(offset + 1);try {
       const packet = JSON.parse(line);assert.equal(packet.token, tapToken);assert.ok(['A', 'B'].includes(packet.key));
-      if (packet.kind === 'start') {physicalMcp.set(packet.pid, {key: packet.key, wrapperPID: packet.pid, parentPID: packet.ppid, childPID: packet.childPID, exit: null});}
+      if (packet.kind === 'start') {physicalMcp.set(packet.pid, {key: packet.key, wrapperPID: packet.pid, parentPID: packet.ppid, childPID: packet.childPID, exit: null, wrapperExit: null, shutdownRequests: [], modelToolCalls: 0});}
       else if (packet.kind === 'close') {const record = physicalMcp.get(packet.pid);assert.ok(record);record.exit = {code: packet.code, signal: packet.signal};}
-      else observeMcp(packet.key, packet.message, packet.direction);
+      else if (packet.kind === 'shutdown-request') {const record = physicalMcp.get(packet.pid);assert.ok(record);record.shutdownRequests.push({reason: packet.reason, at: packet.at});}
+      else observeMcp(packet.key, packet.message, packet.direction, packet.pid);
     } catch {failure ||= Object.assign(new Error('The actual MCP tap failed its fixed boundary.'), {code: 'MCP_TAP_REFUSED'});}}
   });});
   await new Promise((resolve, reject) => {tapServer.once('error', reject);tapServer.listen(tapPath, resolve);});fs.chmodSync(tapPath, 0o600);
   fs.writeFileSync(tapWrapper, String.raw`'use strict';
-const net=require('node:net'),{spawn}=require('node:child_process');
+const net=require('node:net'),fs=require('node:fs'),path=require('node:path'),{spawn}=require('node:child_process');
 const [key,entry,connection,project,review]=process.argv.slice(2),socket=net.createConnection(process.env.REVIEWOPS_CHAT_TAP);
-const token=process.env.REVIEWOPS_CHAT_TAP_TOKEN,child=spawn(process.execPath,[entry,'--connection',connection,'--project-id',project],{env:process.env,stdio:['pipe','pipe','pipe']});
-const emit=value=>socket.write(JSON.stringify({token,key,pid:process.pid,...value})+'\n');
-socket.on('error',()=>{process.exitCode=1;child.stdin.end();});socket.on('connect',()=>emit({kind:'start',ppid:process.ppid,childPID:child.pid}));
-function forward(input,output,direction){let pending='';input.on('data',chunk=>{pending+=chunk.toString('utf8');if(pending.length>40*1024*1024){process.exitCode=1;child.stdin.end();return;}let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);if(!line.trim())continue;let message;try{message=JSON.parse(line);}catch{process.exitCode=1;child.stdin.end();return;}const args=message.params?.arguments;if(direction==='client'&&message.method==='tools/call'&&(message.params?.name!=='reviewops_qa_controller'||args?.projectId!==project||(args.operation==='open'&&args.reviewId!==review))){process.exitCode=1;child.stdin.end();return;}emit({kind:'message',direction,message});output.write(line+'\n');}});}
-forward(process.stdin,child.stdin,'client');forward(child.stdout,process.stdout,'server');child.stderr.on('data',()=>{});process.stdin.on('end',()=>child.stdin.end());child.stdin.on('error',()=>{});child.on('error',()=>{process.exitCode=1;socket.end();});child.on('close',(code,signal)=>{emit({kind:'close',code,signal});socket.end();process.exitCode=code===0&&signal===null?0:1;});
+const token=process.env.REVIEWOPS_CHAT_TAP_TOKEN,journal=path.join(process.env.REVIEWOPS_CHAT_LIFECYCLE,String(process.pid)+'.jsonl');
+const child=spawn(process.execPath,[entry,'--connection',connection,'--project-id',project],{env:process.env,detached:true,stdio:['pipe','pipe','pipe']});let closing=false;
+const emit=value=>{const packet={key,pid:process.pid,at:new Date().toISOString(),...value};if(value.kind!=='message')fs.appendFileSync(journal,JSON.stringify(packet)+'\n',{mode:0o600});if(!socket.destroyed)socket.write(JSON.stringify({token,...packet})+'\n');};
+function stop(reason){emit({kind:'shutdown-request',reason});if(closing)return;closing=true;process.stdin.pause();child.stdin.end();}
+emit({kind:'start',ppid:process.ppid,childPID:child.pid});socket.on('error',()=>stop('observer-error'));
+process.on('SIGTERM',()=>stop('SIGTERM'));process.on('SIGINT',()=>stop('SIGINT'));process.stdin.on('end',()=>stop('stdin-EOF'));
+process.on('exit',code=>fs.appendFileSync(journal,JSON.stringify({key,pid:process.pid,kind:'wrapper-exit',code,at:new Date().toISOString()})+'\n',{mode:0o600}));
+function forward(input,output,direction){let pending='';input.on('data',chunk=>{pending+=chunk.toString('utf8');if(pending.length>40*1024*1024){process.exitCode=1;stop('protocol-bound');return;}let end;while((end=pending.indexOf('\n'))>=0){const line=pending.slice(0,end);pending=pending.slice(end+1);if(!line.trim())continue;let message;try{message=JSON.parse(line);}catch{process.exitCode=1;stop('protocol-json');return;}const args=message.params?.arguments;if(direction==='client'&&message.method==='tools/call'&&(message.params?.name!=='reviewops_qa_controller'||args?.projectId!==project||(args.operation==='open'&&args.reviewId!==review))){process.exitCode=1;stop('tool-scope-refused');return;}emit({kind:'message',direction,message});if(!closing||direction==='server')output.write(line+'\n');}});}
+forward(process.stdin,child.stdin,'client');forward(child.stdout,process.stdout,'server');child.stderr.on('data',()=>{});child.stdin.on('error',()=>{});child.on('error',()=>{process.exitCode=1;emit({kind:'child-error'});socket.end();});child.on('close',(code,signal)=>{emit({kind:'close',childPID:child.pid,code,signal});process.stdin.destroy();socket.end(()=>{process.exitCode=code===0&&signal===null?0:1;});});
 `, {mode: 0o700});
+}
+
+const pidExists = pid => {try {process.kill(pid, 0);return true;} catch (error) {if (error.code === 'ESRCH') return false;throw error;}};
+function sdkClosureSnapshot() {
+  const files = fs.readdirSync(lifecycleDirectory);assert.ok(files.length <= 32);
+  for (const name of files) {
+    assert.match(name, /^[1-9][0-9]*\.jsonl$/);const file = path.join(lifecycleDirectory, name), stat = fs.lstatSync(file);
+    assert.ok(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 32768);
+    const text = fs.readFileSync(file, 'utf8'), complete = text.slice(0, text.lastIndexOf('\n') + 1);
+    const events = complete.split('\n').filter(Boolean).map(line => JSON.parse(line));assert.ok(events.length <= 100);
+    for (const event of events) {
+      assert.ok(Number.isSafeInteger(event.pid) && event.pid > 0);assert.equal(name, event.pid + '.jsonl');assert.ok(['A', 'B'].includes(event.key));
+      let record = physicalMcp.get(event.pid);
+      if (!record && event.kind === 'start') {record = {key: event.key, wrapperPID: event.pid, parentPID: event.ppid, childPID: event.childPID, exit: null, wrapperExit: null, shutdownRequests: [], modelToolCalls: 0};physicalMcp.set(event.pid, record);}
+      if (!record) continue;
+      if (event.kind === 'close') record.exit = {code: event.code, signal: event.signal};
+      if (event.kind === 'wrapper-exit') record.wrapperExit = {code: event.code, receipt: 'Original wrapper process exit hook'};
+      if (event.kind === 'shutdown-request' && !record.shutdownRequests.some(row => row.reason === event.reason && row.at === event.at)) record.shutdownRequests.push({reason: event.reason, at: event.at});
+    }
+  }
+  return [...physicalMcp.values()].map(record => {
+    record.role = record.modelToolCalls > 0 ? 'actual-chat-tool-transport' : 'inventory-or-idle-no-tool-call';
+    record.wrapperAbsent = !pidExists(record.wrapperPID);record.childAbsent = Number.isSafeInteger(record.childPID) && record.childPID > 0 && !pidExists(record.childPID);
+    record.closureProof = record.wrapperAbsent && record.childAbsent ? 'Exact original PID absence' : 'Not confirmed closed';
+    record.childExitStatus = record.exit ? 'Observed original child exit receipt; shutdown intent recorded separately' : 'Natural exit status unconfirmed';
+    return record;
+  });
 }
 
 class DriverMcp {
@@ -228,7 +262,7 @@ process.stdout.write('OWNED_READY\n');process.stdin.setEncoding('utf8');process.
 class ExternalChat {
   constructor(key) {
     this.key = key;this.alias = 'owned_qa_' + key + '_' + randomBytes(4).toString('hex');this.active = null;this.items = new Map();this.finished = new Map();this.waiters = new Map();
-    this.rpc = new RpcClient({command: cli, args: ['app-server'], env: chatEnv, cwd: work[key], timeoutMs: 45000, clientInfo: {name: 'reviewops_owned_external_' + key, title: 'Owned external QA ' + key, version: '1'},
+    this.rpc = new RpcClient({command: cli, args: ['--disable', 'apps', '--disable', 'plugins', 'app-server'], env: chatEnv, cwd: work[key], timeoutMs: 45000, clientInfo: {name: 'reviewops_owned_external_' + key, title: 'Owned external QA ' + key, version: '1'},
       onServerRequest: () => {failure ||= Object.assign(new Error('An unapproved AppServer client request was refused.'), {code: 'EXTERNAL_APPROVAL_REFUSED'});throw failure;}});
     this.rpc.on('notification', (method, params) => {try {this.notification(method, params);} catch {failure ||= Object.assign(new Error('A genuine chat event crossed the fixed cohort boundary.'), {code: 'EXTERNAL_EVENT_REFUSED'});}});
   }
@@ -245,44 +279,77 @@ class ExternalChat {
     if (method === 'turn/completed') {const turn = params.turn;this.finished.set(turn.id, turn);if (this.active === turn.id) this.active = null;this.waiters.get(turn.id)?.(turn);}
   }
   async open() {
+    this.stage('appserver-initialize');
     const starting = this.rpc.start(), child = this.rpc.child;
     if (child) {
       this.record = {kind: 'genuine-external-appserver', key: this.key, pid: child.pid, exit: null};launches.push(this.record);
       this.closed = new Promise(resolve => child.once('close', (code, signal) => {this.record.exit = {code, signal};resolve(this.record.exit);}));
     }
     await starting;assert.ok(child && this.closed, 'Retain the original spawned AppServer before setup.');
+    this.stage('read-thread-configuration');
     const configured = await this.rpc.request('config/read', {includeLayers: false, cwd: work[this.key]});
     const inherited = configured.config?.mcp_servers ?? {};assert.ok(inherited && typeof inherited === 'object' && !Array.isArray(inherited));
-    const config = {'features.shell_tool': false, web_search: 'disabled'};
+    const config = {'features.shell_tool': false, 'features.apps': false, 'features.plugins': false, web_search: 'disabled'};
     for (const name of Object.keys(inherited)) {assert.match(name, /^[A-Za-z0-9_-]+$/, 'An inherited MCP alias cannot be safely overridden.');assert.notEqual(name, this.alias);config[`mcp_servers.${name}.enabled`] = false;}
     config[`mcp_servers.${this.alias}`] = {command: process.execPath, args: [tapWrapper, this.key, mcpEntry, path.join(data, 'integrations/tools.json'), projects[this.key].id, reviews[this.key].id],
-      env: {REVIEWOPS_CHAT_TAP: tapPath, REVIEWOPS_CHAT_TAP_TOKEN: tapToken}, enabled: true, required: true, enabled_tools: ['reviewops_qa_controller'], tools: {reviewops_qa_controller: {approval_mode: 'approve'}}, startup_timeout_sec: 30, tool_timeout_sec: 45};
+      env: {REVIEWOPS_CHAT_TAP: tapPath, REVIEWOPS_CHAT_TAP_TOKEN: tapToken, REVIEWOPS_CHAT_LIFECYCLE: lifecycleDirectory}, enabled: true, required: true, enabled_tools: ['reviewops_qa_controller'], tools: {reviewops_qa_controller: {approval_mode: 'approve'}}, startup_timeout_sec: 30, tool_timeout_sec: 45};
     // Overrides exist only on this thread. The selected CLI must prove their
     // actual effect through its original-thread inventory before any turn.
+    this.stage('thread-start');
     const started = await this.rpc.request('thread/start', {cwd: work[this.key], approvalPolicy: 'never', sandbox: 'read-only', ephemeral: true, historyMode: 'paginated', config});
     this.threadId = started.thread.id;assert.match(this.threadId, /^[A-Za-z0-9_-]+$/);this.record.threadId = this.threadId;
-    let cursor, pages = 0;const servers = [], cursors = new Set();
-    do {
-      const page = await this.rpc.request('mcpServerStatus/list', {threadId: this.threadId, detail: 'toolsAndAuthOnly', limit: 100, ...(cursor ? {cursor} : {})});
-      assert.ok(Array.isArray(page.data));servers.push(...page.data);assert.ok(++pages <= 20);assert.ok(page.nextCursor == null || typeof page.nextCursor === 'string');if (page.nextCursor) {assert.equal(cursors.has(page.nextCursor), false);cursors.add(page.nextCursor);}cursor = page.nextCursor;
-    } while (cursor);
+    this.stage('complete-inventory-isolation');
+    const servers = await this.statusSnapshot();
     assert.equal(new Set(servers.map(server => server.name)).size, servers.length);assert.equal(servers.filter(server => server.name === this.alias).length, 1);
     for (const other of servers.filter(server => server.name !== this.alias)) {
       assert.ok(Object.hasOwn(inherited, other.name), 'An unexpected plugin or inherited server remains on the genuine thread.');
       assert.equal(other.runtimeStatus, 'disabled');assert.deepEqual(Object.keys(other.tools || {}), []);assert.deepEqual(other.resources || [], []);assert.deepEqual(other.resourceTemplates || [], []);
     }
-    const server = servers.find(server => server.name === this.alias);assert.equal(server.runtimeStatus, 'connected');assert.equal(server.authStatus, 'unsupported');assert.equal(server.pluginId ?? null, null);assert.equal(server.httpOrigin ?? null, null);assert.equal(server.toolsError ?? null, null);assert.ok(server.tools && typeof server.tools === 'object' && !Array.isArray(server.tools));
-    assert.deepEqual(Object.keys(server.tools), ['reviewops_qa_controller']);const tools = Object.values(server.tools);assert.equal(tools[0].name, 'reviewops_qa_controller');
-    assert.deepEqual(tools[0].inputSchema, require(path.join(resources, 'mcp/automation-api.cjs')).qaControllerSchema);
-    result.threadIsolation ||= [];result.threadIsolation.push({key: this.key, threadId: this.threadId, alias: this.alias, disabledAliases: Object.keys(inherited).sort(), servers: [{name: server.name, toolNames: tools.map(tool => tool.name)}], checkedAt: new Date().toISOString()});
+    this.checkOwnServer(servers.find(server => server.name === this.alias), false);
+    // Full inventory intentionally creates an SDK-owned temporary MCP manager.
+    // Subsequent readiness reads address ONLY the original thread's alias.
+    const deadline = Date.now() + 30000;let ready = false;
+    this.stage('original-server-ready');
+    do {
+      const current = await this.statusSnapshot(this.alias);assert.equal(current.length, 1);assert.equal(current[0].name, this.alias);
+      this.checkOwnServer(current[0], false);
+      if (current[0].runtimeStatus === 'connected') {this.checkOwnServer(current[0], true);ready = true;break;}
+      await wait(250);
+    } while (Date.now() < deadline);
+    if (!ready) throw Object.assign(new Error('Original owned MCP startup did not finish.'), {code: 'OWNED_MCP_STARTUP_TIMEOUT'});
+    result.threadIsolation ||= [];result.threadIsolation.push({key: this.key, threadId: this.threadId, alias: this.alias, disabledAliases: Object.keys(inherited).sort(), processFeaturesDisabled: ['apps', 'plugins'], toolNames: ['reviewops_qa_controller'], checkedAt: new Date().toISOString()});
+    this.stage('ready-before-model');
   }
+  stage(name) {
+    this.setupStage = name;result.setupProgress ||= [];result.setupProgress.push({key: this.key, stage: name, at: new Date().toISOString()});
+  }
+  async statusSnapshot(serverName) {
+    let cursor, pages = 0;const servers = [], cursors = new Set();
+    do {
+      const page = await this.rpc.request('mcpServerStatus/list', {threadId: this.threadId, ...(serverName ? {serverName} : {}), detail: 'toolsAndAuthOnly', limit: 100, ...(cursor ? {cursor} : {})});
+      if (!Array.isArray(page.data)) {result.mcpInventory ||= [];result.mcpInventory.push({key: this.key, scope: serverName ? 'original-server' : 'complete-temporary-manager', malformed: true});}
+      assert.ok(Array.isArray(page.data));servers.push(...page.data);assert.ok(++pages <= 20);assert.ok(page.nextCursor == null || typeof page.nextCursor === 'string');if (page.nextCursor) {assert.equal(cursors.has(page.nextCursor), false);cursors.add(page.nextCursor);}cursor = page.nextCursor;
+    } while (cursor);
+    const publicName = value => typeof value === 'string' && /^[A-Za-z0-9_.-]{1,200}$/.test(value) ? value : 'INVALID_PUBLIC_NAME';
+    result.mcpInventory ||= [];result.mcpInventory.push({key: this.key, alias: this.alias, threadId: this.threadId, scope: serverName ? 'original-server' : 'complete-temporary-manager', at: new Date().toISOString(),
+      servers: servers.map(server => ({name: publicName(server.name), runtimeStatus: ['notStarted', 'starting', 'connected', 'authenticationRequired', 'failed', 'cancelled', 'disabled'].includes(server.runtimeStatus) ? server.runtimeStatus : 'unknown', authStatus: ['unknown', 'unsupported', 'notLoggedIn', 'bearerToken', 'oAuth'].includes(server.authStatus) ? server.authStatus : 'unknown', plugin: server.pluginId != null, httpOrigin: server.httpOrigin != null, toolsError: server.toolsError != null, toolCount: Object.keys(server.tools || {}).length, toolNames: Object.keys(server.tools || {}).slice(0, 1000).map(publicName)}))});
+    return servers;
+  }
+  checkOwnServer(server, requireReady) {
+    assert.ok(['notStarted', 'starting', 'connected'].includes(server.runtimeStatus));if (requireReady) assert.equal(server.runtimeStatus, 'connected');
+    assert.equal(server.authStatus, 'unsupported');assert.equal(server.pluginId ?? null, null);assert.equal(server.httpOrigin ?? null, null);assert.equal(server.toolsError ?? null, null);assert.ok(server.tools && typeof server.tools === 'object' && !Array.isArray(server.tools));
+    const names = Object.keys(server.tools);assert.ok(names.every(name => name === 'reviewops_qa_controller'));
+    if (requireReady || server.runtimeStatus === 'connected') assert.deepEqual(names, ['reviewops_qa_controller']);
+    if (names.length) {const tool = server.tools.reviewops_qa_controller;assert.equal(tool.name, 'reviewops_qa_controller');assert.deepEqual(tool.inputSchema, require(path.join(resources, 'mcp/automation-api.cjs')).qaControllerSchema);}
+  }
+
   async turn(label, text, visualWord) {
     assert.equal(this.active, null);assert.ok(!failure);const startCalls = modelCalls.length, startImages = images.length;
     const record = {key: this.key, label, threadId: this.threadId, startedAt: new Date().toISOString(), callStart: startCalls, imageStart: startImages};modelTurns.push(record);
     const accepted = await this.rpc.request('turn/start', {threadId: this.threadId, input: [{type: 'text', text, text_elements: []}]});const turnId = accepted.turn.id;record.turnId = turnId;
     const terminal = this.finished.get(turnId) || await bounded(new Promise(resolve => this.waiters.set(turnId, resolve)), 'Original genuine turn completion', 300000);this.waiters.delete(turnId);
     assert.equal(terminal.status, 'completed', 'The original genuine turn did not complete.');assert.ok(!failure);
-    await until(() => [...protocolPending.keys()].some(key => key.startsWith(this.key + ':')), value => !value, 'Original MCP receipt observer drained');
+    await until(() => [...protocolPending.values()].some(request => request.key === this.key), value => !value, 'Original MCP receipt observer drained');
     const messages = [...this.items.values()].filter(item => item.turnId === turnId).map(item => item.text).join('\n');
     assert.ok(messages.includes(visualWord), 'The genuine answer did not contain the unseen canvas code.');
     record.completedAt = new Date().toISOString();record.status = terminal.status;record.responseSHA256 = sha(messages);record.visualMatched = true;record.observedVisualCode = visualWord;
@@ -379,6 +446,10 @@ try {
   const identity = await app.evaluate(({app}) => ({pid: process.pid, ppid: process.ppid, platform: process.platform, arch: process.arch, executable: process.execPath, packaged: app.isPackaged}));
   verifyOriginalMainProcess({...identity, expectedPlatform: process.platform, childPID: child.pid});assert.equal(identity.arch, process.arch);assert.equal(identity.packaged, true);assert.equal(fs.realpathSync(identity.executable), executable);launched.identity = identity;
   const info = await ipc(main, 'app.info');assert.deepEqual(info.build, build);assert.equal(fs.realpathSync(info.dataPath), data);
+  phase = 'owned-main-foreground-admission';const mainWindow = await app.browserWindow(main), mainId = await mainWindow.evaluate(value => value.id);
+  await mainWindow.evaluate(value => value.focus());
+  const focusedMainId = await until(() => app.evaluate(({BrowserWindow}) => BrowserWindow.getFocusedWindow()?.id ?? null), value => value === mainId, 'Owned main window foreground capability', 5000);
+  driverCalls.push({operation: 'owned-main-foreground-preflight', expectedId: mainId, actualId: focusedMainId, at: new Date().toISOString()});
   const hosts = await main.evaluate(() => window.hostManager.reloadHosts());assert.ok(hosts.hosts.some(host => host.alias === alias));
   const group = await ipc(main, 'group.save', {name: 'Owned external controller acceptance'});
   for (const key of ['A', 'B']) {
@@ -477,10 +548,10 @@ try {
   await aPreserved(pageA, origin + '/A', originalA, 'A final driver observation', streams);await photo(pageA, '05-a-original-chat-work-preserved.png');
   assert.equal(modelTurns.length, 6);assert.equal(new Set(modelTurns.map(turn => turn.threadId)).size, 2);
   assert.deepEqual(modelCalls.filter(call => call.operation === 'open').map(call => call.key).sort(), ['A', 'B']);
-  assert.equal(errors.length, 0);assert.ok(!failure);assert.equal(physicalMcp.size, 2, 'Record two actual per-chat MCP processes; do not claim a shared physical process.');
+  assert.equal(errors.length, 0);assert.ok(!failure);assert.deepEqual([...new Set([...physicalMcp.values()].filter(row => row.modelToolCalls > 0).map(row => row.key))].sort(), ['A', 'B']);
   pass('Two genuine original conversations completed six bounded turns and image proofs; final driver observations confirmed A original window, scroll, drafts and both SSH channels.');
 } catch (error) {
-  failure ||= error;result.failure = {phase, code: typeof error.code === 'string' ? error.code : 'EXTERNAL_COHORT_FAILED'};process.exitCode = 1;
+  failure ||= error;result.failure = {phase, code: typeof error.code === 'string' ? error.code : 'EXTERNAL_COHORT_FAILED', setupStages: Object.fromEntries(Object.entries(chats).map(([key, chat]) => [key, chat.setupStage])), driverLocations: [...String(error.stack || '').matchAll(/e2e-qa-controller-external\.mjs:(\d+):(\d+)/g)].map(match => ({line: Number(match[1]), column: Number(match[2])}))};process.exitCode = 1;
   for (const key of ['A', 'B']) if (app && controllers[key]) {const page = await projectPage(key).catch(() => null);if (page) await photo(page, 'failure-owned-' + key + '.png').catch(() => {});}
 } finally {
   phase = 'owned-cleanup';const cleanup = result.cleanup = {errors: []};
@@ -499,9 +570,8 @@ try {
     await attempt('Original driver MCP natural exit', () => admin.close());
   }
   for (const key of ['A', 'B']) if (chats[key]) await attempt(key + ' original ephemeral AppServer EOF', () => chats[key].close());
-  await attempt('Actual chat MCP children natural exit', async () => {
-    await until(() => [...physicalMcp.values()], rows => rows.every(row => row.exit), 'Actual chat MCP closure', 20000);
-    for (const row of physicalMcp.values()) assert.deepEqual(row.exit, {code: 0, signal: null});
+  await attempt('SDK-owned MCP exact PID closure', async () => {
+    await until(() => sdkClosureSnapshot(), rows => rows.every(row => row.wrapperAbsent && row.childAbsent), 'SDK-owned original wrapper and MCP child closure', 20000);
   });
   if (app) await attempt('Original installed app natural exit', async () => {await bounded(app.close(), 'Owned installed app close', 30000);assert.deepEqual(await bounded(appClosed, 'Original installed main closure'), {code: 0, signal: null});app = null;});
   for (const connection of sshConnections) connection.end();
@@ -510,7 +580,8 @@ try {
   if (tapServer) await attempt('Private tap closure', () => bounded(new Promise(resolve => tapServer.close(resolve)), 'Private tap close'));
   if (webServer) await attempt('Owned fixture HTTP closure', () => bounded(new Promise(resolve => webServer.close(resolve)), 'Owned fixture HTTP close'));
   await attempt('Candidate and selected CLI bytes unchanged', async () => {assert.equal(hashFile(zip), descriptor.sha256);assert.equal(hashFile(cli), result.cli.sha256);if (originalInventory) assert.deepEqual(inventory(bundle), originalInventory);});
-  result.physicalMcp = [...physicalMcp.values()];result.physicalMcpCount = physicalMcp.size + (admin ? 1 : 0);result.models = {originalThreads: Object.values(chats).map(chat => ({key: chat.key, threadId: chat.threadId})), turns: modelTurns.length};
+  try {result.physicalMcp = sdkClosureSnapshot();} catch {result.physicalMcp = [...physicalMcp.values()];cleanup.errors.push('SDK closure evidence inspection unconfirmed');}
+  result.physicalMcpCount = physicalMcp.size + (admin ? 1 : 0);result.actualChatTransportCount = result.physicalMcp.filter(row => row.modelToolCalls > 0).length;result.inventoryOrIdleTransportCount = result.physicalMcp.filter(row => row.modelToolCalls === 0).length;result.models = {originalThreads: Object.values(chats).map(chat => ({key: chat.key, threadId: chat.threadId})), turns: modelTurns.length};
   result.driverSHA256 = hashFile(new URL(import.meta.url));result.rendererErrors = errors;result.ok = !failure && cleanup.errors.length === 0 && checks.length === 8;
   if (!result.ok) process.exitCode = 1;
   // Keep the private failed fixture and immutable original observations for
