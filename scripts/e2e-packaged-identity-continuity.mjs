@@ -214,7 +214,8 @@ export async function main(args=process.argv.slice(2)){
     let state=await invoke('remoteManagement.state');assert.equal(report.identityEnrollmentAttempts,0);
     report.identityEnrollmentAttempted=true;report.identityEnrollmentAttempts=1;persist();
     const initialized=await invoke('remoteManagement.initializeIdentity',{expectedGeneration:state.generation,address:'127.0.0.1'});
-    report.initialEnrollment={status:initialized.identity.status,backend:initialized.identity.backend,errorCode:initialized.identity.errorCode};persist();
+    report.initialEnrollment={status:initialized.identity.status,backend:initialized.identity.backend,errorCode:initialized.identity.errorCode,
+     ...(Object.hasOwn(initialized.identity,'diagnostic')?{diagnostic:require('../electron/remote-identity-diagnostics.cjs').copyIdentityDiagnostic(initialized.identity.diagnostic)}:{})};persist();
     if(initialized.identity.status!=='ready')throw Object.assign(new Error('The original identity enrollment was refused.'),{code:initialized.identity.errorCode||'IDENTITY_UNAVAILABLE'});
     const group=await invoke('group.save',{name:'Owned identity continuity'}),project=await invoke('project.save',{groupId:group.id,name:'Preserved shared project'});
     state=await invoke('remoteManagement.state');await invoke('remoteManagement.configureApp',{expectedGeneration:state.generation,bindAddress:'127.0.0.1',port,enabled:true});
