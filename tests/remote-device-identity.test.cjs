@@ -79,6 +79,22 @@ test('known locked preflight returns safe current status before any pending inte
  assert.deepEqual(result.diagnostic,{version:1,source:'live-operation',stage:'backend-preflight',code:'DEFAULT_LOCKED',osStatus:null,mayRemain:false,cleanup:'not-needed'});
  assert.equal(f.files.store.exists,false);assert.equal(f.n.calls.create,0);assert.equal(f.trace.some(x=>x.startsWith('write:')),false);await f.owner.closeAndDrain();
 });
+test('default-keychain preflight keeps SDK status without item mutation or private error fields',async()=>{
+ const secret='Synthetic private Keychain path and provider text';
+ for(const [rawStatus,expectedStatus] of [[-25294,-25294],[-25295,-25295],[-25307,-25307],[12345678,null]]){
+  const f=fixture();let accessed=0;
+  const error=Object.assign(new Error(secret),{code:'DEFAULT_KEYCHAIN_FAILED',osStatus:rawStatus,mayRemain:false,path:secret,reference:Buffer.from(secret)});
+  Object.defineProperty(error,'cause',{get(){accessed++;return secret;},enumerable:true});
+  f.n.native.initializeError=error;
+  try{
+   const result=await f.owner.initialize(f.request(A));
+   assert.deepEqual(result,{status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic:{version:1,source:'live-operation',stage:'backend-preflight',code:'DEFAULT_KEYCHAIN_FAILED',osStatus:expectedStatus,mayRemain:false,cleanup:'not-needed'}});
+   assert.equal(accessed,0);assert.equal(JSON.stringify(result).includes(secret),false);
+   assert.equal(f.n.calls.initialize,1);assert.equal(f.n.calls.create,0);assert.equal(f.n.calls.read,0);assert.equal(f.n.calls.remove,0);
+   assert.equal(f.files.store.exists,false);assert.equal(f.files.store.records.size,0);assert.equal(f.trace.some(x=>x.startsWith('write:')),false);
+  }finally{await f.owner.closeAndDrain();}
+ }
+});
 test('create-time native failure keeps its own intent-bound reason across reopen without another create',async()=>{
  const f=fixture();f.n.native.createError={code:'ITEM_CREATE_FAILED',osStatus:-25308,mayRemain:true};
  const result=await f.owner.initialize(f.request(A));assert.equal(result.status,'pending');

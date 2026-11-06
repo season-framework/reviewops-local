@@ -24,6 +24,21 @@ test('renderer accepts the closed provider diagnostic vocabulary and rejects pri
  assert.equal(ui.identityValid({status:'ready',backend:'macos-default-file-keychain',identity:null,errorCode:null,diagnostic:base}),false);
 });
 
+test('backend preflight diagnostics reach the renderer without accepting arbitrary status or private fields',()=>{
+ const ui=renderer();
+ for(const [rawStatus,expectedStatus] of [[-25294,-25294],[-25295,-25295],[-25307,-25307],[12345678,null]]){
+  const diagnostic=contract.captureIdentityDiagnostic({stage:'backend-preflight',error:{code:'DEFAULT_KEYCHAIN_FAILED',osStatus:rawStatus,mayRemain:false,path:'Synthetic private path'},cleanup:'not-needed'});
+  const identity={status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic};
+  assert.equal(diagnostic.osStatus,expectedStatus);assert.equal(ui.identityValid(identity),true);
+  const html=renderToStaticMarkup(React.createElement(ui.IdentityDiagnosticNotice,{identity}));
+  assert.ok(html.includes('보안 저장소 사전 확인'));assert.ok(html.includes('정리 대상 없음'));
+  assert.ok(html.includes(expectedStatus===null?'확인 불가':String(expectedStatus)));
+  assert.equal(html.includes('Synthetic private path'),false);assert.equal(html.includes('DEFAULT_KEYCHAIN_FAILED'),false);
+  assert.equal(ui.identityValid({...identity,diagnostic:{...diagnostic,osStatus:12345678}}),false);
+  assert.equal(ui.identityValid({...identity,diagnostic:{...diagnostic,path:'Synthetic private path'}}),false);
+  assert.throws(()=>contract.copyIdentityDiagnostic({...diagnostic,path:'Synthetic private path'}),{code:'IDENTITY_UNAVAILABLE'});
+ }
+});
 test('known locked diagnostics render actionable fixed guidance without enabling pending replay',()=>{
  const ui=renderer(),identity=pending({version:1,source:'retained-intent',stage:'create-protected-item',code:'DEFAULT_LOCKED',osStatus:-25308,mayRemain:false,cleanup:'not-needed'});
  const html=renderToStaticMarkup(React.createElement(ui.IdentityDiagnosticNotice,{identity}));

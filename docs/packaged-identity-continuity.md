@@ -58,6 +58,18 @@ and records Authenticode status. Unsigned Windows builds are reported accurately
 node scripts/e2e-packaged-identity-continuity.mjs --plan /absolute/plan.json
 ```
 
+On macOS, the harness preserves the real OS account home obtained from
+`os.userInfo().homedir`, after checking its canonical directory and ownership.
+The default file Keychain must resolve in that account's normal environment; a
+private `HOME` can instead report that no default Keychain exists. Application
+data, `CODEX_HOME`, the model CLI fixture, and SSH configuration remain in their
+owned private fixture paths. Windows keeps its existing private-home behavior.
+This is not full home-directory isolation: the product can publish its normal
+per-process running-instance registry record under the real home, containing an
+instance ID and the private connection-file location. Normal shutdown removes
+only that process's own record; unrelated instances and their records are not
+removed.
+
 The harness creates a fresh private installation and data profile. Only the first
 baseline phase enrolls an identity. It establishes an actual read-only HTTPS
 self-connection and saves its protected credential. Each following phase uses

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
+import {userInfo} from 'node:os';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {createRequire} from 'node:module';
@@ -149,6 +150,15 @@ export async function main(args=process.argv.slice(2)){
   fs.writeFileSync(sshConfig,'# Owned continuity fixture only\n',{mode:0o600});
   fs.mkdirSync(path.join(dataPath,'updates'),{mode:0o700});fs.writeFileSync(path.join(dataPath,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:10}),{mode:0o600});
   const isolation=process.platform==='darwin'?isolatedModelRuntime({home,dataPath}):{HOME:home,USERPROFILE:home,CODEX_HOME:path.join(home,'.codex')};
+  if(process.platform==='darwin'){
+   // The real default file Keychain follows the OS account home, while model,
+   // SSH and application data remain in the owned private fixture paths.
+   const account=userInfo();
+   assert.ok(typeof account.homedir==='string'&&path.isAbsolute(account.homedir)&&!/[\x00-\x1f\x7f]/.test(account.homedir),'The OS account home was refused');
+   const osHome=fs.realpathSync(account.homedir),homeStat=fs.lstatSync(osHome);
+   assert.ok(osHome!==path.parse(osHome).root&&homeStat.isDirectory()&&!homeStat.isSymbolicLink()&&homeStat.uid===account.uid&&account.uid===process.getuid()&&!(homeStat.mode&0o022),'The canonical owned OS home was refused');
+   isolation.HOME=osHome;
+  }
   if(process.platform==='win32'){
    fs.mkdirSync(path.join(dataPath,'codex-manager'),{recursive:true});
    fs.writeFileSync(path.join(dataPath,'codex-manager/runtime.json'),JSON.stringify({path:path.join(home,'no-user-runtime.exe')}),{mode:0o600});
