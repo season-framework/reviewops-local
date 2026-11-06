@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.4.1",
-  "version": "1.5.0",
-  "bump": "minor",
-  "reason": "Add private running-instance discovery so a fresh MCP process can connect to one running app without restarting it.",
-  "baseCommit": "209bb9fe7b090df578bca250c48da4d55ddcb341"
+  "previousVersion": "1.5.0",
+  "version": "1.5.1",
+  "bump": "patch",
+  "reason": "Update Electron to 44.9.1 to block compromised eMudhra intermediate certificates (GHSA-jr5w-w6x2-84p9). No application feature or data-schema change.",
+  "baseCommit": "114fde3e344c9f77e46c769ef66ccc8e959567fd"
 }
