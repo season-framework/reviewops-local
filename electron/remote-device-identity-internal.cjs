@@ -83,7 +83,7 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
     try {
       if(pending){
         parsePending(pending);diagnostic=legacyIdentityDiagnostic();let saved;
-        try{saved=files.read('diagnostic.json');if(saved)diagnostic=retainedIdentityDiagnostic(canonical(saved),pending.bytes);}catch{ /* An optional diagnostic never authorizes recovery. */ }
+        try{saved=files.read('diagnostic.json');if(saved){const captured=retainedIdentityDiagnostic(canonical(saved),pending.bytes);files.unchanged(pending,'pending.json');diagnostic=captured;}}catch{ /* Changed or optional evidence never authorizes recovery. */ }
         finally{saved?.bytes.fill(0);}
         fail('IDENTITY_PENDING');
       }

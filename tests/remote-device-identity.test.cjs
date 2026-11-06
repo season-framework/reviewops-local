@@ -96,6 +96,19 @@ test('failed own cleanup retains worst-case uncertainty while preserving the ori
  assert.equal(result.diagnostic.cleanup,'unconfirmed');assert.equal(result.diagnostic.mayRemain,true);assert.equal(result.diagnostic.code,'UNKNOWN');
  assert.equal(JSON.stringify(result).includes('Synthetic private'),false);assert.equal(f.n.records.size,1);await f.owner.closeAndDrain();
 });
+test('replacing the original pending snapshot during journal read cannot attach its cause to a new intent',async()=>{
+ const first=fixture();first.n.native.createError={code:'DEFAULT_LOCKED',osStatus:null,mayRemain:false};
+ assert.equal((await first.owner.initialize(first.request(A))).diagnostic.code,'DEFAULT_LOCKED');await first.owner.closeAndDrain();
+ const next=fixture({store:first.files.store}),read=next.files.read;let replacement;
+ next.files.read=name=>{const value=read(name);if(name==='diagnostic.json'){
+  const old=next.files.store.records.get('pending.json'),record=JSON.parse(old.bytes);record.operationId=crypto.randomUUID();
+  replacement=Buffer.from(JSON.stringify(record));next.files.store.records.set('pending.json',{bytes:replacement,version:++next.files.store.version});
+ }return value;};
+ const result=await next.owner.initialize(next.request(A));assert.equal(result.status,'pending');
+ assert.deepEqual(result.diagnostic,{version:1,source:'legacy-intent',stage:'unknown',code:'UNKNOWN',osStatus:null,mayRemain:null,cleanup:'unknown'});
+ assert.ok(next.files.store.records.get('pending.json').bytes.equals(replacement));assert.equal(next.n.calls.initialize,0);assert.equal(next.n.calls.create,0);assert.equal(next.n.calls.read,0);
+ assert.equal(next.trace.some(x=>x.startsWith('write:')),false);await next.owner.closeAndDrain();
+});
 test('verification preserves the native reference failure before identity-lost mapping and its own cleanup outcome',async()=>{
  const f=fixture();f.n.native.readError={code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};
  f.n.native.removeError={code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};
