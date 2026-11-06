@@ -1921,5 +1921,9 @@
   "변경한 예약 내용": "Changed schedule content",
   "목표를 일시정지하고 실행 결과를 확인한 뒤 삭제하십시오.": "Pause the goal and confirm its execution state before deleting it.",
   "목표 시작": "Start goal",
-  "목표 종료됨": "Finished"
+  "목표 종료됨": "Finished",
+  "합침": "Combined",
+  "설정 변경으로 교체": "Replaced after settings change",
+  "지원되지 않는 승인 정책": "Unsupported approval policy",
+  "이 승인 정책은 현재 Codex에서 지원하지 않습니다. 지원되는 정책을 직접 선택하십시오.": "This approval policy is not supported by the current Codex runtime. Choose a supported policy explicitly."
 }

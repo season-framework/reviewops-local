@@ -28,10 +28,11 @@ test('goal editing preserves explicit connection and Codex settings while exclud
  const saved={id:'A',name:'Goal A',description:'Work',projectId:'P',serviceId:'SSH',workPath:'/workspace',prompt:'Do the work',model:'chosen-model',reasoningEffort:'ultra',sandboxMode:'read-only',approvalPolicy:'on-request',threadId:'protected-thread',status:'paused'};
  const draft=goalDraft(saved);
  assert.equal(draft.projectId,'P');assert.equal(draft.serviceId,'SSH');assert.equal(draft.model,'chosen-model');assert.equal(draft.reasoningEffort,'ultra');assert.equal(draft.approvalPolicy,'on-request');
+ assert.equal(goalDraft({...saved,approvalPolicy:'on-failure'}).approvalPolicy,'on-failure','Unsupported persisted values must not be silently rewritten.');
  assert.equal('threadId'in draft,false);assert.equal('status'in draft,false);
 });
 
 test('prepared and unknown delivery states are not labeled as delivered',async()=>{
  const {outcomeKey}=await helpers();
- assert.equal(outcomeKey('prepared'),'실행 준비');assert.equal(outcomeKey('queued'),'전달 대기');assert.equal(outcomeKey('unknown'),'결과 확인 필요');assert.equal(outcomeKey('accepted'),'전달 확인');
+ assert.equal(outcomeKey('coalesced'),'합침');assert.equal(outcomeKey('replaced'),'설정 변경으로 교체');assert.equal(outcomeKey('prepared'),'실행 준비');assert.equal(outcomeKey('queued'),'전달 대기');assert.equal(outcomeKey('unknown'),'결과 확인 필요');assert.equal(outcomeKey('accepted'),'전달 확인');
 });
