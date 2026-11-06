@@ -50,14 +50,14 @@ class OpsManager{
     const raw={name:before?.name||'',description:before?.description||'',projectId:before?.projectId||'',serviceId:before?.serviceId||null,workPath:before?.workPath||'',prompt:before?.prompt||'',model:before?.model||'',reasoningEffort:before?.reasoningEffort||'',sandboxMode:before?.sandboxMode||'workspace-write',approvalPolicy:before?.approvalPolicy||'never',...input};
     string(raw.name,200,'목표 이름',true);string(raw.description,100000,'설명');string(raw.prompt,100000,'목표 프롬프트');string(raw.model,256,'모델');
     string(raw.projectId,128,'프로젝트');string(raw.workPath,4096,'작업 폴더');if(raw.serviceId!==null)string(raw.serviceId,128,'프로젝트 연결');
-    if(!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(raw.reasoningEffort)||!['read-only','workspace-write','danger-full-access'].includes(raw.sandboxMode)||!['never','untrusted','on-failure','on-request'].includes(raw.approvalPolicy))fail('INVALID_OPS_REQUEST','Codex 실행 설정을 확인하십시오.');
+    if(!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(raw.reasoningEffort)||!['read-only','workspace-write','danger-full-access'].includes(raw.sandboxMode)||!['never','untrusted','on-request'].includes(raw.approvalPolicy))fail('INVALID_OPS_REQUEST','Codex 실행 설정을 확인하십시오.');
     executionSettings(undefined,{model:raw.model,reasoningEffort:raw.reasoningEffort});
     const target=await this.resolveTarget(raw);this._open();guard();const timestamp=this._time();
     const result=this._mutate(data=>{
       const goal=raw.id?this._goal(data,raw.id):null;
       if(goal&&(goal.workPath!==target.workPath||goal.projectId!==(target.projectId||'')||goal.targetIdentity!==(target.targetIdentity||'local')||CONFIG.some(key=>goal[key]!==raw[key]))&&['running','starting','unknown'].includes(goal.executionState))fail('OPS_GOAL_BUSY','실행 또는 전달 결과를 확인한 뒤 작업 대상과 실행 설정을 변경하십시오.');
       if(goal?.threadId&&goal.targetIdentity!==(target.targetIdentity||'local'))fail('OPS_SESSION_TARGET_CHANGED','기존 대화는 원래 작업 서버에 연결됩니다. 다른 서버는 새 목표로 등록하십시오.');
-      const saved={...raw,workPath:target.workPath,projectId:target.projectId||'',targetKind:target.targetKind||'local',targetIdentity:target.targetIdentity||'local',targetLockIdentity:target.targetLockIdentity||target.targetIdentity||'local',targetLabel:target.targetLabel||target.workPath,serviceId:target.serviceId||null,id:goal?.id||randomUUID(),updatedAt:timestamp};
+      const saved={...raw,workPath:target.workPath,projectId:target.projectId||'',projectEpoch:target.projectEpoch,projectBirth:target.projectBirth,targetKind:target.targetKind||'local',targetIdentity:target.targetIdentity||'local',targetLockIdentity:target.targetLockIdentity||target.targetIdentity||'local',targetLabel:target.targetLabel||target.workPath,serviceId:target.serviceId||null,id:goal?.id||randomUUID(),updatedAt:timestamp};
       if(goal){Object.assign(goal,saved);this._history(goal,'goal.updated','사용자가 목표 설정을 변경했습니다.');this._rebasePending(goal,'목표 설정 변경으로 미전달 지시를 다시 조립했습니다.');}
       else{if(data.goals.length>=100)fail('OPS_LIMIT','목표는 100개까지 등록할 수 있습니다.');data.goals.push({...saved,status:'draft',executionState:'idle',threadId:null,turnId:null,lastError:null,lastWork:'',waitingReason:null,createdAt:timestamp,schedules:[],history:[],conversation:[],toolReceipts:[]});}
       this._promptBudget(data);
@@ -132,7 +132,7 @@ class OpsManager{
     ];
   }
   _session(id){let session=this.sessions.get(id);if(session)return session;const goal=this._goal(this.store.data,id),factory=this.createSession||require('./ops-session.cjs').createOpsSession;
-    session=factory({goalId:id,workPath:goal.workPath,target:{kind:goal.targetKind||'local',identityKey:goal.targetIdentity||'local',projectId:goal.projectId,serviceId:goal.serviceId},resolveSessionTarget:this.resolveSessionTarget?()=>this.resolveSessionTarget(structuredClone(goal)):undefined,config:Object.fromEntries(CONFIG.map(k=>[k,goal[k]])),threadId:goal.threadId,runtime:typeof this.runtime==='function'?this.runtime():this.runtime,resolveRuntime:typeof this.runtime==='function'?this.runtime:()=>this.runtime,onEvent:event=>this._event(id,event),tools:this._tools(id)});this.sessions.set(id,session);return session;}
+    session=factory({goalId:id,workPath:goal.workPath,target:{kind:goal.targetKind||'local',identityKey:goal.targetIdentity||'local',projectId:goal.projectId,serviceId:goal.serviceId},resolveSessionTarget:this.resolveSessionTarget?()=>this.resolveSessionTarget(structuredClone(this._goal(this.store.data,id))):undefined,config:Object.fromEntries(CONFIG.map(k=>[k,goal[k]])),threadId:goal.threadId,runtime:typeof this.runtime==='function'?this.runtime():this.runtime,resolveRuntime:typeof this.runtime==='function'?this.runtime:()=>this.runtime,onEvent:event=>this._event(id,event),tools:this._tools(id)});this.sessions.set(id,session);return session;}
   _event(id,event){
     if(this.closed)return;const current=this.store.data.goals.find(g=>g.id===id);if(!current)return;
     try{

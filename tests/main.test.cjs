@@ -4193,3 +4193,11 @@ test('Ops backup restore rolls back its original records when the outer review-d
  h.state.openResult={canceled:false,filePaths:[file]};try{const result=await h.invoke('backup.import');assert.equal(result.ok,false);assert.match(result.error.message,/Injected outer commit failure/);}finally{db.exec=exec;}
  const after=h.state.opsManager.exportData();assert.equal(after.commonPrompt,before.commonPrompt);assert.deepEqual(after.goals,before.goals);
 });
+
+test('Ops project targets retain committed birth and require confirmation after dataset replacement',async t=>{
+ const h=await harness(t),a=await seed(h);await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentWorkPath:''});
+ const input={name:'Project-bound Ops',description:'',prompt:'Inspect this project',projectId:a.project.id,serviceId:a.service.id,workPath:''};
+ const saved=await h.ops('saveGoal',input),goal=saved.goals[0];assert.ok(Number.isSafeInteger(goal.projectBirth));assert.equal((await h.state.opsOptions.resolveTarget(goal)).workPath,fs.realpathSync(h.root));
+ h.state.liveStore.importData(h.state.liveStore.exportData());await assert.rejects(h.state.opsOptions.resolveTarget(goal),{code:'OPS_PROJECT_CHANGED'});
+ const confirmed=await h.ops('saveGoal',{...input,id:goal.id});assert.notEqual(confirmed.goals[0].projectEpoch,goal.projectEpoch);assert.equal((await h.state.opsOptions.resolveTarget(confirmed.goals[0])).workPath,fs.realpathSync(h.root));
+});

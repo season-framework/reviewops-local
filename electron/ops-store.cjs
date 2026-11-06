@@ -16,7 +16,7 @@ function validateOpsData(value){
   for(const g of value.goals){
     if(!g||!UUID.test(g.id)||ids.has(g.id)||!text(g.name,200)||!g.name.trim()||!text(g.description,100000)||!text(g.prompt,100000)||!text(g.workPath,4096)||!(g.targetKind==='ssh'?path.posix:path).isAbsolute(g.workPath)||!text(g.projectId,128)||!['local','ssh'].includes(g.targetKind)||!text(g.targetIdentity,512)||!g.targetIdentity||
       !text(g.model,256)||!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(g.reasoningEffort)||
-      !['read-only','workspace-write','danger-full-access'].includes(g.sandboxMode)||!['never','untrusted','on-failure','on-request'].includes(g.approvalPolicy)||
+      !['read-only','workspace-write','danger-full-access'].includes(g.sandboxMode)||!['never','untrusted','on-request'].includes(g.approvalPolicy)||
       !['draft','active','paused','finished'].includes(g.status)||!['idle','starting','running','waiting','unknown','error'].includes(g.executionState)||!Array.isArray(g.schedules)||g.schedules.length>100||!Array.isArray(g.history)||!Array.isArray(g.conversation)||
       g.threadId!==null&&(!text(g.threadId,256)||!g.threadId||threads.has(g.threadId))||g.turnId!==null&&!text(g.turnId,256))fail();
     ids.add(g.id);

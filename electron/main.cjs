@@ -102,13 +102,18 @@ function opsProjectService(input){
   return serviceById(selected,true);
 }
 async function resolveOpsTarget(input){
-  const service=opsProjectService(input);
+  const service=opsProjectService(input),originalStore=store;
   if(!service){if(input.serviceId)throw new Error('폴더 목표에는 프로젝트 연결을 지정할 수 없습니다.');return {projectId:'',workPath:await require('./work-directory.cjs').requireDirectory(input.workPath),targetKind:'local',targetIdentity:'local',targetLabel:input.workPath,serviceId:null};}
+  const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===input.projectId)?.birth;
+  if(!birth||input.projectEpoch!==undefined&&(input.projectEpoch!==dataset.epoch||input.projectBirth!==birth))throw Object.assign(new Error('목표의 원래 프로젝트가 변경되었습니다. 목표 설정에서 대상을 다시 확인하십시오.'),{code:'OPS_PROJECT_CHANGED'});
+  const keys=['id','kind','host','hostAlias','sshConfigPath','port','username','rootPath','agentWorkPath','hostFingerprint'],signature=JSON.stringify(keys.map(key=>service[key]));
+  const assertTarget=()=>{const current=store.peerReadDataset(),selected=opsProjectService(input);if(store!==originalStore||current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===input.projectId)?.birth!==birth||JSON.stringify(keys.map(key=>selected?.[key]))!==signature)throw Object.assign(new Error('프로젝트 연결이 확인 중에 변경되었습니다.'),{code:'OPS_PROJECT_CHANGED'});};
+  const scope={projectEpoch:dataset.epoch,projectBirth:birth};
   const workPath=service.agentWorkPath||service.rootPath;
-  if(service.kind==='local')return {projectId:input.projectId,serviceId:service.id,workPath:await require('./work-directory.cjs').requireDirectory(workPath),targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};
+  if(service.kind==='local'){const canonical=await require('./work-directory.cjs').requireDirectory(workPath);assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:canonical,targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};}
   if(typeof ssh.inspectAppServerTarget!=='function')throw Object.assign(new Error('SSH Ops 연결을 준비하고 있습니다. 로컬 실행으로 전환하지 않았습니다.'),{code:'OPS_SSH_UNAVAILABLE'});
   const result=await ssh.inspectAppServerTarget(service,{workPath});
-  return {projectId:input.projectId,serviceId:service.id,workPath:result.canonicalWorkPath,targetKind:'ssh',targetIdentity:result.identity,targetLockIdentity:result.lockIdentity||result.identity,targetLabel:service.name||service.hostAlias||service.host};
+  assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:result.canonicalWorkPath,targetKind:'ssh',targetIdentity:result.identity,targetLockIdentity:result.lockIdentity||result.identity,targetLabel:service.name||service.hostAlias||service.host};
 }
 async function resolveOpsSessionTarget(goal){
   const target=await resolveOpsTarget(goal);
