@@ -98,7 +98,7 @@ test('QA status rejects cross-project binding input and preserves the original e
 test('QA status MCP tool accepts only projectId, injects only its recorded project binding and returns no control IDs',async()=>{
   const f=fixture(),c=connected(f);try{
     await c.initialize();const listed=(await c.request('tools/list')).result.tools,tool=listed.find(value=>value.name==='reviewops_qa_connection_status');
-    assert.equal(listed.length,28);assert.deepEqual(tool.inputSchema.required,['projectId']);assert.deepEqual(Object.keys(tool.inputSchema.properties),['projectId']);assert.equal(tool.inputSchema.additionalProperties,false);assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
+    assert.equal(listed.length,29);assert.deepEqual(tool.inputSchema.required,['projectId']);assert.deepEqual(Object.keys(tool.inputSchema.properties),['projectId']);assert.equal(tool.inputSchema.additionalProperties,false);assert.deepEqual(tool.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
     const opened=(await c.call('reviewops_qa_open',{projectId:'A',clientId:'a'})).result.structuredContent;
     const value=await status(c,'A');assert.equal(value.instanceId,instanceId);assert.equal(value.bindingState,'attached');assert.equal(value.client.bindingSource,'recorded');assert.equal(value.client.scope,'mcp-server');
     assert.deepEqual(c.calls.at(-1),{action:'connection.qa.status',args:{projectId:'A',binding:only(opened)}});

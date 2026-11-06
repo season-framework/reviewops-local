@@ -38,6 +38,14 @@
       ]
     },
     {
+      "category": "features",
+      "title": "Reconnect project QA independently",
+      "description": "Keep each external chat bound to its own project and QA controller. Reconnect or release one controller while other projects retain their QA sessions, drafts and running work. Window badges show the connected project, controller label and state. Fresh observations prevent old input from targeting a reloaded or recreated surface.",
+      "commits": [
+        "23e87b39e2d1dd5374f3ff5a25a8948359e0e892"
+      ]
+    },
+    {
       "category": "improvements",
       "title": "Inspect goal prompts, progress and recovery",
       "description": "Preview common, goal and schedule instructions together, then inspect the exact submitted prompt, reason, originating schedules and outcome in history. Recover the original conversation after restart and restore backups with goals paused. Interactive approval requests appear as errors; Ops has no approval dialog.",

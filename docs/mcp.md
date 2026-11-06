@@ -26,7 +26,7 @@ Home prefixes are replaced with `$HOME` at path boundaries, and the complete inf
 
 An invalid connection record retains `INVALID_CONNECTION` and asks you to check the chosen data folder/configuration. An older app can return `CONNECTION_INFO_UNSUPPORTED`; missing or malformed startup information returns an unavailable/invalid information error. None establishes that an old app caused a reported QA problem. Do not fall back to the active window, another data root, system input or an app-wide restart. Explicit, environment-selected and present-default descriptors keep their existing connection-file/socket checks, including their treatment of path aliases. An invalid, inaccessible or unreachable present-default descriptor never triggers a search. Only an absent default descriptor permits the limited registry discovery described below.
 
-The advertised QA protocol label `1` describes the current session/project/window and optional browser-ID contract. It does not include document-generation fencing or transport reconnection. Existing QA ownership, input and timeout rules below still apply. An external chat host may require its own tool-list refresh or configuration change before exposing a newly registered tool; this app does not control that behavior. Installing an app update and reconnecting an agent to an already capable app are separate operations.
+The advertised QA protocol label `1` describes the legacy session/project/window and optional browser-ID contract. It does not advertise document-generation fencing or transport reconnection. Capable apps provide the separate opt-in [`reviewops_qa_controller` contract](qa-controllers.md) for independently reconnectable logical controllers. Confirm that tool's named response rather than inferring support from protocol `1`. An external chat host may require its own tool-list refresh or configuration change before exposing a newly registered tool; this app does not control that behavior. Installing an app update and reconnecting an agent to an already capable app are separate operations.
 
 The native owned-service harness observes this query through the actual MCP JSON-RPC exports and the selected authenticated socket while retaining its original Electron app and driver Node. Its initial launch, existing QA-lease interval and ordinary reopen record metadata separately from the unchanged service scenario IDs. Package checks bind the physical MCP resource files to their ASAR/source copies and read actual embedded test identity; an omitted bundle-summary field does not establish missing runtime metadata. Database/WAL bytes, descriptor bytes, renderer data-change events and owned-window state must remain unchanged during the quiescent query; SQLite SHM is diagnostic only. This observes the declared fixture cohort, not external-chat registration or controller reconnection. These added checks require a new source-bound native run before being reported as passed.
 
@@ -50,7 +50,7 @@ The MCP server supplies its own recorded binding only when it has exactly one fo
 
 For explicit, environment and default connections, the query rereads only the configured descriptor using the existing checks. A discovered connection instead retains its original descriptor and app instance, as described below. Neither route switches to the active window. An older app's explicit unknown-action response becomes `QA_CONNECTION_STATUS_UNSUPPORTED`; inspect `reviewops_connection_info` without assuming that an old app caused the problem. Missing or malformed status information remains unavailable. Existing session expiry may run independently of this observation.
 
-Status is a point-in-time observation, not an ownership handoff. Same-client `qa_open` reuse, `PROJECT_BUSY`, request idempotency, timeout quarantine and MCP-disconnect release keep their existing behavior. Actual external-chat registration, separate-chat identity and reconnection across transport loss remain separate validation and implementation boundaries.
+Status is a point-in-time observation, not an ownership handoff. Legacy same-client `qa_open` reuse, `PROJECT_BUSY`, request idempotency, timeout quarantine and legacy MCP-disconnect release keep their existing behavior. The optional logical-controller tool has its own proof and reconnect rules; a status response never supplies that proof. Actual external-host registration remains a separate check.
 
 The native harness adds this query to its existing initial-launch, held-lease and ordinary-reopen observations, using the original retained app and driver Node. Startup and reopen use a deliberately absent fixture project and expect unavailable. During the original A lease, the fresh MCP record sees A as busy without receiving its control IDs; a query for B on that A-bound MCP connection must be rejected before app invocation. The observer permits only `connection.info` and `connection.qa.status`, preserves the original explicit release and checks database/WAL bytes, descriptor bytes, QA scope, owned-window state and renderer data-change events. SQLite SHM remains diagnostic. These native checks require a new source-bound execution before any pass claim. Own recorded bindings, known-idle availability, expiry, stale records and quarantine remain controlled-unit coverage in this phase; no formal service scenario IDs are added.
 
@@ -86,6 +86,8 @@ tool_timeout_sec = 60
 ```
 
 Check configuration with `codex mcp list`, then request a `reviewops_projects_list` call in a new Codex conversation. Appearing in the configuration list and successfully calling an app function are separate checks.
+
+A host's `enabled_tools` list can hide a supported app tool. To use logical controllers, include `reviewops_qa_controller` in that connection's bounded allowlist. A trusted project's `.codex/config.toml` can scope registration to that project; see the [official MCP configuration guide](https://learn.chatgpt.com/docs/extend/mcp). Keep the physical MCP entry and explicit app/data selection aligned with the installed candidate. Do not restart ReviewOps or another chat's working connection to expose a missing tool. The [App Server API](https://learn.chatgpt.com/docs/app-server) describes `config/mcpServer/reload` as affecting loaded threads; it is not a B-only logical reconnect. A fresh separately configured chat/connection is appropriate when the host cannot refresh B alone.
 
 ### Select tools for an automated QA run
 
@@ -244,7 +246,13 @@ The response includes `requestId`, `request`, `supportsLiveDelivery: false`, and
 
 Completing a predecessor can make a request `ready`, but never starts it. Failed, interrupted, cancelled or missing predecessors keep it waiting. If `requiredResult` is supplied, confirm it separately in the app. Use the existing UI **Run** action on the saved request to start it explicitly; its resulting run ID remains linked and can be inspected with the existing run tools. The follow-up API does not expose start, edit, result-confirmation, or application-resolution operations. Cancelling a request that is already starting or linked to a run is rejected; the separate run controls remain responsible for that execution. A completed run does not automatically mark the request as applied.
 
-## Concurrent QA in project windows
+## Concurrent QA with logical controllers
+
+For a capable app, use [`reviewops_qa_controller`](qa-controllers.md) to open one logical controller per chat/project. Keep each returned proof private. B can inspect, detach, reconnect or release its own controller while A retains its lease and work. Logical reconnect does not restart the MCP transport or app. The connected project's QA badge displays the controller label and state; a label is display text, not ownership proof.
+
+## Legacy QA in project windows
+
+The following eleven tools retain their existing contract, including release on MCP disconnect. A caller-chosen `clientId` does not authenticate a separate chat.
 
 1. Each agent calls `reviewops_qa_open` with its own `projectId` and a unique `clientId`, such as `codex-a`, `codex-b`, or `claude-b`.
 2. Pass the returned `sessionId`, `projectId`, and `windowId` on every later screen request.
