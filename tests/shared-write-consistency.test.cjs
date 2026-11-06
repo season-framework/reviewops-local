@@ -110,8 +110,8 @@ test('schema-10 migration preserves business data, format 10 and the epoch acros
   const f = setup(t), data = fixture(f.store), before = f.store.exportData(); f.store.close();
   const db = new DatabaseSync(f.dbPath);
   removeWriteConsistencySchema(db); db.exec('PRAGMA user_version=10;'); db.close();
-  const migrated = f.open(); assert.equal(SCHEMA_VERSION, 11); assert.equal(BACKUP_FORMAT_VERSION, 10);
-  assert.deepEqual(migrated.exportData(), before); assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 11);
+  const migrated = f.open(); assert.equal(SCHEMA_VERSION, 12); assert.equal(BACKUP_FORMAT_VERSION, 10);
+  assert.deepEqual(migrated.exportData(), before); assert.equal(migrated.db.prepare('PRAGMA user_version').get().user_version, 12);
   const token = state(migrated, data); migrated.close(); assert.deepEqual(state(f.open(), data), token);
 });
 
