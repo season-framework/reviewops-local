@@ -24,14 +24,18 @@ function nextOccurrence(cron,timezone,after=Date.now()) {
 class OpsScheduler {
   constructor({tick,nextDue,now=Date.now,setTimer=setTimeout,clearTimer=clearTimeout,onError=()=>{}}) {
     Object.assign(this,{tick,nextDue,now,setTimer,clearTimer,onError});
-    this.timer=null;this.running=null;this.closed=false;
+    this.timer=null;this.timerAt=null;this.running=null;this.closed=false;
   }
   arm() {
-    if(this.timer!==null)this.clearTimer(this.timer);
-    this.timer=null;if(this.closed||this.running)return;
+    if(this.closed||this.running)return;
     const next=this.nextDue(),remaining=next===null?60_000:new Date(next).getTime()-this.now();
     const delay=remaining<=0?60_000:Math.max(1000,Math.min(60_000,remaining));
-    this.timer=this.setTimer(()=>{this.timer=null;void this.wake();},Math.min(MAX_DELAY,delay));
+    const timerAt=this.now()+Math.min(MAX_DELAY,delay);
+    // State updates must not postpone an already armed ownership/due probe.
+    if(this.timer!==null&&this.timerAt<=timerAt)return;
+    if(this.timer!==null)this.clearTimer(this.timer);
+    this.timerAt=timerAt;
+    this.timer=this.setTimer(()=>{this.timer=null;this.timerAt=null;void this.wake();},Math.min(MAX_DELAY,delay));
     this.timer?.unref?.();
   }
   wake() {
@@ -40,6 +44,6 @@ class OpsScheduler {
       .finally(()=>{if(this.running===pending)this.running=null;this.arm();});
     this.running=pending;return pending;
   }
-  close(){this.closed=true;if(this.timer!==null)this.clearTimer(this.timer);this.timer=null;}
+  close(){this.closed=true;if(this.timer!==null)this.clearTimer(this.timer);this.timer=null;this.timerAt=null;}
 }
 module.exports={validateSchedule,nextOccurrence,OpsScheduler};
