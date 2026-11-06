@@ -38,8 +38,12 @@ async function readGitCatalog(commit,{directory,command,cache}){
  cache.set(match[1],value);return value;
 }
 
-export async function loadReleaseHighlights({version,changes,source,directory=sourceRoot,command=run,readHistoricalCatalog=readGitCatalog}={}){
- let value;try{value=JSON.parse(await fs.readFile(path.join(directory,'release-notes.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
+export async function loadReleaseHighlights({version,changes,source,directory=sourceRoot,command=run,readHistoricalCatalog=readGitCatalog,catalogCommit}={}){
+ let value;
+ if(catalogCommit!==undefined){
+  if(!sha(catalogCommit))throw new Error('A full producer commit is required for promoted release highlights.');
+  value=await readHistoricalCatalog(catalogCommit,{directory,command,cache:new Map()})??undefined;
+ }else try{value=JSON.parse(await fs.readFile(path.join(directory,'release-notes.json'),'utf8'));}catch(error){if(error.code!=='ENOENT')throw error;}
  const entries=value===undefined?[]:validateReleaseHighlights(value,version);
  if(changes){
   if(!Array.isArray(changes.commits)||changes.commits.length>100||changes.commits.some(item=>!item||!sha(item.commit))||new Set(changes.commits.map(item=>item.commit)).size!==changes.commits.length)throw new Error('Historical highlights require at most 100 distinct frozen source commits.');
