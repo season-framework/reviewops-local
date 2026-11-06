@@ -9,6 +9,7 @@ const {createRemoteAppListener} = require('./remote-app-listener.cjs');
 const {createRemoteAttachments} = require('./remote-attachments.cjs');
 const {createRemoteAppSessionStore} = require('./remote-app-session-store.cjs');
 const {loadRemoteWebAssets} = require('./remote-web-assets.cjs');
+const {copyIdentityDiagnostic} = require('./remote-identity-diagnostics.cjs');
 
 const MESSAGES = Object.freeze({
   INVALID_REMOTE_REQUEST: 'Invalid Remote Management request.',
@@ -95,12 +96,17 @@ function createRemoteManagement(options) {
     try { original = provider.state(); } catch (error) { providerError(error); }
     let result;
     try {
-      result = fields(original, ['status', 'backend', 'identity', 'errorCode']);
+      const diagnostic = Boolean(original && Object.hasOwn(original, 'diagnostic'));
+      result = fields(original, ['status', 'backend', 'identity', 'errorCode', ...(diagnostic ? ['diagnostic'] : [])]);
       if (!['not_initialized', 'ready', 'unavailable', 'identity_lost', 'pending'].includes(result.status) ||
           !['macos-default-file-keychain', 'electron-safe-storage', 'unsupported'].includes(result.backend) ||
           result.errorCode !== null && !PROVIDER_CODES.has(result.errorCode)) fail('IDENTITY_UNAVAILABLE');
       result.identity = result.identity === null ? null : publicIdentity(result.identity);
       if (result.status === 'ready' && (!result.identity || result.errorCode !== null)) fail('IDENTITY_UNAVAILABLE');
+      if (diagnostic) {
+        if (result.status === 'ready' || result.errorCode === null) fail('IDENTITY_UNAVAILABLE');
+        result.diagnostic = copyIdentityDiagnostic(result.diagnostic);
+      }
     } catch { fail('IDENTITY_UNAVAILABLE'); }
     return Object.freeze({...result});
   }

@@ -21,10 +21,10 @@ function nativeFixture(records=new Map(),trace=[]) {
   let initialized=null,closed=false;const calls={initialize:0,create:0,read:0,remove:0,close:0};
   const rawReads=[];
   const native={
-    initialize(account){calls.initialize++;if(closed||initialized||native.initializeError)throw{code:'PROVIDER_FAILED',osStatus:null,mayRemain:false};initialized=account;trace.push('native:initialize');},
+    initialize(account){calls.initialize++;if(native.initializeError&&typeof native.initializeError==='object')throw native.initializeError;if(closed||initialized||native.initializeError)throw{code:'PROVIDER_FAILED',osStatus:null,mayRemain:false};initialized=account;trace.push('native:initialize');},
     create(payload){calls.create++;trace.push('native:create');native.beforeCreate?.();if(native.createError)throw native.createError;const ref=Buffer.from(crypto.randomUUID());records.set(ref.toString('base64'),Buffer.from(payload));native.afterCreate?.();return native.badReference?Buffer.from(native.badReference):ref;},
-    read(ref){calls.read++;trace.push('native:read');const value=records.get(ref.toString('base64'));if(!value)throw{code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};const answer=Buffer.from(native.readOverride||value);rawReads.push(answer);return answer;},
-    remove(ref,digest){calls.remove++;trace.push('native:remove');const key=ref.toString('base64'),value=records.get(key);if(!value||!crypto.createHash('sha256').update(value).digest().equals(digest))throw{code:'DIGEST_MISMATCH',osStatus:null,mayRemain:true};value.fill(0);records.delete(key);},
+    read(ref){calls.read++;trace.push('native:read');if(native.readError)throw native.readError;const value=records.get(ref.toString('base64'));if(!value)throw{code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};const answer=Buffer.from(native.readOverride||value);rawReads.push(answer);return answer;},
+    remove(ref,digest){calls.remove++;trace.push('native:remove');if(native.removeError)throw native.removeError;const key=ref.toString('base64'),value=records.get(key);if(!value||!crypto.createHash('sha256').update(value).digest().equals(digest))throw{code:'DIGEST_MISMATCH',osStatus:null,mayRemain:true};value.fill(0);records.delete(key);},
     close(){calls.close++;trace.push('native:close');closed=true;}
   };
   return{native,calls,records,rawReads};
@@ -73,6 +73,43 @@ test('PENDING and existing empty profile both refuse first-create retry',async()
 });
 test('ambiguous native create failure retains pending and never retries',async()=>{const f=fixture();f.n.native.createError={code:'NATIVE_EXCEPTION',osStatus:null,mayRemain:true};assert.equal((await f.owner.initialize(f.request(A))).status,'pending');assert.equal((await f.owner.initialize(f.request(A))).status,'pending');assert.equal(f.n.calls.create,1);assert.ok(f.files.store.records.has('pending.json'));await f.owner.closeAndDrain();});
 test('index publication failure cleans only the returned create and retains PENDING',async()=>{const f=fixture();f.files.store.beforeWrite=name=>{if(name==='index.json')throw new Error('synthetic commit failure');};assert.equal((await f.owner.initialize(f.request(A))).status,'pending');assert.equal(f.n.calls.remove,1);assert.equal(f.n.records.size,0);assert.ok(f.files.store.records.has('pending.json'));await f.owner.initialize(f.request(A));assert.equal(f.n.calls.create,1);await f.owner.closeAndDrain();});
+test('known locked preflight returns safe current status before any pending intent or create',async()=>{
+ const f=fixture();f.n.native.initializeError={code:'DEFAULT_LOCKED',osStatus:null,mayRemain:false};
+ const result=await f.owner.initialize(f.request(A));assert.equal(result.status,'unavailable');
+ assert.deepEqual(result.diagnostic,{version:1,source:'live-operation',stage:'backend-preflight',code:'DEFAULT_LOCKED',osStatus:null,mayRemain:false,cleanup:'not-needed'});
+ assert.equal(f.files.store.exists,false);assert.equal(f.n.calls.create,0);assert.equal(f.trace.some(x=>x.startsWith('write:')),false);await f.owner.closeAndDrain();
+});
+test('create-time native failure keeps its own intent-bound reason across reopen without another create',async()=>{
+ const f=fixture();f.n.native.createError={code:'ITEM_CREATE_FAILED',osStatus:-25308,mayRemain:true};
+ const result=await f.owner.initialize(f.request(A));assert.equal(result.status,'pending');
+ assert.equal(result.diagnostic.stage,'create-protected-item');assert.equal(result.diagnostic.code,'ITEM_CREATE_FAILED');assert.equal(result.diagnostic.osStatus,-25308);
+ const original=Buffer.from(f.files.store.records.get('pending.json').bytes);assert.ok(f.files.store.records.has('diagnostic.json'));
+ await f.owner.closeAndDrain();const next=fixture({store:f.files.store,records:f.n.records});const restored=await next.owner.initialize(next.request(A));
+ assert.equal(restored.status,'pending');assert.equal(restored.diagnostic.source,'retained-intent');assert.equal(restored.diagnostic.code,'ITEM_CREATE_FAILED');
+ assert.equal(next.n.calls.initialize,0);assert.equal(next.n.calls.create,0);assert.equal(next.n.calls.read,0);assert.equal(next.counts().certificateCalls,0);
+ assert.ok(f.files.store.records.get('pending.json').bytes.equals(original));await next.owner.closeAndDrain();
+});
+test('failed own cleanup retains worst-case uncertainty while preserving the original publication stage',async()=>{
+ const f=fixture();f.files.store.beforeWrite=name=>{if(name==='index.json')throw Object.assign(new Error('Synthetic private publication path'),{mayRemain:false});};
+ f.n.native.removeError={code:'ITEM_DELETE_FAILED',osStatus:-25308,mayRemain:true};
+ const result=await f.owner.initialize(f.request(A));assert.equal(result.status,'pending');assert.equal(result.diagnostic.stage,'publish-index');
+ assert.equal(result.diagnostic.cleanup,'unconfirmed');assert.equal(result.diagnostic.mayRemain,true);assert.equal(result.diagnostic.code,'UNKNOWN');
+ assert.equal(JSON.stringify(result).includes('Synthetic private'),false);assert.equal(f.n.records.size,1);await f.owner.closeAndDrain();
+});
+test('verification preserves the native reference failure before identity-lost mapping and its own cleanup outcome',async()=>{
+ const f=fixture();f.n.native.readError={code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};
+ f.n.native.removeError={code:'REFERENCE_RESOLVE_FAILED',osStatus:-25300,mayRemain:true};
+ const result=await f.owner.initialize(f.request(A));assert.equal(result.status,'pending');assert.equal(result.diagnostic.stage,'verify-protected-item');
+ assert.equal(result.diagnostic.code,'REFERENCE_RESOLVE_FAILED');assert.equal(result.diagnostic.osStatus,-25300);assert.equal(result.diagnostic.cleanup,'unconfirmed');await f.owner.closeAndDrain();
+});
+test('uncaptured intent publication and legacy pending history cannot receive a fabricated retained cause',async()=>{
+ const f=fixture(),write=f.files.write;
+ f.files.write=(name,...args)=>{const value=write(name,...args);if(name==='pending.json')throw new Error('Synthetic post-publication capture failure');return value;};
+ assert.equal((await f.owner.initialize(f.request(A))).status,'pending');assert.equal(f.n.calls.create,0);assert.equal(f.files.store.records.has('diagnostic.json'),false);
+ await f.owner.closeAndDrain();const next=fixture({store:f.files.store});const result=await next.owner.initialize(next.request(A));
+ assert.deepEqual(result.diagnostic,{version:1,source:'legacy-intent',stage:'unknown',code:'UNKNOWN',osStatus:null,mayRemain:null,cleanup:'unknown'});
+ assert.equal(next.n.calls.create,0);assert.equal(next.trace.some(x=>x.startsWith('write:')),false);await next.owner.closeAndDrain();
+});
 test('stale after certificate await withholds and wipes DER before any enrollment',async()=>{const gate=deferred();let result;const f=fixture({create:async input=>{result=await realTLS.createRemoteCertificate(input);await gate.promise;return result;}});const task=f.owner.initialize(f.request(A));await new Promise(resolve=>setImmediate(resolve));f.setLive(false);gate.resolve();await assert.rejects(task,isCode('STALE_IDENTITY_REQUEST'));assert.equal(f.n.calls.create,0);assert.equal(f.files.store.exists,false);assert.ok(result.privateKeyDER.every(x=>x===0));await f.owner.closeAndDrain();});
 test('stale immediately after create uses its own guarded cleanup, not a second create',async()=>{const f=fixture();f.n.native.afterCreate=()=>f.setLive(false);await assert.rejects(f.owner.initialize(f.request(A)),isCode('STALE_IDENTITY_REQUEST'));assert.equal(f.n.calls.create,1);assert.equal(f.n.calls.remove,1);assert.ok(f.files.store.records.has('pending.json'));await f.owner.closeAndDrain();});
 test('public certificate reissue changes address/leaf while preserving key, device and OS payload',async()=>{

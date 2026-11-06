@@ -16,5 +16,15 @@ test('hard-linked private file is refused',{skip:!supported},t=>{const f=fixture
 test('oversized metadata and POSIX permissive files are refused',{skip:!supported},t=>{const f=fixture(t),p=path.join(f.dir,'pending.json');fs.writeFileSync(p,Buffer.alloc(1025),{mode:0o600});assert.throws(()=>f.files.read('pending.json'));if(!windows){fs.writeFileSync(p,JSON.stringify(pending()));fs.chmodSync(p,0o644);assert.throws(()=>f.files.read('pending.json'));}});
 test('a ready directory can be reopened without stale process-lock or PID adoption',{skip:!supported},t=>{const f=fixture(t),other=createPrivateIdentityFiles(f.root);other.open(false);other.assertDirectory();other.close();assert.equal(fs.existsSync(path.join(f.dir,'.owner-lock')),false);});
 test('private DER fields and unknown output names cannot enter metadata writer',{skip:!supported},t=>{const f=fixture(t);assert.throws(()=>f.files.write('pending.json',{...pending(),privateKeyDERbase64:'secret'},null,()=>{}));assert.throws(()=>f.files.write('private.key',pending(),null,()=>{}));assert.equal(fs.existsSync(path.join(f.dir,'private.key')),false);});
+test('intent-bound diagnostic journal remains private and cannot persist provider text or arbitrary codes',{skip:!supported},t=>{
+ const {captureIdentityDiagnostic,identityDiagnosticRecord}=require('../electron/remote-identity-diagnostics.cjs'),f=fixture(t);
+ const intent=f.files.write('pending.json',pending(),null,()=>{}),before=Buffer.from(intent.bytes);
+ const diagnostic=captureIdentityDiagnostic({stage:'create-protected-item',error:{code:'ITEM_CREATE_FAILED',osStatus:-25308,mayRemain:true},cleanup:'not-attempted'});
+ const record=identityDiagnosticRecord(intent.bytes,diagnostic),written=f.files.write('diagnostic.json',record,null,()=>{});
+ assert.deepEqual(JSON.parse(written.bytes),record);assert.ok(f.files.read('pending.json').bytes.equals(before));
+ const stat=fs.statSync(path.join(f.dir,'diagnostic.json'));if(!windows)assert.equal(stat.mode&0o777,0o600);assert.equal(stat.nlink,1);
+ assert.throws(()=>f.files.write('diagnostic.json',{...record,diagnostic:{...diagnostic,code:'Synthetic private provider detail'}},written,()=>{}));
+ assert.ok(f.files.read('diagnostic.json').bytes.equals(written.bytes));intent.bytes.fill(0);written.bytes.fill(0);before.fill(0);
+});
 test('a replaced original directory fails the owner fence',{skip:!supported},t=>{const f=fixture(t);fs.renameSync(f.dir,f.dir+'-old');fs.mkdirSync(f.dir,{mode:0o700});assert.throws(()=>f.files.assertDirectory());});
 test('Windows directory junction cannot replace the private profile',{skip:!windows},t=>{const f=fixture(t);fs.renameSync(f.dir,f.dir+'-old');fs.symlinkSync(f.dir+'-old',f.dir,'junction');assert.throws(()=>f.files.assertDirectory());});

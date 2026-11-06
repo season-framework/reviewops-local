@@ -288,7 +288,10 @@ void Perform(napi_env env, EnvTag* tag, Operation operation, const napi_value* a
     if (g.phase == Phase::Failed) { outcome.Fail("PROVIDER_FAILED"); return; }
     if (g.phase == Phase::New) { g.owner = tag; g.ownerSignal.store(tag); g.account = account; }
     else if (g.account != account) { outcome.Fail("ACCOUNT_IMMUTABLE"); return; }
-    if (NoUI(outcome) && Undefined(env, output, outcome)) g.phase = Phase::Ready;
+    // Observe the current default vault before JS publishes a new pending
+    // intent. Create still repeats this check: preflight cannot prevent a later
+    // lock or default change and is never proof about an old failed operation.
+    if (CaptureDefault(resources, outcome) && Undefined(env, output, outcome)) g.phase = Phase::Ready;
     else g.phase = Phase::Failed;
     return;
   }

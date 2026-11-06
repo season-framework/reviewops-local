@@ -26,7 +26,7 @@ async function fixture(t, hooks = {}) {
   const f = {root,store,project,foreign,review,listeners:[],appListeners:[],events:[],queue:[],closed:false};
   let providerStatus = hooks.initialStatus || 'ready';
   const provider = {
-    state() { return {status:providerStatus,backend:'electron-safe-storage',identity:providerStatus==='ready'?publicIdentity:null,errorCode:null}; },
+    state() { return hooks.providerState ? hooks.providerState() : {status:providerStatus,backend:'electron-safe-storage',identity:providerStatus==='ready'?publicIdentity:null,errorCode:null}; },
     async initialize(input) { f.events.push('initialize'); await hooks.initialize?.(input); input.assertCurrent(); providerStatus='ready'; },
     publicCertificate() { return {...publicIdentity,certificatePEM:'-----BEGIN CERTIFICATE-----\nTEST_ONLY\n-----END CERTIFICATE-----\n'}; },
     async acquireServerTLS(input) {
@@ -92,6 +92,33 @@ async function fixture(t, hooks = {}) {
   t.after(async()=>{try{await f.manager.closeAndDrain();}finally{try{store.close();}finally{fs.rmSync(root,{recursive:true,force:true});}}});
   return f;
 }
+
+test('remote identity diagnostic projects a strict copy while preserving legacy provider states',async t=>{
+  let current={status:'pending',backend:'electron-safe-storage',identity:null,errorCode:'IDENTITY_PENDING'};
+  const f=await fixture(t,{providerState:()=>current});
+  assert.equal(Object.hasOwn(f.manager.state().identity,'diagnostic'),false);
+  current.diagnostic={version:1,source:'retained-intent',stage:'create-protected-item',code:'DEFAULT_LOCKED',osStatus:null,mayRemain:false,cleanup:'not-needed'};
+  const observed=f.manager.state().identity.diagnostic;
+  assert.deepEqual(observed,current.diagnostic);assert.equal(Object.isFrozen(observed),true);
+  current.diagnostic.code='UNKNOWN';assert.equal(observed.code,'DEFAULT_LOCKED');
+  assert.deepEqual(f.events,[],'Reading diagnostics must not initialize or reopen protected identity');
+});
+
+test('remote identity diagnostic refuses accessors, private extras and success-state diagnostics',async t=>{
+  const legacy={status:'pending',backend:'electron-safe-storage',identity:null,errorCode:'IDENTITY_PENDING'};
+  let current=legacy,accessed=0;const f=await fixture(t,{providerState:()=>current});
+  const safe={version:1,source:'legacy-intent',stage:'unknown',code:'UNKNOWN',osStatus:null,mayRemain:null,cleanup:'unknown'};
+  const accessor={...safe};Object.defineProperty(accessor,'code',{get(){accessed++;return 'PRIVATE_NATIVE_MESSAGE';},enumerable:true});
+  const stateAccessor={...legacy};Object.defineProperty(stateAccessor,'diagnostic',{get(){accessed++;return safe;},enumerable:true});
+  try{
+    for(const value of [{...legacy,diagnostic:{...safe,message:'PRIVATE_NATIVE_MESSAGE'}},{...legacy,diagnostic:accessor},stateAccessor,
+      {...legacy,diagnostic:{...safe,osStatus:123456}},
+      {status:'ready',backend:'electron-safe-storage',identity:publicIdentity,errorCode:null,diagnostic:safe}]){
+      current=value;assert.throws(()=>f.manager.state(),error=>error.code==='IDENTITY_UNAVAILABLE'&&!error.message.includes('PRIVATE_NATIVE_MESSAGE'));
+    }
+    assert.equal(accessed,0);assert.deepEqual(f.events,[]);
+  }finally{current=legacy;}
+});
 
 test('remote coordinator is default off and rejects stale control generations before provider work',async t=>{
   const f=await fixture(t,{initialStatus:'not_initialized'}), state=f.manager.state();

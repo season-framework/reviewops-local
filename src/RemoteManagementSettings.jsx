@@ -28,7 +28,8 @@ const ERROR_TEXT=Object.freeze({
 });
 function failureMessage(value){let code;try{code=value?.code}catch{}return t(typeof code==='string'&&Object.hasOwn(ERROR_TEXT,code)?ERROR_TEXT[code]:'요청을 완료하지 못했습니다. 상태를 다시 불러온 뒤 확인하십시오.');}
 const fields=(value,keys)=>value&&typeof value==='object'&&!Array.isArray(value)&&
- Object.keys(value).length===keys.length&&keys.every(key=>Object.hasOwn(value,key));
+ [Object.prototype,null].includes(Object.getPrototypeOf(value))&&Reflect.ownKeys(value).length===keys.length&&
+ keys.every(key=>Object.hasOwn(Object.getOwnPropertyDescriptor(value,key)||{},'value'));
 const text=(value,max)=>typeof value==='string'&&value.length<=max&&!/[\u0000-\u001f\u007f]/.test(value);
 const iso=value=>typeof value==='string'&&!Number.isNaN(Date.parse(value))&&new Date(value).toISOString()===value;
 const nullableCode=value=>value===null||typeof value==='string'&&FIXED_CODE.test(value);
@@ -36,13 +37,25 @@ const ipv4=value=>typeof value==='string'&&/^(?:0|[1-9][0-9]{0,2})(?:\.(?:0|[1-9
  value.split('.').every(part=>Number(part)<=255)&&value!=='0.0.0.0'&&value!=='255.255.255.255'&&Number(value.split('.')[0])<224;
 const endpoint=value=>{try{const url=new URL(value);return url.protocol==='https:'&&!url.username&&!url.password&&
  ipv4(url.hostname)&&url.pathname==='/'&&!url.search&&!url.hash&&url.href===value}catch{return false}};
-const identityValid=value=>fields(value,['status','backend','identity','errorCode'])&&
+const DIAGNOSTIC_CODES=Object.freeze(["UNKNOWN", "IDENTITY_UNAVAILABLE", "IDENTITY_NOT_INITIALIZED", "IDENTITY_LOST", "IDENTITY_PENDING", "CERTIFICATE_REISSUE_REQUIRED", "INVALID_REMOTE_ADDRESS", "STALE_IDENTITY_REQUEST", "ACCOUNT_IMMUTABLE", "ACCOUNT_REFUSED", "ARGUMENTS_REFUSED", "ATTRIBUTES_REFUSED", "BUFFER_REFUSED", "CF_RELEASE_FAILED", "CLASS_MISMATCH", "CREATE_READBACK_MISMATCH", "CREATOR_ACCESS_FAILED", "CREATOR_APPLICATION_FAILED", "CREATOR_LIST_REFUSED", "DEFAULT_KEYCHAIN_FAILED", "DEFAULT_LOCKED", "DEFAULT_STATUS_FAILED", "DETACHED_BUFFER_REFUSED", "DIGEST_FAILED", "DIGEST_MISMATCH", "FINAL_DEFAULT_FAILED", "ITEM_CREATE_FAILED", "ITEM_DELETE_FAILED", "ITEM_KEYCHAIN_FAILED", "ITEM_READ_FAILED", "NAPI_FAILURE", "NATIVE_EXCEPTION", "NATIVE_SHAPE_REFUSED", "NO_UI_GET_FAILED", "NO_UI_NOT_ENFORCED", "NO_UI_SET_FAILED", "NO_UI_VERIFY_FAILED", "OWNER_CONTEXT_REFUSED", "OWN_CREATE_CLEANUP_FAILED", "PAYLOAD_SIZE_REFUSED", "PROVIDER_BUSY", "PROVIDER_CLOSED", "PROVIDER_FAILED", "PROVIDER_NOT_READY", "READ_FREE_FAILED", "REFERENCE_CREATE_FAILED", "REFERENCE_RESOLVE_FAILED", "REFERENCE_SIZE_REFUSED", "SHARED_BUFFER_REFUSED", "TARGET_CHANGED", "TARGET_MISMATCH"]);
+const DIAGNOSTIC_OS_STATUSES=Object.freeze([-50, -128, -25291, -25293, -25299, -25300, -25308, -25315, -34018, -67068, -67062, -67054, -67050, -67034, -67022]);
+export function identityDiagnosticValid(value){
+ return fields(value,['version','source','stage','code','osStatus','mayRemain','cleanup'])&&value.version===1&&
+ ["live-operation", "retained-intent", "legacy-intent"].includes(value.source)&&["unknown", "backend-preflight", "certificate-generation", "write-intent", "create-protected-item", "verify-protected-item", "publish-index", "publish-certificate", "commit-intent"].includes(value.stage)&&
+ DIAGNOSTIC_CODES.includes(value.code)&&(value.osStatus===null||DIAGNOSTIC_OS_STATUSES.includes(value.osStatus))&&
+ [true,false,null].includes(value.mayRemain)&&["unknown", "not-needed", "not-attempted", "confirmed", "unconfirmed"].includes(value.cleanup)&&
+ (value.source!=='retained-intent'||['create-protected-item','verify-protected-item','publish-index','publish-certificate','commit-intent'].includes(value.stage))&&
+ (value.cleanup!=='confirmed'||value.mayRemain===false)&&(value.cleanup!=='unconfirmed'||value.mayRemain===true)&&
+ (value.source!=='legacy-intent'||value.stage==='unknown'&&value.code==='UNKNOWN'&&value.osStatus===null&&value.mayRemain===null&&value.cleanup==='unknown');
+}
+export const identityValid=value=>fields(value,['status','backend','identity','errorCode',...(value&&Object.hasOwn(value,'diagnostic')?['diagnostic']:[])])&&
+ (!Object.hasOwn(value,'diagnostic')||value.status!=='ready'&&value.errorCode!==null&&identityDiagnosticValid(value.diagnostic))&&
  ['not_initialized','ready','unavailable','identity_lost','pending'].includes(value.status)&&
  ['macos-default-file-keychain','electron-safe-storage','unsupported'].includes(value.backend)&&nullableCode(value.errorCode)&&
  (value.identity===null||fields(value.identity,['deviceId','address','keyFingerprint','certificateFingerprint','validUntil'])&&
  typeof value.identity.deviceId==='string'&&ID.test(value.identity.deviceId)&&ipv4(value.identity.address)&&/^[0-9a-f]{64}$/.test(value.identity.keyFingerprint)&&
  /^[0-9a-f]{64}$/.test(value.identity.certificateFingerprint)&&iso(value.identity.validUntil))&&
- (value.status!=='ready'||value.identity!==null);
+ (value.status!=='ready'||value.identity!==null&&value.errorCode===null);
 function stateValid(value){
  if(!fields(value,['generation','managementAllowed','identity','web','app','pending','connections'])||
  !Number.isSafeInteger(value.generation)||value.generation<1||typeof value.managementAllowed!=='boolean'||!identityValid(value.identity)||
@@ -71,6 +84,27 @@ const unavailable=()=>new Error(t('원격 관리 상태를 확인하지 못했�
 const statusLabel=value=>({not_initialized:t('아직 설정하지 않았습니다.'),ready:t('이 컴퓨터의 신원을 확인했습니다.'),
  unavailable:t('이 컴퓨터에서 보안 저장소를 사용할 수 없습니다.'),identity_lost:t('저장한 신원을 확인하지 못했습니다.'),
  pending:t('이전 설정 결과를 확인해야 합니다.')})[value]||t('상태를 확인하지 못했습니다.');
+
+export function IdentityDiagnosticNotice({identity}){
+ const diagnostic=identity?.diagnostic;
+ if(!identityDiagnosticValid(diagnostic))return null;
+ const unknown=diagnostic.source==='legacy-intent'||diagnostic.stage==='unknown'||diagnostic.code==='UNKNOWN';
+ const message=unknown?'이전 등록의 실패 원인과 보호된 신원 항목의 상태를 확인할 수 없습니다. 기존 기록을 보존하고 새 신원을 만들지 마십시오.':diagnostic.code==='DEFAULT_LOCKED'?'작업 당시 기본 Keychain 잠금이 확인되었습니다. 현재 잠금 상태를 확인하고, 잠겨 있으면 macOS의 키체인 접근에서 잠금 해제한 뒤 상태를 새로고침하십시오.':'보안 저장소 작업을 완료하지 못했습니다. 아래 실패 단계와 OSStatus를 확인하십시오.';
+ const stages={'unknown':'단계 확인 불가','backend-preflight':'보안 저장소 사전 확인','certificate-generation':'인증서 준비','write-intent':'등록 시작 기록 저장','create-protected-item':'보호된 신원 저장','verify-protected-item':'저장한 신원 확인','publish-index':'신원 참조 저장','publish-certificate':'인증서 저장','commit-intent':'등록 완료 기록'};
+ const cleanup={'unknown':'정리 결과 확인 불가','not-needed':'정리 대상 없음','not-attempted':'정리 미실행','confirmed':'정리 확인됨','unconfirmed':'정리 결과 미확인'};
+ const h=React.createElement;
+ return h('section',{className:'muted',role:'note','aria-label':t('신원 설정 진단')},
+  h('p',null,t(message)),
+  diagnostic.source==='retained-intent'&&h('p',null,t("이 진단은 보존한 등록 시도의 기록입니다. 현재 보안 저장소 상태를 새로 검사한 결과가 아닙니다.")),
+  identity.status==='pending'&&h('p',null,t('미완료 등록 기록은 보존됩니다. 상태 새로고침은 등록을 다시 실행하거나 기록을 삭제하지 않습니다.')),
+  diagnostic.mayRemain===true&&h('p',null,t('보호된 신원 항목이 남아 있을 수 있습니다.')),
+  h('dl',null,h('dt',null,t('실패 단계')),h('dd',null,t(stages[diagnostic.stage])),h('dt',null,'OSStatus'),h('dd',null,diagnostic.osStatus===null?t('확인 불가'):String(diagnostic.osStatus)),h('dt',null,t('정리 상태')),h('dd',null,t(cleanup[diagnostic.cleanup]))));
+}
+export function identitySetupBlocked(state,disabled=false){
+ return disabled||['pending','identity_lost'].includes(state?.identity.status)||
+ !(['not_initialized','ready'].includes(state?.identity.status)||state?.identity.errorCode==='CERTIFICATE_REISSUE_REQUIRED')||
+ state?.web.enabled||state?.app.enabled||state?.web.state==='closing'||state?.app.state==='closing'||state?.web.errorCode==='WEB_DRAIN_UNCONFIRMED';
+}
 
 export default function RemoteManagementSettings({invoke,projects=[],active=true}){
  useLocale();
@@ -157,7 +191,7 @@ export default function RemoteManagementSettings({invoke,projects=[],active=true
  };
  if(!active)return null;
  const allowed=state?.managementAllowed===true&&fresh,disabled=!allowed||Boolean(busy),ready=state?.identity.status==='ready',identity=state?.identity.identity;
- const initializeDisabled=disabled||!(['not_initialized','ready'].includes(state?.identity.status)||state?.identity.errorCode==='CERTIFICATE_REISSUE_REQUIRED')||state?.web.enabled||state?.app.enabled||state?.web.state==='closing'||state?.app.state==='closing'||state?.web.errorCode==='WEB_DRAIN_UNCONFIRMED';
+ const initializeDisabled=identitySetupBlocked(state,disabled);
  const projectOptions=projects.filter(row=>row&&typeof row.id==='string'&&ID.test(row.id)&&typeof row.name==='string');
  return <div className="remote-management-settings">
   <section className="settings-panel" aria-label={t('원격 관리')}>
@@ -171,6 +205,7 @@ export default function RemoteManagementSettings({invoke,projects=[],active=true
   <section className="settings-panel" aria-label={t('이 컴퓨터 신원')}>
    <h2>{t('이 컴퓨터 신원')}</h2><p>{state?statusLabel(state.identity.status):t('상태를 불러오는 중입니다.')}</p>
    {state?.identity.errorCode&&<p className="form-error" role="alert">{failureMessage({code:state.identity.errorCode})}</p>}
+   <IdentityDiagnosticNotice identity={state?.identity}/>
    {identity&&<dl><dt>{t('기기 ID')}</dt><dd><code>{identity.deviceId}</code></dd><dt>{t('인증서 주소')}</dt><dd>{identity.address}</dd>
     <dt>{t('공개 키 지문 · SHA-256')}</dt><dd><code style={{overflowWrap:'anywhere'}}>{identity.keyFingerprint}</code></dd>
     <dt>{t('인증서 지문 · SHA-256')}</dt><dd><code style={{overflowWrap:'anywhere'}}>{identity.certificateFingerprint}</code></dd><dt>{t('인증서 만료')}</dt><dd>{identity.validUntil}</dd></dl>}

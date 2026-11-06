@@ -3,12 +3,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const {copyIdentityDiagnostic}=require('./remote-identity-diagnostics.cjs');
 const fields = Object.freeze({
   'pending.json': ['schema','operationId','deviceId','accountUUID','keyFingerprint'],
   'index.json': ['schema','deviceId','accountUUID','referenceBase64','payloadSHA256','keyFingerprint'],
-  'certificate.json': ['schema','deviceId','address','keyFingerprint','certificateFingerprint','validUntil','certificatePEM']
+  'certificate.json': ['schema','deviceId','address','keyFingerprint','certificateFingerprint','validUntil','certificatePEM'],
+  'diagnostic.json':['schema','pendingSHA256','diagnostic']
 });
-const bounds = Object.freeze({'pending.json':1024,'index.json':8192,'certificate.json':24576});
+const bounds = Object.freeze({'pending.json':1024,'index.json':8192,'certificate.json':24576,'diagnostic.json':1536});
 const unavailable = () => { throw Object.assign(new Error('The remote identity is unavailable.'), {code:'IDENTITY_UNAVAILABLE'}); };
 const plain = value => value && Object.getPrototypeOf(value) === Object.prototype;
 const id = s => [s.dev,s.ino,s.uid,s.mode].join(':');
@@ -82,6 +84,7 @@ function createPrivateIdentityFiles(dataPath) {
   }
   function encode(name,record) {
     if(!Object.hasOwn(fields,name)||!plain(record)||record.schema!==1||JSON.stringify(Object.keys(record).sort())!==JSON.stringify([...fields[name]].sort()))unavailable();
+    if(name==='diagnostic.json'){if(typeof record.pendingSHA256!=='string'||!/^[a-f0-9]{64}$/.test(record.pendingSHA256))unavailable();copyIdentityDiagnostic(record.diagnostic);}
     const bytes=Buffer.from(JSON.stringify(record));if(bytes.length<1||bytes.length>bounds[name]||bytes.includes(Buffer.from('PRIVATE KEY')))unavailable();return bytes;
   }
   function write(name,record,expected,guard) {

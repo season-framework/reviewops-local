@@ -2,6 +2,7 @@
 // Application-internal assembly seam for controlled tests, never an IPC/constructor option.
 const crypto = require('node:crypto');
 const net = require('node:net');
+const {captureIdentityDiagnostic,legacyIdentityDiagnostic,identityDiagnosticRecord,retainedIdentityDiagnostic}=require('./remote-identity-diagnostics.cjs');
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/;
 const HEX=/^[a-f0-9]{64}$/;
 const CODES=new Set(['IDENTITY_UNAVAILABLE','IDENTITY_NOT_INITIALIZED','IDENTITY_LOST','IDENTITY_PENDING','CERTIFICATE_REISSUE_REQUIRED','INVALID_REMOTE_ADDRESS','STALE_IDENTITY_REQUEST']);
@@ -40,12 +41,12 @@ function parseCertificate(snapshot,index) {
 }
 function parsePending(snapshot) {const v=canonical(snapshot);if(!exact(v,['schema','operationId','deviceId','accountUUID','keyFingerprint'])||v.schema!==1||![v.operationId,v.deviceId,v.accountUUID].every(x=>UUID.test(x))||!HEX.test(v.keyFingerprint))fail('IDENTITY_LOST');return v;}
 function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uuid=crypto.randomUUID,backend='macos-default-file-keychain'}) {
-  let status='not_initialized',errorCode=null,publicIdentity=null,closing=false,closePromise=null;
+  let status='not_initialized',errorCode=null,publicIdentity=null,diagnostic=null,closing=false,closePromise=null;
   let epoch=0,identityVersion=0,queue=Promise.resolve(),native=null,nativeAccount=null,nativeUsable=false,everProfileObserved=false;
   const leases=new Set();
   try{const original=loadNative(),names=['initialize','create','read','remove','close'];if(!original)fail('IDENTITY_UNAVAILABLE');const captured={};for(const name of names){const d=Object.getOwnPropertyDescriptor(original,name);if(!d||typeof d.value!=='function')fail('IDENTITY_UNAVAILABLE');captured[name]=d.value.bind(original);}native=Object.freeze(captured);}catch{fail('IDENTITY_UNAVAILABLE');}
-  function state() {let current=false;try{current=ownerCurrent()===true&&!closing;}catch{}if(!current)return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'IDENTITY_UNAVAILABLE'});if(status==='ready'&&publicIdentity&&Date.parse(publicIdentity.validUntil)<=now())return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'CERTIFICATE_REISSUE_REQUIRED'});return Object.freeze({status,backend,identity:status==='ready'&&publicIdentity?Object.freeze({deviceId:publicIdentity.deviceId,address:publicIdentity.address,keyFingerprint:publicIdentity.keyFingerprint,certificateFingerprint:publicIdentity.certificateFingerprint,validUntil:publicIdentity.validUntil}):null,errorCode});}
-  function set(code) {if(closing)code='IDENTITY_UNAVAILABLE';errorCode=code;status=code==='IDENTITY_PENDING'?'pending':code==='IDENTITY_LOST'?'identity_lost':code==='IDENTITY_NOT_INITIALIZED'?'not_initialized':'unavailable';publicIdentity=null;}
+  function state() {let current=false;try{current=ownerCurrent()===true&&!closing;}catch{}if(!current)return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'IDENTITY_UNAVAILABLE'});if(status==='ready'&&publicIdentity&&Date.parse(publicIdentity.validUntil)<=now())return Object.freeze({status:'unavailable',backend,identity:null,errorCode:'CERTIFICATE_REISSUE_REQUIRED'});return Object.freeze({status,backend,identity:status==='ready'&&publicIdentity?Object.freeze({deviceId:publicIdentity.deviceId,address:publicIdentity.address,keyFingerprint:publicIdentity.keyFingerprint,certificateFingerprint:publicIdentity.certificateFingerprint,validUntil:publicIdentity.validUntil}):null,errorCode,...(diagnostic?{diagnostic}:{})});}
+  function set(code,detail) {if(closing)code='IDENTITY_UNAVAILABLE';if(detail!==undefined)diagnostic=detail;else if(code!=='IDENTITY_PENDING')diagnostic=null;errorCode=code;status=code==='IDENTITY_PENDING'?'pending':code==='IDENTITY_LOST'?'identity_lost':code==='IDENTITY_NOT_INITIALIZED'?'not_initialized':'unavailable';publicIdentity=null;}
   function originalGuard(assertCurrent) {
     if(typeof assertCurrent!=='function')fail('STALE_IDENTITY_REQUEST');
     const originalEpoch=epoch;
@@ -65,11 +66,11 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
     if(!nativeUsable){if(nativeAccount)fail('IDENTITY_UNAVAILABLE');nativeAccount=account;native.initialize(account);nativeUsable=true;}
     guard();return native;
   }
-  function material(index,guard) {
+  function material(index,guard,onNativeFailure) {
     let raw,ref,der;
     try {
       ref=base64(index.referenceBase64,4096);const n=bindNative(index.accountUUID,guard);guard();
-      try{raw=n.read(ref);}catch(e){const d=e&&Object.getOwnPropertyDescriptor(e,'osStatus');if(d?.value===-25300)fail('IDENTITY_LOST');throw e;}
+      try{raw=n.read(ref);}catch(e){onNativeFailure?.(e);const d=e&&Object.getOwnPropertyDescriptor(e,'osStatus');if(d?.value===-25300)fail('IDENTITY_LOST');throw e;}
       guard();if(!Buffer.isBuffer(raw)||raw.length<1||raw.length>65536||sha(raw)!==index.payloadSHA256)fail('IDENTITY_LOST');
       const v=canonical({bytes:raw});if(!exact(v,['version','deviceId','privateKeyDERbase64'])||v.version!==1||v.deviceId!==index.deviceId)fail('IDENTITY_LOST');
       der=base64(v.privateKeyDERbase64,16384);if(keyValue(der).keyFingerprint!==index.keyFingerprint)fail('IDENTITY_LOST');
@@ -80,16 +81,21 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
     guard();if(!files.probe()){if(everProfileObserved||nativeAccount)fail('IDENTITY_LOST');return null;}everProfileObserved=true;files.open(false);guard();
     const pending=files.read('pending.json'),index=files.read('index.json'),certificate=files.read('certificate.json');
     try {
-      if(pending){parsePending(pending);fail('IDENTITY_PENDING');}
+      if(pending){
+        parsePending(pending);diagnostic=legacyIdentityDiagnostic();let saved;
+        try{saved=files.read('diagnostic.json');if(saved)diagnostic=retainedIdentityDiagnostic(canonical(saved),pending.bytes);}catch{ /* An optional diagnostic never authorizes recovery. */ }
+        finally{saved?.bytes.fill(0);}
+        fail('IDENTITY_PENDING');
+      }
       if(!index)fail('IDENTITY_LOST');
       const parsed=parseIndex(index),pub=parseCertificate(certificate,parsed);
       return{index,certificate,parsed,pub};
     } catch(e){pending?.bytes.fill(0);index?.bytes.fill(0);certificate?.bytes.fill(0);throw e;}
   }
   function currentBundle(bundle,guard) {guard();files.assertDirectory();files.unchanged(bundle.index,'index.json');files.unchanged(bundle.certificate,'certificate.json');files.unchanged(null,'pending.json');}
-  function publishPublic(value) {if(!publicIdentity||publicIdentity.certificateFingerprint!==value.certificateFingerprint||publicIdentity.deviceId!==value.deviceId)identityVersion++;publicIdentity=Object.freeze(value);status='ready';errorCode=null;}
+  function publishPublic(value) {if(!publicIdentity||publicIdentity.certificateFingerprint!==value.certificateFingerprint||publicIdentity.deviceId!==value.deviceId)identityVersion++;publicIdentity=Object.freeze(value);status='ready';errorCode=null;diagnostic=null;}
   async function enroll(address,guard) {
-    let generated,der,payload,reference,digest,pending,indexSnapshot,certificateSnapshot,committed=false,owned=false,pendingAttempted=false;
+    let generated,der,payload,reference,digest,pending,indexSnapshot,certificateSnapshot,nativeFailure,committed=false,owned=false,pendingAttempted=false,createAttempted=false,stage='certificate-generation';
     try {
       guard();generated=await tls.createRemoteCertificate({address});guard();
       if(!exact(generated,['certificatePEM','privateKeyDER','identity'])||!Buffer.isBuffer(generated.privateKeyDER))fail('IDENTITY_UNAVAILABLE');
@@ -98,23 +104,28 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
       payload=Buffer.from(JSON.stringify({version:1,deviceId,privateKeyDERbase64:der.toString('base64')}));if(payload.length>65536)fail('IDENTITY_UNAVAILABLE');digest=crypto.createHash('sha256').update(payload).digest();
       // Availability/account setup creates no item. A locked/unavailable OS
       // backend must not strand a brand-new profile in PENDING before any create.
-      const n=bindNative(accountUUID,guard);
+      stage='backend-preflight';const n=bindNative(accountUUID,guard);
       guard();if(files.probe()){everProfileObserved=true;fail('IDENTITY_PENDING');}files.open(true);everProfileObserved=true;guard();
-      pendingAttempted=true;pending=files.write('pending.json',{schema:1,operationId,deviceId,accountUUID,keyFingerprint:identity.keyFingerprint},null,guard);
-      guard();reference=n.create(payload);owned=true;
+      stage='write-intent';pendingAttempted=true;pending=files.write('pending.json',{schema:1,operationId,deviceId,accountUUID,keyFingerprint:identity.keyFingerprint},null,guard);
+      stage='create-protected-item';guard();createAttempted=true;reference=n.create(payload);owned=true;
       if(!Buffer.isBuffer(reference)||reference.length<1||reference.length>4096)fail('IDENTITY_PENDING');guard();
       const encodedDER=Buffer.from(der.toString('base64'));try{if(reference.includes(der)||reference.includes(payload)||reference.includes(encodedDER))fail('IDENTITY_PENDING');}finally{wipe(encodedDER);}
       const index={schema:1,deviceId,accountUUID,referenceBase64:reference.toString('base64'),payloadSHA256:digest.toString('hex'),keyFingerprint:identity.keyFingerprint};
-      let verified;try{verified=material(index,guard);if(!verified.equals(der))fail('IDENTITY_PENDING');}finally{verified?.fill(0);}
+      stage='verify-protected-item';let verified;try{verified=material(index,guard,error=>{nativeFailure=error;});if(!verified.equals(der))fail('IDENTITY_PENDING');}finally{verified?.fill(0);}
       guard();files.unchanged(pending,'pending.json');files.unchanged(null,'index.json');files.unchanged(null,'certificate.json');
-      indexSnapshot=files.write('index.json',index,null,guard);
-      certificateSnapshot=files.write('certificate.json',{schema:1,deviceId,...identity},null,guard);
-      guard();files.remove('pending.json',pending,guard);committed=true;guard();publishPublic({deviceId,...identity});return state();
+      stage='publish-index';indexSnapshot=files.write('index.json',index,null,guard);
+      stage='publish-certificate';certificateSnapshot=files.write('certificate.json',{schema:1,deviceId,...identity},null,guard);
+      stage='commit-intent';guard();files.remove('pending.json',pending,guard);committed=true;guard();publishPublic({deviceId,...identity});return state();
     } catch(e) {
       // Cleanup of only this returned create is allowed after revocation; no new identity is retried.
-      if(owned&&!committed&&Buffer.isBuffer(reference)&&reference.length>=1&&reference.length<=4096&&digest&&nativeUsable){try{native.remove(reference,digest);}catch{}}
-      if(codeOf(e)==='STALE_IDENTITY_REQUEST'){set(committed?'IDENTITY_NOT_INITIALIZED':pendingAttempted?'IDENTITY_PENDING':'IDENTITY_NOT_INITIALIZED');throw e;}
-      set(pendingAttempted||owned?'IDENTITY_PENDING':codeOf(e)==='IDENTITY_LOST'?'IDENTITY_UNAVAILABLE':codeOf(e));guard();return state();
+      let cleanup=createAttempted?'not-attempted':'not-needed',mayRemain=createAttempted?undefined:false;
+      if(owned){mayRemain=true;if(!committed&&Buffer.isBuffer(reference)&&reference.length>=1&&reference.length<=4096&&digest&&nativeUsable){try{native.remove(reference,digest);cleanup='confirmed';mayRemain=false;}catch{cleanup='unconfirmed';}}}
+      const detail=captureIdentityDiagnostic({stage,error:nativeFailure||e,mayRemain,cleanup});
+      // Persist only against the original successfully captured intent. A failed
+      // publication/capture cannot be reconstructed from a later path lookup.
+      if(pending&&!committed){let previous,written;try{guard();files.unchanged(pending,'pending.json');previous=files.read('diagnostic.json');written=files.write('diagnostic.json',identityDiagnosticRecord(pending.bytes,detail),previous,guard);files.unchanged(pending,'pending.json');}catch{ /* Keep the primary cause and the original intent. */ }finally{previous?.bytes.fill(0);written?.bytes.fill(0);}}
+      if(codeOf(e)==='STALE_IDENTITY_REQUEST'){set(committed?'IDENTITY_NOT_INITIALIZED':pendingAttempted?'IDENTITY_PENDING':'IDENTITY_NOT_INITIALIZED',detail);throw e;}
+      set(pendingAttempted||owned?'IDENTITY_PENDING':codeOf(e)==='IDENTITY_LOST'?'IDENTITY_UNAVAILABLE':codeOf(e),detail);guard();return state();
     } finally {wipe(der);wipe(generated?.privateKeyDER);wipe(payload);wipe(reference);wipe(digest);wipe(pending?.bytes);wipe(indexSnapshot?.bytes);wipe(certificateSnapshot?.bytes);}
   }
   async function initialize(options) {

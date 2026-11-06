@@ -20,6 +20,30 @@ macOS stores the identity key through an app-owned native Keychain module, indep
 
 Approved app sessions expire after 24 hours. Saved approved connections can reopen while that approval remains valid. Revocation, a restored dataset epoch, or a changed project birth invalidates access. Lost identity material requires explicit recovery or new pairing; the provider does not silently replace a lost key. Changing an address or expired certificate requires stopping incoming listeners and reissuing the certificate with the same identity key. Port binding errors are shown in Settings. Sleeping or shutting down the working computer makes it unavailable; routing and firewall configuration must allow the selected IP and port.
 
+### Enrollment failure diagnostics
+
+Settings shows a validated failure stage, an allowed numeric OSStatus when it was
+captured, and the cleanup outcome. It never displays an exception message,
+private-key material, bearer credential, Keychain reference or storage path.
+Earlier unfinished records without matching captured diagnostics remain
+explicitly unknown; present Keychain availability cannot establish their
+original failure.
+
+Only a recorded default-Keychain locked condition offers guidance to check its
+current state and, if still locked, unlock it in macOS Keychain Access and refresh
+status. A retained diagnostic describes the earlier operation, not a new check
+of the current vault. Refresh reads status; it does not
+repeat enrollment or clear its unfinished intent. A pending enrollment keeps
+identity setup disabled even after a lock is removed. Unknown outcomes do not
+promise that unlocking or restarting will resolve the enrollment.
+
+The native backend checks default-Keychain availability before a fresh
+enrollment intent is written and checks again when creating the protected item.
+Availability may change between those observations. A retained diagnostic is
+bound to the original intent bytes, is not a capability to read/remove an item,
+and never authorizes reset, automatic retry or replacement of the original
+identity. Missing or mismatched evidence stays unknown.
+
 ## Development and verification
 
 `npm run dev` builds the macOS N-API identity modules before starting Electron. The native build requires locally installed Node headers and Xcode Command Line Tools; it does not download headers. Electron Builder's `beforePack` hook builds both macOS architectures, and `afterSign` verifies the final signed module hashes. Windows uses no native identity addon. Renderer builds publish only the browser entry's dependency closure to the HTTPS listener, excluding the desktop entry and source files.
