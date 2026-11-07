@@ -1,0 +1,57 @@
+name: Experimental Windows driver package admission
+
+on:
+  push:
+    branches: [codex/windows-virtual-display-prototype]
+    paths:
+      - 'experiments/windows-virtual-display/PackageAdmission.h'
+      - 'experiments/windows-virtual-display/PackageAdmission.cpp'
+      - 'experiments/windows-virtual-display/PackageInspect.cpp'
+      - 'experiments/windows-virtual-display/ReviewOpsPackageInspect.vcxproj'
+      - 'experiments/windows-virtual-display/Fetch-AdmissionBaseline.ps1'
+      - 'experiments/windows-virtual-display/Build-PackageAdmission.ps1'
+      - 'experiments/windows-virtual-display/Test-PackageAdmission.ps1'
+      - 'experiments/windows-virtual-display/Directory.Build.props'
+      - 'experiments/windows-virtual-display/packages.config'
+      - '.github/workflows/windows-driver-package-admission.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: windows-driver-package-admission
+  cancel-in-progress: false
+
+jobs:
+  admission:
+    if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Fetch the exact original unsigned package fixture
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: ./experiments/windows-virtual-display/Fetch-AdmissionBaseline.ps1
+      - name: Compile and test package admission without installing a driver
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Build-PackageAdmission.ps1
+      - name: Preserve admission evidence and the inspector
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-windows-package-admission
+          path: |
+            experiments/windows-virtual-display/_out/package-admission-build.json
+            experiments/windows-virtual-display/_out/package-admission-msbuild.log
+            experiments/windows-virtual-display/_out/package-admission-restore.log
+            experiments/windows-virtual-display/_out/admission-baseline-source.json
+            experiments/windows-virtual-display/_out/admission/*.exe
+            experiments/windows-virtual-display/_out/admission-tests/*.json
+            experiments/windows-virtual-display/_out/admission-tests/*.log
+          retention-days: 7
+          if-no-files-found: warn

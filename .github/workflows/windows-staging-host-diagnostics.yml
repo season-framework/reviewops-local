@@ -1,0 +1,36 @@
+name: Experimental staging host diagnostics
+
+on:
+  push:
+    branches: [codex/windows-virtual-display-prototype]
+    paths:
+      - 'experiments/windows-virtual-display/Inspect-StagingHost.ps1'
+      - '.github/workflows/windows-staging-host-diagnostics.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-staging-host-diagnostics
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype'
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Read the OS staging ancestor security descriptors
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Inspect-StagingHost.ps1
+      - name: Preserve read-only host evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-staging-host-diagnostics
+          path: experiments/windows-virtual-display/_out/package-staging-host.json
+          retention-days: 7
+          if-no-files-found: warn

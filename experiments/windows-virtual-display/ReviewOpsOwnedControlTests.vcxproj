@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{7E316617-DF0F-432A-841C-8BB2BEEDD606}</ProjectGuid>
+    <RootNamespace>ReviewOpsOwnedControlTests</RootNamespace>
+    <ProjectName>ReviewOpsOwnedControlTests</ProjectName>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <PlatformToolset>v143</PlatformToolset>
+    <ConfigurationType>Application</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)_out\owned-control\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)_obj\owned-control-tests\</IntDir>
+    <TargetName>ReviewOpsOwnedControlTests</TargetName>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;NOMINMAX;WIN32_LEAN_AND_MEAN;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link>
+      <SubSystem>Console</SubSystem>
+      <UACExecutionLevel>AsInvoker</UACExecutionLevel>
+      <UACUIAccess>false</UACUIAccess>
+      <AdditionalDependencies>wintrust.lib;crypt32.lib;bcrypt.lib;advapi32.lib;shell32.lib;ole32.lib;uuid.lib;setupapi.lib;newdev.lib;swdevice.lib;cfgmgr32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <!-- The test translation unit includes OwnedDisplayControl.cpp for private units only. -->
+  <ItemGroup><ClCompile Include="PackageAdmission.cpp" /><ClCompile Include="PackageStaging.cpp" /><ClCompile Include="PackageInstall.cpp" /><ClCompile Include="OwnedSoftwareDevice.cpp" /><ClCompile Include="OwnedDisplayControlTests.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="PackageAdmission.h" /><ClInclude Include="PackageStaging.h" /><ClInclude Include="PackageInstall.h" /><ClInclude Include="OwnedSoftwareDevice.h" /><ClInclude Include="OwnedDisplayControl.h" /><ClInclude Include="ControlProtocol.h" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
