@@ -30,11 +30,24 @@ function copyCollected(modules,parent){
 test('actual production collection omits peer-only TLS imports before and closes the complete import graph after explicit declarations',async t=>{
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-tls-package-')));
  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+ const installedTemporary=new TmpDir();let installedModules;
+ try{installedModules=await new NpmNodeModulesCollector(repository,installedTemporary).getNodeModules({packageName:pkg.name});}
+ finally{await installedTemporary.cleanup();}
  for(const explicit of [false,true]){
   const label=explicit?'explicit-production':'peer-only',project=path.join(root,label),image=path.join(root,'image-'+label);fs.mkdirSync(project);
-  const dependencies=Object.fromEntries(['@peculiar/x509','reflect-metadata',...(explicit?Object.keys(required):[])].map(name=>[name,pkg.dependencies[name]]));
-  fs.writeFileSync(path.join(project,'package.json'),JSON.stringify({name:'owned-tls-package-fixture',version:'0.0.0',dependencies}));
-  fs.symlinkSync(path.join(repository,'node_modules'),path.join(project,'node_modules'),process.platform==='win32'?'junction':'dir');
+  // Keep a physical production tree with its matching root lock metadata.
+  // A node_modules symlink outside the fixture makes npm classify packages as
+  // external/extraneous and include their uninstalled development graph.
+  const metadata=structuredClone(pkg),installed=structuredClone(lock);
+  metadata.name='owned-tls-package-fixture';metadata.version='0.0.0';
+  installed.name=metadata.name;installed.version=metadata.version;
+  installed.packages[''].name=metadata.name;installed.packages[''].version=metadata.version;
+  if(!explicit)for(const name of Object.keys(required)){
+   delete metadata.dependencies[name];delete installed.packages[''].dependencies[name];
+  }
+  fs.writeFileSync(path.join(project,'package.json'),JSON.stringify(metadata));
+  fs.writeFileSync(path.join(project,'package-lock.json'),JSON.stringify(installed));
+  copyCollected(installedModules.nodeModules,project);
   const temporary=new TmpDir();let collected;
   try{collected=await new NpmNodeModulesCollector(project,temporary).getNodeModules({packageName:'owned-tls-package-fixture'});}
   finally{await temporary.cleanup();}
