@@ -1,0 +1,53 @@
+name: Experimental Windows owned device components
+
+on:
+  push:
+    branches: [codex/windows-virtual-display-prototype]
+    paths:
+      - 'experiments/windows-virtual-display/PackageInstall.h'
+      - 'experiments/windows-virtual-display/PackageInstall.cpp'
+      - 'experiments/windows-virtual-display/OwnedSoftwareDevice.h'
+      - 'experiments/windows-virtual-display/OwnedSoftwareDevice.cpp'
+      - 'experiments/windows-virtual-display/InstallerComponentTests.cpp'
+      - 'experiments/windows-virtual-display/ReviewOpsOwnedDevice.vcxproj'
+      - 'experiments/windows-virtual-display/ReviewOpsOwnedDeviceTests.vcxproj'
+      - 'experiments/windows-virtual-display/Build-InstallerComponents.ps1'
+      - 'experiments/windows-virtual-display/PackageAdmission.h'
+      - 'experiments/windows-virtual-display/PackageAdmission.cpp'
+      - 'experiments/windows-virtual-display/PackageStaging.h'
+      - 'experiments/windows-virtual-display/PackageStaging.cpp'
+      - 'experiments/windows-virtual-display/Directory.Build.props'
+      - 'experiments/windows-virtual-display/packages.config'
+      - '.github/workflows/windows-owned-device-components.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-owned-device-components
+  cancel-in-progress: false
+
+jobs:
+  components:
+    if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Compile production components and test without importing packages or creating devices
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Build-InstallerComponents.ps1
+      - name: Preserve component evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-windows-owned-device-components
+          path: |
+            experiments/windows-virtual-display/_out/owned-device-components-build.json
+            experiments/windows-virtual-display/_out/owned-device-components-*.log
+            experiments/windows-virtual-display/_out/owned-device/*.exe
+            experiments/windows-virtual-display/_out/owned-device/*.lib
+          retention-days: 7
+          if-no-files-found: warn
