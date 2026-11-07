@@ -34,13 +34,15 @@ try {
         $path = Join-Path $root $name
         $record['inputs'] += [ordered]@{ name = $name; bytes = (Get-Item -LiteralPath $path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }
     }
+    # Pin exact Git LF bytes and their exact Windows-checkout CRLF bytes.
+    # Do not normalize arbitrary input or relax binary package hashes.
     $acceptedAdmissionInputs = @{
-        'PackageAdmission.h' = 'c34452a3cefc48b52d796ae74b597c3042ecd8e182b830cfac4515ac856df88d'
-        'PackageAdmission.cpp' = '7501e9002115864e447a91bdbddc25fc9b621edc158ba19ece53cf3e046dbc0e'
+        'PackageAdmission.h' = @('c34452a3cefc48b52d796ae74b597c3042ecd8e182b830cfac4515ac856df88d', '3420cf4e0438014d0fe87a381a550b04f356cbdbdfb972524ad1c8dc958bd2be')
+        'PackageAdmission.cpp' = @('7501e9002115864e447a91bdbddc25fc9b621edc158ba19ece53cf3e046dbc0e', '82d30d53ca853b67696322ff202f6ac8869599cb26464b9926f097037835a62d')
     }
     foreach ($name in $acceptedAdmissionInputs.Keys) {
         $actual = @($record['inputs'] | Where-Object { $_.name -eq $name })
-        if ($actual.Count -ne 1 -or $actual[0].sha256 -ne $acceptedAdmissionInputs[$name]) { throw 'Changed admission inputs require their own accepted native evidence before reusing the baseline.' }
+        if ($actual.Count -ne 1 -or $actual[0].sha256 -notin $acceptedAdmissionInputs[$name]) { throw 'Changed admission inputs require their own accepted native evidence before reusing the baseline.' }
     }
     $record['admissionBaselineInputsMatched'] = $true
     $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
