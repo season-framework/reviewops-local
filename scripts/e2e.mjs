@@ -139,7 +139,7 @@ try {
     dialog.showMessageBox=async()=>({response:1});
   },backup);
   await page.getByRole('button',{name:'백업 파일 열기',exact:true}).click();
-  await expect(page.getByRole('alert')).toContainText('작성 중인 설정을 저장하거나 닫은 뒤 백업을 복원하십시오.');
+  await expect(page.locator('.error-banner[role="alert"]')).toContainText('작성 중인 설정을 저장하거나 닫은 뒤 백업을 복원하십시오.');
   assert.equal(await app.evaluate(()=>globalThis.__reviewopsBackupPickerCalls),0);
   assert.equal((await ipc(page,'snapshot')).reviews[0].title,'백업 이후 변경');
   const taskTabs=page.getByRole('tablist',{name:'작업 탭',exact:true});
