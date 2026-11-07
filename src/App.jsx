@@ -286,7 +286,7 @@ export default function App() {
    if(plan.kind==='project'&&(project?.dataset.projectId!==plan.entityId||project?.dataset.section!==plan.extra.section))continue;
    if(plan.kind==='group'&&(group?.dataset.opsGroupId!==plan.entityId||group?.dataset.opsSection!==plan.extra.section))continue;
    if(target.reviewId&&project?.dataset.reviewId!==target.reviewId)continue;
-   if(plan.kind==='ops'&&(target.section==='conversation'||!target.section?ops?.dataset.page!=='conversation':ops?.dataset.page!=='goals'))continue;
+   if(plan.kind==='ops'&&ops?.dataset.page!==(plan.goalId||target.section&&target.section!=='conversation'?'goals':'conversation'))continue;
    if(plan.goalId&&(ops?.dataset.selectedGoal!==plan.goalId||target.section&&target.section!=='goals'&&ops?.dataset.goalSection!==target.section))continue;
    return {shown:true};
   }

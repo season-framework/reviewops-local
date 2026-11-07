@@ -50,7 +50,7 @@ export default function OpsWorkspace({data,invoke,onDirtyChange,bridge=window.op
  useEffect(()=>()=>dirtyCallback.current?.(false),[]);
  const goals=state?.goals||[],goal=goals.find(row=>row.id===selected)||goals[0];
  useEffect(()=>{if(goal?.id){setSelected(goal.id);try{localStorage.setItem('reviewops.ops.selected',goal.id)}catch{}}},[goal?.id]);
- useEffect(()=>{if(goalNavigation){if(goalNavigation.goalId)setSelected(goalNavigation.goalId);setPage(goalNavigation.section==='conversation'?'conversation':'goals')}},[goalNavigation?.request]);
+ useEffect(()=>{if(goalNavigation){if(goalNavigation.goalId)setSelected(goalNavigation.goalId);setPage(goalNavigation.goalId||goalNavigation.section!=='conversation'?'goals':'conversation')}},[goalNavigation?.request]);
  const contextCallback=useRef(onContextChange);contextCallback.current=onContextChange;
  useEffect(()=>{if(active)contextCallback.current?.({view:'ops',section:page==='goals'?goalSection:'conversation',...(page==='goals'&&goal?{goalId:goal.id,projectId:goal.projectId||''}:{})})},[active,page,goalSection,goal?.id,goal?.projectId]);
  const filtered=goals.filter(row=>(status==='all'||row.status===status)&&`${row.name} ${row.description||''} ${row.workPath||''}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
