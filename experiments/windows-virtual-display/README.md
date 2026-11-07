@@ -49,6 +49,16 @@ The native build retains separate InfVerif `/u /v /info /osver` logs for x64 bui
 
 Inf2Cat then validates a fresh directory containing only this generated INF and DLL for Windows 10 1803/22H2 and Windows 11 21H2/24H2 x64, and generates an unsigned catalog. The build records all three package files and refuses a signed catalog. Catalog creation checks package layout and signability prerequisites; it does not sign, stage or install a driver, import a certificate or change boot/security settings.
 
+## Package admission component
+
+`ReviewOpsDriverPackageInspect.exe --inspect <absolute-directory>` is an unelevated, read-only inspection command. It admits only the three fixed package filenames, rejects reparse paths/hard links/extra files and pins the approved INF/DLL hashes from source `884e875`. It retains original read handles and resolves subsequent lookups through the original volume GUID rather than a mutable drive-letter alias.
+
+Catalog verification uses SIP member hashes from the original file handles and the explicit catalog with `DRIVER_ACTION_VERIFY`. Only a zero trust result followed by the additional Microsoft production-root chain policy can produce a move-only `VerifiedPackage`. It does not fall back to generic Authenticode, enable test roots, register catalogs or change trust/boot settings. Missing offline revocation evidence can cause refusal. Positive acceptance of a real approved WHQL/attested package still requires native qualification; source implementation and rejection tests cannot establish that result.
+
+The returned object retains its handles. Its `Revalidate()` method checks the originals; JSON output is not an installation ticket. A future elevated installer must copy those handles into fresh protected staging, recheck that copy and its signature, and then perform scoped SetupAPI operations. Neither the CLI nor this component installs a driver or creates a device.
+
+The separate admission workflow downloads and checks the exact original unsigned package archive from run `42338440488`, then builds only the inspector and runs negative cases. It does not rebuild that driver or repeat the full prototype/whole-product QA. The original Actions fixture is a development artifact with finite retention; a missing/expired or changed artifact fails acquisition rather than silently selecting a newer package. Test receipts distinguish unsigned/tampered/missing/extra/reparse/hard-link/argument refusals from an optional unrelated Microsoft catalog fixture, and record positive signed-package admission as unexecuted.
+
 ## Remaining verification
 
 No driver, broker or display operation has been executed as part of authoring this source. No certificate was created/imported, no test mode or signature setting was changed, and no driver was installed. Each changed installation route still requires its targeted Windows INF validation before installation or signing.
