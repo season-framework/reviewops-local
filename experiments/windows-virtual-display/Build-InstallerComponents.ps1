@@ -29,7 +29,7 @@ try {
     $dirty = (& git -C $root status --porcelain --untracked-files=all -- . | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit the installer/device component inputs before building.' }
     $record['inputs'] = @()
-    foreach ($name in @('PackageAdmission.h', 'PackageAdmission.cpp', 'PackageStaging.h', 'PackageStaging.cpp', 'PackageInstall.h', 'PackageInstall.cpp', 'OwnedSoftwareDevice.h', 'OwnedSoftwareDevice.cpp', 'InstallerComponentTests.cpp',
+    foreach ($name in @('ControlProtocol.h', 'PackageAdmission.h', 'PackageAdmission.cpp', 'PackageStaging.h', 'PackageStaging.cpp', 'PackageInstall.h', 'PackageInstall.cpp', 'OwnedSoftwareDevice.h', 'OwnedSoftwareDevice.cpp', 'InstallerComponentTests.cpp',
                        'ReviewOpsOwnedDevice.vcxproj', 'ReviewOpsOwnedDeviceTests.vcxproj', 'Directory.Build.props', 'packages.config')) {
         $path = Join-Path $root $name
         $record['inputs'] += [ordered]@{ name = $name; bytes = (Get-Item -LiteralPath $path).Length; sha256 = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash.ToLowerInvariant() }

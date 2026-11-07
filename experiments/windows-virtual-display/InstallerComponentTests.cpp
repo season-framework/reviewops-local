@@ -68,7 +68,9 @@ device::TrustedProjectBinding Binding(DWORD seed = 1) {
             {seed + 2, 0x3344, 0x4c55, {0x80, 1, 2, 3, 4, 5, 6, 9}}};
 }
 bool SameGuid(const GUID& left, const GUID& right) { return !std::memcmp(&left, &right, sizeof(left)); }
-bool ExactDeviceSecurity(PSECURITY_DESCRIPTOR descriptor) {
+bool ExactDeviceSecurity(const SECURITY_DESCRIPTOR* input) {
+    // The legacy query APIs take non-const pointers but only read this descriptor.
+    auto* descriptor = const_cast<SECURITY_DESCRIPTOR*>(input);
     if (!descriptor || !IsValidSecurityDescriptor(descriptor)) return false;
     PSID owner = nullptr; BOOL defaulted = FALSE;
     if (!GetSecurityDescriptorOwner(descriptor, &owner, &defaulted) || !owner || !IsWellKnownSid(owner, WinBuiltinAdministratorsSid)) return false;

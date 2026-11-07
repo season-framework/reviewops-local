@@ -8,6 +8,7 @@ on:
       - 'experiments/windows-virtual-display/PackageInstall.cpp'
       - 'experiments/windows-virtual-display/OwnedSoftwareDevice.h'
       - 'experiments/windows-virtual-display/OwnedSoftwareDevice.cpp'
+      - 'experiments/windows-virtual-display/ControlProtocol.h'
       - 'experiments/windows-virtual-display/InstallerComponentTests.cpp'
       - 'experiments/windows-virtual-display/ReviewOpsOwnedDevice.vcxproj'
       - 'experiments/windows-virtual-display/ReviewOpsOwnedDeviceTests.vcxproj'

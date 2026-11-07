@@ -141,7 +141,8 @@ void StartEnumeration(EnumerationState& state, const EnumerationOps& ops, const 
     SW_DEVICE_CREATE_INFO info{}; info.cbSize = sizeof(info); info.pszInstanceId = nonce.data();
     info.pszzHardwareIds = HardwareIds; info.pContainerId = &binding.sessionId;
     info.CapabilityFlags = SWDeviceCapabilitiesRemovable | SWDeviceCapabilitiesDriverRequired;
-    info.pszDeviceDescription = L"ReviewOps project-owned virtual display"; info.pSecurityDescriptor = descriptor;
+    info.pszDeviceDescription = L"ReviewOps project-owned virtual display";
+    info.pSecurityDescriptor = static_cast<const SECURITY_DESCRIPTOR*>(descriptor);
     HSWDEVICE returned = nullptr;
     const HRESULT started = ops.create(Enumerator, Parent, &info, 0, nullptr, &EnumerationCallback, &state, &returned);
     AcquireSRWLockExclusive(&state.callbackLock); state.original = returned; ReleaseSRWLockExclusive(&state.callbackLock);
