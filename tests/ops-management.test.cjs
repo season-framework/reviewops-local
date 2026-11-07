@@ -79,6 +79,30 @@ test('management conversations use separate persistent threads, private working 
   assert.equal(restored.goals.length, 0);
 });
 
+test('reconciled management messages retain original positions metadata and timestamps across restart', async t => {
+  const messages = [{itemId: 'first-replayed-answer', text: 'First original answer'}, {itemId: 'second-replayed-answer', text: 'Second original answer'}];
+  const h = await harness(t, {reconcile: async (input, state) => {
+    for (const message of messages) await state.options.onEvent({type: 'message', role: 'assistant', partial: false, ...message});
+    return {threadId: input.threadId, state: 'idle', backgroundState: 'empty', backgroundCount: 0, delivery: 'accepted', outcome: 'completed'};
+  }}), id = await h.create();
+  await h.request(id); const session = h.sessions.get(id);
+  await session.options.onEvent({type: 'message', role: 'assistant', partial: false, ...messages[0]});
+  const project = await h.tool(id, 'ops_projects_create', {name: 'Interleaved real project result', workPath: h.root});
+  await session.options.onEvent({type: 'message', role: 'assistant', partial: false, ...messages[1]});
+  h.manager.store.update(data => { data.managementConversations[0].conversation.find(row => row.id === messages[0].itemId).links = [{kind: 'project', id: project.data.id, name: project.data.name}]; });
+  await h.complete(id); const before = h.manager.snapshot().managementConversations[0], starts = h.calls.filter(row => row.kind === 'start').length;
+  assert.deepEqual(before.conversation.map(row => row.role), ['user', 'assistant', 'tool', 'assistant']);
+  await h.manager.management.reconnect(id);
+  assert.deepEqual(h.manager.snapshot().managementConversations[0].conversation, before.conversation);
+  await h.manager.close(); const reopened = new OpsManager(h.options); h.managers.push(reopened); await reopened.init(); await reopened.management.reconnect(id);
+  assert.deepEqual(reopened.snapshot().managementConversations[0].conversation, before.conversation);
+  assert.equal(h.calls.filter(row => row.kind === 'start').length, starts, 'Metadata replay never sends another model turn');
+  const restored = h.sessions.get(id); await restored.options.onEvent({type: 'message', role: 'assistant', itemId: 'genuinely-new-message', text: 'New message appends', partial: false});
+  const after = reopened.snapshot().managementConversations[0].conversation; assert.deepEqual(after.slice(0, -1), before.conversation); assert.equal(after.at(-1).id, 'genuinely-new-message');
+  await restored.options.onEvent({type: 'message', role: 'assistant', itemId: messages[0].itemId, text: 'Updated same original message', partial: false});
+  const updated = reopened.snapshot().managementConversations[0].conversation; assert.deepEqual(updated.map(row => row.id), after.map(row => row.id)); assert.equal(updated[1].createdAt, before.conversation[1].createdAt); assert.deepEqual(updated[1].links, before.conversation[1].links); assert.equal(updated[1].text, 'Updated same original message');
+});
+
 test('typed management tools create actual projects/goals/schedules and link results without using the management thread for goal work', async t => {
   const h = await harness(t), id = await h.create(); await h.request(id, 'Create a project and a goal; then start that goal.');
   const projectResult = await h.tool(id, 'ops_projects_create', {name: 'Managed project', workPath: h.root, groupName: 'Release work'}, 'project-add');

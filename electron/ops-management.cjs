@@ -129,7 +129,12 @@ class OpsManagement {
       const key = id + ':' + event.itemId, previous = this.messages.get(key) || this._conversation(id).conversation.find(item => item.id === event.itemId);
       const item = {id: event.itemId, role: event.role || 'assistant', text: String(event.text || '').slice(0, 4 * 1024 * 1024), createdAt: previous?.createdAt || this.manager._time(), partial: Boolean(event.partial)};
       if (event.partial) { this.messages.set(key, item); this.manager._notify(); }
-      else { this.messages.delete(key); this._change(id, row => { row.conversation = row.conversation.filter(message => message.id !== item.id); row.conversation.push(item); row.updatedAt = this.manager._time(); }); }
+      else { this.messages.delete(key); this._change(id, row => {
+        const index = row.conversation.findIndex(message => message.id === item.id);
+        if (index < 0) row.conversation.push(item);
+        else row.conversation[index] = {...row.conversation[index], ...item, createdAt: row.conversation[index].createdAt};
+        row.updatedAt = this.manager._time();
+      }); }
       return;
     }
     if (event.type === 'thread') this._change(id, row => { row.threadId = event.threadId; });
