@@ -233,7 +233,7 @@ void Retain(const DeviceKey& key, const std::shared_ptr<Slot>& slot, bool blocke
 } // namespace internal
 
 struct OwnedDisplayControl::Impl : internal::ProtocolState {
-    std::mutex operation;
+    std::mutex operationGate;
     std::atomic<bool> retired{false};
     std::shared_ptr<internal::Slot> slot;
     internal::DeviceKey key;
@@ -322,7 +322,7 @@ ControlObservation OwnedDisplayControl::Perform(Operation operation) noexcept {
     ControlObservation observation; observation.operation = operation;
     if (!impl_) { observation.reason = "CONTROL_OWNER_RETIRED"; observation.retired = true; return observation; }
     try {
-        std::lock_guard<std::mutex> lock(impl_->operation); std::lock_guard<std::mutex> io(impl_->slot->gate);
+        std::lock_guard<std::mutex> lock(impl_->operationGate); std::lock_guard<std::mutex> io(impl_->slot->gate);
         try { return impl_->Execute(operation); }
         catch (const internal::Failure& error) {
             observation = impl_->trace;
@@ -345,7 +345,7 @@ CloseObservation OwnedDisplayControl::Close() noexcept {
     if (!impl_) return observation;
     impl_->retired.store(true);
     try {
-        std::lock_guard<std::mutex> lock(impl_->operation); std::lock_guard<std::mutex> io(impl_->slot->gate);
+        std::lock_guard<std::mutex> lock(impl_->operationGate); std::lock_guard<std::mutex> io(impl_->slot->gate);
         if (impl_->slot->everOpened && (!impl_->cleanEmpty || !internal::Zero(impl_->ownedMonitor.monitorId))) impl_->Block();
         observation.ioCompletionConfirmed = impl_->slot->Drain();
         if (!observation.ioCompletionConfirmed) impl_->Block();
@@ -371,7 +371,7 @@ ControlOpening OpenOwnedDisplayControl(std::shared_ptr<softwaredevice::OwnedSoft
         auto impl = std::make_unique<OwnedDisplayControl::Impl>(); impl->key = {instance, binding}; impl->originalPath = path;
         impl->slot = std::make_shared<internal::Slot>(); impl->slot->device = std::move(device);
         opening.owner = std::unique_ptr<OwnedDisplayControl>(new OwnedDisplayControl(std::move(impl)));
-        auto& state = *opening.owner->impl_; std::lock_guard<std::mutex> lock(state.operation); std::lock_guard<std::mutex> io(state.slot->gate);
+        auto& state = *opening.owner->impl_; std::lock_guard<std::mutex> lock(state.operationGate); std::lock_guard<std::mutex> io(state.slot->gate);
         internal::Acquire(state.key, state.slot); state.registered = true;
         state.Current(); state.slot->file = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
             nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, nullptr);
@@ -384,15 +384,15 @@ ControlOpening OpenOwnedDisplayControl(std::shared_ptr<softwaredevice::OwnedSoft
             opening.observation.reason = !opening.observation.mutationsBlocked ? "CONTROL_ORIGINAL_FILE_ADMITTED" : "CONTROL_OBSERVE_ONLY";
         }
     } catch (const internal::Failure& error) {
-        if (opening.owner) { try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operation); opening.observation = opening.owner->impl_->trace; } catch (...) {} }
+        if (opening.owner) { try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operationGate); opening.observation = opening.owner->impl_->trace; } catch (...) {} }
         opening.observation.reason = error.reason; opening.observation.win32Error = error.code; opening.observation.protocolConfirmed = false;
     }
     catch (...) {
-        if (opening.owner) { try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operation); opening.observation = opening.owner->impl_->trace; } catch (...) {} }
+        if (opening.owner) { try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operationGate); opening.observation = opening.owner->impl_->trace; } catch (...) {} }
         opening.observation.reason = "CONTROL_OPEN_UNCONFIRMED"; opening.observation.win32Error = ERROR_UNHANDLED_EXCEPTION; opening.observation.protocolConfirmed = false;
     }
     if (opening.owner && !opening.observation.protocolConfirmed) {
-        try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operation); opening.owner->impl_->Block(); } catch (...) {}
+        try { std::lock_guard<std::mutex> lock(opening.owner->impl_->operationGate); opening.owner->impl_->Block(); } catch (...) {}
         opening.owner->Close(); opening.observation.retired = true; opening.observation.mutationsBlocked = true;
     }
     return opening;
