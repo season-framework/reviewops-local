@@ -87,3 +87,12 @@ test('parallel goal creates return each own committed ID and link after deferred
  const first=h.call('ops_goals_save',{requestId,name:'First parallel',prompt:'First'}),second=h.call('ops_goals_save',{requestId,name:'Second parallel',prompt:'Second'});await new Promise(resolve=>setImmediate(resolve));pending.get('Second parallel')();const b=await second;pending.get('First parallel')();const a=await first;
  assert.equal(a.ok,true);assert.equal(b.ok,true);assert.equal(a.data.name,'First parallel');assert.equal(b.data.name,'Second parallel');assert.notEqual(a.data.id,b.data.id);assert.equal(a.links[0].id,a.data.id);assert.equal(b.links[0].id,b.data.id);
 });
+test('explicit create from a selected review adds a different review and leaves the selected original unchanged',async t=>{
+ const h=await harness(t),requestId=await h.start(),before=h.store.get('reviews',h.review.id),saved=await h.call('ops_reviews_save',{requestId,operationId:'new-related-issue',mode:'create',title:'Another issue in this project',body:'New separate review.'});assert.equal(saved.ok,true);assert.notEqual(saved.data.review.id,h.review.id);assert.equal(saved.data.review.projectId,h.a.id);assert.deepEqual(h.store.get('reviews',h.review.id),before);assert.equal(h.store.snapshot().reviews.length,2);
+});
+test('selected-review requests read sibling context without granting sibling writes and can respond to their own new review',async t=>{
+ const h=await harness(t),sibling=h.store.saveReview({projectId:h.a.id,title:'Existing sibling',body:'Duplicate-check material'}),requestId=await h.start();
+ const read=await h.call('ops_reviews_read',{requestId,reviewId:sibling.id});assert.equal(read.ok,true);assert.equal(read.data.review.id,sibling.id);
+ const denied=await h.call('ops_reviews_respond',{requestId,operationId:'must-not-reply-sibling',reviewId:sibling.id,body:'No grant'});assert.equal(denied.ok,false);assert.equal(denied.error.code,'OPS_TARGET_MISMATCH');
+ const created=await h.call('ops_reviews_save',{requestId,operationId:'new-own',mode:'create',title:'New owned review',body:'Actual new issue'}),reply=await h.call('ops_reviews_respond',{requestId,operationId:'reply-own-new',reviewId:created.data.review.id,body:'Own new result'});assert.equal(reply.ok,true);assert.equal(reply.data.activity.reviewId,created.data.review.id);
+});

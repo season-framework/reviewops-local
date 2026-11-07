@@ -34,12 +34,13 @@ function createWorkspaceAdapter({getStore, assertReady = () => {}, enqueue = cal
       const current = readDataset(store.db);
       if (current.epoch !== context.datasetEpoch || context.projectId && current.projects.find(row => row.projectId === context.projectId)?.birth !== context.projectBirth || context.groupId && !store.snapshot().groups.some(row => row.id === context.groupId) || context.reviewId && revision(store, context.reviewId).generation !== context.reviewGeneration) fail('OPS_MANAGEMENT_STALE', '요청을 시작한 원래 대상이 변경되었습니다. 새 요청으로 다시 선택하십시오.');
     };
-    return {context, guard, origin};
+    return {context, guard, origin, createdReviews: new Map()};
   };
-  const target = (args, binding, guard, reviewRequired = false) => {
-    guard(); binding?.guard(); const store = getStore(), context = binding?.context || {}, reviewId = args.reviewId || context.reviewId || '';
+  const target = (args, binding, guard, reviewRequired = false, creating = false, siblingRead = false) => {
+    guard(); binding?.guard(); const store = getStore(), context = binding?.context || {}, reviewId = creating ? '' : args.reviewId || context.reviewId || '';
     const review = reviewId ? store.get('reviews', reviewId) : null, projectId = args.projectId || review?.projectId || context.projectId || '';
-    if (!projectId || !store.snapshot().projects.some(row => row.id === projectId) || review && review.projectId !== projectId || context.projectId && context.projectId !== projectId || context.reviewId && review && context.reviewId !== review.id) fail('OPS_TARGET_MISMATCH', '이 요청의 작업 대상과 리뷰가 일치하지 않습니다. 대상 선택 후 새 요청을 보내십시오.');
+    if (!projectId || !store.snapshot().projects.some(row => row.id === projectId) || review && review.projectId !== projectId || context.projectId && context.projectId !== projectId || !siblingRead && context.reviewId && review && context.reviewId !== review.id && !binding.createdReviews?.has(review.id)) fail('OPS_TARGET_MISMATCH', '이 요청의 작업 대상과 리뷰가 일치하지 않습니다. 대상 선택 후 새 요청을 보내십시오.');
+    if (review && binding?.createdReviews?.has(review.id) && binding.createdReviews.get(review.id) !== revision(store, review.id).generation) fail('OPS_MANAGEMENT_STALE', '이 요청에서 만든 원래 리뷰가 변경되었습니다.');
     if (reviewRequired && !review) fail('OPS_REVIEW_NOT_FOUND', '응답할 리뷰를 선택하거나 리뷰 ID를 지정하십시오.');
     return {store, projectId, review};
   };
@@ -56,9 +57,10 @@ function createWorkspaceAdapter({getStore, assertReady = () => {}, enqueue = cal
     listReviews(args, binding, guard) {
       const {store, projectId} = target(args, binding, guard); return {projectId, reviews: store.snapshot().reviews.filter(row => row.projectId === projectId).slice(-200).map(({id, title, status, number, updatedAt}) => ({id, title, status, number, updatedAt, revision: revision(store, id).revision}))};
     },
-    readReview(args, binding, guard) { const {store, review} = target(args, binding, guard, true); return readReview(store, review); },
+    readReview(args, binding, guard) { const {store, review} = target(args, binding, guard, true, false, true); return readReview(store, review); },
     async saveReview(args, binding, guard, operationId) {
-      const {store, projectId, review} = target(args, binding, guard);
+      if (args.mode !== undefined && !['create', 'update'].includes(args.mode) || args.mode === 'create' && args.reviewId) fail('INVALID_OPS_REQUEST', '새 리뷰 등록과 기존 리뷰 수정을 구분하십시오.');
+      const {store, projectId, review} = target(args, binding, guard, args.mode === 'update', args.mode === 'create');
       if (args.title !== undefined || !review) bounded(args.title, 500, !review); if (args.body !== undefined) bounded(args.body, 100000);
       const admission = store.captureWriteAdmission(), birth = store.peerReadDataset().projects.find(row => row.projectId === projectId)?.birth;
       const result = await enqueue(() => store.transaction(() => {
@@ -68,6 +70,7 @@ function createWorkspaceAdapter({getStore, assertReady = () => {}, enqueue = cal
         const saved = store.saveReview({...(review ? {id: review.id} : {}), projectId, ...(args.title !== undefined ? {title: args.title} : {}), ...(args.body !== undefined ? {body: args.body} : {}), ...(args.status !== undefined ? {status: args.status} : {}), ...(args.priority !== undefined ? {priority: args.priority} : {}), ...(args.category !== undefined ? {category: args.category} : {})});
         return readReview(store, saved);
       }));
+      if (!review && binding) binding.createdReviews.set(result.review.id, result.review.generation);
       guard(); onChange(); return {data: result, message: 'ReviewOps 리뷰를 저장하고 다시 확인했습니다: ' + result.review.title, links: [reviewLink(result.review)]};
     },
     async respond(args, binding, guard) {
@@ -100,7 +103,7 @@ function createWorkspaceAdapter({getStore, assertReady = () => {}, enqueue = cal
       } catch (error) { if (created && !store.snapshot().attachments.some(row => row.id === operationId)) fs.rmSync(destination, {force: true}); throw error; }
     },
     readAttachment(args, binding, guard) {
-      const {store, review} = target(args, binding, guard, true), item = store.get('attachments', args.attachmentId || binding.context.documentId);
+      const {store, review} = target(args, binding, guard, true, false, true), item = store.get('attachments', args.attachmentId || binding.context.documentId);
       if (item.reviewId !== review.id || !attachmentPath || path.basename(item.storageName) !== item.storageName) fail('OPS_TARGET_MISMATCH', '이 요청의 원래 리뷰 문서만 읽을 수 있습니다.');
       const fd = fs.openSync(path.join(attachmentPath, item.storageName), fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0)); let bytes;
       try { const stat = fs.fstatSync(fd); if (!stat.isFile() || stat.size !== item.size || stat.size > 2 * 1024 * 1024) fail('OPS_DOCUMENT_TOO_LARGE', '이 도구는 2 MiB 이하의 저장 문서를 읽습니다.'); bytes = fs.readFileSync(fd); } finally { fs.closeSync(fd); }
