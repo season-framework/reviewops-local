@@ -8,15 +8,15 @@
   "private": true,
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "node scripts/dev.mjs",
-    "start": "electron .",
+    "dev": "node scripts/prepare-remote-identity.cjs && node scripts/dev.mjs",
+    "start": "node scripts/prepare-remote-identity.cjs && electron .",
     "build": "node scripts/licenses.mjs && vite build && node scripts/copy-locales.mjs",
     "test": "node --test tests/*.test.cjs",
     "test:e2e": "node scripts/e2e.mjs",
     "test:ssh-ui": "node scripts/e2e-ssh.mjs",
     "test:ssh-diagnostics": "node scripts/e2e-ssh-diagnostics.mjs",
-    "package": "node scripts/build-info.mjs --clear && npm run build && electron-builder --mac dmg --arm64 --publish never",
-    "package:intel": "node scripts/build-info.mjs --clear && npm run build && electron-builder --mac dmg --x64 --publish never",
+    "package": "node scripts/build-info.mjs --clear && npm run build && electron-builder --config scripts/electron-builder.config.cjs --mac dmg --arm64 --publish never",
+    "package:intel": "node scripts/build-info.mjs --clear && npm run build && electron-builder --config scripts/electron-builder.config.cjs --mac dmg --x64 --publish never",
     "package:test": "node scripts/test-build.mjs package",
     "release:test": "node scripts/test-release.mjs",
     "test:test-release": "node --test tests/test-release.test.cjs",
@@ -53,7 +53,7 @@
     "test:update-install": "node scripts/e2e-update-install.mjs",
     "test:update-packaged": "node scripts/e2e-update-packaged.mjs",
     "release:manifest": "node scripts/create-update-manifest.mjs",
-    "package:windows": "node scripts/build-info.mjs --clear && npm run build && electron-builder --win nsis --x64 --publish never",
+    "package:windows": "node scripts/build-info.mjs --clear && npm run build && electron-builder --config scripts/electron-builder.config.cjs --win nsis --x64 --publish never",
     "test:windows-release": "node --test tests/tool-integration.test.cjs && node scripts/windows-release-smoke.mjs",
     "test:update-ui": "node scripts/e2e-update-ui.mjs",
     "test:remote-restart": "node scripts/e2e-remote-restart.mjs",
@@ -64,13 +64,18 @@
     "test:concurrent-qa": "node scripts/e2e-concurrent-qa.mjs",
     "test:qa-project-scope": "node scripts/e2e-qa-project-scope.mjs",
     "test:mcp-review-categories": "node scripts/e2e-mcp-review-categories.mjs",
-    "mcp": "node electron/mcp-server.cjs"
+    "mcp": "node electron/mcp-server.cjs",
+    "build:remote-identity": "node scripts/build-remote-identity.cjs"
   },
   "dependencies": {
+    "@peculiar/asn1-schema": "3.0.0",
+    "@peculiar/x509": "3.1.0",
+    "asn1js": "4.0.0",
     "cron-parser": "5.10.4",
     "github-markdown-css": "5.9.0",
     "lucide-react": "0.577.0",
     "react-markdown": "10.1.0",
+    "reflect-metadata": "0.2.2",
     "remark-gfm": "4.0.1",
     "ssh2": "1.17.0"
   },
@@ -109,7 +114,10 @@
       "icon": "build/icon.icns",
       "identity": "-",
       "hardenedRuntime": false,
-      "minimumSystemVersion": "13.0"
+      "minimumSystemVersion": "13.0",
+      "signIgnore": [
+        ".*remote-identity-darwin-(arm64|x64)\\.node$"
+      ]
     },
     "dmg": {
       "title": "ReviewOps",
@@ -151,7 +159,13 @@
       "createStartMenuShortcut": true,
       "runAfterFinish": false,
       "deleteAppDataOnUninstall": false
-    }
+    },
+    "asarUnpack": [
+      "dist/**/*",
+      "electron/native/**/*"
+    ],
+    "afterSign": "./scripts/verify-remote-identity.cjs",
+    "beforePack": "./scripts/before-pack.cjs"
   },
   "repository": {
     "type": "git",
