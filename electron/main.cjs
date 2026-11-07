@@ -119,7 +119,7 @@ function opsProjectService(input){
   return serviceById(selected,true);
 }
 const OPS_CONNECTION_KEYS=['id','kind','host','hostAlias','sshConfigPath','port','username','rootPath','agentWorkPath','hostFingerprint'];
-function opsConnectionSignature(service){return crypto.createHash('sha256').update(JSON.stringify(OPS_CONNECTION_KEYS.map(key=>service?.[key]))).digest('hex');}
+function opsConnectionSignature(service){const values=OPS_CONNECTION_KEYS.map(key=>service?.[key]),binary=service?.agentBinary?.trim()||'codex';if(binary!=='codex')values.push(['agentBinary',binary]);return crypto.createHash('sha256').update(JSON.stringify(values)).digest('hex');}
 function assertOpsQaContext(context){
   if(!context.projectId)throw Object.assign(new Error('등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'),{code:'OPS_QA_UNAVAILABLE'});
   const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===context.projectId)?.birth,service=opsProjectService(context);
@@ -142,8 +142,8 @@ async function resolveOpsTarget(input){
   if(!service){if(input.serviceId)throw new Error('폴더 목표에는 프로젝트 연결을 지정할 수 없습니다.');return {projectId:'',workPath:await require('./work-directory.cjs').requireDirectory(input.workPath),targetKind:'local',targetIdentity:'local',targetLabel:input.workPath,serviceId:null};}
   const dataset=store.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===input.projectId)?.birth;
   if(!birth||input.projectEpoch!==undefined&&(input.projectEpoch!==dataset.epoch||input.projectBirth!==birth))throw Object.assign(new Error('목표의 원래 프로젝트가 변경되었습니다. 목표 설정에서 대상을 다시 확인하십시오.'),{code:'OPS_PROJECT_CHANGED'});
-  const keys=OPS_CONNECTION_KEYS,signature=JSON.stringify(keys.map(key=>service[key]));
-  const assertTarget=()=>{const current=store.peerReadDataset(),selected=opsProjectService(input);if(store!==originalStore||current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===input.projectId)?.birth!==birth||JSON.stringify(keys.map(key=>selected?.[key]))!==signature)throw Object.assign(new Error('프로젝트 연결이 확인 중에 변경되었습니다.'),{code:'OPS_PROJECT_CHANGED'});};
+  const signature=opsConnectionSignature(service);
+  const assertTarget=()=>{const current=store.peerReadDataset(),selected=opsProjectService(input);if(store!==originalStore||current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===input.projectId)?.birth!==birth||opsConnectionSignature(selected)!==signature)throw Object.assign(new Error('프로젝트 연결이 확인 중에 변경되었습니다.'),{code:'OPS_PROJECT_CHANGED'});};
   const scope={projectEpoch:dataset.epoch,projectBirth:birth,projectConnectionSignature:opsConnectionSignature(service)};
   const workPath=service.agentWorkPath||service.rootPath;
   if(service.kind==='local'){const canonical=await require('./work-directory.cjs').requireDirectory(workPath);assertTarget();return {...scope,projectId:input.projectId,serviceId:service.id,workPath:canonical,targetKind:'local',targetIdentity:'local',targetLabel:service.name||workPath};}
@@ -153,8 +153,18 @@ async function resolveOpsTarget(input){
 }
 async function resolveOpsSessionTarget(goal){
   const target=await resolveOpsTarget(goal);
-  if(target.targetIdentity!==goal.targetIdentity||target.workPath!==goal.workPath)throw Object.assign(new Error('목표의 작업 서버 또는 폴더가 변경되었습니다.'),{code:'OPS_TARGET_CHANGED'});
+  if(target.targetIdentity!==goal.targetIdentity||target.workPath!==goal.workPath||goal.projectConnectionSignature&&goal.projectConnectionSignature!==target.projectConnectionSignature)throw Object.assign(new Error('목표의 작업 서버 또는 폴더가 변경되었습니다.'),{code:'OPS_TARGET_CHANGED'});
   return target.targetKind==='ssh'?{sshConfig:opsProjectService(goal),workPath:goal.workPath,binary:opsProjectService(goal).agentBinary||'codex',targetIdentity:goal.targetIdentity}:target;
+}
+async function resolveOpsRuntime(goal){
+  const target=await resolveOpsSessionTarget(goal),service=opsProjectService(goal);
+  if(target.targetKind==='ssh'||goal.targetKind==='ssh')throw Object.assign(new Error('SSH 목표는 원래 원격 실행 파일을 사용해야 합니다.'),{code:'OPS_TARGET_CHANGED'});
+  const binary=service?.agentBinary?.trim()||'codex',originalStore=store;
+  const useGlobal=!service||process.platform==='darwin'&&binary==='codex';
+  const runtime=useGlobal?codexManager.localRuntime():await require('./codex/runtime.cjs').findRuntime(/^(?:codex|codex\.exe|codex\.cmd|codex\.ps1)$/i.test(binary)?'':binary);
+  const current=await resolveOpsSessionTarget(goal);
+  if(store!==originalStore||current.workPath!==target.workPath||current.projectConnectionSignature!==target.projectConnectionSignature||(opsProjectService(goal)?.agentBinary?.trim()||'codex')!==binary)throw Object.assign(new Error('Codex 실행 파일 확인 중 원래 프로젝트 연결이 변경되었습니다.'),{code:'OPS_TARGET_CHANGED'});
+  return runtime;
 }
 function requestQaProjectId(){const context=requestWindowContext.getStore();return context?.qaProjectId||qaProjectId(context&&windowContexts.get(context.host));}
 function qaScopeIncarnation(record) {
@@ -1894,7 +1904,7 @@ else {
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,powerMonitor,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>{modelCache?.reconcile();opsManager?.runtimeChanged();}});
     codexManager.registerHandlers(ipcMain);
     const managementAdapter=require('./ops-management.cjs').createProjectAdapter({getStore:()=>store,assertReady:()=>{if(restoring||quitting||updater?.installing)throw Object.assign(new Error('앱 자료 변경이 끝난 뒤 관리 요청을 다시 보내십시오.'),{code:'OPS_MANAGEMENT_UNAVAILABLE'});},enqueue:callback=>{const result=actionQueue.then(callback);actionQueue=result.catch(()=>{});return result;},onChange:()=>{dataChanged();modelCache?.reconcile();}});
-    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,managementAdapter,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,onChange:sendOpsState});}
+    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,managementAdapter,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,resolveRuntime:resolveOpsRuntime,onChange:sendOpsState});}
     catch{console.warn('Ops state could not be opened. Existing Ops files were preserved.');}
     const opsResume=()=>{void opsManager?.scheduler.wake();};powerMonitor?.on('resume',opsResume);
     ipcMain.handle('ops:invoke',async(event,method,input)=>{

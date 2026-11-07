@@ -195,6 +195,7 @@ async function harness(t, options = {}) {
     }
     if (['./ops-management.cjs','./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
+    if (name === './codex/runtime.cjs') return {findRuntime:options.opsFindRuntime||require('../electron/codex/runtime.cjs').findRuntime};
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
@@ -4487,6 +4488,29 @@ test('Ops project targets retain committed birth and require confirmation after 
  const saved=await h.ops('saveGoal',input),goal=saved.goals[0];assert.ok(Number.isSafeInteger(goal.projectBirth));assert.equal((await h.state.opsOptions.resolveTarget(goal)).workPath,fs.realpathSync(h.root));
  h.state.liveStore.importData(h.state.liveStore.exportData());await assert.rejects(h.state.opsOptions.resolveTarget(goal),{code:'OPS_PROJECT_CHANGED'});
  const confirmed=await h.ops('saveGoal',{...input,id:goal.id});assert.notEqual(confirmed.goals[0].projectEpoch,goal.projectEpoch);assert.equal((await h.state.opsOptions.resolveTarget(confirmed.goals[0])).workPath,fs.realpathSync(h.root));
+});
+
+test('Ops local project execution resolves its catalog binary while management keeps the global runtime',async t=>{
+ const looked=[],custom='/explicit/project-codex',fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create,opsFindRuntime:async binary=>{looked.push(binary);return {available:true,command:binary,path:binary,args:[],version:'0.166.0-alpha.5.1'};}}),a=await seed(h);
+ await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentWorkPath:'',agentBinary:custom});
+ const saved=await h.ops('saveGoal',{name:'Custom local runtime',prompt:'Use this environment.',projectId:a.project.id,serviceId:a.service.id,workPath:''}),goal=saved.goals[0];
+ const runtime=await h.state.opsOptions.resolveRuntime(goal);assert.equal(runtime.command,custom);assert.deepEqual(looked,[custom]);
+ const catalogs=await h.success('modelCache.state');assert.ok(catalogs.targets.some(row=>row.label.includes(custom)),'The selected project catalog is bound to that same custom executable');
+ await h.ops('goalAction',{goalId:goal.id,action:'start'});await h.state.opsManager.pumpAll();assert.equal((await fixture.sessions.get(goal.id).options.resolveRuntime()).command,custom);
+ const created=await h.ops('managementCreate',{}),id=created.managementConversations[0].id;await h.ops('managementRequest',{conversationId:id,instruction:'Read existing goals.'});await h.state.opsManager.management.pump(id);
+ assert.equal(fixture.sessions.get(id).options.resolveRuntime,h.state.opsOptions.runtime,'Management conversations keep the configured global runtime');
+});
+
+test('Ops runtime resolution refuses a project binary changed during asynchronous validation',async t=>{
+ let release,entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve),h=await harness(t,{opsFindRuntime:async binary=>{entered();await gate;return {available:true,command:binary,args:[],version:'0.166.0-alpha.5.1'};}}),a=await seed(h);t.after(()=>release());
+ await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentBinary:'/original/codex'});const goal=(await h.ops('saveGoal',{name:'Original binary',prompt:'Preserve target.',projectId:a.project.id,serviceId:a.service.id,workPath:''})).goals[0];
+ const pending=h.state.opsOptions.resolveRuntime(goal);await ready;await h.success('service.save',{id:a.service.id,agentBinary:'/replacement/codex'});release();await assert.rejects(pending,{code:'OPS_TARGET_CHANGED'});
+});
+
+test('Ops delivery requires explicit target confirmation after an external local binary change',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await seed(h);await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentBinary:'codex'});
+ const goal=(await h.ops('saveGoal',{name:'Retained global default',prompt:'Use original target.',projectId:a.project.id,serviceId:a.service.id,workPath:''})).goals[0];await h.success('service.save',{id:a.service.id,agentBinary:'/changed/codex'});
+ await h.ops('goalAction',{goalId:goal.id,action:'start'});await h.state.opsManager.pumpAll();const changed=(await h.ops('snapshot')).goals[0];assert.equal(changed.executionState,'error');assert.match(changed.lastError,/Codex/);assert.equal(fixture.sessions.size,0,'A changed executable cannot start or adopt a session silently');
 });
 
 
