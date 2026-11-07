@@ -1,0 +1,68 @@
+; Copyright (c) Season Framework contributors.
+; Uninstalled build-only prototype. No release catalog or install qualification.
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer=2.0
+Provider=%Manufacturer%
+CatalogFile=ReviewOpsVirtualDisplay.cat
+DriverVer=11/07/2026,0.1.0.0
+PnpLockDown=1
+
+[Manufacturer]
+%Manufacturer%=Models,NTamd64.10.0...17134
+
+[Models.NTamd64.10.0...17134]
+%DeviceName%=Install,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
+%DeviceName%=Install,ReviewOpsVirtualDisplayPrototype
+
+[SourceDisksNames]
+1=%DiskName%
+[SourceDisksFiles]
+ReviewOpsVirtualDisplay.dll=1
+
+[Install.NT]
+CopyFiles=DriverCopy
+
+[Install.NT.HW]
+AddReg=DeviceSettings
+
+[DeviceSettings]
+HKR,,UpperFilters,0x00010000,"IndirectKmd"
+HKR,"WUDF",DeviceGroupId,0x00000000,"ReviewOpsVirtualDisplayPrototype"
+; Only an explicitly elevated future diagnostic/broker may open the interface.
+; This prototype never grants Everyone access or changes an existing device.
+HKR,,Security,0x00000000,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+HKR,,DeviceCharacteristics,0x00010001,0x00000100
+
+[Install.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRDService
+
+[WUDFRDService]
+DisplayName=%WudfDisplayName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+[Install.NT.Wdf]
+UmdfService=ReviewOpsVirtualDisplay,DriverService
+UmdfServiceOrder=ReviewOpsVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[DriverService]
+UmdfLibraryVersion=2.25
+ServiceBinary=%12%\UMDF\ReviewOpsVirtualDisplay.dll
+UmdfExtensions=IddCx0102
+
+[DriverCopy]
+ReviewOpsVirtualDisplay.dll
+[DestinationDirs]
+DriverCopy=12,UMDF
+
+[Strings]
+Manufacturer="Season Framework"
+DeviceName="ReviewOps file-owned virtual display prototype"
+DiskName="ReviewOps virtual display prototype files"
+WudfDisplayName="Windows Driver Foundation User-mode Driver Framework Reflector"

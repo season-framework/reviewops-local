@@ -1,0 +1,9 @@
+<Project>
+  <PropertyGroup>
+    <ReviewOpsKitVersion>10.0.26100.6584</ReviewOpsKitVersion>
+    <ReviewOpsPackagesRoot>$(MSBuildThisFileDirectory)packages\</ReviewOpsPackagesRoot>
+  </PropertyGroup>
+  <Import Project="$(ReviewOpsPackagesRoot)Microsoft.Windows.WDK.x64.$(ReviewOpsKitVersion)\build\native\Microsoft.Windows.WDK.x64.props" />
+  <Import Project="$(ReviewOpsPackagesRoot)Microsoft.Windows.SDK.CPP.x64.$(ReviewOpsKitVersion)\build\native\Microsoft.Windows.SDK.cpp.x64.props" />
+  <Import Project="$(ReviewOpsPackagesRoot)Microsoft.Windows.SDK.CPP.$(ReviewOpsKitVersion)\build\native\Microsoft.Windows.SDK.cpp.props" />
+</Project>

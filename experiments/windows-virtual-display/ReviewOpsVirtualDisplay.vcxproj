@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" ToolsVersion="Current" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Release|x64"><Configuration>Release</Configuration><Platform>x64</Platform></ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <ProjectGuid>{635DDB42-C32B-44E8-A902-413057B5C799}</ProjectGuid>
+    <RootNamespace>ReviewOpsVirtualDisplay</RootNamespace>
+    <ProjectName>ReviewOpsVirtualDisplay</ProjectName>
+    <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
+    <Platform Condition="'$(Platform)' == ''">x64</Platform>
+    <Configuration Condition="'$(Configuration)' == ''">Release</Configuration>
+  </PropertyGroup>
+  <PropertyGroup Label="PropertySheets">
+    <PlatformToolset>WindowsUserModeDriver10.0</PlatformToolset>
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <DriverTargetPlatform>Universal</DriverTargetPlatform>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Label="Configuration">
+    <TargetVersion>Windows10</TargetVersion>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <UMDF_VERSION_MAJOR>2</UMDF_VERSION_MAJOR>
+    <UMDF_VERSION_MINOR>25</UMDF_VERSION_MINOR>
+    <IndirectDisplayDriver>true</IndirectDisplayDriver>
+    <IDDCX_VERSION_MAJOR>1</IDDCX_VERSION_MAJOR>
+    <IDDCX_VERSION_MINOR>4</IDDCX_VERSION_MINOR>
+    <DriverSignMode>Off</DriverSignMode>
+    <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <PropertyGroup>
+    <OutDir>$(MSBuildThisFileDirectory)_out\</OutDir>
+    <IntDir>$(MSBuildThisFileDirectory)_obj\</IntDir>
+    <TargetName>ReviewOpsVirtualDisplay</TargetName>
+    <SignMode>Off</SignMode>
+    <RunCodeAnalysis>false</RunCodeAnalysis>
+    <EnableInf2cat>false</EnableInf2cat>
+    <Inf2CatUseLocalTime>false</Inf2CatUseLocalTime>
+  </PropertyGroup>
+  <ItemDefinitionGroup>
+    <ClCompile>
+      <LanguageStandard>stdcpp17</LanguageStandard>
+      <ExceptionHandling>Sync</ExceptionHandling>
+      <WarningLevel>Level4</WarningLevel>
+      <TreatWarningAsError>true</TreatWarningAsError>
+      <WppEnabled>false</WppEnabled>
+      <PreprocessorDefinitions>UNICODE;_UNICODE;UMDF_DRIVER;IDDCX_VERSION_MAJOR=1;IDDCX_VERSION_MINOR=4;IDDCX_MINIMUM_VERSION_REQUIRED=3;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+    </ClCompile>
+    <Link><AdditionalDependencies>d3d11.lib;dxgi.lib;avrt.lib;bcrypt.lib;OneCoreUAP.lib;%(AdditionalDependencies)</AdditionalDependencies></Link>
+  </ItemDefinitionGroup>
+  <ItemGroup><ClCompile Include="Driver.cpp" /></ItemGroup>
+  <ItemGroup><ClInclude Include="Driver.h" /><ClInclude Include="ControlProtocol.h" /></ItemGroup>
+  <ItemGroup><Inf Include="ReviewOpsVirtualDisplay.inf" /></ItemGroup>
+  <ItemGroup><FilesToPackage Include="$(TargetPath)" /></ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+</Project>
