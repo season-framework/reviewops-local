@@ -91,13 +91,13 @@ export function verifyOpsData(data, fixture) {
     assert.equal(goal.turnId, null);
     assert.equal(goal.history.some(row => row.type === 'delivery'), false, 'A paused/finished fixture started work.');
     assert.equal(goal.model, '');assert.equal(goal.reasoningEffort, '');
-    assert.equal(goal.sandboxMode, 'workspace-write');assert.equal(goal.approvalPolicy, 'never');
+    assert.equal(goal.sandboxMode, 'danger-full-access');assert.equal(goal.approvalPolicy, 'never');
   }
   const schedule = paused.schedules.find(row => row.id === fixture.scheduleId);
   assert.ok(schedule);assert.equal(schedule.cron, '15 3 * * *');assert.equal(schedule.timezone, 'Asia/Seoul');assert.equal(schedule.enabled, true);
   assert.ok(Number.isFinite(Date.parse(schedule.nextRunAt)));
   const unavailable=data.goals.find(row=>row.id===fixture.offlineGoalId);
-  assert.ok(unavailable);assert.equal(unavailable.status,'paused');
+  assert.ok(unavailable);assert.equal(unavailable.status,'paused');assert.equal(unavailable.sandboxMode,'danger-full-access');assert.equal(unavailable.approvalPolicy,'never');
   assert.equal(unavailable.history.some(row=>row.type==='delivery'),false);
   if(fixture.syntheticSavedThread){
     assert.equal(unavailable.threadId,fixture.syntheticSavedThread);

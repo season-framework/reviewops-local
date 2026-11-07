@@ -7,6 +7,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
 import {setTestLocale} from './test-locale.mjs';
+import {comparePackagedElectronTree} from './packaged-source-policy.mjs';
 import {inspectMac} from './test-build.mjs';
 import {readBoundedJSON, inventory} from './packaged-bundle-guards.mjs';
 import {requireNativeHost, selectMainHost, selectProjectHost, verifyOriginalMainProcess} from './native-adapters.mjs';
@@ -137,14 +138,11 @@ async function inspectInstalled(label) {
   asar.uncache(path.join(bundle, 'Contents/Resources/app.asar'));
   await inspectMac(bundle, build, process.arch);
   const archive = path.join(bundle, 'Contents/Resources/app.asar');
-  const files = asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\/+/, '')).filter(name => /^electron\/.+/.test(name) && name !== 'electron/reviewops-build.json' && !asar.statFile(archive, name).files);
   const expectedFiles = execFileSync('git', ['ls-tree', '-rz', '--name-only', build.commit, '--', 'electron'], {cwd: repository, maxBuffer: 2 * 1024 ** 2}).toString().split('\0').filter(Boolean);
-  assert.deepEqual(files.slice().sort(), expectedFiles.sort(), 'The installed Electron tree must contain exactly the tracked source files plus its validated build identity.');
-  const source = [];
-  for (const name of files) {assert.ok(!name.split('/').includes('..'));const bytes = asar.extractFile(archive, name);assert.deepEqual(bytes, gitBytes(name), `Installed source differs from embedded commit: ${name}`);source.push({path: name, sha256: sha(bytes)});}
+  const {source,generatedNative}=comparePackagedElectronTree(archive,{asar,sourceFiles:expectedFiles,readSource:gitBytes});
   assert.ok(source.some(row => row.path === 'electron/ops-qa.cjs'));
   const current = inventory(bundle);if (originalInventory) assert.deepEqual(current, originalInventory, 'Same-candidate reinstall must reproduce identical bundle file bytes.');else originalInventory = current;
-  boundaries.push({label, source, archiveSHA256: fileHash(archive), inventorySHA256: sha(JSON.stringify(current))});
+  boundaries.push({label, source,generatedNative, archiveSHA256: fileHash(archive), inventorySHA256: sha(JSON.stringify(current))});
 }
 async function install(label) {
   assert.equal(app, undefined, 'The owned app must be confirmed closed before replacing its bundle.');

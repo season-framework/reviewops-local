@@ -11,6 +11,7 @@ import { _electron as electron, expect } from '@playwright/test';
 import { setTestLocale } from './test-locale.mjs';
 import {runRequiredOwnedGate, nativeOutput, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {comparePackagedCheckout} from './packaged-source-policy.mjs';
 import {inspectOpsArchive,seedOpsSmoke,verifyOpsSmoke,verifyOpsFile,verifyOpsData,mutateOpsSmoke,seedUnavailableOpsThread} from './ops-native-smoke.mjs';
 
 const require = createRequire(import.meta.url);
@@ -40,16 +41,6 @@ async function hashFile(file) {
   const hash = crypto.createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
-}
-async function walk(directory) {
-  const files = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    assert.equal(entry.isSymbolicLink(), false, `Unexpected source symlink: ${file}`);
-    if (entry.isDirectory()) files.push(...await walk(file));
-    else if (entry.isFile()) files.push(file);
-  }
-  return files;
 }
 async function peInfo(file) {
   const handle = await fs.open(file, 'r');
@@ -131,12 +122,8 @@ async function verifyAsar(archive) {
     assert.ok(allowedRoots.has(entry.split('/')[0]), `Unexpected packaged path: ${entry}`);
     assert.ok(!/(^|\/)(?:\.git|\.ssh|\.codex|\.env(?:\.[^/]*)?|reviewops\.sqlite(?:-wal|-shm)?|credentials\.json|auth\.json|accounts\.json|test-results)(?:\/|$)/i.test(entry), `Unexpected private data path: ${entry}`);
   }
-  const files = [...await walk(path.join(root, 'electron')), ...await walk(path.join(root, 'dist')),
-    ...['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt'].map(name => path.join(root, name))];
-  for (const file of files) {
-    const relative = path.relative(root, file);
-    assert.equal(digest(asar.extractFile(archive, relative)), await hashFile(file), `Packaged file does not match its source: ${relative}`);
-  }
+  const sourceComparison=comparePackagedCheckout(archive,{repository:root,asar}),files=sourceComparison.files;
+  report.omittedRepositoryControlFiles=sourceComparison.omittedRepositoryControlFiles;
   const packagedMetadata = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   assert.equal(packagedMetadata.version, version);
   assert.equal(packagedMetadata.main, metadata.main);

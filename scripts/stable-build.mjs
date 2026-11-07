@@ -11,20 +11,17 @@ import {validateSource,assertDispatch,TARGETS} from './stable-release.mjs';
 import {fileHash,jsonBytes,hash} from './test-release.mjs';
 import {runRequiredOwnedGate,runWindowsInstalledSmoke,nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {comparePackagedCheckout} from './packaged-source-policy.mjs';
 import {inspectOpsArchive} from './ops-native-smoke.mjs';
 const require=createRequire(import.meta.url),asar=require('@electron/asar'),{validateArchive}=require('../electron/update-archive.cjs'),run=promisify(execFile),root=fileURLToPath(new URL('..',import.meta.url));
-async function sourceFiles(directory){const files=[];for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isSymbolicLink())throw new Error('소스 파일의 심볼릭 링크는 허용하지 않습니다.');if(entry.isDirectory())files.push(...await sourceFiles(file));else if(entry.isFile())files.push(file)}return files}
 export async function inspectStableArchive(archive,version,directory=root){
  const info=await fs.lstat(archive);if(!info.isFile()||info.isSymbolicLink())throw new Error('정식 앱 아카이브가 올바르지 않습니다.');
  asar.uncache(archive);
  const entries=asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,'')),allowed=new Set(['dist','electron','node_modules','package.json','LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt']);
  for(const entry of entries)if(!allowed.has(entry.split('/')[0])||/(^|\/)(?:\.git|\.ssh|\.codex|\.env(?:\.[^/]*)?|reviewops-build\.json|reviewops\.sqlite(?:-wal|-shm)?|credentials\.json|auth\.json|accounts\.json|test-results)(?:\/|$)/i.test(entry))throw new Error('정식 패키지에 허용하지 않은 파일이 있습니다: '+entry);
  const pkg=JSON.parse(asar.extractFile(archive,'package.json').toString('utf8'));if(pkg.version!==version||pkg.main!=='electron/main.cjs')throw new Error('정식 패키지 버전 또는 실행 파일이 다릅니다.');
- const files=[...await sourceFiles(path.join(directory,'electron')),...await sourceFiles(path.join(directory,'dist')),...['LICENSE','NOTICE','THIRD-PARTY-NOTICES.txt'].map(name=>path.join(directory,name))];
- // ASAR's directory traversal splits on the host's path.sep. Keep the native
- // path for extraction; slash-normalized names are only for display/policies.
- for(const file of files){const relative=path.relative(directory,file);if(hash(asar.extractFile(archive,relative))!==await fileHash(file))throw new Error('정식 패키지가 검사한 소스와 다릅니다: '+relative.replaceAll('\\','/'))}
- return {version,testMetadataAbsent:true,comparedFiles:files.length};
+ const comparison=comparePackagedCheckout(archive,{repository:directory,asar,mismatchMessage:name=>'정식 패키지가 검사한 소스와 다릅니다: '+name});
+ return {version,testMetadataAbsent:true,comparedFiles:comparison.files.length,omittedRepositoryControlFiles:comparison.omittedRepositoryControlFiles};
 }
 export async function packageStable({target,version,commit,env=process.env}){
  if(!TARGETS.includes(target)||target!==`${process.platform}-${process.arch}`)throw new Error('대상 운영체제와 CPU에 맞는 네이티브 runner를 사용하십시오.');
