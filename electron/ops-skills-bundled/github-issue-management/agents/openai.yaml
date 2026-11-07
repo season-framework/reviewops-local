@@ -1,0 +1,4 @@
+interface:
+  display_name: "GitHub 이슈 관리"
+  short_description: "GitHub 이슈와 개발 결과를 전체 창 사진·조작 순서·검사 결과로 작성·정리합니다"
+  default_prompt: "$github-issue-management 스킬로 요청한 이슈를 정리하고 실제 화면 사진, 조작 시나리오, 세부 개발·검사 결과를 포함하여 게시하십시오."

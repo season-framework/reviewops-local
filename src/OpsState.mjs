@@ -5,7 +5,7 @@ export function chooseOpsSnapshot(current,incoming){
 }
 export function goalDraft(goal={}){
  goal ||= {};
- return {id:goal.id||'',name:goal.name||'',description:goal.description||'',projectId:goal.projectId||'',serviceId:goal.serviceId||'',workPath:goal.workPath||'',prompt:goal.prompt||'',model:goal.model||'',reasoningEffort:goal.reasoningEffort||'',sandboxMode:'danger-full-access',approvalPolicy:'never'};
+ return {id:goal.id||'',name:goal.name||'',description:goal.description||'',projectId:goal.projectId||'',serviceId:goal.serviceId||'',workPath:goal.workPath||'',prompt:goal.prompt||'',...(goal.skillIds!==undefined?{skillIds:goal.skillIds}:{}),...(goal.taskKinds!==undefined?{taskKinds:goal.taskKinds}:{}),model:goal.model||'',reasoningEffort:goal.reasoningEffort||'',sandboxMode:'danger-full-access',approvalPolicy:'never'};
 }
 export function scheduleDraft(schedule={},goalId=''){
  schedule ||= {};

@@ -9,7 +9,7 @@ const {requestTargetKey,conflictingTargets,executionIdentity}=require('./agent-r
 const {executionSettings,requestContext}=require('./agent-execution-settings.cjs');
 const {OpsManagement,EXECUTION}=require('./ops-management.cjs');
 const CONFIG=['model','reasoningEffort','sandboxMode','approvalPolicy'];
-const GOAL_FIELDS=['id','name','description','projectId','serviceId','workPath','prompt',...CONFIG];
+const GOAL_FIELDS=['id','name','description','projectId','serviceId','workPath','prompt','skillIds','taskKinds',...CONFIG];
 function fail(code,message){throw Object.assign(new Error(message),{code});}
 function fields(input,names){if(!input||typeof input!=='object'||Array.isArray(input)||![Object.prototype,null].includes(Object.getPrototypeOf(input))||Object.keys(input).some(key=>!names.includes(key)))fail('INVALID_OPS_REQUEST','Ops 요청 항목을 확인하십시오.');return input;}
 function string(value,max,name,required=false){if(typeof value!=='string'||value.length>max||value.includes('\0')||required&&!value.trim())fail('INVALID_OPS_REQUEST',`${name}을 확인하십시오.`);return value;}
@@ -19,11 +19,12 @@ function terminalStatus(status){return status==='failed'?'failed':['interrupted'
 function qaResult(value){const keys=['projectId','clientId','sessionId','windowId','browserId','documentId','contract','url','title','applied','released','closed','reloaded','availability','bindingState','capturedAt','width','height','mimeType'],result=Object.fromEntries(keys.filter(key=>['string','number','boolean'].includes(typeof value?.[key])).map(key=>[key,typeof value[key]==='string'?value[key].slice(0,4096):value[key]]));for(const [field,allowed]of [['viewport',['width','height','scrollX','scrollY']],['imageToCss',['scaleX','scaleY']]])if(value?.[field])result[field]=Object.fromEntries(allowed.filter(key=>typeof value[field][key]==='number').map(key=>[key,value[field][key]]));return result;}
 
 class OpsManager{
-  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,resolveRuntime,runtime,createSession,createQaBridge,managementAdapter,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
+  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,resolveRuntime,runtime,createSession,createQaBridge,managementAdapter,skillProvider,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
     this.store=new OpsStore({dataPath});this.onChange=onChange;this.resolveTarget=resolveTarget;this.resolveSessionTarget=resolveSessionTarget;this.resolveRuntime=resolveRuntime;this.runtime=runtime;this.createSession=createSession;this.now=now;
     this.sessions=new Map();this.pumps=new Map();this.messages=new Map();this.reconciling=new Map();this.lifecycle=new Map();this.draining=new Set();this.closed=false;this.suspended=false;this.revision=this.store.data.revision;
     this.dataPath=dataPath;this.appInstanceId=appInstanceId;this.createQaBridge=createQaBridge;this.validateQaContext=validateQaContext;this.qaBridges=new Map();this.qaTokens=new Map();this.qaReleases=new Map();this.retiring=new Map();this.retirementFailures=new Map();this.qaOperations=new Map();this.closing=false;
     this.scheduler=new OpsScheduler({tick:at=>this.tick(at),nextDue:()=>this.nextDue(),now,...schedulerOptions,onError:error=>this._schedulerError(error)});
+    this.skillProvider=skillProvider;
     this.management=new OpsManagement(this,managementAdapter);
   }
   _open(){if(this.closed)fail('OPS_CLOSED','Ops가 종료되고 있습니다.');}
@@ -64,7 +65,7 @@ class OpsManager{
     goal.history.push(row);goal.updatedAt=row.createdAt;return row;}
   _mutate(change){this._open();this.store.update(change);this._notify();this.scheduler.arm();return this.snapshot();}
   _notify(){this.revision++;try{this.onChange(this.snapshot());}catch{/* Renderer listeners do not own persistence. */}}
-  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,managementConversations:this.management.snapshot(),revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
+  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,managementConversations:this.management.snapshot(),availableSkills:this.skillProvider?.snapshot().skills||[],revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
     goals:data.goals.map(goal=>({...goal,qaBinding:goal.qaBinding||(!goal.projectId?{state:'unavailable',projectId:'',reason:'등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'}:null),nextRunAt:goal.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt).filter(Boolean).sort()[0]||null,
       conversation:[...goal.conversation.filter(row=>!this.messages.has(goal.id+':'+row.id)),...[...this.messages].filter(([key])=>key.startsWith(goal.id+':')).map(([,value])=>value)]}))};}
   nextDue(){if(this.suspended||this.closed)return null;return this.store.data.goals.filter(g=>g.status==='active').flatMap(g=>g.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt)).filter(Boolean).sort()[0]||null;}
@@ -82,11 +83,12 @@ class OpsManager{
   }
   async saveGoal(input,guard=()=>{}){
     this._open();fields(input,GOAL_FIELDS);const before=input.id?this._goal(this.store.data,input.id):null;
-    const raw={name:before?.name||'',description:before?.description||'',projectId:before?.projectId||'',serviceId:before?.serviceId||null,workPath:before?.workPath||'',prompt:before?.prompt||'',model:before?.model||'',reasoningEffort:before?.reasoningEffort||'',...input,...EXECUTION};
+    const raw={name:before?.name||'',description:before?.description||'',projectId:before?.projectId||'',serviceId:before?.serviceId||null,workPath:before?.workPath||'',prompt:before?.prompt||'',...(before?.skillIds!==undefined?{skillIds:before.skillIds}:{}),...(before?.taskKinds!==undefined?{taskKinds:before.taskKinds}:{}),model:before?.model||'',reasoningEffort:before?.reasoningEffort||'',...input,...EXECUTION};
     string(raw.name,200,'목표 이름',true);string(raw.description,100000,'설명');string(raw.prompt,100000,'목표 프롬프트');string(raw.model,256,'모델');
     string(raw.projectId,128,'프로젝트');string(raw.workPath,4096,'작업 폴더');if(raw.serviceId!==null)string(raw.serviceId,128,'프로젝트 연결');
     if(!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(raw.reasoningEffort)||!['read-only','workspace-write','danger-full-access'].includes(raw.sandboxMode)||!['never','untrusted','on-request'].includes(raw.approvalPolicy))fail('INVALID_OPS_REQUEST','Codex 실행 설정을 확인하십시오.');
     executionSettings(undefined,{model:raw.model,reasoningEffort:raw.reasoningEffort});
+    if(this.skillProvider)this.captureSkills({instruction:raw.prompt,skillIds:raw.skillIds,taskKinds:raw.taskKinds});
     const target=await this.resolveTarget(raw);this._open();guard();const timestamp=this._time();
     const result=this._mutate(data=>{
       const goal=raw.id?this._goal(data,raw.id):null;
@@ -102,18 +104,19 @@ class OpsManager{
   }
   async deleteGoal(id,guard=()=>{}){guard();const result=this._mutate(data=>{const goal=this._goal(data,id);if(goal.status==='active'||this._ownsTarget(goal))fail('OPS_GOAL_BUSY','목표를 일시정지하고 실행 결과를 확인한 뒤 삭제하십시오.');data.goals=data.goals.filter(g=>g.id!==id);});const session=this.sessions.get(id);this.sessions.delete(id);await this._releaseQa(id,'목표가 삭제되어 QA 연결을 해제했습니다.');this.qaBridges.delete(id);await session?.close?.();return result;}
   configure(input){fields(input,['commonPrompt']);string(input.commonPrompt,100000,'공통 실행 지침');return this._mutate(data=>{data.commonPrompt=input.commonPrompt;this._promptBudget(data);for(const goal of data.goals)this._rebasePending(goal,'공통 지침 변경으로 미전달 지시를 다시 조립했습니다.',data.commonPrompt);});}
-  _layers(goal,{scheduleIds=[],reason='사용자 요청',instruction='',commonPrompt=this.store.data.commonPrompt}={}){
+  _layers(goal,{scheduleIds=[],reason='사용자 요청',instruction='',skills,commonPrompt=this.store.data.commonPrompt}={}){
     const schedules=scheduleIds.map(id=>goal.schedules.find(s=>s.id===id)).filter(Boolean);
     return [
       {name:'common',content:commonPrompt},
       {name:'goal',content:`Goal: ${goal.name}\nDescription: ${goal.description}\nWorking target: ${goal.workPath}\n\n${goal.prompt}`},
       {name:'schedule',content:schedules.map(s=>`Schedule: ${s.name}\nCron: ${s.cron} (${s.timezone})\n${s.prompt}`).join('\n\n')},
       {name:'request',content:instruction},
+      {name:'skills',content:skills?this.captureSkills({inheritedSnapshot:skills}).prompt:''},
       {name:'context',content:`Reason: ${reason}\nGoal ID: ${goal.id}\nCurrent state: ${goal.status}\nLatest work: ${(goal.lastWork||'').slice(-8000)}\nOnly manage schedules belonging to this goal. Pausing or finishing the goal prevents automatic restarts.`}
     ];
   }
   _compose(goal,options,id,commonPrompt=this.store.data.commonPrompt){const layers=this._layers(goal,{...options,commonPrompt}),raw=layers.filter(l=>l.content).map(l=>`## ${l.name}\n${l.content}`).join('\n\n');const {opsDeliveryPrompt}=require('./ops-session.cjs');return {layers,prompt:opsDeliveryPrompt({deliveryId:id,prompt:raw})};}
-  preview(input){fields(input,['goalId','scheduleId','reason','instruction']);const goal=this._goal(this.store.data,input.goalId);return {...this._compose(goal,{scheduleIds:input.scheduleId?[input.scheduleId]:[],reason:input.reason||'프롬프트 미리보기',instruction:input.instruction||''},'PREVIEW'),reason:input.reason||'프롬프트 미리보기',goalId:goal.id,scheduleId:input.scheduleId||null};}
+  preview(input){fields(input,['goalId','scheduleId','reason','instruction']);const goal=this._goal(this.store.data,input.goalId),skills=this.captureSkills({instruction:[goal.prompt,input.instruction||'',goal.schedules.find(row=>row.id===input.scheduleId)?.prompt||''].join('\n'),skillIds:goal.skillIds,taskKinds:goal.taskKinds}).snapshot;return {...this._compose(goal,{skills,scheduleIds:input.scheduleId?[input.scheduleId]:[],reason:input.reason||'프롬프트 미리보기',instruction:input.instruction||''},'PREVIEW'),reason:input.reason||'프롬프트 미리보기',goalId:goal.id,scheduleId:input.scheduleId||null};}
   _receipt(goal,meta,args){
     if(!meta.callId)return null;
     if(typeof meta.callId!=='string'||meta.callId.length>512)fail('INVALID_OPS_TOOL','예약 도구의 호출 식별자가 올바르지 않습니다.');
@@ -127,15 +130,15 @@ class OpsManager{
     for(const old of [...goal.history])if(old.type==='delivery'&&old.status==='queued'&&old.scheduleIds?.includes(id)){
       old.status='cancelled';old.cancelledAt=this._time();old.cancelReason='예약이 삭제되거나 사용 중지되어 미전달 지시를 취소했습니다.';
       const remaining=old.scheduleIds.filter(sid=>sid!==id&&goal.schedules.some(s=>s.id===sid&&s.enabled));
-      if(remaining.length){const deliveryId=randomUUID(),reason='예약 사용 변경 후 남은 예약 지시',assembled=this._compose(goal,{scheduleIds:remaining,reason},deliveryId);this._history(goal,'delivery',reason,{id:deliveryId,status:'queued',scheduleId:remaining[0],scheduleIds:remaining,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});}
+      if(remaining.length){const deliveryId=randomUUID(),reason='예약 사용 변경 후 남은 예약 지시',skills=old.skills,assembled=this._compose(goal,{scheduleIds:remaining,reason,skills},deliveryId);this._history(goal,'delivery',reason,{id:deliveryId,status:'queued',scheduleId:remaining[0],scheduleIds:remaining,...(skills?{skills}:{}),prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});}
     }
   }
   _rebasePending(goal,reason,commonPrompt=this.store.data.commonPrompt){
     for(const old of [...goal.history])if(old.type==='delivery'&&old.status==='queued'){
       const scheduleIds=(old.scheduleIds||[]).filter(id=>goal.schedules.some(s=>s.id===id&&s.enabled)),instruction=old.layers?.find(l=>l.name==='request')?.content||'';
       old.status='replaced';old.replacedAt=this._time();if(old.scheduleIds?.length&&!scheduleIds.length){old.status='cancelled';continue;}
-      const id=randomUUID(),assembled=this._compose(goal,{scheduleIds,reason:old.reason,instruction},id,commonPrompt);old.replacedBy=id;
-      this._history(goal,'delivery',old.reason,{id,status:'queued',scheduleId:scheduleIds[0]||null,scheduleIds,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null,replacementReason:reason});
+      const id=randomUUID(),skills=old.skills,assembled=this._compose(goal,{scheduleIds,reason:old.reason,instruction,skills},id,commonPrompt);old.replacedBy=id;
+      this._history(goal,'delivery',old.reason,{id,status:'queued',scheduleId:scheduleIds[0]||null,scheduleIds,...(skills?{skills}:{}),prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null,replacementReason:reason});
     }
   }
   saveSchedule(input,meta={}){
@@ -164,7 +167,7 @@ class OpsManager{
       {name:'ops_schedules_list',description:'List schedules belonging to this Ops goal only.',inputSchema:schema({}),execute:()=>({schedules:own()})},
       {name:'ops_schedules_save',description:'Create or update one schedule for this goal. Use an empty id to create. Record why this follow-up is needed.',inputSchema:schema({id:field,name:field,prompt:field,cron:field,timezone:field,enabled:{type:'boolean'},reason}),execute:(args,context)=>run('save',args,context)},
       {name:'ops_schedules_delete',description:'Delete an unnecessary schedule belonging to this goal and record the reason.',inputSchema:schema({id:field,reason}),execute:(args,context)=>run('delete',args,context)}
-    ].concat(this._qa(id)?.tools||[]);
+    ].concat(this._qa(id)?.tools||[],this.skillTools((args,context)=>{const goal=this._goal(this.store.data,id),delivery=[...goal.history].reverse().find(row=>row.type==='delivery'&&row.skills?.id===args.snapshotId&&['prepared','accepted'].includes(row.status));if(!delivery||goal.status!=='active'||goal.threadId!==context.threadId||goal.turnId!==context.turnId)fail('OPS_SKILL_SCOPE','원래 목표 요청에서 선택한 스킬만 읽을 수 있습니다.');return delivery.skills;},()=>{if(this.closed||this.closing||this.suspended)fail('OPS_SKILL_SCOPE','목표 실행을 확인하십시오.');}));
   }
   _session(id){let session=this.sessions.get(id);if(session)return session;const goal=this._goal(this.store.data,id),factory=this.createSession||require('./ops-session.cjs').createOpsSession;
     session=factory({goalId:id,workPath:goal.workPath,target:{kind:goal.targetKind||'local',identityKey:goal.targetIdentity||'local',projectId:goal.projectId,serviceId:goal.serviceId},resolveSessionTarget:this.resolveSessionTarget?()=>this.resolveSessionTarget(structuredClone(this._goal(this.store.data,id))):undefined,config:{...Object.fromEntries(CONFIG.map(k=>[k,goal[k]])),...EXECUTION},threadId:goal.threadId,runtime:typeof this.runtime==='function'?this.runtime():this.runtime,resolveRuntime:this.resolveRuntime?()=>this.resolveRuntime(structuredClone(this._goal(this.store.data,id))):typeof this.runtime==='function'?this.runtime:()=>this.runtime,onEvent:event=>this._event(id,event),tools:this._tools(id)});this.sessions.set(id,session);return session;}
@@ -173,6 +176,7 @@ class OpsManager{
     try{
       if(event.type==='message'){
         const message={id:String(event.itemId||event.id||randomUUID()),role:['user','assistant','system','tool'].includes(event.role)?event.role:'assistant',text:String(event.text||''),createdAt:this._time(),partial:Boolean(event.partial)};
+        if(message.role==='user'){const delivery=activeDelivery(current);if(delivery?.skills)message.skills=delivery.skills;}
         if(message.partial){this.messages.set(id+':'+message.id,message);this._notify();return;}
         this.messages.delete(id+':'+message.id);this._mutate(data=>{const g=this._goal(data,id),old=g.conversation.find(row=>row.id===message.id);if(old)Object.assign(old,message,{createdAt:old.createdAt});else g.conversation.push(message);if(message.role==='assistant')g.lastWork=message.text.slice(-8000);});return;
       }
@@ -185,9 +189,9 @@ class OpsManager{
       if(event.type==='turn.completed')void this.pumpAll();
     }catch(error){this._deliveryError(id,error);if(['thread','turn.started','delivery'].includes(event.type))throw error;}
   }
-  _enqueue(id,{scheduleIds=[],reason,instruction=''}){
+  _enqueue(id,{scheduleIds=[],reason,instruction='',skillSnapshot}){
     string(instruction,100000,'추가 지시');const deliveryId=randomUUID();
-    this._mutate(data=>{const goal=this._goal(data,id);if(goal.status!=='active')fail('OPS_GOAL_INACTIVE','활성화된 목표에만 지시를 전달할 수 있습니다.');const assembled=this._compose(goal,{scheduleIds,reason,instruction},deliveryId);this._history(goal,'delivery',reason,{id:deliveryId,status:'queued',scheduleId:scheduleIds[0]||null,scheduleIds,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});
+    this._mutate(data=>{const goal=this._goal(data,id);if(goal.status!=='active')fail('OPS_GOAL_INACTIVE','활성화된 목표에만 지시를 전달할 수 있습니다.');const skills=this.captureSkills({instruction:[goal.prompt,instruction,...scheduleIds.map(id=>goal.schedules.find(row=>row.id===id)?.prompt||'')].join('\n'),skillIds:goal.skillIds,taskKinds:goal.taskKinds,inheritedSnapshot:skillSnapshot}).snapshot;const assembled=this._compose(goal,{scheduleIds,reason,instruction,skills},deliveryId);this._history(goal,'delivery',reason,{id:deliveryId,status:'queued',scheduleId:scheduleIds[0]||null,scheduleIds,...(skills?{skills}:{}),prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});
     void this.pump(id);return deliveryId;
   }
   _blocker(goal){const keys=this._requestKeys(goal);return this.store.data.goals.find(other=>other.id!==goal.id&&this._ownsTarget(other)&&this._requestKeys(other).some(first=>keys.some(second=>conflictingTargets(first,second))));}
@@ -250,8 +254,8 @@ class OpsManager{
       this._mutate(data=>{const g=this._goal(data,id);g.turnId=null;g.modelState='idle';g.backgroundState='empty';g.backgroundCount=0;g.executionState='idle';g.waitingReason=null;g.lastError=null;});
     }finally{this.draining.delete(id);}
   }
-  async goalAction(input,guard=()=>{}){fields(input,['goalId','action','instruction']);const {goalId:id,action}=input;this._goal(this.store.data,id);guard();
-    if(action==='request'){this._enqueue(id,{reason:'사용자의 추가 지시',instruction:string(input.instruction,100000,'추가 지시',true)});return this.snapshot();}
+  async goalAction(input,guard=()=>{},internal={}){fields(input,['goalId','action','instruction']);const {goalId:id,action}=input;this._goal(this.store.data,id);guard();
+    if(action==='request'){this._enqueue(id,{reason:'사용자의 추가 지시',instruction:string(input.instruction,100000,'추가 지시',true),skillSnapshot:internal.skillSnapshot});return this.snapshot();}
     if(action==='reconnect'){await this.reconnect(id);guard();return this.snapshot();}
     if(!['start','resume','pause','finish'].includes(action))fail('INVALID_OPS_REQUEST','목표 작업을 확인하십시오.');
     if(this.lifecycle.has(id)){await this.lifecycle.get(id);return this.snapshot();}
@@ -263,10 +267,11 @@ class OpsManager{
       }
       const current=this._goal(this.store.data,id);if(current.status==='active')return;
       if(current.status==='finished'&&action!=='start')fail('OPS_GOAL_FINISHED','종료한 목표는 시작 버튼으로 다시 시작하십시오.');
+      const startSkills=this.captureSkills({instruction:[current.prompt,input.instruction||''].join('\n'),skillIds:current.skillIds,taskKinds:current.taskKinds,inheritedSnapshot:internal.skillSnapshot}).snapshot;
       if(current.executionState==='unknown')await this.reconnect(id,false);
       if(this._goal(this.store.data,id).executionState==='unknown')fail('OPS_DELIVERY_UNKNOWN','원래 전달 결과를 확인한 뒤 재개하십시오.');
       guard();this._mutate(data=>{const goal=this._goal(data,id);goal.status='active';Object.assign(goal,EXECUTION);this._history(goal,`goal.${action}`,current.status==='finished'?'사용자가 종료한 목표를 기존 설정과 대화로 다시 시작했습니다.':'사용자가 목표 실행을 변경했습니다.');});
-      this._enqueue(id,{reason:action==='start'?'목표 시작':'목표 재개',instruction:input.instruction||''});
+      this._enqueue(id,{reason:action==='start'?'목표 시작':'목표 재개',instruction:input.instruction||'',skillSnapshot:startSkills});
     })().finally(()=>{this.lifecycle.delete(id);void this.pumpAll();});this.lifecycle.set(id,task);await task;return this.snapshot();
   }
   async tick(at=this.now()){
@@ -278,16 +283,18 @@ class OpsManager{
     if(this.closed||this.suspended)return;const due=[];
     for(const goal of this.store.data.goals)if(goal.status==='active'){const ids=goal.schedules.filter(s=>s.enabled&&s.nextRunAt&&new Date(s.nextRunAt).getTime()<=at).map(s=>s.id);if(ids.length)due.push({id:goal.id,ids});}
     for(const item of due){const id=randomUUID();try{this._mutate(data=>{const goal=this._goal(data,item.id),reason='예약 시각 도래: 누락된 반복은 목표별 한 번으로 모았습니다.';
-      const pending=goal.history.filter(h=>h.type==='delivery'&&h.status==='queued'&&h.scheduleIds?.length),combined=[...new Set([...pending.flatMap(h=>h.scheduleIds),...item.ids])].filter(sid=>goal.schedules.some(s=>s.id===sid&&s.enabled));
+      const skills=this.captureSkills({instruction:[goal.prompt,...item.ids.map(id=>goal.schedules.find(row=>row.id===id)?.prompt||'')].join('\n'),skillIds:goal.skillIds,taskKinds:goal.taskKinds}).snapshot;const pending=goal.history.filter(h=>h.type==='delivery'&&h.status==='queued'&&h.scheduleIds?.length&&canonicalJSON(h.skills?.skills||[])===canonicalJSON(skills?.skills||[])),combined=[...new Set([...pending.flatMap(h=>h.scheduleIds),...item.ids])].filter(sid=>goal.schedules.some(s=>s.id===sid&&s.enabled));
       for(const old of pending){old.status='coalesced';old.coalescedInto=id;}
-      const assembled=this._compose(goal,{scheduleIds:combined,reason},id);
+      const assembled=this._compose(goal,{scheduleIds:combined,reason,skills},id);
       for(const schedule of goal.schedules)if(item.ids.includes(schedule.id)){schedule.lastRunAt=this._time();schedule.lastResult='queued';schedule.nextRunAt=nextOccurrence(schedule.cron,schedule.timezone,at);}
-      this._history(goal,'delivery',reason,{id,status:'queued',scheduleId:combined[0],scheduleIds:combined,prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});}catch(error){this._deliveryError(item.id,error);}}
+      this._history(goal,'delivery',reason,{id,status:'queued',scheduleId:combined[0],scheduleIds:combined,...(skills?{skills}:{}),prompt:assembled.prompt,layers:assembled.layers,threadId:goal.threadId,turnId:null});});}catch(error){this._deliveryError(item.id,error);}}
     for(const goal of this.store.data.goals)if(goal.status==='active')void this.pump(goal.id);
   }
   async pumpAll(){await Promise.allSettled(this.store.data.goals.filter(g=>g.status==='active').map(g=>this.pump(g.id)));}
   managementCreate(input,guard){return this.management.create(input,guard);}
-  managementRequest(input,guard){return this.management.request(input,guard);}
+  managementRequest(input,guard,internal){return this.management.request(input,guard,internal);}
+  captureSkills(input){return this.skillProvider?this.skillProvider.capture(input):{snapshot:null,prompt:''};}
+  skillTools(resolveSnapshot,validateContext){return this.skillProvider?.tools(resolveSnapshot,validateContext)||[];}
   managementAction(input,guard){return this.management.action(input,guard);}
   hasActiveWork(){return this.management.hasActiveWork()||this.pumps.size>0||this.reconciling.size>0||this.qaReleases.size>0||this.retiring.size>0||this.retirementFailures.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
   runtimeChanged(){if(this.closed)return;this.management.runtimeChanged();for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal))void this._retireIdleSession(goal.id,'실행 환경 변경으로 유휴 QA 연결을 해제했습니다.').catch(()=>{});this._notify();}
