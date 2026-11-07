@@ -78,6 +78,8 @@ contextBridge.exposeInMainWorld('opsManager',Object.freeze({
   snapshot:invokeOps('snapshot'),saveGoal:invokeOps('saveGoal'),deleteGoal:invokeOps('deleteGoal'),goalAction:invokeOps('goalAction'),
   saveSchedule:invokeOps('saveSchedule'),deleteSchedule:invokeOps('deleteSchedule'),preview:invokeOps('preview'),configure:invokeOps('configure'),
   managementCreate:invokeOps('managementCreate'),managementRequest:invokeOps('managementRequest'),managementAction:invokeOps('managementAction'),
+  navigationResult:invokeOps('navigationResult'),
+  onNavigate(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>{if(typeof value?.id==='string'&&value.target&&typeof value.target==='object')callback(value);};ipcRenderer.on('reviewops:ops-navigate',listener);return()=>ipcRenderer.removeListener('reviewops:ops-navigate',listener);},
   onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-state',listener);}
 }));
 

@@ -26,7 +26,7 @@ const viewportPreset=viewport=>VIEWER_PRESETS.find(([,width,height])=>width===vi
 const viewportDraft=viewport=>({width:String(viewport.width),height:String(viewport.height)});
 const fileType=file=>file?.mimeType?.startsWith('image/')?t("이미지"):/\.(md|markdown)$/i.test(file?.name||file?.path||'')||file?.mimeType==='text/markdown'?'Markdown':/\.csv$/i.test(file?.name||file?.path||'')||file?.mimeType==='text/csv'?'CSV':file?.mimeType==='application/pdf'?'PDF':/html/.test(file?.mimeType||'')?'HTML':t("파일");
 
-export default function ProjectWorkspace({data,projectId,qaScoped=false,resourceMode='project',invoke,mutate,busy,onOpenGroup,onOpenWindow,windowOpening=false,onError,onDirtyChange,onDelete,onOpenHosts,initialReviewId='',selectionRequest=0,initialSection='',sectionRequest=0,initialReviewMode='detail',integrationRequest=0,active=true,onIntegrationReady}) {
+export default function ProjectWorkspace({data,projectId,qaScoped=false,resourceMode='project',invoke,mutate,busy,onOpenGroup,onOpenWindow,windowOpening=false,onError,onDirtyChange,onDelete,onOpenHosts,initialReviewId='',selectionRequest=0,initialSection='',sectionRequest=0,initialReviewMode='detail',integrationRequest=0,active=true,onIntegrationReady,onContextChange}) {
  const isService=false;
  const resource=data.projects.find(item=>item.id===projectId);
  const group=data.groups.find(item=>item.id===resource?.groupId);
@@ -36,6 +36,8 @@ export default function ProjectWorkspace({data,projectId,qaScoped=false,resource
  const [tab,setTab]=useState(initialSection||'review');
  const [selectedReviewId,setSelectedReviewId]=useState(initialReviewId),[creating,setCreating]=useState(initialReviewMode==='create'),[reviewMode,setReviewMode]=useState(initialReviewMode),[closeRequest,setCloseRequest]=useState(0);
  const [file,setFile]=useState(null),[fileMode,setFileMode]=useState('preview'),[previewFile,setPreviewFile]=useState(null),[previewUrl,setPreviewUrl]=useState(''),[previewRequest,setPreviewRequest]=useState(0),[trust,setTrust]=useState(null);
+ const contextCallback=useRef(onContextChange);contextCallback.current=onContextChange;
+ useEffect(()=>{if(active)contextCallback.current?.({view:'project',section:tab,projectId,reviewId:selectedReviewId||'',documentId:data.attachments.some(row=>row.id===previewFile?.id)?previewFile.id:''})},[active,tab,projectId,selectedReviewId,previewFile?.id,data.attachments]);
  const [mobilePane,setMobilePane]=useState('workspace');
  const [width,setWidth]=useState(()=>bound(safeStored('reviewops.project.panelWidth',560),420,900));
  const dirtyParts=useRef({}),dirtyCallback=useRef(onDirtyChange);dirtyCallback.current=onDirtyChange;
