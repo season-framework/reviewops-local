@@ -175,7 +175,8 @@ struct CatalogApi {
         // Offline only. Missing revocation evidence refuses; never weaken policy.
         trust.dwProvFlags = WTD_REVOCATION_CHECK_CHAIN_EXCLUDE_ROOT | WTD_CACHE_ONLY_URL_RETRIEVAL | WTD_USE_DEFAULT_OSVER_CHECK;
         GUID action = DRIVER_ACTION_VERIFY;
-        const LONG status = WinVerifyTrust(INVALID_HANDLE_VALUE, &action, &trust);
+        const HWND noInteractiveWindow = reinterpret_cast<HWND>(INVALID_HANDLE_VALUE);
+        const LONG status = WinVerifyTrust(noInteractiveWindow, &action, &trust);
         LONG signerStatus = TRUST_E_SUBJECT_NOT_TRUSTED;
         if (status == ERROR_SUCCESS) {
             const auto data = provider(trust.hWVTStateData);
@@ -197,7 +198,7 @@ struct CatalogApi {
             }
         }
         trust.dwStateAction = WTD_STATEACTION_CLOSE;
-        WinVerifyTrust(INVALID_HANDLE_VALUE, &action, &trust);
+        WinVerifyTrust(noInteractiveWindow, &action, &trust);
         Check(SetFilePointerEx(original, zero, nullptr, FILE_BEGIN) != FALSE, "CATALOG_HASH_FAILED");
         if (status != ERROR_SUCCESS) Refuse("CATALOG_TRUST_REFUSED", status);
         if (signerStatus != ERROR_SUCCESS) Refuse("CATALOG_SIGNER_REFUSED", signerStatus);
