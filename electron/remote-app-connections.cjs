@@ -17,8 +17,8 @@ function fields(value, keys) {
 }
 // Saved profiles contain public pairing data and an OS-protected credential
 // envelope. Raw tokens and local command prompts never enter profile files/IPC.
-function createRemoteAppConnections({dataPath,identityProvider}) {
-  if(typeof dataPath!=='string'||!path.isAbsolute(dataPath))fail('INVALID_REMOTE_REQUEST');
+function createRemoteAppConnections({dataPath,identityProvider,requestAgentForProfile=()=>false}) {
+  if(typeof dataPath!=='string'||!path.isAbsolute(dataPath)||typeof requestAgentForProfile!=='function')fail('INVALID_REMOTE_REQUEST');
   const directory=path.join(dataPath,'remote-app-connections'),file=path.join(directory,'hosts.json');
   function owned(stat,isDirectory=false){
     if(stat.isSymbolicLink()||(isDirectory?!stat.isDirectory():!stat.isFile())||
@@ -88,7 +88,7 @@ function createRemoteAppConnections({dataPath,identityProvider}) {
   function check(guard){if(closed)fail('CONNECTION_CLOSED');if(typeof guard!=='function')fail('ACCESS_DENIED');guard();}
   function scope(row){return `remote-app-client:${row.profile.id}:${row.profile.certificateFingerprint}`;}
   function client(row,guard,sessionToken=''){
-    return createRemoteAppClient({...row.profile,sessionToken,onSessionToken:async secret=>{
+    return createRemoteAppClient({...row.profile,sessionToken,requestAgent:requestAgentForProfile(row.profile),onSessionToken:async secret=>{
       const currentGuard=row.guard||guard;check(currentGuard);
       if(!secret)row.ciphertext='';
       else{if(!identityProvider)fail('IDENTITY_UNAVAILABLE');row.ciphertext=await identityProvider.sealCredential({scope:scope(row),secret,assertCurrent:()=>check(currentGuard)});}

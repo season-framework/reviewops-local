@@ -55,7 +55,7 @@ async function fixture(t) {
     sessionStore: createRemoteAppSessionStore({directory: path.join(root, 'host-access')})});
   const {port} = await listener.start({address: '127.0.0.1', port: 0});
   const identityProvider = protectedCredentialFixture(t), dataPath = path.join(root, 'client'), managers = [];
-  function manager() { const result = createRemoteAppConnections({dataPath, identityProvider}); managers.push(result); return result; }
+  function manager(options={}) { const result = createRemoteAppConnections({dataPath, identityProvider,...options}); managers.push(result); return result; }
   const guard = () => {};
   const connectInput = () => ({id: '', label: 'Saved host', address: '127.0.0.1', port,
     certificatePEM: generated.certificatePEM, certificateFingerprint: generated.identity.certificateFingerprint,
@@ -188,4 +188,14 @@ test('a failed saved-host replacement cannot erase the original protected creden
  await assert.rejects(second.connect({...f.connectInput(),id,label:'Replacement label',invitation:'bad'},f.guard),code('INVALID_REQUEST'));
  const after=JSON.parse(fs.readFileSync(f.profileFile,'utf8')).hosts[0];assert.deepEqual(after,before);
  assert.equal((await second.refresh({id},f.guard)).remote.state,'approved');
+});
+
+
+test('trusted main transport selection receives only the immutable public host and preserves real TLS pairing',async t=>{
+ const f=await fixture(t),https=require('node:https'),agent=new https.Agent();let profiles=0;
+ t.after(()=>agent.destroy());const manager=f.manager({requestAgentForProfile(profile){profiles++;assert.ok(Object.isFrozen(profile));
+  assert.equal(Object.hasOwn(profile,'sessionToken'),false);assert.equal(Object.hasOwn(profile,'ciphertext'),false);return agent;}});
+ const id=await f.pair(manager);assert.equal(profiles,1);assert.equal(manager.state({},f.guard).connections[0].state,'approved');
+ assert.equal((await manager.writeState({id,projectId:f.project.id,reviewId:f.review.id},f.guard)).reviewId,f.review.id);
+ assert.equal(fs.readFileSync(f.profileFile,'utf8').includes('requestAgent'),false);
 });
