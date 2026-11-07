@@ -1,0 +1,2 @@
+# Preserve every user-provided skill resource and archive byte on all platforms.
+/electron/ops-skills-bundled/** -text
