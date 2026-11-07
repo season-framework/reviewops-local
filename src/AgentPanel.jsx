@@ -54,7 +54,7 @@ function AgentTurn({run,renderMarkdown,showInstruction,preview,showLog,generated
   </div>
   <div className="agent-answer"><header><strong>{t('에이전트')}</strong><span className={`agent-status ${run.status}`}>{statusLabel[run.status]||run.status}</span></header>
    <p className="agent-model-summary">{hasReportedSettings?<><span>{modelSummary}</span><span>{reasoningSummary}</span></>:<span>{t('사용 모델·추론 정보 없음')}</span>}</p>
-   {run.response?.trim()?renderMarkdown(run.response,{onFileLink:path=>generatedPreview.open(path,run.id)}):!active&&<p className="agent-response-empty">{t('응답 내용이 없습니다.')}</p>}
+   <div className={`agent-response-text${logOpen?' agent-response-text-reading':''}`} tabIndex={logOpen?0:undefined} aria-label={logOpen?t('에이전트 응답 본문'):undefined}>{run.response?.trim()?renderMarkdown(run.response,{onFileLink:path=>generatedPreview.open(path,run.id)}):!active&&<p className="agent-response-empty">{t('응답 내용이 없습니다.')}</p>}</div>
    {run.error&&<p className="form-error" role="alert">{run.error}</p>}{run.status==='interrupted'&&<p>{t('앱이 다시 시작되어 실행 연결이 끊겼습니다. 작업 결과를 확인한 뒤 다시 요청하십시오.')}</p>}
    <div className="agent-response-actions"><MessageCopy value={run.response} streaming={active} label={active?t('작성 중 응답 복사'):t('응답 복사')}/>{!readOnly&&<><Button onClick={()=>onContinue(run)}>{t('이어서 요청')}</Button>{['failed','cancelled','interrupted'].includes(run.status)&&<><Button disabled={disabled} onClick={()=>onRetry(run)}>{t('재실행')}</Button><Button disabled={disabled} onClick={()=>onCopyDraft(run)}>{t('이전 내용을 새 요청으로 가져오기')}</Button></>}</>}</div>
    <RunSettings run={run} onNavigate={onNavigate} onTransfer={onTransfer} isTransferred={isTransferred} transferring={transferring} readOnly={readOnly}/>
@@ -198,7 +198,7 @@ export default function AgentPanel({review,service,invoke,mutate,renderMarkdown,
    if(mode==='edit'){let cleared=false;editing[1](value=>{const next=acceptedQueueEditDraft(value,sent,saved);cleared=!next.editingId;return next;});if(cleared&&readDraft(`reviewops.agent.composer.${review.id}`).mode==='edit')setComposer({mode:'draft'});setNotice(t('대기 요청을 수정했습니다.'));}else{setDraft(value=>acceptedAgentDraft(mode==='legacy'?legacyFollowupDraft(value):value,sent));setNotice(t('후속 요청을 저장했습니다. 실행 버튼을 누르면 시작합니다.'));}setQueueVersion(value=>value+1);await refreshAcceptedRun();
   }catch(cause){failure(cause)}finally{setBusy(false)}
  };
- const jumpLatest=()=>{if(!scroll.current)return;scroll.current.scrollTop=scroll.current.scrollHeight;followLatest.current=true;setShowLatest(false);};
+ const jumpLatest=()=>{if(!scroll.current)return;const latest=[...scroll.current.querySelectorAll('.agent-turn')].at(-1);for(const node of latest?.querySelectorAll('.agent-response-text-reading,.agent-run-log[open] .agent-run-log-content')||[])node.scrollTop=node.scrollHeight;scroll.current.scrollTop=scroll.current.scrollHeight;followLatest.current=true;setShowLatest(false);};
  const closeLinkedRecord=()=>{navigationRequest.current++;setLinkedRecord(null);};
  const navigateRun=async id=>{
   const request=++navigationRequest.current,element=document.getElementById(`agent-run-${id}`);followLatest.current=false;
