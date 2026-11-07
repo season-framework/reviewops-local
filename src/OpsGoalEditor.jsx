@@ -7,7 +7,7 @@ import OpsMarkdownEditor from './OpsMarkdownEditor.jsx';
 
 export default function OpsGoalEditor({goal,projects=[],services=[],invoke,onSave,onCancel,onDirtyChange,pending=false}){
  const [draft,setDraft]=useState(()=>goalDraft(goal)),[error,setError]=useState(''),[conflict,setConflict]=useState(false),[environment,setEnvironment]=useState(null),[modelError,setModelError]=useState(''),[loadingModels,setLoadingModels]=useState(false);
- const source=useRef(goalDraft(goal)),dirty=dirtySettings(draft,source.current),dirtyCallback=useRef(onDirtyChange);dirtyCallback.current=onDirtyChange;
+ const source=useRef(goalDraft(goal)),modelRequest=useRef(0),dirty=dirtySettings(draft,source.current),dirtyCallback=useRef(onDirtyChange);dirtyCallback.current=onDirtyChange;
  const serialized=JSON.stringify(goalDraft(goal));
  useEffect(()=>{const incoming=JSON.parse(serialized);if(dirtySettings(draft,source.current))setConflict(dirtySettings(incoming,source.current));else{setDraft(incoming);setConflict(false)}source.current=incoming},[serialized]);
  useEffect(()=>{dirtyCallback.current?.(dirty);return()=>dirtyCallback.current?.(false)},[dirty]);
@@ -16,8 +16,9 @@ export default function OpsGoalEditor({goal,projects=[],services=[],invoke,onSav
   let live=true;setEnvironment(null);setModelError('');
   if(!connection?.id){setLoadingModels(false);return()=>{live=false}}
   setLoadingModels(true);
-  Promise.resolve(invoke('agent.models',{serviceId:connection.id})).then(value=>{if(live)setEnvironment(value)}).catch(cause=>{if(live)setModelError(errorText(cause))}).finally(()=>{if(live)setLoadingModels(false)});
-  return()=>{live=false};
+  const refresh=()=>{const request=++modelRequest.current;return Promise.resolve(invoke('agent.models',{serviceId:connection.id})).then(value=>{if(live&&request===modelRequest.current){setEnvironment(value);setModelError(value?.modelError||'')}}).catch(cause=>{if(live&&request===modelRequest.current)setModelError(errorText(cause))}).finally(()=>{if(live&&request===modelRequest.current)setLoadingModels(false)})};
+  refresh();const stop=window.reviewops?.onModelCacheState?.(()=>refresh());
+  return()=>{live=false;modelRequest.current++;stop?.()};
  },[target,invoke]);
  const models=availableModels(environment,connection?.agentModels||[]),selectedModel=models.find(row=>row.id===(draft.model||environment?.defaultModel)),efforts=reasoningOptions(selectedModel),legacyFolder=Boolean(goal&&!draft.projectId&&draft.workPath);
  const update=(key,value)=>{setDraft(current=>({...current,[key]:value}));setError('')};
