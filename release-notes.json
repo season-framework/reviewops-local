@@ -23,7 +23,7 @@
     {
       "category": "improvements",
       "title": "Use compact goal rows and Markdown goal prompts",
-      "description": "Switch between Conversation and Goals, inspect goal details in four tabs and use one state-appropriate Start or Finish action. Search project and model choices, edit Markdown locally in Monaco and restart a finished goal with its original conversation. New and retained goals run with danger-full-access and approvalPolicy never.",
+      "description": "Switch between Conversation and Goals, inspect goal details in four tabs and use one state-appropriate Start or Finish action. Search project and model choices, edit Markdown locally in Monaco and restart a finished goal with its original conversation. New and retained goals use full local access without interactive approvals.",
       "commits": [
         "912b7e0711967c2424e288a8057a13a283b99053",
         "a79197d499bc21b9154984c95efeeef67fa09d9a"
@@ -35,7 +35,7 @@
       "description": "Use shared headers across Home, Ops, Groups, accounts, hosts and settings. Align titles with actions and search, retain useful paths inline and keep long project navigation clear in narrow windows and either sidebar state.",
       "commits": [
         "ddff377de97b1126f7592080ea91558a6ec8d18f",
-        "beb0573e3e01ed61df05107876dddfdfa73c2455"
+        "3d587192ea89980c1fbc1c863ed4b6e7839d0c19"
       ]
     },
     {
