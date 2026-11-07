@@ -7,7 +7,8 @@
       "title": "Use the same Ops assistant across app screens",
       "description": "Keep a resizable right-hand conversation while moving through Home, groups and projects. Explicitly select its work target, retain drafts and use typed review, reply, document and navigation tools bound to the request’s original project and review generation.",
       "commits": [
-        "f9719291f403026e59d9a61534e12d992eb5ca32"
+        "2398efa7a56a7f530bf60d640833d6cfa96cf83f",
+        "2d45490018f7de632bac66e2b8f6adc7ac755783"
       ]
     },
     {
@@ -33,8 +34,8 @@
       "title": "Connect to a work PC from a browser or another ReviewOps app",
       "description": "Enable browser viewing and app access separately in Remote management. Approve project-scoped devices, inspect reviews and attachments, and run or stop Codex in the work PC's configured local or SSH environment. Both listeners start disabled.",
       "commits": [
-        "00aad64dc81ed9d60e1d70c1ecac94aa7dce5a73",
-        "a15a9608cad292c5bd745d632cb7217abb9ed43d"
+        "83c0c25d13f56dca5588437a6e395b2cde77906d",
+        "25a78aa7a4e7a7def5e40c083c263df9b785cc9e"
       ]
     },
     {
