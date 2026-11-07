@@ -8,19 +8,39 @@ export function inspectOpsArchive(archive, {repository, asar}) {
   const names = fs.readdirSync(path.join(repository, 'electron')).filter(name => /^ops-.*\.cjs$/.test(name)).sort();
   assert.ok(names.includes('ops-manager.cjs'), 'The reviewed Ops manager is missing.');
   for (const name of names) assert.deepEqual(asar.extractFile(archive, path.join('electron', name)), fs.readFileSync(path.join(repository, 'electron', name)), `Packaged Ops source differs: ${name}`);
+  const prefix='electron/ops-skills-bundled/',skillResources=[];
+  const visit=relative=>{
+    for(const name of fs.readdirSync(path.join(repository,...relative.split('/'))).sort()){
+      const file=relative+'/'+name,stat=fs.lstatSync(path.join(repository,...file.split('/')));
+      assert.ok(!stat.isSymbolicLink()&&(stat.isFile()||stat.isDirectory()),`Invalid reviewed skill resource: ${file}`);
+      if(stat.isDirectory())visit(file);else skillResources.push(file);
+    }
+  };
+  visit(prefix.slice(0,-1));
+  for(const slug of ['github-issue-management','qa-usability-report'])assert.ok(skillResources.includes(prefix+slug+'/SKILL.md'),`Initial skill instructions are missing: ${slug}`);
+  const packagedResources=[];
+  for(const entry of asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''))){
+    if(!entry.startsWith(prefix))continue;
+    const stat=asar.statFile(archive,entry,false);
+    assert.ok(!stat.link,`Packaged skill links are not allowed: ${entry}`);
+    if(!stat.files)packagedResources.push(entry);
+  }
+  assert.deepEqual(packagedResources.sort(),skillResources.slice().sort(),'Packaged skill resource inventory differs from reviewed source.');
+  for(const file of skillResources)assert.deepEqual(asar.extractFile(archive,file),fs.readFileSync(path.join(repository,...file.split('/'))),`Packaged skill resource differs: ${file}`);
   const lock = JSON.parse(fs.readFileSync(path.join(repository, 'package-lock.json'), 'utf8'));
   const dependencies = {};
-  for (const name of ['cron-parser', 'luxon']) {
+  for (const name of ['cron-parser', 'luxon','js-yaml','argparse']) {
     const relative = path.join('node_modules', name);
     const metadata = JSON.parse(asar.extractFile(archive, path.join(relative, 'package.json')).toString('utf8'));
     assert.equal(metadata.version, lock.packages[`node_modules/${name}`]?.version, `Packaged dependency version differs: ${name}`);
-    assert.equal(typeof metadata.main, 'string', `Packaged dependency entry is missing: ${name}`);
-    const entry = path.normalize(path.join(relative, metadata.main));
+    const main=name==='js-yaml'?metadata.exports?.['.']?.require:metadata.main;
+    assert.equal(typeof main, 'string', `Packaged dependency entry is missing: ${name}`);
+    const entry = path.normalize(path.join(relative, main));
     assert.ok(entry.startsWith(relative + path.sep), `Invalid dependency entry: ${name}`);
     assert.ok(asar.extractFile(archive, entry).length > 0, `Packaged dependency cannot be loaded: ${name}`);
     dependencies[name] = metadata.version;
   }
-  return {sourceModules: names, dependencies};
+  return {sourceModules: names,skillResources, dependencies};
 }
 
 const invoke = (page, method, input) => page.evaluate(({method, input}) => {
