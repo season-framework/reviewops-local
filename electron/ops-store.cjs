@@ -3,6 +3,8 @@
 const fs=require('node:fs');
 const path=require('node:path');
 const {randomUUID}=require('node:crypto');
+const {validateManagementContext}=require('./ops-workspace-context.cjs');
+const {validateSnapshot}=require('./ops-skills.cjs');
 const {validateSchedule}=require('./ops-scheduler.cjs');
 const MAX_STATE_BYTES=64*1024*1024;
 const UUID=/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
@@ -21,6 +23,9 @@ function validateQaReceipt(value,history=false){
   if(value.error){if(Object.keys(value.error).some(key=>!['code','message','inputMayHaveApplied'].includes(key))||!text(value.error.code,128)||!text(value.error.message,2000)||typeof value.error.inputMayHaveApplied!=='boolean')fail();}
   if(value.result){const allowed=['projectId','clientId','sessionId','windowId','browserId','documentId','contract','url','title','applied','released','closed','reloaded','availability','bindingState','capturedAt','width','height','mimeType','viewport','imageToCss'];if(typeof value.result!=='object'||Array.isArray(value.result)||Object.entries(value.result).some(([key,entry])=>!allowed.includes(key)||(!['viewport','imageToCss'].includes(key)&&!(text(entry,4096)||typeof entry==='boolean'||typeof entry==='number'&&Number.isFinite(entry)))))fail();for(const [field,keys]of [['viewport',['width','height','scrollX','scrollY']],['imageToCss',['scaleX','scaleY']]])if(value.result[field]){const numbers=value.result[field];if(typeof numbers!=='object'||Array.isArray(numbers)||Object.entries(numbers).some(([key,entry])=>!keys.includes(key)||!Number.isFinite(entry)||Math.abs(entry)>1e9||field==='imageToCss'&&entry<=0))fail();}}
 }
+function optionalSkills(value){if(value!==undefined)validateSnapshot(value);}
+function optionalContext(value){if(value!==undefined)validateManagementContext(value);}
+function selection(value){if(value===undefined)return;if(!value||typeof value!=='object'||Array.isArray(value)||Object.keys(value).some(key=>!['context','skillIds','taskKinds'].includes(key)))fail();optionalContext(value.context);if(value.skillIds!==undefined&&(!Array.isArray(value.skillIds)||value.skillIds.length>20||new Set(value.skillIds).size!==value.skillIds.length||value.skillIds.some(id=>!UUID.test(id))))fail();if(value.taskKinds!==undefined&&(!Array.isArray(value.taskKinds)||value.taskKinds.length>5||new Set(value.taskKinds).size!==value.taskKinds.length||value.taskKinds.some(kind=>!['review_create','review_response','qa','report','general'].includes(kind))))fail();}
 function validateOpsData(value){
   if(!value||value.version!==1||!Number.isSafeInteger(value.revision)||value.revision<0||!text(value.commonPrompt,100000)||!Array.isArray(value.goals)||value.goals.length>100)fail();
   const ids=new Set(),schedules=new Set(),threads=new Set();
@@ -34,11 +39,11 @@ function validateOpsData(value){
     if(g.targetLockIdentities!==undefined&&(!Array.isArray(g.targetLockIdentities)||g.targetLockIdentities.length<1||g.targetLockIdentities.length>8||g.targetLockIdentities.some(value=>!text(value,512)||!value)))fail();
     if(g.projectConnectionSignature!==undefined&&!/^[a-f0-9]{64}$/.test(g.projectConnectionSignature))fail();
     if(g.qaBinding!==undefined&&g.qaBinding!==null)validateQaBinding(g.qaBinding);
-    if(g.qaReceipts!==undefined){if(!Array.isArray(g.qaReceipts)||g.qaReceipts.length>10000)fail();const calls=new Set();for(const receipt of g.qaReceipts){validateQaReceipt(receipt);if(calls.has(receipt.callId))fail();calls.add(receipt.callId);}}
+    if(g.qaReceipts!==undefined){if(!Array.isArray(g.qaReceipts)||g.qaReceipts.length>10000)fail();const calls=new Set();for(const receipt of g.qaReceipts){validateQaReceipt(receipt);if(calls.has(receipt.callId))fail();for(const key of ['requestId','operationId'])if(receipt[key]!==undefined&&(!text(receipt[key],128)||!receipt[key]))fail();calls.add(receipt.callId);}}
     if(g.threadId)threads.add(g.threadId);
     for(const s of g.schedules){if(!s||!UUID.test(s.id)||schedules.has(s.id)||s.goalId!==g.id||!text(s.name,200)||!s.name.trim()||!text(s.prompt,100000)||typeof s.enabled!=='boolean')fail();validateSchedule(s.cron,s.timezone);schedules.add(s.id);}
-    for(const h of g.history){if(!h||!UUID.test(h.id)||!text(h.type,80)||!text(h.reason||'',100000)||h.prompt!==undefined&&!text(h.prompt,2*1024*1024))fail();if(h.type==='qa.operation')validateQaReceipt(h,true);}
-    for(const item of g.conversation)if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();
+    for(const h of g.history){if(!h||!UUID.test(h.id)||!text(h.type,80)||!text(h.reason||'',100000)||h.prompt!==undefined&&!text(h.prompt,2*1024*1024))fail();if(h.type==='qa.operation')validateQaReceipt(h,true);optionalSkills(h.skills);}
+    for(const item of g.conversation){if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();optionalSkills(item.skills);}
   }
   if(value.managementConversations!==undefined){
     if(!Array.isArray(value.managementConversations)||value.managementConversations.length>100)fail();
@@ -46,10 +51,10 @@ function validateOpsData(value){
     for(const row of value.managementConversations){
       if(!row||!UUID.test(row.id)||conversations.has(row.id)||ids.has(row.id)||!text(row.name,200)||!row.name.trim()||!text(row.model,256)||!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(row.reasoningEffort)||!['idle','starting','running','unknown','error'].includes(row.executionState)||row.threadId!==null&&(!text(row.threadId,256)||!row.threadId||threads.has(row.threadId))||row.turnId!==null&&!text(row.turnId,256)||row.lastError!==null&&!text(row.lastError,2000)||!Array.isArray(row.conversation)||!Array.isArray(row.requests)||row.requests.length>10000||!Array.isArray(row.toolReceipts)||row.toolReceipts.length>10000)fail();
       conversations.add(row.id);if(row.threadId)threads.add(row.threadId);
-      for(const item of row.conversation){if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();if(item.links!==undefined&&(!Array.isArray(item.links)||item.links.length>100||item.links.some(link=>!link||!['goal','project'].includes(link.kind)||!UUID.test(link.id)||!text(link.name,200))))fail();}
+      for(const item of row.conversation){if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();if(item.links!==undefined&&(!Array.isArray(item.links)||item.links.length>100||item.links.some(link=>!link||!['goal','project','review','activity','group'].includes(link.kind)||!UUID.test(link.id)||!text(link.name,500))))fail();optionalSkills(item.skills);optionalContext(item.context);}
       const requests=new Set(),calls=new Set();
-      for(const request of row.requests){if(!request||!UUID.test(request.id)||requests.has(request.id)||!text(request.instruction,100000)||!text(request.prompt,256*1024)||!['queued','prepared','accepted','unknown','completed','failed','interrupted','cancelled'].includes(request.status)||request.threadId!==null&&!text(request.threadId,256)||request.turnId!==null&&!text(request.turnId,256))fail();requests.add(request.id);}
-      for(const receipt of row.toolReceipts){if(!receipt||!text(receipt.callId,512)||!receipt.callId||calls.has(receipt.callId)||!/^ops_(projects|goals|schedules)_[a-z]+$/.test(receipt.tool)||!/^[a-f0-9]{64}$/.test(receipt.digest)||!text(receipt.threadId,256)||!text(receipt.turnId,256)||!['prepared','completed','failed','unknown'].includes(receipt.status)||receipt.result!==undefined&&(!receipt.result||typeof receipt.result!=='object'||Array.isArray(receipt.result)||typeof receipt.result.ok!=='boolean'||Buffer.byteLength(JSON.stringify(receipt.result))>256*1024))fail();calls.add(receipt.callId);}
+      for(const request of row.requests){if(!request||!UUID.test(request.id)||requests.has(request.id)||!text(request.instruction,100000)||!text(request.prompt,256*1024)||!['queued','prepared','accepted','unknown','completed','failed','interrupted','cancelled'].includes(request.status)||request.threadId!==null&&!text(request.threadId,256)||request.turnId!==null&&!text(request.turnId,256))fail();requests.add(request.id);optionalSkills(request.skills);optionalContext(request.context);selection(request.selection);}
+      for(const receipt of row.toolReceipts){if(!receipt||!text(receipt.callId,512)||!receipt.callId||calls.has(receipt.callId)||!/^ops_(projects|goals|schedules|screen|reviews|results|attachments|skills)_[a-z_]+$/.test(receipt.tool)||!/^[a-f0-9]{64}$/.test(receipt.digest)||!text(receipt.threadId,256)||!text(receipt.turnId,256)||!['prepared','completed','failed','unknown'].includes(receipt.status)||receipt.result!==undefined&&(!receipt.result||typeof receipt.result!=='object'||Array.isArray(receipt.result)||typeof receipt.result.ok!=='boolean'||Buffer.byteLength(JSON.stringify(receipt.result))>256*1024))fail();for(const key of ['requestId','operationId'])if(receipt[key]!==undefined&&(!text(receipt[key],128)||!receipt[key]))fail();calls.add(receipt.callId);}
     }
   }
   if(Buffer.byteLength(JSON.stringify(value))>MAX_STATE_BYTES)fail('Ops 기록이 64 MiB를 초과합니다. 기존 자료는 보존했습니다.');

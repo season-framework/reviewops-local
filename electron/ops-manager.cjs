@@ -19,11 +19,12 @@ function terminalStatus(status){return status==='failed'?'failed':['interrupted'
 function qaResult(value){const keys=['projectId','clientId','sessionId','windowId','browserId','documentId','contract','url','title','applied','released','closed','reloaded','availability','bindingState','capturedAt','width','height','mimeType'],result=Object.fromEntries(keys.filter(key=>['string','number','boolean'].includes(typeof value?.[key])).map(key=>[key,typeof value[key]==='string'?value[key].slice(0,4096):value[key]]));for(const [field,allowed]of [['viewport',['width','height','scrollX','scrollY']],['imageToCss',['scaleX','scaleY']]])if(value?.[field])result[field]=Object.fromEntries(allowed.filter(key=>typeof value[field][key]==='number').map(key=>[key,value[field][key]]));return result;}
 
 class OpsManager{
-  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,resolveRuntime,runtime,createSession,createQaBridge,managementAdapter,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
+  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,resolveRuntime,runtime,createSession,createQaBridge,managementAdapter,skillProvider,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
     this.store=new OpsStore({dataPath});this.onChange=onChange;this.resolveTarget=resolveTarget;this.resolveSessionTarget=resolveSessionTarget;this.resolveRuntime=resolveRuntime;this.runtime=runtime;this.createSession=createSession;this.now=now;
     this.sessions=new Map();this.pumps=new Map();this.messages=new Map();this.reconciling=new Map();this.lifecycle=new Map();this.draining=new Set();this.closed=false;this.suspended=false;this.revision=this.store.data.revision;
     this.dataPath=dataPath;this.appInstanceId=appInstanceId;this.createQaBridge=createQaBridge;this.validateQaContext=validateQaContext;this.qaBridges=new Map();this.qaTokens=new Map();this.qaReleases=new Map();this.retiring=new Map();this.retirementFailures=new Map();this.qaOperations=new Map();this.closing=false;
     this.scheduler=new OpsScheduler({tick:at=>this.tick(at),nextDue:()=>this.nextDue(),now,...schedulerOptions,onError:error=>this._schedulerError(error)});
+    this.skillProvider=skillProvider;
     this.management=new OpsManagement(this,managementAdapter);
   }
   _open(){if(this.closed)fail('OPS_CLOSED','Ops가 종료되고 있습니다.');}
@@ -64,7 +65,7 @@ class OpsManager{
     goal.history.push(row);goal.updatedAt=row.createdAt;return row;}
   _mutate(change){this._open();this.store.update(change);this._notify();this.scheduler.arm();return this.snapshot();}
   _notify(){this.revision++;try{this.onChange(this.snapshot());}catch{/* Renderer listeners do not own persistence. */}}
-  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,managementConversations:this.management.snapshot(),revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
+  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,managementConversations:this.management.snapshot(),availableSkills:this.skillProvider?.snapshot().skills||[],revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
     goals:data.goals.map(goal=>({...goal,qaBinding:goal.qaBinding||(!goal.projectId?{state:'unavailable',projectId:'',reason:'등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'}:null),nextRunAt:goal.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt).filter(Boolean).sort()[0]||null,
       conversation:[...goal.conversation.filter(row=>!this.messages.has(goal.id+':'+row.id)),...[...this.messages].filter(([key])=>key.startsWith(goal.id+':')).map(([,value])=>value)]}))};}
   nextDue(){if(this.suspended||this.closed)return null;return this.store.data.goals.filter(g=>g.status==='active').flatMap(g=>g.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt)).filter(Boolean).sort()[0]||null;}
@@ -287,7 +288,9 @@ class OpsManager{
   }
   async pumpAll(){await Promise.allSettled(this.store.data.goals.filter(g=>g.status==='active').map(g=>this.pump(g.id)));}
   managementCreate(input,guard){return this.management.create(input,guard);}
-  managementRequest(input,guard){return this.management.request(input,guard);}
+  managementRequest(input,guard,internal){return this.management.request(input,guard,internal);}
+  captureSkills(input){return this.skillProvider?this.skillProvider.capture(input):{snapshot:null,prompt:''};}
+  skillTools(resolveSnapshot,validateContext){return this.skillProvider?.tools(resolveSnapshot,validateContext)||[];}
   managementAction(input,guard){return this.management.action(input,guard);}
   hasActiveWork(){return this.management.hasActiveWork()||this.pumps.size>0||this.reconciling.size>0||this.qaReleases.size>0||this.retiring.size>0||this.retirementFailures.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
   runtimeChanged(){if(this.closed)return;this.management.runtimeChanged();for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal))void this._retireIdleSession(goal.id,'실행 환경 변경으로 유휴 QA 연결을 해제했습니다.').catch(()=>{});this._notify();}
