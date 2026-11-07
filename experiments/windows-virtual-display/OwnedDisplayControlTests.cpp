@@ -304,7 +304,7 @@ void IoTimeoutDrainedNoAdoption() {
         Fixture fixture(script); const auto io = fixture.Create();
         Need(io.attempted && io.completed && !io.unconfirmed && io.error == WAIT_TIMEOUT && io.cancelRequested && !io.cancelError &&
              impl::Zero(io.reply.monitorId) && !fixture.slot.pending, "TEST_TIMEOUT_LATE_REPLY_ADOPTED");
-        Need(io.completionError == (script == Script::TimeoutSuccess ? ERROR_SUCCESS : ERROR_OPERATION_ABORTED), "TEST_DRAIN_FAILURE_EVIDENCE_LOST");
+        Need(io.completionError == static_cast<DWORD>(script == Script::TimeoutSuccess ? ERROR_SUCCESS : ERROR_OPERATION_ABORTED), "TEST_DRAIN_FAILURE_EVIDENCE_LOST");
         Need(fixture.argumentsValid && fixture.sends == 1 && fixture.cancels == 1 && fixture.results == 2 &&
              fixture.waits == std::vector<DWORD>({impl::IoWaitMs, impl::DrainWaitMs}), "TEST_TIMEOUT_REQUEST_REPLAYED");
         Need(Live(fixture.slot.file), "TEST_DRAIN_CLOSED_ORIGINAL_FILE");
