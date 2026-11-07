@@ -267,10 +267,11 @@ class OpsManager{
       }
       const current=this._goal(this.store.data,id);if(current.status==='active')return;
       if(current.status==='finished'&&action!=='start')fail('OPS_GOAL_FINISHED','종료한 목표는 시작 버튼으로 다시 시작하십시오.');
+      const startSkills=this.captureSkills({instruction:[current.prompt,input.instruction||''].join('\n'),skillIds:current.skillIds,taskKinds:current.taskKinds,inheritedSnapshot:internal.skillSnapshot}).snapshot;
       if(current.executionState==='unknown')await this.reconnect(id,false);
       if(this._goal(this.store.data,id).executionState==='unknown')fail('OPS_DELIVERY_UNKNOWN','원래 전달 결과를 확인한 뒤 재개하십시오.');
       guard();this._mutate(data=>{const goal=this._goal(data,id);goal.status='active';Object.assign(goal,EXECUTION);this._history(goal,`goal.${action}`,current.status==='finished'?'사용자가 종료한 목표를 기존 설정과 대화로 다시 시작했습니다.':'사용자가 목표 실행을 변경했습니다.');});
-      this._enqueue(id,{reason:action==='start'?'목표 시작':'목표 재개',instruction:input.instruction||'',skillSnapshot:internal.skillSnapshot});
+      this._enqueue(id,{reason:action==='start'?'목표 시작':'목표 재개',instruction:input.instruction||'',skillSnapshot:startSkills});
     })().finally(()=>{this.lifecycle.delete(id);void this.pumpAll();});this.lifecycle.set(id,task);await task;return this.snapshot();
   }
   async tick(at=this.now()){

@@ -29,7 +29,8 @@ function readZip(bytes){
   total+=length;if(total>LIMITS.package||files.length>=LIMITS.files)fail('OPS_SKILL_LIMIT','패키지는 파일 500개·압축 해제 32 MiB 이하여야 합니다.');
   let content;try{content=method===8?zlib.inflateRawSync(bytes.subarray(start,stop),{maxOutputLength:LIMITS.file}):Buffer.from(bytes.subarray(start,stop));}catch{fail('OPS_SKILL_ZIP','압축을 해제할 수 없습니다.',entry);}
   if(content.length!==length||crc32(content)!==crc)fail('OPS_SKILL_ZIP','파일 크기 또는 체크섬이 일치하지 않습니다.',entry);
-  if(!entry.split('/').includes('__MACOSX')&&path.posix.basename(entry)!=='.DS_Store')files.push({path:entry,bytes:content});
+  const appleDouble=path.posix.basename(entry).startsWith('._')&&content.length>=4&&content.readUInt32BE(0)===0x00051607;
+  if(!appleDouble&&!entry.split('/').includes('__MACOSX')&&path.posix.basename(entry)!=='.DS_Store')files.push({path:entry,bytes:content});
  }
  ranges.sort((a,b)=>a[0]-b[0]);if(cursor!==end||ranges.some((r,i)=>i&&ranges[i-1][1]>r[0]))fail('OPS_SKILL_ZIP','ZIP의 파일 영역이 겹칩니다.');
  const roots=files.filter(row=>path.posix.basename(row.path)==='SKILL.md');if(roots.length!==1)fail('OPS_SKILL_REQUIRED','SKILL.md가 정확히 하나 있는 스킬 ZIP을 선택하십시오.');
