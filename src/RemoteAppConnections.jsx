@@ -1,4 +1,5 @@
 import React,{useEffect,useRef,useState} from 'react';
+import PageHeader from './PageHeader.jsx';
 import {t,useLocale} from './i18n/index.js';
 import {readObservedReview,observedCommand,sameWriteObservation,captureWriteObservation} from './remote/write-observation.mjs';
 import {uploadRemoteAttachment,downloadRemoteAttachment,captureTimelineAttachment,REMOTE_FILE_BYTES} from './remote/attachments.mjs';
@@ -167,7 +168,7 @@ export default function RemoteAppConnections({invoke,active=true}){
  });
  if(!active)return null;
  return <section className="settings-panel remote-app-connections" aria-label={t('다른 PC에 원격 접속')}>
-  <h2>{t('다른 PC에 원격 접속')}</h2><p>{t('작업 PC의 IP·포트와 초대 정보를 입력하십시오. 자료 저장과 에이전트 실행은 작업 PC에서 처리합니다.')}</p>
+  <PageHeader variant="section" headingLevel={2} title={t('다른 PC에 원격 접속')}/><p>{t('작업 PC의 IP·포트와 초대 정보를 입력하십시오. 자료 저장과 에이전트 실행은 작업 PC에서 처리합니다.')}</p>
   {error&&<p role="alert" className="form-error">{error}</p>}{message&&<p role="status">{message}</p>}
   <form onSubmit={event=>{event.preventDefault();perform(async()=>{const value=await invoke('remoteApp.connect',{...form,port:Number(form.port)});setSelected(value.id);setForm(previous=>({...previous,invitation:''}));setMessage(t('작업 PC에서 이 앱의 프로젝트 권한을 승인한 뒤 연결 상태를 확인하십시오.'));});}}>
    <div className="field-row"><label>{t('연결 이름')}<input value={form.label} onChange={event=>change('label',event.target.value)} maxLength={120} required disabled={busy}/></label><label>{t('작업 PC IPv4 주소')}<input value={form.address} onChange={event=>change('address',event.target.value)} maxLength={15} required disabled={busy}/></label><label>{t('포트')}<input value={form.port} onChange={event=>change('port',event.target.value)} inputMode="numeric" maxLength={5} required disabled={busy}/></label></div>
@@ -192,7 +193,7 @@ export default function RemoteAppConnections({invoke,active=true}){
     })}>{t('임시 전송 취소')}</button>}
    </div>)}
   </section>}
-  {host&&<div className="remote-host"><h3>{t('원격 작업 공간: {0}',[host.label])}</h3><p>{host.address}:{host.port}</p><p role="status">{freshness.stale?t('연결 또는 최신 상태를 확인하지 못했습니다. 저장된 화면과 초안을 보존하고 있습니다.'):t('마지막 확인: {0} · 15초마다 자동 새로고침',[new Date(freshness.at).toLocaleTimeString()])}</p>{draftConflict&&<section aria-label={t('원격 변경과 초안 비교')}><p role="alert">{t('초안을 작성한 뒤 작업 PC의 리뷰가 바뀌었습니다. 초안을 보존했습니다. 최신 내용과 비교한 뒤 새로 작성하십시오.')}</p><h4>{freshness.stale?t('마지막으로 확인한 내용'):t('작업 PC의 최신 내용')}</h4><p>{detail?.title}</p><pre className="user-text">{detail?.body}</pre><button className="button" type="button" disabled={busy||!observed||freshness.stale} onClick={()=>{const draft=drafts.current.get(draftKey);if(draft)drafts.current.set(draftKey,{...draft,binding:observed});setDraftConflict(false);}}>{t('최신 내용을 확인하고 현재 초안 유지')}</button></section>}
+  {host&&<div className="remote-host remote-host-workspace"><PageHeader variant="section" headingLevel={3} className="remote-workspace-identity" title={t('원격 작업 공간: {0}',[host.label])} subtitle={`${host.address}:${host.port}`}><p role="status">{freshness.stale?t('연결 또는 최신 상태를 확인하지 못했습니다. 저장된 화면과 초안을 보존하고 있습니다.'):t('마지막 확인: {0} · 15초마다 자동 새로고침',[new Date(freshness.at).toLocaleTimeString()])}</p></PageHeader>{draftConflict&&<section aria-label={t('원격 변경과 초안 비교')}><p role="alert">{t('초안을 작성한 뒤 작업 PC의 리뷰가 바뀌었습니다. 초안을 보존했습니다. 최신 내용과 비교한 뒤 새로 작성하십시오.')}</p><h4>{freshness.stale?t('마지막으로 확인한 내용'):t('작업 PC의 최신 내용')}</h4><p>{detail?.title}</p><pre className="user-text">{detail?.body}</pre><button className="button" type="button" disabled={busy||!observed||freshness.stale} onClick={()=>{const draft=drafts.current.get(draftKey);if(draft)drafts.current.set(draftKey,{...draft,binding:observed});setDraftConflict(false);}}>{t('최신 내용을 확인하고 현재 초안 유지')}</button></section>}
    <button type="button" className="button" disabled={busy} onClick={loadProjects}>{t('공유 프로젝트 불러오기')}</button>
    <label>{t('원격 프로젝트')}<select value={projectId} disabled={busy} onChange={event=>{setProjectId(event.target.value);setReviewId('');setReviews([]);setDetail(null);setTimeline(null);}}><option value="">{t('프로젝트 선택')}</option>{projects.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
    <button type="button" className="button" disabled={busy||!projectId} onClick={loadReviews}>{t('리뷰 불러오기')}</button>

@@ -3,6 +3,7 @@ import React, {useEffect, useRef, useState} from 'react';
 import Icon from './icons.jsx';
 import {tabKeyboard} from './tabKeyboard.js';
 import WorkHome from './WorkHome.jsx';
+import PageHeader from './PageHeader.jsx';
 import ProjectWorkspace from './ProjectWorkspace.jsx';
 import {RegistrationScreen,GroupSettings} from './OriginalForms.jsx';
 import GroupResourceList, {GroupListIcon} from './GroupResourceList.jsx';
@@ -352,8 +353,7 @@ function ProjectWindowDialog({data,openingProject,error,onOpen,onClose}) {
 }
 
 function ResourceHeader({title,children,onBack,backLabel,actions,inlineBack=false}) {
- if(inlineBack)return <header className="resource-header group-resource-header"><div className="group-resource-header-row"><div className="resource-heading">{onBack&&<button type="button" className="group-resource-back" onClick={onBack} aria-label={t("그룹 목록")} title={t("그룹 목록")}><GroupListIcon name="back" size={15}/></button>}<h1>{title}</h1></div>{children}{actions&&<div className="resource-actions">{actions}</div>}</div></header>;
- return <header className="resource-header"><div className="resource-heading"><h1>{title}</h1>{onBack&&<button className="group-breadcrumb" onClick={onBack}><Icon name="back" size={12}/>{backLabel||t("그룹")}</button>}</div>{children}{actions&&<div className="resource-actions">{actions}</div>}</header>;
+ return <PageHeader className={inlineBack?'resource-header group-resource-header':'resource-header'} title={title} leading={onBack&&<button type="button" className="group-resource-back" onClick={onBack} aria-label={t("그룹 목록")} title={backLabel||t("그룹 목록")}><GroupListIcon name="back" size={15}/></button>} controls={children} actions={actions}/>;
 }
 function ResourceTabs({items,value,onChange,label}) {return <nav className="resource-tabs reviewops-tab-strip reviewops-tab-strip--text" aria-label={label} onKeyDown={tabKeyboard}>{items.map(([key,name,count])=><button type="button" key={key} aria-label={name} aria-pressed={value===key} tabIndex={value===key?0:-1} className={`reviewops-tab ${value===key?'active is-active':''}`} onClick={()=>onChange(key)}>{count===undefined?name:`${name}(${count})`}</button>)}</nav>}
 function GroupPane({data,groupId,initialSection='projects',sectionRequest,onGroups,onOpenProject,onOpenService,onEdit,onDelete,mutate,busy,onDirtyChange}) {

@@ -1,6 +1,7 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {t,useLocale} from './i18n/index.js';
 import RemoteAppConnections from './RemoteAppConnections.jsx';
+import PageHeader from './PageHeader.jsx';
 
 const ID=/^[A-Za-z0-9_-]{1,128}$/;
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -197,7 +198,7 @@ export default function RemoteManagementSettings({invoke,projects=[],active=true
  const projectOptions=projects.filter(row=>row&&typeof row.id==='string'&&ID.test(row.id)&&typeof row.name==='string');
  return <div className="remote-management-settings">
   <section className="settings-panel" aria-label={t('원격 관리')}>
-   <div className="section-heading"><h2>{t('원격 관리')}</h2><button className="button" type="button" disabled={Boolean(busy)} onClick={()=>perform('state')}>{busy==='state'?t('불러오는 중'):t('상태 새로고침')}</button></div>
+   <PageHeader variant="section" headingLevel={2} title={t('원격 관리')} actions={<button className="button" type="button" disabled={Boolean(busy)} onClick={()=>perform('state')}>{busy==='state'?t('불러오는 중'):t('상태 새로고침')}</button>}/>
    <p>{t('다른 기기의 브라우저에서 승인한 프로젝트와 리뷰를 읽을 수 있습니다.')}</p>
    <p className="muted">{t('브라우저 조회와 ReviewOps 앱 제어를 각각 허용하고, 기기별 프로젝트 권한을 승인하십시오.')}</p>
    {state&&!state.managementAllowed&&<p role="status">{t('이 창에서는 원격 관리를 변경할 수 없습니다.')}</p>}

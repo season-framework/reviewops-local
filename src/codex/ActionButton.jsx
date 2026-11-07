@@ -2,7 +2,7 @@ import React, { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Loader2, RefreshCw } from 'lucide-react';
 
-export function ActionButton({ label, tooltip = label, icon: Icon, busy = false, className = '', as: Element = 'button', onFocus, onBlur, onMouseEnter, onMouseLeave, ...props }) {
+export function ActionButton({ label, tooltip = label, icon: Icon, busy = false, showLabel = false, className = '', as: Element = 'button', onFocus, onBlur, onMouseEnter, onMouseLeave, ...props }) {
   const ref = useRef(null);
   const id = useId();
   const [position, setPosition] = useState(null);
@@ -29,9 +29,10 @@ export function ActionButton({ label, tooltip = label, icon: Icon, busy = false,
   }, [position]);
   const DisplayIcon = busy && Icon !== RefreshCw ? Loader2 : Icon;
   return <>
-    <Element ref={ref} {...(Element === 'button' ? { type: 'button' } : {})} {...props} className={`button icon-button action-button ${className}`} aria-label={label} aria-busy={busy} aria-describedby={position ? id : undefined} title={tooltip}
+    <Element ref={ref} {...(Element === 'button' ? { type: 'button' } : {})} {...props} className={`button icon-button action-button ${showLabel?'action-button--labelled':''} ${className}`} aria-label={label} aria-busy={busy} aria-describedby={position ? id : undefined} title={tooltip}
       onFocus={event => { show(); onFocus?.(event); }} onBlur={event => { hide(); onBlur?.(event); }} onMouseEnter={event => { show(); onMouseEnter?.(event); }} onMouseLeave={event => { hide(); onMouseLeave?.(event); }}>
       <DisplayIcon size={16} strokeWidth={1.8} aria-hidden="true" className={busy ? 'spin' : undefined}/>
+      {showLabel&&<span>{label}</span>}
     </Element>
     {position && createPortal(<div className="codex-management codex-management-portal"><div id={id} role="tooltip" className="action-tooltip" style={position}>{tooltip}</div></div>, document.body)}
   </>;
