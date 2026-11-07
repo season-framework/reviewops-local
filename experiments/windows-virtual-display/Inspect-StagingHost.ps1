@@ -10,15 +10,25 @@ $source = (& git -C $PSScriptRoot rev-parse HEAD | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $source -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -ne $source -or
     $env:GITHUB_REPOSITORY -ne 'season-framework/reviewops-local' -or $env:GITHUB_REF -ne 'refs/heads/codex/windows-virtual-display-prototype' -or
     $env:GITHUB_EVENT_NAME -ne 'push' -or $env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'Original diagnostic source/attempt binding differs.' }
-$programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-if (-not [IO.Path]::IsPathFullyQualified($programData) -or $programData.Length -gt 140) { throw 'OS common application data path unavailable.' }
+if (-not [Environment]::Is64BitProcess) { throw 'Native x64 folder lookup is required.' }
+$folders = [ordered]@{
+    ProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+    ProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+}
 $paths = [Collections.Generic.List[string]]::new()
-$current = [IO.DirectoryInfo]::new($programData)
-while ($null -ne $current) { $paths.Insert(0, $current.FullName); $current = $current.Parent }
+foreach ($path in $folders.Values) {
+    if (-not [IO.Path]::IsPathFullyQualified($path) -or $path.Length -gt 140) { throw 'An OS known folder is unavailable.' }
+    $current = [IO.DirectoryInfo]::new($path)
+    while ($null -ne $current) {
+        if (-not $paths.Contains($current.FullName)) { $paths.Insert(0, $current.FullName) }
+        $current = $current.Parent
+    }
+}
 $record = [ordered]@{
     schema = 1; atUTC = [DateTime]::UtcNow.ToString('o'); source = $source
     producer = [ordered]@{ runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; event = $env:GITHUB_EVENT_NAME }
-    scope = 'Read-only OS ProgramData ancestor ACL diagnostics, not staging or a passing test'
+    scope = 'Read-only OS ProgramData and x64 ProgramFiles ancestor ACL diagnostics, not staging or a passing test'
+    folders = $folders; nativeX64Process = $true
     directoryCreated = $false; aclChanged = $false; nativeTestsRun = $false; driverInstalled = $false
     ancestors = @()
 }
