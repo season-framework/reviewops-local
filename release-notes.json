@@ -5,10 +5,11 @@
     {
       "category": "features",
       "title": "Use the same Ops assistant across app screens",
-      "description": "Keep a resizable right-hand conversation while moving through Home, groups and projects. Explicitly select its work target, retain drafts and use typed review, reply, document and navigation tools bound to the request’s original project and review generation.",
+      "description": "Keep a resizable right-hand conversation while moving through Home, groups and projects. Explicitly select its work target, retain drafts and use typed review, reply, document and navigation tools bound to the request’s original project and review generation. Read stored completion evidence and exact goal responses before replying to the original review.",
       "commits": [
         "2398efa7a56a7f530bf60d640833d6cfa96cf83f",
-        "2d45490018f7de632bac66e2b8f6adc7ac755783"
+        "2d45490018f7de632bac66e2b8f6adc7ac755783",
+        "fdd8513147f7c50ae5a058afb498b348b688a26f"
       ]
     },
     {
