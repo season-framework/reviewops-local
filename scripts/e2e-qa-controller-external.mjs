@@ -8,6 +8,7 @@ import {userInfo} from 'node:os';
 import {createHash, randomUUID, randomBytes, generateKeyPairSync} from 'node:crypto';
 import {spawn, execFileSync} from 'node:child_process';
 import {createRequire} from 'node:module';
+import {comparePackagedElectronTree} from './packaged-source-policy.mjs';
 import {inspectMac} from './test-build.mjs';
 import {readBoundedJSON, inventory} from './packaged-bundle-guards.mjs';
 import {requireNativeHost, selectMainHost, selectProjectHost, verifyOriginalMainProcess, createPrivatePaths} from './native-adapters.mjs';
@@ -189,13 +190,11 @@ async function installCandidate() {
   await validateArchive(zip);execFileSync('/usr/bin/ditto', ['-x', '-k', zip, install], {timeout: 120000});
   assert.deepEqual(fs.readdirSync(install), ['ReviewOps.app']);assert.equal(fs.realpathSync(bundle), bundle);
   const archive = path.join(resources, 'app.asar');asar.uncache(archive);await inspectMac(bundle, build, process.arch);
-  const files = asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\/+/, '')).filter(name => /^electron\/.+/.test(name) && name !== 'electron/reviewops-build.json' && !asar.statFile(archive, name).files);
   const expected = execFileSync('git', ['ls-tree', '-rz', '--name-only', build.commit, '--', 'electron'], {cwd: repository, maxBuffer: 2 * 1024 ** 2}).toString().split('\0').filter(Boolean);
-  assert.deepEqual(files.slice().sort(), expected.sort(), 'The installed app must exactly match the selected source object.');
-  const source = files.map(name => {const bytes = asar.extractFile(archive, name);assert.deepEqual(bytes, gitBytes(name), 'An installed source entry differs from the selected commit.');return {path: name, sha256: sha(bytes)};});
+  const {source,generatedNative}=comparePackagedElectronTree(archive,{asar,sourceFiles:expected,readSource:gitBytes});
   for (const name of ['qa-controllers.cjs', 'qa-automation.cjs', 'automation-api.cjs', 'mcp-server.cjs']) assert.ok(source.some(row => row.path === 'electron/' + name));
   for (const [name, installed] of [['mcp-server.cjs', 'reviewops-mcp.cjs'], ['automation-api.cjs', 'automation-api.cjs'], ['instance-discovery.cjs', 'instance-discovery.cjs'], ['review-categories.json', 'review-categories.json']]) assert.deepEqual(fs.readFileSync(path.join(resources, 'mcp', installed)), gitBytes('electron/' + name));
-  originalInventory = inventory(bundle);result.admission = {source, archiveSHA256: hashFile(archive), inventorySHA256: sha(JSON.stringify(originalInventory)), mcpEntrySHA256: hashFile(mcpEntry)};
+  originalInventory = inventory(bundle);result.admission = {source,generatedNative, archiveSHA256: hashFile(archive), inventorySHA256: sha(JSON.stringify(originalInventory)), mcpEntrySHA256: hashFile(mcpEntry)};
 }
 async function servePages() {
   webServer = http.createServer((request, response) => {

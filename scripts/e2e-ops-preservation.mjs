@@ -44,6 +44,8 @@ try{
   await launch();result.ops=await verifyOpsSmoke(page,fixture);
   await expect.poll(()=>page.evaluate(id=>window.opsManager.snapshot().then(state=>Boolean(state.goals.find(goal=>goal.id===id)?.lastError)),fixture.offlineGoalId)).toBe(true);
   await page.locator('.main-nav').getByRole('button',{name:'Ops',exact:true}).click();
+  await expect(page.locator('.ops-main-tabs').getByRole('button',{name:'대화',exact:true})).toHaveAttribute('aria-current','page');
+  await page.locator('.ops-main-tabs').getByRole('button',{name:'목표',exact:true}).click();
   await page.locator('.ops-goal-list button').filter({hasText:'Native Ops unavailable saved thread'}).click();
   await expect(page.getByRole('heading',{name:'Native Ops unavailable saved thread',exact:true})).toBeVisible();
   await page.screenshot({path:path.join(output,'unavailable-thread-window.png'),fullPage:true});

@@ -1,6 +1,7 @@
 import {t,localized} from '../i18n/index.js';
 import React, { useEffect, useId, useRef, useState } from 'react';
 import Select from '../Select.jsx';
+import PageHeader from '../PageHeader.jsx';
 import { createPortal } from 'react-dom';
 import { AlertCircle, ArrowRightLeft, ArrowUpCircle, Check, ChevronDown, ChevronRight, Copy, ExternalLink, Folder, FolderOpen, FolderPlus, GripVertical, KeyRound, Loader2, Pencil, Plus, RefreshCw, Terminal, Trash2, X } from 'lucide-react';
 import { HostFiles } from './HostFiles';
@@ -631,17 +632,17 @@ export function HostManager({ bridge, isDemo = false }) {
   const fileHost = state.hosts.find(item => item.id === fileHostId);
   if (fileHost) return <main className="host-app host-file-app"><HostFiles key={fileHost.id} host={fileHost} bridge={bridge} onBack={closeFiles}/></main>;
   return <main className="host-app">
-    <header className="toolbar"><div className="host-toolbar-title"><div className="host-title-line"><h1>{t("호스트관리")+" "}<span aria-hidden="true">{state.hosts.length}</span></h1>{isDemo && <span className="demo-badge">{t("예시 데이터")}</span>}</div>{state.configPath && <p className="host-config-path" title={state.configPath}>{t("SSH 설정")+" "}<code>{state.configPath}</code></p>}</div><div className="toolbar-actions host-toolbar-actions">
+    <PageHeader className="manager-page-header" title={t("호스트관리")} meta={<>{state.hosts.length}{isDemo&&<span className="demo-badge">{t("예시 데이터")}</span>}</>} subtitle={state.configPath?`${t('SSH 설정')} ${state.configPath}`:null} actions={<div className="toolbar-actions host-toolbar-actions">
       {selectedHosts.length > 0 && <>
         <span className="host-selected-count numeric" role="status">{selectedHosts.length}{t("개 선택")}</span>
-        <ActionButton label={t("선택 업그레이드")} icon={ArrowUpCircle} disabled={!bridge?.upgradeCodexBatch || batchRunning || orderSaving || Boolean(action)} onClick={() => openBatch('batchUpgrade')}/>
-        <ActionButton className="danger" label={t("선택 삭제")} icon={Trash2} disabled={!bridge?.deleteHosts || selectedBusy || orderSaving || Boolean(action)} onClick={() => openBatch('batchDelete')}/>
+        <ActionButton showLabel label={t("선택 업그레이드")} icon={ArrowUpCircle} disabled={!bridge?.upgradeCodexBatch || batchRunning || orderSaving || Boolean(action)} onClick={() => openBatch('batchUpgrade')}/>
+        <ActionButton showLabel className="danger" label={t("선택 삭제")} icon={Trash2} disabled={!bridge?.deleteHosts || selectedBusy || orderSaving || Boolean(action)} onClick={() => openBatch('batchDelete')}/>
       </>}
-      <ActionButton label={t("새로고침")} icon={RefreshCw} busy={refreshActive} disabled={!bridge || refreshActive || orderSaving || Boolean(action) || batchRunning} onClick={refreshHosts}/>
-      {state.refresh.running && <ActionButton label={t("새로고침 취소")} icon={X} onClick={() => run(() => bridge.cancelRefresh())}/>}
-      <ActionButton label={t("그룹 추가")} icon={FolderPlus} disabled={!bridge?.saveGroup || orderSaving} onClick={() => openGroupForm()}/>
-      <ActionButton className="primary" label={t("호스트 추가")} icon={Plus} disabled={!bridge || orderSaving} onClick={() => openForm()}/>
-    </div></header>
+      <ActionButton showLabel label={t("새로고침")} icon={RefreshCw} busy={refreshActive} disabled={!bridge || refreshActive || orderSaving || Boolean(action) || batchRunning} onClick={refreshHosts}/>
+      {state.refresh.running && <ActionButton showLabel label={t("새로고침 취소")} icon={X} onClick={() => run(() => bridge.cancelRefresh())}/>}
+      <ActionButton showLabel label={t("그룹 추가")} icon={FolderPlus} disabled={!bridge?.saveGroup || orderSaving} onClick={() => openGroupForm()}/>
+      <ActionButton showLabel className="primary" label={t("호스트 추가")} icon={Plus} disabled={!bridge || orderSaving} onClick={() => openForm()}/>
+    </div>}/>
     {batchRunning && <div className="host-batch-progress" role="status"><Loader2 size={13} className="spin"/>{batchTargets.length}{t("개 호스트 업그레이드 중")}</div>}
     {batchResult && <section className={`host-batch-result ${batchResult.some(result => !result.success) ? 'has-failures' : ''}`} role="region" aria-label={t("일괄 업그레이드 결과")}>
       <div className="host-batch-result-heading"><p role="status">{t("업그레이드 완료: 성공")+" "}{batchResult.filter(result => result.success).length}{t("개 · 실패")+" "}{batchResult.filter(result => !result.success).length}{t("개")}</p><button className="icon-button" aria-label={t("업그레이드 결과 닫기")} onClick={() => setBatchResult(null)}><X size={15}/></button></div>

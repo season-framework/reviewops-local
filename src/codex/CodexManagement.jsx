@@ -1,6 +1,7 @@
 import {t,getLocale} from '../i18n/index.js';
 import React, { useEffect, useRef, useState } from 'react';
 import Select from '../Select.jsx';
+import PageHeader from '../PageHeader.jsx';
 import { CircleHelp, ExternalLink, Loader2, LogIn, MoreHorizontal, Plus, RefreshCw, Server, Ticket, Users, X } from 'lucide-react';
 import { AccountDetails } from './AccountDetails';
 import { ActionButton } from './ActionButton';
@@ -236,11 +237,11 @@ export function AccountApp() {
   };
 
   return <main className="account-app">
-    <header className="toolbar"><h1>{t("계정")+" "}<span aria-hidden="true">{accounts.length}</span></h1><div className="toolbar-actions">
+    <PageHeader className="manager-page-header" title={t("계정")} meta={accounts.length} subtitle={null} actions={<div className="toolbar-actions">
 
-      <ActionButton label={t("새로고침")} icon={RefreshCw} busy={state.refresh.running} disabled={!accounts.length || accounts.every(account => account.requiresLogin) || state.refresh.running} onClick={() => run(() => bridge.refreshAccounts())}/>
-      <ActionButton label={t("계정 추가")} icon={Plus} className="primary" onClick={openAdd}/>
-    </div></header>
+      <ActionButton showLabel label={t("새로고침")} icon={RefreshCw} busy={state.refresh.running} disabled={!accounts.length || accounts.every(account => account.requiresLogin) || state.refresh.running} onClick={() => run(() => bridge.refreshAccounts())}/>
+      <ActionButton showLabel label={t("계정 추가")} icon={Plus} className="primary" onClick={openAdd}/>
+    </div>}/>
     <section className="runtime-panel" aria-label={t('Codex CLI 실행 환경')}>
       {state.runtime.available ? <p className="runtime-summary" role="status"><strong>Codex CLI {state.runtime.version}</strong><code>{state.runtime.path}</code></p>
         : <p className="runtime-notice" role="status">{t(state.runtime.error || 'Codex 실행 파일이 필요합니다.')}</p>}

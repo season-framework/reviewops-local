@@ -1,0 +1,61 @@
+name: Experimental Windows virtual display compile
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-virtual-display-prototype]
+    paths:
+      - 'experiments/windows-virtual-display/ExperimentCIContext.ps1'
+      - 'experiments/windows-virtual-display/Test-ExperimentCIContext.ps1'
+      - 'experiments/windows-virtual-display/Driver.cpp'
+      - 'experiments/windows-virtual-display/Driver.h'
+      - 'experiments/windows-virtual-display/ControlProtocol.h'
+      - 'experiments/windows-virtual-display/Client.cpp'
+      - 'experiments/windows-virtual-display/ReviewOpsVirtualDisplay.inf'
+      - 'experiments/windows-virtual-display/ReviewOpsVirtualDisplay.vcxproj'
+      - 'experiments/windows-virtual-display/ReviewOpsDisplayControl.vcxproj'
+      - 'experiments/windows-virtual-display/Directory.Build.props'
+      - 'experiments/windows-virtual-display/packages.config'
+      - 'experiments/windows-virtual-display/DriverPackage.json'
+      - 'experiments/windows-virtual-display/Build.ps1'
+      - 'experiments/windows-virtual-display/Inspect-InfSelection.ps1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-virtual-display-prototype
+  cancel-in-progress: false
+
+jobs:
+  compile:
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    # The pinned WDK requires VS2022; windows-2025 now selects VS2026.
+    runs-on: windows-2022
+    env:
+      REVIEWOPS_MANUAL_DISPLAY_PROBE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check explicit CI admission without native effects
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Test-ExperimentCIContext.ps1
+      - name: Compile and inspect the unsigned driver without installing it
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Build.ps1
+      - name: Preserve the original build-only evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-windows-display-prototype-unsigned-build
+          path: |
+            experiments/windows-virtual-display/_out/*.json
+            experiments/windows-virtual-display/_out/*.log
+            experiments/windows-virtual-display/_out/*.dll
+            experiments/windows-virtual-display/_out/*.exe
+            experiments/windows-virtual-display/_out/**/*.inf
+            experiments/windows-virtual-display/_out/unsigned-driver-package/*
+          retention-days: 7
+          if-no-files-found: warn

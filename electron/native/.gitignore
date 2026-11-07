@@ -1,0 +1,3 @@
+*.node
+remote-identity-manifest.json
+.identity-build-*/

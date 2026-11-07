@@ -1,0 +1,96 @@
+; Copyright (c) Season Framework contributors.
+; Uninstalled build-only prototype. No release catalog or install qualification.
+[Version]
+Signature="$WINDOWS NT$"
+Class=Display
+ClassGuid={4D36E968-E325-11CE-BFC1-08002BE10318}
+ClassVer=2.0
+Provider=%Manufacturer%
+CatalogFile=ReviewOpsVirtualDisplay.cat
+DriverVer=11/07/2026,0.1.0.0
+PnpLockDown=1
+
+[Manufacturer]
+%Manufacturer%=Models,NTamd64.10.0...17134,NTamd64.10.0...22000
+
+[Models.NTamd64.10.0...17134]
+%DeviceName%=InstallWin10,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
+%DeviceName%=InstallWin10,ReviewOpsVirtualDisplayPrototype
+
+[Models.NTamd64.10.0...22000]
+%DeviceName%=InstallWin11,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
+%DeviceName%=InstallWin11,ReviewOpsVirtualDisplayPrototype
+
+[SourceDisksNames]
+1=%DiskName%
+[SourceDisksFiles]
+ReviewOpsVirtualDisplay.dll=1
+
+; Windows 10 has no inbox WUDFRD.inf. Preserve existing reflector configuration.
+[InstallWin10.NT]
+CopyFiles=DriverCopy
+
+[InstallWin10.NT.HW]
+AddReg=DeviceSettings
+
+[InstallWin10.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRDService
+
+[InstallWin10.NT.Wdf]
+UmdfService=ReviewOpsVirtualDisplay,DriverService
+UmdfServiceOrder=ReviewOpsVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+; Windows 11 uses the inbox reflector INF rather than redeclaring its service.
+[InstallWin11.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=DriverCopy
+
+[InstallWin11.NT.HW]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=DeviceSettings
+
+[InstallWin11.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[InstallWin11.NT.Wdf]
+UmdfService=ReviewOpsVirtualDisplay,DriverService
+UmdfServiceOrder=ReviewOpsVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+[DeviceSettings]
+HKR,,UpperFilters,0x00010000,"IndirectKmd"
+HKR,"WUDF",DeviceGroupId,0x00000000,"ReviewOpsVirtualDisplayPrototype"
+; Only an explicitly elevated future diagnostic/broker may open the interface.
+; This prototype never grants Everyone access or changes an existing device.
+HKR,,Security,0x00000000,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+; FILE_DEVICE_SECURE_OPEN: PnP applies this per-device flag to the entire stack.
+; UMDF cannot call the KMDF-only WdfDeviceInitSetCharacteristics API.
+HKR,,DeviceCharacteristics,0x00010001,0x00000100
+
+[WUDFRDService]
+DisplayName=%WudfDisplayName%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%12%\WUDFRd.sys
+
+[DriverService]
+UmdfLibraryVersion=2.25
+ServiceBinary=%13%\ReviewOpsVirtualDisplay.dll
+UmdfExtensions=IddCx0102
+
+[DriverCopy]
+ReviewOpsVirtualDisplay.dll
+[DestinationDirs]
+; UMDF run-from-Driver-Store is supported from Windows 10 version 1803.
+DriverCopy=13
+
+[Strings]
+Manufacturer="Season Framework"
+DeviceName="ReviewOps file-owned virtual display prototype"
+DiskName="ReviewOps virtual display prototype files"
+WudfDisplayName="Windows Driver Foundation User-mode Driver Framework Reflector"

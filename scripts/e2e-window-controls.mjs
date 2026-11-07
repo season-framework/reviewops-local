@@ -29,6 +29,7 @@ const nativeWindow = fn => app.evaluate(({ BrowserWindow }, expression) => {
 const enterFullScreen = () => page.getByRole('button', { name: '창 전체 화면', exact: true });
 const leaveFullScreen = () => page.getByRole('button', { name: '창 전체 화면 종료', exact: true });
 const projectWindow = () => page.getByRole('button', { name: '프로젝트 창 열기', exact: true });
+const opsPanel = () => page.getByRole('button', { name: 'Ops 대화 패널', exact: true });
 const close = () => page.getByRole('button', { name: '창 닫기', exact: true });
 const nativeContents = (id, expression) => app.evaluate(({ webContents }, { id, expression }) => webContents.fromId(id).executeJavaScript(expression, true), { id, expression });
 const toggleNativeMenuFullScreen = async expected => {
@@ -56,7 +57,8 @@ async function controlsGeometry() {
     const box = node => { const { x, y, width, height, right, bottom } = node.getBoundingClientRect(); return { x, y, width, height, right, bottom }; };
     const buttons = [...strip.querySelectorAll('.window-control')];
     const project = strip.querySelector('.workspace-project-window');
-    return { strip: box(strip), refresh: box(strip.querySelector('.workspace-refresh')), projectWindow: { ...box(project), label: project.getAttribute('aria-label'), cursor: getComputedStyle(project).cursor, appRegion: getComputedStyle(project).getPropertyValue('-webkit-app-region') }, sidebarControls: document.querySelectorAll('.sidebar .window-control').length, buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region'), cursor: getComputedStyle(button).cursor, text: button.textContent.trim(), icons: button.querySelectorAll('svg').length })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
+    const ops = strip.querySelector('.workspace-ops-toggle');
+    return { strip: box(strip), refresh: box(strip.querySelector('.workspace-refresh')), opsPanel: { ...box(ops), label: ops.getAttribute('aria-label'), cursor: getComputedStyle(ops).cursor, appRegion: getComputedStyle(ops).getPropertyValue('-webkit-app-region') }, projectWindow: { ...box(project), label: project.getAttribute('aria-label'), cursor: getComputedStyle(project).cursor, appRegion: getComputedStyle(project).getPropertyValue('-webkit-app-region') }, sidebarControls: document.querySelectorAll('.sidebar .window-control').length, buttons: buttons.map(button => ({ label: button.getAttribute('aria-label'), ...box(button), appRegion: getComputedStyle(button).getPropertyValue('-webkit-app-region'), cursor: getComputedStyle(button).cursor, text: button.textContent.trim(), icons: button.querySelectorAll('svg').length })), scrollWidth: document.documentElement.scrollWidth, width: window.innerWidth };
   });
 }
 
@@ -71,7 +73,13 @@ function expectTopRightControls(geometry) {
   assert.ok(geometry.projectWindow.width >= 32 && geometry.projectWindow.height >= 32);
   assert.ok(geometry.projectWindow.x >= geometry.strip.x && geometry.projectWindow.right <= geometry.strip.right + 1);
   assert.ok(geometry.projectWindow.y >= geometry.strip.y && geometry.projectWindow.bottom <= geometry.strip.bottom + 1);
-  const controls = [geometry.refresh, geometry.projectWindow, ...geometry.buttons];
+  assert.equal(geometry.opsPanel.label, 'Ops 대화 패널');
+  assert.equal(geometry.opsPanel.appRegion, 'no-drag');
+  assert.equal(geometry.opsPanel.cursor, 'pointer');
+  assert.ok(geometry.opsPanel.width >= 32 && geometry.opsPanel.height >= 32);
+  assert.ok(geometry.opsPanel.x >= geometry.strip.x && geometry.opsPanel.right <= geometry.strip.right + 1);
+  assert.ok(geometry.opsPanel.y >= geometry.strip.y && geometry.opsPanel.bottom <= geometry.strip.bottom + 1);
+  const controls = [geometry.refresh, geometry.opsPanel, geometry.projectWindow, ...geometry.buttons];
   for (const button of geometry.buttons) {
     assert.equal(button.appRegion, 'no-drag');
     assert.equal(button.cursor, 'pointer');
@@ -84,7 +92,7 @@ function expectTopRightControls(geometry) {
   for (let index = 1; index < controls.length; index += 1) {
     assert.ok(controls[index].x >= controls[index - 1].right - 1);
     // The project action has a 6px margin after its text button.
-    assert.ok(controls[index].x - controls[index - 1].right <= (index === 2 ? 18 : 12));
+    assert.ok(controls[index].x - controls[index - 1].right <= (index === 3 ? 18 : 12));
   }
   const iconControls = [geometry.refresh, ...geometry.buttons];
   for (let index = 1; index < iconControls.length; index += 1) {
@@ -120,6 +128,12 @@ async function controlFeedback() {
   }
   await page.mouse.move(10, 100);
   await page.locator('.workspace-refresh').focus();
+  await page.keyboard.press('Tab');
+  await expect(opsPanel()).toBeFocused();
+  assert.equal(await opsPanel().evaluate(node => node.matches(':focus-visible')), true);
+  const opsFocus = await controlStyle(opsPanel());
+  assert.ok((opsFocus.outline !== 'none' && parseFloat(opsFocus.outlineWidth) >= 1) || opsFocus.shadow !== 'none');
+  states.push({ label: 'Ops 대화 패널', focus: opsFocus });
   await page.keyboard.press('Tab');
   await expect(projectWindow()).toBeFocused();
   assert.equal(await projectWindow().evaluate(node => node.matches(':focus-visible')), true);
@@ -169,7 +183,7 @@ try {
   const collapsed = await controlsGeometry();
   expectTopRightControls(collapsed);
   const lightFeedback = await controlFeedback();
-  passed('접힌 메뉴에서도 상단 오른쪽에 새로고침·프로젝트 창 열기·전체 화면·닫기를 순서대로 표시하고 마우스·키보드 효과 적용');
+  passed('접힌 메뉴에서도 상단 오른쪽에 새로고침·Ops 패널·프로젝트 창 열기·전체 화면·닫기를 순서대로 표시하고 마우스·키보드 효과 적용');
 
   const dragRegions = await page.locator('.workspace-tabs').evaluate(strip => {
     const region = node => getComputedStyle(node).getPropertyValue('-webkit-app-region');
@@ -324,7 +338,7 @@ try {
   await page.getByRole('button', { name: '밝은 화면', exact: true }).click();
   await page.getByRole('button', { name: '메뉴 접기', exact: true }).click();
   await nativeWindow(host => host.setBounds({ x: 100, y: 100, width: 1200, height: 850 }));
-  passed('800px 창에서 메뉴를 접거나 펼쳐도 새로고침·프로젝트 창 열기·전체 화면·닫기를 겹침 없이 표시');
+  passed('800px 창에서 메뉴를 접거나 펼쳐도 새로고침·Ops 패널·프로젝트 창 열기·전체 화면·닫기를 겹침 없이 표시');
 
   const group = await invoke('group.save', { name: '창 닫기 검사 그룹' });
   const service = await invoke('service.save', { name: '창 닫기 검사 서비스', groupId: group.id, kind: 'local', rootPath: files, viewerUrl: origin });

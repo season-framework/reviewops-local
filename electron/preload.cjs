@@ -73,10 +73,16 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
 // Embedded viewers must never receive account or host-management APIs.
 if (process.isMainFrame) {
 
+const skillMethod=method=>input=>ipcRenderer.invoke('ops-skills:invoke',method,input||{});
+contextBridge.exposeInMainWorld('opsSkills',Object.freeze({snapshot:skillMethod('snapshot'),readFile:skillMethod('readFile'),importZip:skillMethod('importZip'),create:skillMethod('create'),update:skillMethod('update'),save:skillMethod('save'),saveFile:skillMethod('saveFile'),remove:skillMethod('remove'),restoreOriginal:skillMethod('restoreOriginal'),checkCapabilities:skillMethod('checkCapabilities'),onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-skills-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-skills-state',listener);}}));
+
 const invokeOps=method=>(...args)=>ipcRenderer.invoke('ops:invoke',method,...args);
 contextBridge.exposeInMainWorld('opsManager',Object.freeze({
   snapshot:invokeOps('snapshot'),saveGoal:invokeOps('saveGoal'),deleteGoal:invokeOps('deleteGoal'),goalAction:invokeOps('goalAction'),
   saveSchedule:invokeOps('saveSchedule'),deleteSchedule:invokeOps('deleteSchedule'),preview:invokeOps('preview'),configure:invokeOps('configure'),
+  managementCreate:invokeOps('managementCreate'),managementRequest:invokeOps('managementRequest'),managementAction:invokeOps('managementAction'),
+  navigationResult:invokeOps('navigationResult'),
+  onNavigate(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>{if(typeof value?.id==='string'&&value.target&&typeof value.target==='object')callback(value);};ipcRenderer.on('reviewops:ops-navigate',listener);return()=>ipcRenderer.removeListener('reviewops:ops-navigate',listener);},
   onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-state',listener);}
 }));
 

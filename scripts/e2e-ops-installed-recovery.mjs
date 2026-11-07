@@ -7,6 +7,7 @@ import {createHash, randomUUID} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {execFileSync} from 'node:child_process';
 import {setTestLocale} from './test-locale.mjs';
+import {comparePackagedElectronTree} from './packaged-source-policy.mjs';
 import {inspectMac} from './test-build.mjs';
 import {readBoundedJSON, inventory} from './packaged-bundle-guards.mjs';
 import {requireNativeHost, selectMainHost, selectProjectHost, verifyOriginalMainProcess} from './native-adapters.mjs';
@@ -91,7 +92,7 @@ const detail = () => ops().locator('.ops-detail');
 const traffic = () => {const file = path.join(ownedRoot, 'protocol.jsonl');return fs.existsSync(file) ? fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];};
 const pass = text => {checks.push(text);console.log('PASS: ' + text);};
 async function photo(name) {await main.screenshot({path: path.join(output, name)});photos.push(name);}
-async function select(key) {await ops().locator('.ops-goal-list').getByRole('button').filter({has: main.getByText(goals[key].name, {exact: true})}).click();await expect(detail().getByRole('heading', {name: goals[key].name, exact: true})).toBeVisible();}
+async function select(key) {await ops().locator('.ops-main-tabs').getByRole('button', {name: '목표', exact: true}).click();await ops().locator('.ops-goal-list').getByRole('button').filter({has: main.getByText(goals[key].name, {exact: true})}).click();await expect(detail().getByRole('heading', {name: goals[key].name, exact: true})).toBeVisible();await detail().getByRole('navigation', {name: '목표 상세 항목', exact: true}).getByRole('button', {name: '정보', exact: true}).click();}
 async function action(key, label, status) {await select(key);await detail().getByRole('button', {name: label, exact: true}).click();return until(() => goal(key), row => row.status === status && (status !== 'paused' || row.executionState === 'idle'), `${key} ${label}`, 30000);}
 function protocolAssertions(expectedTurns) {
   const rows = traffic(), starts = rows.filter(row => row.direction === 'client' && row.method === 'thread/start');
@@ -137,14 +138,11 @@ async function inspectInstalled(label) {
   asar.uncache(path.join(bundle, 'Contents/Resources/app.asar'));
   await inspectMac(bundle, build, process.arch);
   const archive = path.join(bundle, 'Contents/Resources/app.asar');
-  const files = asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\/+/, '')).filter(name => /^electron\/.+/.test(name) && name !== 'electron/reviewops-build.json' && !asar.statFile(archive, name).files);
   const expectedFiles = execFileSync('git', ['ls-tree', '-rz', '--name-only', build.commit, '--', 'electron'], {cwd: repository, maxBuffer: 2 * 1024 ** 2}).toString().split('\0').filter(Boolean);
-  assert.deepEqual(files.slice().sort(), expectedFiles.sort(), 'The installed Electron tree must contain exactly the tracked source files plus its validated build identity.');
-  const source = [];
-  for (const name of files) {assert.ok(!name.split('/').includes('..'));const bytes = asar.extractFile(archive, name);assert.deepEqual(bytes, gitBytes(name), `Installed source differs from embedded commit: ${name}`);source.push({path: name, sha256: sha(bytes)});}
+  const {source,generatedNative}=comparePackagedElectronTree(archive,{asar,sourceFiles:expectedFiles,readSource:gitBytes});
   assert.ok(source.some(row => row.path === 'electron/ops-qa.cjs'));
   const current = inventory(bundle);if (originalInventory) assert.deepEqual(current, originalInventory, 'Same-candidate reinstall must reproduce identical bundle file bytes.');else originalInventory = current;
-  boundaries.push({label, source, archiveSHA256: fileHash(archive), inventorySHA256: sha(JSON.stringify(current))});
+  boundaries.push({label, source,generatedNative, archiveSHA256: fileHash(archive), inventorySHA256: sha(JSON.stringify(current))});
 }
 async function install(label) {
   assert.equal(app, undefined, 'The owned app must be confirmed closed before replacing its bundle.');
@@ -169,6 +167,8 @@ async function launch(label) {
   record.identity = actual;const info = await invoke('app.info');assert.deepEqual(info.build, build);assert.equal(info.platform, process.platform);assert.equal(info.arch, process.arch);assert.equal(fs.realpathSync(info.dataPath), dataPath);
   main.on('pageerror', error => errors.push({label, message: error.message}));await setTestLocale(main);
   await main.locator('.main-nav').getByRole('button', {name: 'Ops', exact: true}).click();await expect(ops()).toBeVisible();
+  await expect(ops().locator('.ops-main-tabs').getByRole('button',{name:'대화',exact:true})).toHaveAttribute('aria-current','page');
+  await ops().locator('.ops-main-tabs').getByRole('button',{name:'목표',exact:true}).click();
   if (Object.keys(goals).length) await until(async () => (await snapshot()).goals, rows => rows.length === 2 && rows.every(row => row.status === 'paused' && row.executionState === 'idle'), 'original paused goals reconcile without model input', 45000);
 }
 function alive(pid) {try {process.kill(pid, 0);return true;} catch (error) {if (error.code === 'ESRCH') return false;throw error;}}
@@ -182,7 +182,8 @@ async function close(label) {
   boundaries.push({label, opsFileSHA256: fileHash(path.join(dataPath, 'ops/state.json')), databaseSHA256: fileHash(path.join(dataPath, 'reviewops.sqlite'))});
 }
 async function imageTurn(key, label, prior = null) {
-  await action(key, prior ? '재개' : '목표 시작', 'active');
+  // The unified Start control resumes a paused goal on its original thread.
+  await action(key, '목표 시작', 'active');
   const expectedCount = prior ? 2 : 1;
   const row = await until(() => goal(key), current => {
     if (current.lastError || ['error', 'unknown'].includes(current.executionState)) throw new Error(`Goal ${key}: ${current.lastError || current.executionState}`);

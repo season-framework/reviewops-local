@@ -11,6 +11,7 @@ import { _electron as electron, expect } from '@playwright/test';
 import { setTestLocale } from './test-locale.mjs';
 import {runRequiredOwnedGate, nativeOutput, nativePackagedRendererRecord} from './owned-native-orchestration.mjs';
 import {recordNativeRenderer} from './native-packet.mjs';
+import {comparePackagedCheckout} from './packaged-source-policy.mjs';
 import {inspectOpsArchive,seedOpsSmoke,verifyOpsSmoke,verifyOpsFile,verifyOpsData,mutateOpsSmoke,seedUnavailableOpsThread} from './ops-native-smoke.mjs';
 
 const require = createRequire(import.meta.url);
@@ -40,16 +41,6 @@ async function hashFile(file) {
   const hash = crypto.createHash('sha256');
   for await (const chunk of createReadStream(file)) hash.update(chunk);
   return hash.digest('hex');
-}
-async function walk(directory) {
-  const files = [];
-  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
-    const file = path.join(directory, entry.name);
-    assert.equal(entry.isSymbolicLink(), false, `Unexpected source symlink: ${file}`);
-    if (entry.isDirectory()) files.push(...await walk(file));
-    else if (entry.isFile()) files.push(file);
-  }
-  return files;
 }
 async function peInfo(file) {
   const handle = await fs.open(file, 'r');
@@ -131,12 +122,8 @@ async function verifyAsar(archive) {
     assert.ok(allowedRoots.has(entry.split('/')[0]), `Unexpected packaged path: ${entry}`);
     assert.ok(!/(^|\/)(?:\.git|\.ssh|\.codex|\.env(?:\.[^/]*)?|reviewops\.sqlite(?:-wal|-shm)?|credentials\.json|auth\.json|accounts\.json|test-results)(?:\/|$)/i.test(entry), `Unexpected private data path: ${entry}`);
   }
-  const files = [...await walk(path.join(root, 'electron')), ...await walk(path.join(root, 'dist')),
-    ...['LICENSE', 'NOTICE', 'THIRD-PARTY-NOTICES.txt'].map(name => path.join(root, name))];
-  for (const file of files) {
-    const relative = path.relative(root, file);
-    assert.equal(digest(asar.extractFile(archive, relative)), await hashFile(file), `Packaged file does not match its source: ${relative}`);
-  }
+  const sourceComparison=comparePackagedCheckout(archive,{repository:root,asar}),files=sourceComparison.files;
+  report.omittedRepositoryControlFiles=sourceComparison.omittedRepositoryControlFiles;
   const packagedMetadata = JSON.parse(asar.extractFile(archive, 'package.json').toString('utf8'));
   assert.equal(packagedMetadata.version, version);
   assert.equal(packagedMetadata.main, metadata.main);
@@ -243,15 +230,16 @@ try {
   await launch();
   check('Installed application launches its home screen and IPC in an isolated profile');
   const refresh = page.locator('.workspace-refresh');
+  const opsPanel = page.getByRole('button', { name: 'Ops 대화 패널', exact: true });
   const projectWindow = page.getByRole('button', { name: '프로젝트 창 열기', exact: true });
   const enterFullScreen = () => page.getByRole('button', { name: '창 전체 화면', exact: true });
   const leaveFullScreen = () => page.getByRole('button', { name: '창 전체 화면 종료', exact: true });
   const closeButton = page.getByRole('button', { name: '창 닫기', exact: true });
   const geometry = await page.locator('.workspace-tabs').evaluate(strip => {
-    const controls = [strip.querySelector('.workspace-refresh'), strip.querySelector('.workspace-project-window'), ...strip.querySelectorAll('.window-control')];
+    const controls = [strip.querySelector('.workspace-refresh'),strip.querySelector('.workspace-ops-toggle'), strip.querySelector('.workspace-project-window'), ...strip.querySelectorAll('.window-control')];
     return controls.map(node => ({ label: node.getAttribute('aria-label'), x: node.getBoundingClientRect().x, right: node.getBoundingClientRect().right, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, cursor: getComputedStyle(node).cursor, appRegion: getComputedStyle(node).getPropertyValue('-webkit-app-region') }));
   });
-  assert.deepEqual(geometry.map(button => button.label), ['새로고침', '프로젝트 창 열기', '창 전체 화면', '창 닫기']);
+  assert.deepEqual(geometry.map(button => button.label), ['새로고침','Ops 대화 패널', '프로젝트 창 열기', '창 전체 화면', '창 닫기']);
   for (let index = 1; index < geometry.length; index++) {
     assert.ok(geometry[index - 1].right <= geometry[index].x + 1);
     assert.equal(geometry[index].cursor, 'pointer');
@@ -263,7 +251,8 @@ try {
   const initialBackground = await closeButton.evaluate(node => getComputedStyle(node).backgroundColor);
   await closeButton.hover();
   await expect.poll(() => closeButton.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe(initialBackground);
-  await refresh.focus(); await page.keyboard.press('Tab'); await expect(projectWindow).toBeFocused();
+  await refresh.focus(); await page.keyboard.press('Tab'); await expect(opsPanel).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(projectWindow).toBeFocused();
   await page.keyboard.press('Tab'); await expect(enterFullScreen()).toBeFocused();
   await page.keyboard.press('Tab'); await expect(closeButton).toBeFocused();
   await page.keyboard.press('Shift+Tab'); await expect(enterFullScreen()).toBeFocused();
@@ -272,7 +261,7 @@ try {
   await expect(leaveFullScreen()).toHaveAttribute('aria-pressed', 'true');
   await leaveFullScreen().click();
   await expect.poll(async () => (await invoke('window.state')).fullScreen).toBe(false);
-  check('Top-right refresh, project window, full-screen, and close controls retain their order, keyboard access, and native full-screen changes');
+  check('Top-right refresh, Ops panel, project window, full-screen, and close controls retain their order, keyboard access, and native full-screen changes');
 
   const group = await invoke('group.save', { name: 'Windows 설치 검사' });
   const registeredModels = [{id:'windows-fixture-model',label:'Windows fixture model',reasoning:['low','high'],defaultReasoningEffort:'high'}];
