@@ -54,10 +54,11 @@
     {
       "category": "improvements",
       "title": "Keep page titles and controls consistent",
-      "description": "Use shared headers across Home, Ops, Groups, accounts, hosts and settings. Align titles with actions and search, retain useful paths inline and keep long project navigation clear in narrow windows and either sidebar state.",
+      "description": "Use shared headers across Home, Ops, Groups, accounts, hosts and settings. Align titles with actions and search, retain useful paths inline and keep long project navigation clear in narrow windows and either sidebar state. Keep static manager titles readable before optional paths when narrow windows share space with several actions.",
       "commits": [
         "ddff377de97b1126f7592080ea91558a6ec8d18f",
-        "3d587192ea89980c1fbc1c863ed4b6e7839d0c19"
+        "3d587192ea89980c1fbc1c863ed4b6e7839d0c19",
+        "4a2baa2cd91a47897a1279b380b324ea3e32739a"
       ]
     },
     {
