@@ -9,6 +9,9 @@ test('lifecycle refuses local/self-hosted/other-branch/PR/repository and incompl
  assert.ok(executionRefusal({},'darwin','x64'));
  for(const key of Object.keys(env)){const altered={...env};delete altered[key];assert.ok(executionRefusal(altered,'darwin','x64'),key)}
  for(const [key,value] of Object.entries({RUNNER_ENVIRONMENT:'self-hosted',GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'pull_request',GITHUB_REPOSITORY:'other/repo'}))assert.ok(executionRefusal({...env,[key]:value},'darwin','arm64'));
+ const manual={...env,GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',REVIEWOPS_MANUAL_DISPLAY_PROBE:'1'};
+ assert.equal(executionRefusal(manual,'darwin','arm64'),null);
+ for(const patch of [{GITHUB_EVENT_NAME:'push'},{GITHUB_EVENT_NAME:'pull_request'},{GITHUB_REF:'refs/heads/other'},{REVIEWOPS_MANUAL_DISPLAY_PROBE:'0'},{REVIEWOPS_MANUAL_DISPLAY_PROBE:'true'},{REVIEWOPS_MANUAL_DISPLAY_PROBE:undefined}])assert.ok(executionRefusal({...manual,...patch},'darwin','arm64'));
  assert.equal(executionRefusal(env,'darwin','x64'),null);assert.equal(executionRefusal(env,'darwin','arm64'),null);assert.ok(executionRefusal(env,'linux','x64'));
 });
 test('caught Objective-C failure releases the owned strong parameter before cleanup',{

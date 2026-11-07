@@ -13,9 +13,9 @@ node --test tests/macos-virtual-display-probe.test.cjs
 node experiments/macos-virtual-display/run-probe.mjs --compile-only
 ```
 
-실제 생성은 `.github/workflows/macos-virtual-display-prototype.yml`의 정확한 `codex/macos-virtual-display-prototype` push에서만 예정된다. `macos-15` arm64와 `macos-15-intel` x64의 GitHub 호스팅 runner가 대상이다. 작업 권한은 `contents: read`, checkout credential 저장은 끄며 외부 secret·서비스·설정 변경을 사용하지 않는다. 새 workflow 등록을 위해 dispatch-only 방식으로 구성하지 않았다. **최초 push·CI 실행·PR은 root 검토 후 별도 수행한다.**
+실제 생성은 `.github/workflows/macos-virtual-display-prototype.yml`의 정확한 `codex/macos-virtual-display-prototype` push 또는 main의 명시적 수동 실행(`acknowledge_disposable_runner=true`)으로 제한한다. `macos-15` arm64와 `macos-15-intel` x64의 GitHub 호스팅 runner가 대상이다. 작업 권한은 `contents: read`, checkout credential 저장은 끄며 외부 secret·서비스·설정 변경을 사용하지 않는다. main push나 PR에서는 자동 실행하지 않는다. 통합 뒤 현재 범위와 미완료 항목은 [통합 상태 문서](../../docs/virtual-display-integration.md)를 따른다.
 
-Node launcher와 native helper는 모두 repository, branch, push event, GitHub Actions·CI·github-hosted·macOS 환경을 확인한다. launcher는 clean checkout SHA 및 실제 Node architecture를 검사하며 helper의 native architecture도 대조한다. 이 gate는 실수 방지용이며 환경 변수를 위조하는 행위에 대한 보안 경계라는 뜻은 아니다. 사용자 Mac에서 CI 변수를 흉내 내거나 CI 전용 빌드를 실행하지 않는다.
+Node launcher와 native helper는 모두 repository, 허용한 branch/event와 수동 승인 표시, GitHub Actions·CI·github-hosted·macOS 환경을 확인한다. launcher는 clean checkout SHA 및 실제 Node architecture를 검사하며 helper의 native architecture도 대조한다. 이 gate는 실수 방지용이며 환경 변수를 위조하는 행위에 대한 보안 경계라는 뜻은 아니다. 사용자 Mac에서 CI 변수를 흉내 내거나 CI 전용 빌드를 실행하지 않는다.
 
 ## 실험이 검증하는 것
 

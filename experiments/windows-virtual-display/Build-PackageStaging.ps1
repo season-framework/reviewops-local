@@ -22,8 +22,8 @@ try {
     if ($LASTEXITCODE -ne 0 -or $source -notmatch '^[0-9a-f]{40}$') { throw 'Source identity unavailable.' }
     $record['source'] = $source
     if ($env:GITHUB_ACTIONS -eq 'true') {
-        if ($env:GITHUB_REPOSITORY -ne 'season-framework/reviewops-local' -or $env:GITHUB_REF -ne 'refs/heads/codex/windows-virtual-display-prototype' -or
-            $env:GITHUB_EVENT_NAME -ne 'push' -or $env:GITHUB_SHA -ne $source -or $env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'The original CI source/attempt binding differs.' }
+        . (Join-Path $PSScriptRoot 'ExperimentCIContext.ps1')
+        Assert-DisplayExperimentCIContext -Source $source
         $record['producer'] = [ordered]@{ runId = $env:GITHUB_RUN_ID; runAttempt = $env:GITHUB_RUN_ATTEMPT; event = $env:GITHUB_EVENT_NAME }
     }
     $dirty = (& git -C $root status --porcelain --untracked-files=all -- . | Out-String).Trim()

@@ -1,9 +1,12 @@
 name: Experimental Windows driver package admission
 
 on:
+  workflow_dispatch:
   push:
     branches: [codex/windows-virtual-display-prototype]
     paths:
+      - 'experiments/windows-virtual-display/ExperimentCIContext.ps1'
+      - 'experiments/windows-virtual-display/Test-ExperimentCIContext.ps1'
       - 'experiments/windows-virtual-display/PackageAdmission.h'
       - 'experiments/windows-virtual-display/PackageAdmission.cpp'
       - 'experiments/windows-virtual-display/PackageInspect.cpp'
@@ -25,13 +28,18 @@ concurrency:
 
 jobs:
   admission:
-    if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype'
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     runs-on: windows-2022
+    env:
+      REVIEWOPS_MANUAL_DISPLAY_PROBE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           persist-credentials: false
+      - name: Check explicit CI admission without native effects
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Test-ExperimentCIContext.ps1
       - name: Fetch the exact original unsigned package fixture
         shell: pwsh
         env:

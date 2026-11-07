@@ -1,6 +1,7 @@
 name: Hidden owned web capture probe
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - codex/hidden-web-capture-probe
@@ -10,7 +11,7 @@ permissions:
 
 jobs:
   probe:
-    if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/hidden-web-capture-probe'
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/hidden-web-capture-probe') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
     strategy:
       fail-fast: false
       matrix:
@@ -23,6 +24,7 @@ jobs:
     timeout-minutes: 10
     env:
       REVIEWOPS_HOSTED_CAPTURE_PROBE: '1'
+      REVIEWOPS_MANUAL_CAPTURE_PROBE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

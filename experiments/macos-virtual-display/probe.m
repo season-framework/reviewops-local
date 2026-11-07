@@ -138,9 +138,12 @@ static NSString *executionRefusal(void) {
 #if !REVIEWOPS_VIRTUAL_DISPLAY_CI_EXECUTION
   return @"LOCAL_BUILD_CANNOT_CREATE_DISPLAYS";
 #else
-  NSDictionary *required = @{@"GITHUB_ACTIONS":@"true", @"CI":@"true", @"RUNNER_ENVIRONMENT":@"github-hosted", @"RUNNER_OS":@"macOS", @"GITHUB_REPOSITORY":@"season-framework/reviewops-local", @"GITHUB_REF":@"refs/heads/codex/macos-virtual-display-prototype", @"GITHUB_EVENT_NAME":@"push"};
+  NSDictionary *required = @{@"GITHUB_ACTIONS":@"true", @"CI":@"true", @"RUNNER_ENVIRONMENT":@"github-hosted", @"RUNNER_OS":@"macOS", @"GITHUB_REPOSITORY":@"season-framework/reviewops-local"};
   NSDictionary *env = NSProcessInfo.processInfo.environment;
   for (NSString *name in required) if (![env[name] isEqual:required[name]]) return [@"EXECUTION_GATE_" stringByAppendingString:name];
+  BOOL prototype = [env[@"GITHUB_REF"] isEqual:@"refs/heads/codex/macos-virtual-display-prototype"] && [env[@"GITHUB_EVENT_NAME"] isEqual:@"push"];
+  BOOL manual = [env[@"GITHUB_REF"] isEqual:@"refs/heads/main"] && [env[@"GITHUB_EVENT_NAME"] isEqual:@"workflow_dispatch"] && [env[@"REVIEWOPS_MANUAL_DISPLAY_PROBE"] isEqual:@"1"];
+  if (!prototype && !manual) return @"EXECUTION_GATE_EXPLICIT_REVIEWED_CONTEXT";
   NSString *source = env[@"GITHUB_SHA"];
   NSCharacterSet *nonHex = [[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdef"] invertedSet];
   if (source.length != 40 || [source rangeOfCharacterFromSet:nonHex].location != NSNotFound) return @"EXECUTION_GATE_GITHUB_SHA";

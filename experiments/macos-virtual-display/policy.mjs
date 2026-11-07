@@ -17,8 +17,11 @@ export function encodeProbeJSON(value) {
 }
 export function executionRefusal(env, platform = process.platform, arch = process.arch) {
   if (platform !== 'darwin' || !['arm64', 'x64'].includes(arch)) return 'unsupported-platform';
-  const exact = {GITHUB_ACTIONS:'true', CI:'true', RUNNER_ENVIRONMENT:'github-hosted', RUNNER_OS:'macOS', GITHUB_REPOSITORY:repository, GITHUB_REF:branch, GITHUB_EVENT_NAME:'push'};
+  const exact = {GITHUB_ACTIONS:'true', CI:'true', RUNNER_ENVIRONMENT:'github-hosted', RUNNER_OS:'macOS', GITHUB_REPOSITORY:repository};
   for (const [name, expected] of Object.entries(exact)) if (env[name] !== expected) return `execution-gate:${name}`;
+  const prototype = env.GITHUB_REF === branch && env.GITHUB_EVENT_NAME === 'push';
+  const manual = env.GITHUB_REF === 'refs/heads/main' && env.GITHUB_EVENT_NAME === 'workflow_dispatch' && env.REVIEWOPS_MANUAL_DISPLAY_PROBE === '1';
+  if (!prototype && !manual) return 'execution-gate:explicit-reviewed-context';
   if (!/^[a-f0-9]{40}$/.test(env.GITHUB_SHA || '')) return 'execution-gate:GITHUB_SHA';
   return null;
 }

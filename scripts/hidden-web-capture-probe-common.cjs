@@ -18,8 +18,10 @@ const CASES = Object.freeze([
 ].map(value=>Object.freeze(value)));
 
 function hostedOnly(env=process.env,platform=process.platform,arch=process.arch) {
-  if(env.GITHUB_ACTIONS!=='true'||env.RUNNER_ENVIRONMENT!=='github-hosted'||env.GITHUB_REPOSITORY!=='season-framework/reviewops-local'||env.GITHUB_REF!==`refs/heads/${BRANCH}`||env.REVIEWOPS_HOSTED_CAPTURE_PROBE!=='1'||!['win32','darwin'].includes(platform)||arch!=='x64') {
-    throw new Error('This diagnostic runs only on the exact probe branch in GitHub-hosted Windows/Intel macOS jobs.');
+  const prototype=env.GITHUB_REF===`refs/heads/${BRANCH}`&&env.GITHUB_EVENT_NAME==='push';
+  const manual=env.GITHUB_REF==='refs/heads/main'&&env.GITHUB_EVENT_NAME==='workflow_dispatch'&&env.REVIEWOPS_MANUAL_CAPTURE_PROBE==='1';
+  if(env.GITHUB_ACTIONS!=='true'||env.RUNNER_ENVIRONMENT!=='github-hosted'||env.GITHUB_REPOSITORY!=='season-framework/reviewops-local'||(!prototype&&!manual)||env.REVIEWOPS_HOSTED_CAPTURE_PROBE!=='1'||!['win32','darwin'].includes(platform)||arch!=='x64') {
+    throw new Error('This diagnostic runs only on the reviewed probe push or explicit main dispatch in GitHub-hosted Windows/Intel macOS jobs.');
   }
 }
 
@@ -35,7 +37,7 @@ function validateConfig(value) {
 
 // Child processes do not inherit API tokens, SSH agents, application settings or model configuration.
 function childEnvironment(env,profile) {
-  const allowed=['PATH','Path','SystemRoot','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','TMPDIR','LANG','LC_ALL','DISPLAY','XDG_RUNTIME_DIR','GITHUB_ACTIONS','RUNNER_ENVIRONMENT','GITHUB_REPOSITORY','GITHUB_REF','REVIEWOPS_HOSTED_CAPTURE_PROBE'];
+  const allowed=['PATH','Path','SystemRoot','SYSTEMROOT','WINDIR','COMSPEC','PATHEXT','TEMP','TMP','TMPDIR','LANG','LC_ALL','DISPLAY','XDG_RUNTIME_DIR','GITHUB_ACTIONS','RUNNER_ENVIRONMENT','GITHUB_REPOSITORY','GITHUB_REF','GITHUB_EVENT_NAME','REVIEWOPS_HOSTED_CAPTURE_PROBE','REVIEWOPS_MANUAL_CAPTURE_PROBE'];
   const result=Object.fromEntries(allowed.filter(key=>env[key]!==undefined).map(key=>[key,env[key]]));
   return {...result,HOME:profile,USERPROFILE:profile,APPDATA:path.join(profile,'appdata'),LOCALAPPDATA:path.join(profile,'localappdata')};
 }

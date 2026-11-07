@@ -3,9 +3,12 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 const {BRANCH,CASES,CAPTURE_TIMEOUT_MS,HIDDEN_SETTLE_MS,CHILD_TIMEOUT_MS,GEOMETRY,hostedOnly,validateConfig,childEnvironment,sourcePreserved,geometryPreserved}=require('../scripts/hidden-web-capture-probe-common.cjs');
 
 test('native execution refuses local, self-hosted, foreign-repository and unrelated-branch contexts',()=>{
-  const env={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_REF:`refs/heads/${BRANCH}`,REVIEWOPS_HOSTED_CAPTURE_PROBE:'1'};
+  const env={GITHUB_ACTIONS:'true',RUNNER_ENVIRONMENT:'github-hosted',GITHUB_REPOSITORY:'season-framework/reviewops-local',GITHUB_REF:`refs/heads/${BRANCH}`,GITHUB_EVENT_NAME:'push',REVIEWOPS_HOSTED_CAPTURE_PROBE:'1'};
   assert.doesNotThrow(()=>hostedOnly(env,'win32','x64'));assert.doesNotThrow(()=>hostedOnly(env,'darwin','x64'));
   for(const patch of [{GITHUB_ACTIONS:'false'},{RUNNER_ENVIRONMENT:'self-hosted'},{GITHUB_REPOSITORY:'other/repository'},{GITHUB_REF:'refs/heads/main'},{REVIEWOPS_HOSTED_CAPTURE_PROBE:'0'}])assert.throws(()=>hostedOnly({...env,...patch},'win32','x64'),/GitHub-hosted/);
+  const manual={...env,GITHUB_REF:'refs/heads/main',GITHUB_EVENT_NAME:'workflow_dispatch',REVIEWOPS_MANUAL_CAPTURE_PROBE:'1'};
+  assert.doesNotThrow(()=>hostedOnly(manual,'win32','x64'));
+  for(const patch of [{GITHUB_EVENT_NAME:'push'},{GITHUB_EVENT_NAME:'pull_request'},{GITHUB_REF:'refs/heads/unreviewed'},{REVIEWOPS_MANUAL_CAPTURE_PROBE:'0'},{REVIEWOPS_MANUAL_CAPTURE_PROBE:undefined}])assert.throws(()=>hostedOnly({...manual,...patch},'win32','x64'));
   assert.throws(()=>hostedOnly(env,'darwin','arm64'));assert.throws(()=>hostedOnly(env,'linux','x64'));
 });
 
@@ -44,7 +47,8 @@ test('probe workflow is branch-restricted, read-only, native hosted, pinned and 
   const uses=[...file.matchAll(/uses: ([^\n]+)/g)].map(match=>match[1]);assert.equal(uses.length,3);assert.ok(uses.every(value=>/@[a-f0-9]{40}(?:\s|$)/.test(value)));
   assert.match(file,/persist-credentials: false/);assert.match(file,/run: npm ci/);assert.match(file,/path: test-results\/hidden-web-capture-probe\/\*\.json/);
   assert.match(file,/timeout-minutes: 6/);
-  assert.doesNotMatch(file,/workflow_dispatch|contents: write|actions: write|secrets\.|GITHUB_TOKEN|npm run build|test-release\.mjs|test-build\.mjs|release\/|--publish|reviewops-test-build-/);
+  assert.match(file,/workflow_dispatch:/);assert.match(file,/github.event_name == 'workflow_dispatch' && github.ref == 'refs\/heads\/main'/);
+  assert.doesNotMatch(file,/contents: write|actions: write|secrets\.|GITHUB_TOKEN|npm run build|test-release\.mjs|test-build\.mjs|release\/|--publish|reviewops-test-build-/);
 });
 
 test('standalone app records capture metadata and never loads the product or writes image bytes',()=>{

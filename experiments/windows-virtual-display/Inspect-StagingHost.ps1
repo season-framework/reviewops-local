@@ -7,9 +7,9 @@ if (-not $IsWindows) { throw 'Native Windows is required.' }
 $out = Join-Path $PSScriptRoot '_out'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $source = (& git -C $PSScriptRoot rev-parse HEAD | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or $source -notmatch '^[0-9a-f]{40}$' -or $env:GITHUB_SHA -ne $source -or
-    $env:GITHUB_REPOSITORY -ne 'season-framework/reviewops-local' -or $env:GITHUB_REF -ne 'refs/heads/codex/windows-virtual-display-prototype' -or
-    $env:GITHUB_EVENT_NAME -ne 'push' -or $env:GITHUB_RUN_ATTEMPT -ne '1') { throw 'Original diagnostic source/attempt binding differs.' }
+if ($LASTEXITCODE -ne 0) { throw 'Source identity unavailable.' }
+. (Join-Path $PSScriptRoot 'ExperimentCIContext.ps1')
+Assert-DisplayExperimentCIContext -Source $source
 if (-not [Environment]::Is64BitProcess) { throw 'Native x64 folder lookup is required.' }
 $folders = [ordered]@{
     ProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)

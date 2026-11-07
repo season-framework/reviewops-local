@@ -119,8 +119,8 @@ is included in this diagnostic branch.
 
 ## Invocation and review boundary
 
-The new workflow runs only on a push to `codex/hidden-web-capture-probe` in the
-original repository, on GitHub-hosted Windows x64 and Intel macOS. Both launcher
+The workflow runs on an original `codex/hidden-web-capture-probe` push or an
+explicit manual dispatch of `main` in the original repository, on GitHub-hosted Windows x64 and Intel macOS. Both launcher
 and app refuse local/self-hosted/unrelated contexts. It uses the existing pinned
 checkout/setup-node/upload actions, Node 24, `npm ci` and JSON-only artifacts with
 one-day retention and a prefix outside publication cleanup.
@@ -129,3 +129,5 @@ Pure boundary checks: `node --test tests/hidden-web-capture-probe.test.cjs`.
 Native invocation is the workflow's `node scripts/hidden-web-capture-probe.mjs`.
 The branch must be reviewed before any commit/push and native execution. No local
 Electron experiment was executed when preparing it.
+
+After integration, see [the virtual display integration status](virtual-display-integration.md) for current execution gates and remaining product acceptance. Historical observations above describe their original source and run.
