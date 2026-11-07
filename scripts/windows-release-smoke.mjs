@@ -230,15 +230,16 @@ try {
   await launch();
   check('Installed application launches its home screen and IPC in an isolated profile');
   const refresh = page.locator('.workspace-refresh');
+  const opsPanel = page.getByRole('button', { name: 'Ops 대화 패널', exact: true });
   const projectWindow = page.getByRole('button', { name: '프로젝트 창 열기', exact: true });
   const enterFullScreen = () => page.getByRole('button', { name: '창 전체 화면', exact: true });
   const leaveFullScreen = () => page.getByRole('button', { name: '창 전체 화면 종료', exact: true });
   const closeButton = page.getByRole('button', { name: '창 닫기', exact: true });
   const geometry = await page.locator('.workspace-tabs').evaluate(strip => {
-    const controls = [strip.querySelector('.workspace-refresh'), strip.querySelector('.workspace-project-window'), ...strip.querySelectorAll('.window-control')];
+    const controls = [strip.querySelector('.workspace-refresh'),strip.querySelector('.workspace-ops-toggle'), strip.querySelector('.workspace-project-window'), ...strip.querySelectorAll('.window-control')];
     return controls.map(node => ({ label: node.getAttribute('aria-label'), x: node.getBoundingClientRect().x, right: node.getBoundingClientRect().right, width: node.getBoundingClientRect().width, height: node.getBoundingClientRect().height, cursor: getComputedStyle(node).cursor, appRegion: getComputedStyle(node).getPropertyValue('-webkit-app-region') }));
   });
-  assert.deepEqual(geometry.map(button => button.label), ['새로고침', '프로젝트 창 열기', '창 전체 화면', '창 닫기']);
+  assert.deepEqual(geometry.map(button => button.label), ['새로고침','Ops 대화 패널', '프로젝트 창 열기', '창 전체 화면', '창 닫기']);
   for (let index = 1; index < geometry.length; index++) {
     assert.ok(geometry[index - 1].right <= geometry[index].x + 1);
     assert.equal(geometry[index].cursor, 'pointer');
@@ -250,7 +251,8 @@ try {
   const initialBackground = await closeButton.evaluate(node => getComputedStyle(node).backgroundColor);
   await closeButton.hover();
   await expect.poll(() => closeButton.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe(initialBackground);
-  await refresh.focus(); await page.keyboard.press('Tab'); await expect(projectWindow).toBeFocused();
+  await refresh.focus(); await page.keyboard.press('Tab'); await expect(opsPanel).toBeFocused();
+  await page.keyboard.press('Tab'); await expect(projectWindow).toBeFocused();
   await page.keyboard.press('Tab'); await expect(enterFullScreen()).toBeFocused();
   await page.keyboard.press('Tab'); await expect(closeButton).toBeFocused();
   await page.keyboard.press('Shift+Tab'); await expect(enterFullScreen()).toBeFocused();
@@ -259,7 +261,7 @@ try {
   await expect(leaveFullScreen()).toHaveAttribute('aria-pressed', 'true');
   await leaveFullScreen().click();
   await expect.poll(async () => (await invoke('window.state')).fullScreen).toBe(false);
-  check('Top-right refresh, project window, full-screen, and close controls retain their order, keyboard access, and native full-screen changes');
+  check('Top-right refresh, Ops panel, project window, full-screen, and close controls retain their order, keyboard access, and native full-screen changes');
 
   const group = await invoke('group.save', { name: 'Windows 설치 검사' });
   const registeredModels = [{id:'windows-fixture-model',label:'Windows fixture model',reasoning:['low','high'],defaultReasoningEffort:'high'}];
