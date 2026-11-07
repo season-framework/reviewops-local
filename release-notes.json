@@ -1,103 +1,77 @@
 {
   "schema": 1,
-  "version": "1.6.0",
+  "version": "1.7.0",
   "entries": [
     {
       "category": "features",
-      "title": "Run persistent Ops goals in parallel",
-      "description": "Create goals with a local folder or approved SSH project connection, their own Codex settings and one persistent conversation. Start, pause, resume or finish each goal independently. Different targets can work in parallel; overlapping canonical folders wait with a visible reason.",
+      "title": "Manage ReviewOps in a persistent Codex conversation",
+      "description": "Create projects and goals, update schedules and explicitly start or finish work through typed app tools. Keep management conversations separate from each goal, retain previous conversations and open the related project or goal from a confirmed result.",
       "commits": [
-        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
-        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
-        "06411de4a42901af92474ccd8c8a745415502c32",
-        "ee6a9606cfa8ea1725ab43c0cffc527bc9a4d3bf"
+        "a79197d499bc21b9154984c95efeeef67fa09d9a",
+        "9e4debe5828da34d3a5b25851dab35d7a2ca0e8f"
       ]
     },
     {
       "category": "features",
-      "title": "Schedule follow-ups inside each goal",
-      "description": "Add multiple cron schedules with IANA time zones. A goal can manage only its own schedules through Codex tools, recording the reason for each change. Due instructions steer its active turn or continue the same idle conversation. Missed occurrences coalesce once; paused and finished goals never restart automatically.",
+      "title": "Connect to a work PC from a browser or another ReviewOps app",
+      "description": "Enable browser viewing and app access separately in Remote management. Approve project-scoped devices, inspect reviews and attachments, and run or stop Codex in the work PC's configured local or SSH environment. Both listeners start disabled.",
       "commits": [
-        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
-        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
-        "06411de4a42901af92474ccd8c8a745415502c32"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Let each Ops goal inspect its own project window",
-      "description": "Open a QA session bound to the goal’s registered project, window and original Codex conversation. Let Codex inspect screenshots and send scoped input while the Ops view shows the connection and operation receipts. Pausing or changing a goal releases only its own session; uncertain operations remain visible without automatic replay.",
-      "commits": [
-        "24dec2bd4752b298045b7c98335ca22a174ba946",
-        "27d6d84fea4c3cb1362fa6e13d33ac16f827df7b",
-        "49ca5b9792ecf2f0f6ca39951e9e98d122b4e6ba",
-        "e8fa49ddb2196c327bb0e200496383ced5f9ad09",
-        "62ba15106094eeb90dae920cad2a292122d9b5cc",
-        "098b44129897296e913c5381750d2a780d6aaa1e",
-        "5db19dc0a1621115c6194722c061e91cde339701"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Reconnect project QA independently",
-      "description": "Keep each external chat bound to its own project and QA controller. Reconnect or release one controller while other projects retain their QA sessions, drafts and running work. Window badges show the connected project, controller label and state. Fresh observations prevent old input from targeting a reloaded or recreated surface.",
-      "commits": [
-        "23e87b39e2d1dd5374f3ff5a25a8948359e0e892"
+        "00aad64dc81ed9d60e1d70c1ecac94aa7dce5a73",
+        "a15a9608cad292c5bd745d632cb7217abb9ed43d"
       ]
     },
     {
       "category": "improvements",
-      "title": "Inspect goal prompts, progress and recovery",
-      "description": "Preview common, goal and schedule instructions together, then inspect the exact submitted prompt, reason, originating schedules and outcome in history. Recover the original conversation after restart and restore backups with goals paused. Interactive approval requests appear as errors; Ops has no approval dialog.",
+      "title": "Use compact goal rows and Markdown goal prompts",
+      "description": "Switch between Conversation and Goals, inspect goal details in four tabs and use one state-appropriate Start or Finish action. Search project and model choices, edit Markdown locally in Monaco and restart a finished goal with its original conversation. New and retained goals run with danger-full-access and approvalPolicy never.",
       "commits": [
-        "c0e5a1d2504d27be9b1025b5363a96ed08e5c038",
-        "ddd6116d9847d58d61f9ee2fb6b49f7ace86e5fa",
-        "06411de4a42901af92474ccd8c8a745415502c32",
-        "85aac45b6766e08e3d30faba8589e5ec8f692d76"
+        "912b7e0711967c2424e288a8057a13a283b99053",
+        "a79197d499bc21b9154984c95efeeef67fa09d9a"
       ]
     },
     {
       "category": "improvements",
-      "title": "Keep background commands owned through pauses and errors",
-      "description": "Retain a goal's folder while its commands are running or unconfirmed, even after the model finishes or a new request fails. Pause and finish stop only that thread's terminals before releasing the target. Offline goals recover independently without blocking the application window, other goals or scheduled work.",
+      "title": "Keep page titles and controls consistent",
+      "description": "Use shared headers across Home, Ops, Groups, accounts, hosts and settings. Align titles with actions and search, retain useful paths inline and keep long project navigation clear in narrow windows and either sidebar state.",
       "commits": [
-        "8c0e18cfb3f1ef1f693131f1ecb5e87f353f256a",
-        "4a7a2bf92995dade6711d2ad5518c70f75b6e632",
-        "e6f1d7385d746d1b63615921aa39ed05b81684c9",
-        "6dea5cbd12b06da98d6ca533857d229e58d7eaec",
-        "a903f710bb452836861891417ca3bbbcb70e5e46"
-      ]
-    },
-    {
-      "category": "features",
-      "title": "Refresh account usage automatically",
-      "description": "Collect account limits and supported detailed usage every 30 minutes in the background, including while the window is minimized. Choose a 1–1440 minute interval in Settings → Automatic checks and keep it after restarting. Overdue startup and resume refresh once; failures retain the last successful values and retry on the chosen interval.",
-      "commits": [
-        "3226739b48d863c81527efae7d1c6d895f29512c"
+        "ddff377de97b1126f7592080ea91558a6ec8d18f",
+        "beb0573e3e01ed61df05107876dddfdfa73c2455"
       ]
     },
     {
       "category": "fixes",
-      "title": "Stop agent tools before ending their runner",
-      "description": "Interrupt local and SSH agent execution gracefully before escalating termination, allowing Codex to stop its detached tool processes. Bounded termination fallback remains available when the runner does not exit.",
+      "title": "Preserve remote edit intent through conflicts and disconnections",
+      "description": "Bind writes to the original project birth, review generation and revision. Compare a stale draft before explicit rebasing, retain pending requests after a lost reply, retrieve their original result without replaying mutations and show refresh or disconnected state.",
       "commits": [
-        "2cd458210691168725fa72948608786d30bc1554"
+        "83c0c25d13f56dca5588437a6e395b2cde77906d",
+        "ea56023f7fdd7d8f21e319613e6b1f0b925cc3f3"
       ]
     },
     {
       "category": "fixes",
-      "title": "Keep restarted execution history within its displayed limit",
-      "description": "When the app restarts during an agent run, retain the latest 100 progress entries including the interruption notice and update the omitted-entry count. Completed runs and confirmed remote executions keep their existing records.",
+      "title": "Preserve protected remote profiles when key access is refused",
+      "description": "Keep the original identity and sealed connections, report the operating-system refusal and retry only the existing protected reference. This does not grant an updated ad hoc app access to an older app's Keychain item; explicit OS authorization or a separately qualified identity migration remains required.",
       "commits": [
-        "2d6fd966ba3425d4d67208c37e172ccb6776a267"
+        "83c0c25d13f56dca5588437a6e395b2cde77906d",
+        "4c39ba32e5ebe25d27379e1c9fe2599dfcfbab4b"
       ]
     },
     {
       "category": "fixes",
-      "title": "Update desktop certificate validation",
-      "description": "Update the desktop runtime to Electron 44.9.1, including its certificate validation fixes.",
+      "title": "Use the model catalog from the selected goal runtime",
+      "description": "Use a project's custom local executable for both its model list and actual goal session. Reject changed targets during resolution, refresh a cold catalog when metadata arrives and clear false conflict warnings after a confirmed own save.",
       "commits": [
-        "85cc055f633e8d960e412dea01b8cf11af7f3a38"
+        "801274e22a9026c388c489050484155c081da350",
+        "935c7e727c0dfbe0cf6c5fdf2e5adf173959cc86",
+        "8f261de17b6f521cf915286f5f855bc614db2930"
+      ]
+    },
+    {
+      "category": "fixes",
+      "title": "Keep expanded execution logs readable during long responses",
+      "description": "Bound the response area while progress is expanded, preserve the existing log reading position as output grows and support independent keyboard scrolling. An explicit jump to latest moves both the response and progress; closing progress restores the complete response.",
+      "commits": [
+        "f98a3965d457f8864e6945b1f7f5fc56bd7634e9"
       ]
     }
   ]

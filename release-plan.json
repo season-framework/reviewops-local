@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "previousVersion": "1.5.0",
-  "version": "1.6.0",
+  "previousVersion": "1.6.0",
+  "version": "1.7.0",
   "bump": "minor",
-  "reason": "Add persistent Ops goals with parallel local and SSH execution, goal-owned schedules, project-window QA and recoverable history, alongside configurable account usage refresh, improved agent cancellation and updated certificate validation.",
-  "baseCommit": "d8190336156d27054e7de838967defb0b34ef7b8"
+  "reason": "Add conversational Ops management with project-bound runtimes and Markdown editing, direct remote browser and app access with revision-safe recovery, and consistent page headers.",
+  "baseCommit": "a38ae6c38fa8e0005748948f1b546410227fb9e0"
 }
