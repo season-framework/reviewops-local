@@ -21,12 +21,12 @@ export function inspectOpsArchive(archive, {repository, asar}) {
   const packagedResources=[];
   for(const entry of asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''))){
     if(!entry.startsWith(prefix))continue;
-    const stat=asar.statFile(archive,entry,false);
+    const stat=asar.statFile(archive,path.join(...entry.split('/')),false);
     assert.ok(!stat.link,`Packaged skill links are not allowed: ${entry}`);
     if(!stat.files)packagedResources.push(entry);
   }
   assert.deepEqual(packagedResources.sort(),skillResources.slice().sort(),'Packaged skill resource inventory differs from reviewed source.');
-  for(const file of skillResources)assert.deepEqual(asar.extractFile(archive,file),fs.readFileSync(path.join(repository,...file.split('/'))),`Packaged skill resource differs: ${file}`);
+  for(const file of skillResources)assert.deepEqual(asar.extractFile(archive,path.join(...file.split('/'))),fs.readFileSync(path.join(repository,...file.split('/'))),`Packaged skill resource differs: ${file}`);
   const lock = JSON.parse(fs.readFileSync(path.join(repository, 'package-lock.json'), 'utf8'));
   const dependencies = {};
   for (const name of ['cron-parser', 'luxon','js-yaml','argparse']) {
