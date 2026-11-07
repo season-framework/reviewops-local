@@ -8,6 +8,7 @@ const path=require('node:path');
 const vm=require('node:vm');
 const {EventEmitter}=require('node:events');
 const {PassThrough}=require('node:stream');
+const {finished}=require('node:stream/promises');
 const helper=import('../scripts/packaged-identity-continuity.mjs');
 const a='a'.repeat(40),b='b'.repeat(40),sha='c'.repeat(64);
 
@@ -94,7 +95,9 @@ test('bundle admission reads the replaced real ASAR at the same installation pat
   for(const [name,bytes] of Object.entries(modules))fs.writeFileSync(path.join(directory,name),bytes);
   // A changed real archive layout makes stale cached offsets observably wrong.
   if(index)fs.writeFileSync(path.join(directory,'000-padding.txt'),'candidate layout '.repeat(300));
-  await asar.createPackage(directory,originals[index]);
+  // The pinned ASAR packer resolves to its writable before the final flush.
+  // Admission must inspect complete fixtures, not a copy of pending writes.
+  await finished(await asar.createPackage(directory,originals[index]));
  }
  const run=async(command,args)=>{
   if(command==='powershell.exe')return{stdout:JSON.stringify({status:'NotSigned',thumbprint:null})};
