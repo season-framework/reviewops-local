@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "packages": {
+    "github-issue-management": {
+      "file": "github-issue-management.zip",
+      "url": "https://github.com/user-attachments/files/34520598/github-issue-management.zip",
+      "bytes": 7177,
+      "sha256": "8cf7b066ab13095dc30d9d25ad3f0153ef82d408589e8f65b93f099eda79723b"
+    },
+    "qa-usability-report": {
+      "file": "qa-usability-report.zip",
+      "url": "https://github.com/user-attachments/files/34520597/qa-usability-report.zip",
+      "bytes": 462609,
+      "sha256": "08a96dd27d9565f0fa04505d55ac3ff86edc703e944555727418a15149bc1aa3"
+    }
+  }
+}
