@@ -84,7 +84,8 @@ function createRemoteManagement(options) {
   if (!identityProvider || typeof enqueueRead !== 'function' || typeof executeAgent !== 'function' || typeof onCommitted !== 'function' || typeof assetDirectory !== 'string' || !assetDirectory ||
       ['state', 'initialize', 'acquireServerTLS', 'publicCertificate', 'closeAndDrain'].some(name => typeof identityProvider[name] !== 'function'))
     fail('INVALID_REMOTE_REQUEST');
-  const provider = Object.freeze(Object.fromEntries(['state', 'initialize', 'acquireServerTLS', 'publicCertificate', 'closeAndDrain']
+  const provider = Object.freeze(Object.fromEntries(['state', 'initialize', 'acquireServerTLS', 'publicCertificate', 'closeAndDrain',
+    ...(typeof identityProvider.retryExisting==='function'?['retryExisting']:[])]
     .map(name => [name, identityProvider[name].bind(identityProvider)])));
   const records = new Map(), principalRecords = new WeakMap(), appRecords = new Map();
   let generation = 1, web = null, app = null, operation = null, finalClose = null, closed = false;
@@ -311,6 +312,16 @@ function createRemoteManagement(options) {
 
   return Object.freeze({
     state() { if (arguments.length) fail('INVALID_REMOTE_REQUEST'); return snapshot(); },
+    async retryExistingIdentity(input, assertCurrent) {
+      const {original} = begin(input, [], assertCurrent);
+      try {
+        if (web || app) fail('WEB_ACCESS_ACTIVE');
+        if (!provider.retryExisting) fail('IDENTITY_UNAVAILABLE');
+        try { await provider.retryExisting(ownRecord({assertCurrent: () => assertOperation(original)})); }
+        catch (error) { providerError(error); }
+        assertOperation(original); bump(); return result(original);
+      } finally { finish(original); }
+    },
     async initializeIdentity(input, assertCurrent) {
       const {original, captured} = begin(input, ['address'], assertCurrent);
       try {

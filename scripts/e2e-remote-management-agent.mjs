@@ -75,7 +75,7 @@ async function choose(project,review){
 async function submit(review,prompt,button='작업 PC에서 실행'){
  const previous=new Set((await ipc('agent.list',{reviewId:review.id})).map(row=>row.id));
  await promptField().fill(prompt);await outgoing().getByRole('button',{name:button,exact:true}).click();
- await expect(outgoing().getByRole('button',{name:button,exact:true})).toBeEnabled({timeout:30000});
+ await expect(outgoing().getByRole('button',{name:'상세·작업 결과 새로고침',exact:true})).toBeEnabled({timeout:30000});
  await expect.poll(async()=> (await ipc('agent.list',{reviewId:review.id})).filter(row=>!previous.has(row.id)).length,{timeout:30000}).toBe(1);
  const run=(await ipc('agent.list',{reviewId:review.id})).find(row=>!previous.has(row.id));runs.push(run.id);return run;
 }
@@ -137,7 +137,7 @@ try{
  assert.equal(localResult.serviceId,localService.id);assert.equal(localResult.workPath,localWork);assert.ok(localResult.response.includes(localNonce));await details();await expect(outgoing().getByText(localResult.response,{exact:true}).first()).toBeVisible();await shot('local-host-real-response.png');
  checks.push('HTTPS app request ran the genuine logged-in CLI in the host local project and displayed its response.');
  await promptField().fill('Continue this same isolated task. Read local-result.txt, write its exact bytes followed by _FOLLOWUP to local-followup.txt, then reply with FOLLOWUP_RESULT and that text. Work only in the current directory.');
- await outgoing().getByRole('button',{name:'후속 요청 저장',exact:true}).click();await expect(outgoing().getByRole('button',{name:'후속 요청 실행',exact:true})).toBeEnabled();
+ await outgoing().getByRole('button',{name:'후속 요청 저장',exact:true}).click();await expect(outgoing().getByRole('button',{name:'후속 요청 실행',exact:true})).toBeEnabled();await expect(promptField()).toHaveValue('');
  const follow=await submit(localReview,await promptField().inputValue(),'후속 요청 실행');const followResult=await completed(follow.id);
  assert.equal(fs.readFileSync(path.join(localWork,'local-followup.txt'),'utf8'),localNonce+'_FOLLOWUP');assert.equal(followResult.sessionId,localResult.sessionId);await details();await shot('local-host-real-followup.png');
  checks.push('Remote saved follow-up started once in the same real CLI session and preserved the host-owned result.');

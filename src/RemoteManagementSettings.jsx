@@ -208,6 +208,7 @@ export default function RemoteManagementSettings({invoke,projects=[],active=true
    <h2>{t('이 컴퓨터 신원')}</h2><p>{state?statusLabel(state.identity.status):t('상태를 불러오는 중입니다.')}</p>
    {state?.identity.errorCode&&<p className="form-error" role="alert">{failureMessage({code:state.identity.errorCode})}</p>}
    <IdentityDiagnosticNotice identity={state?.identity}/>
+   {state?.identity.status==='unavailable'&&state.identity.backend!=='unsupported'&&<><p>{t('기존 신원을 다시 확인하면 저장된 보호 항목만 읽습니다. 신원·인증서·접속 정보는 새로 만들거나 삭제하지 않습니다. 운영체제 보안 저장소의 잠금과 이 앱의 해당 항목 접근 권한을 확인한 뒤 다시 시도하십시오.')}</p><button type="button" className="button" disabled={disabled||state?.web.enabled||state?.app.enabled} onClick={()=>command('retryExistingIdentity')}>{t('기존 신원 읽기 다시 시도')}</button></>}
    {identity&&<dl><dt>{t('기기 ID')}</dt><dd><code>{identity.deviceId}</code></dd><dt>{t('인증서 주소')}</dt><dd>{identity.address}</dd>
     <dt>{t('공개 키 지문 · SHA-256')}</dt><dd><code style={{overflowWrap:'anywhere'}}>{identity.keyFingerprint}</code></dd>
     <dt>{t('인증서 지문 · SHA-256')}</dt><dd><code style={{overflowWrap:'anywhere'}}>{identity.certificateFingerprint}</code></dd><dt>{t('인증서 만료')}</dt><dd>{identity.validUntil}</dd></dl>}

@@ -27,6 +27,7 @@ async function fixture(t, hooks = {}) {
   let providerStatus = hooks.initialStatus || 'ready';
   const provider = {
     state() { return hooks.providerState ? hooks.providerState() : {status:providerStatus,backend:'electron-safe-storage',identity:providerStatus==='ready'?publicIdentity:null,errorCode:null}; },
+    async retryExisting(input) { f.events.push('retry-existing');await hooks.retryExisting?.(input);input.assertCurrent();providerStatus='ready'; },
     async initialize(input) { f.events.push('initialize'); await hooks.initialize?.(input); input.assertCurrent(); providerStatus='ready'; },
     publicCertificate() { return {...publicIdentity,certificatePEM:'-----BEGIN CERTIFICATE-----\nTEST_ONLY\n-----END CERTIFICATE-----\n'}; },
     async acquireServerTLS(input) {
@@ -265,4 +266,16 @@ test('real coordinator serves approved browser and app reads over independently 
     if(manager)await manager.closeAndDrain();else{generated.privateKeyDER.fill(0);store.close();}
     fs.rmSync(root,{recursive:true,force:true});
   }
+});
+
+
+test('explicit existing-identity retry is fenced, refuses active listeners and never calls enrollment',async t=>{
+ const f=await fixture(t,{initialStatus:'unavailable'});
+ const generation=f.manager.state().generation;
+ await assert.rejects(f.manager.retryExistingIdentity({expectedGeneration:generation+1},()=>{}),{code:'STALE_REMOTE_REQUEST'});
+ assert.deepEqual(f.events,[]);
+ await f.manager.retryExistingIdentity({expectedGeneration:generation},()=>{});
+ assert.deepEqual(f.events,['retry-existing']);assert.equal(f.manager.state().identity.status,'ready');
+ await f.enableApp();const before=[...f.events];
+ await assert.rejects(f.manager.retryExistingIdentity(f.input({}),()=>{}),{code:'WEB_ACCESS_ACTIVE'});assert.deepEqual(f.events,before);
 });

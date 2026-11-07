@@ -12,7 +12,7 @@ function fail() {
 }
 function unsupportedProvider() {
   const state=()=>Object.freeze({status:'unavailable',backend:'unsupported',identity:null,errorCode:'IDENTITY_UNAVAILABLE'});
-  return Object.freeze({state,initialize:async()=>state(),publicCertificate:fail,
+  return Object.freeze({state,initialize:async()=>state(),retryExisting:async()=>state(),publicCertificate:fail,
     acquireServerTLS:async()=>fail(),sealCredential:async()=>fail(),openCredential:async()=>fail(),closeAndDrain:async()=>{}});
 }
 

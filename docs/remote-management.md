@@ -14,6 +14,30 @@ Enable app access separately and create an app invitation. On the connecting com
 
 The remote workspace distinguishes its working computer from local projects. It supports review creation and editing, comments and status changes, attachment uploads to a review or an existing ordinary user comment, verified file downloads, and host-side agent start, follow-up request creation/start, and stop. Uploads use bounded chunks and original target/revision checks; temporary stages are cleaned after rejection, revocation, expiry, or startup recovery. Host settings select the execution environment, including SSH; incoming commands cannot replace paths, executables, or credentials. A revision conflict retains the editor's input. An uncertain command result is looked up using its original request ID rather than silently submitting another operation.
 
+### Current data and original edit intent
+
+The app client refreshes the selected workspace every 15 seconds. A failed
+refresh marks the view stale and a transport or protected-credential failure
+removes write/execute availability until a successful connection check. Cached
+content and drafts remain visible. Host identity and IP remain above the remote
+workspace; no operation changes the host's execution configuration.
+
+Before exposing an editable review, the client reads command metadata before
+and after the shared detail/timeline query. It adopts that snapshot only if the
+dataset epoch, project birth, review generation and revision still match. A
+new-review draft similarly belongs to the observed project incarnation. Every
+mutation carries that original binding, including the client-observed project
+birth and review generation; deleting and recreating the same identifiers does
+not make an old draft current. A background refresh never rebases user input.
+When a competing edit wins, the client preserves the draft and shows the latest
+host content. Rebasing requires an explicit confirmation after comparison.
+
+A lost reply keeps the original request ID and input. The result action looks
+up that same durable receipt and clears only the exact submitted input after
+confirmed completion. It never resends a command, file, or agent request. A
+failed saved-host replacement preserves the previous endpoint, sealed
+credential, and unresolved request ownership.
+
 ## Identity and recovery
 
 Internal diagnostics can inspect the labels for an unfinished enrollment in the
@@ -64,6 +88,30 @@ of the current vault. Refresh reads status; it does not
 repeat enrollment or clear its unfinished intent. A pending enrollment keeps
 identity setup disabled even after a lock is removed. Unknown outcomes do not
 promise that unlocking or restarting will resolve the enrollment.
+
+### Explicit retry of an existing protected identity
+
+Settings offers **Retry reading the existing identity** when an existing
+provider is unavailable. This action verifies only the existing canonical
+index, persistent item reference, payload digest, key and certificate. It does
+not enroll, create/delete an item, renew a certificate, rewrite the profile,
+clear pending evidence, change an ACL, or enable Keychain interaction. A missing,
+pending or changed original bundle fails closed. Connection status retry then
+reopens the original sealed credential; a denied read leaves the saved
+connection and draft intact and reports `credential_locked`.
+
+On macOS, a changed application can require an explicit per-application grant
+for the **existing item** through the operating system. Apple documents this
+[per-item access control](https://developer.apple.com/documentation/security/access-control-lists)
+and [Keychain Access workflow](https://support.apple.com/en-gb/guide/mac-help/kychn002/26/mac/26).
+Do not select access for all applications or reset, delete or replace the item.
+Unlocking a vault does not itself prove app authorization. The native module
+continues to disable process-wide Keychain UI; this button cannot display an OS
+authorization prompt. An explicit OS grant followed by a successful same-item
+read is one possible acceptance path; a consistently signed Developer ID
+update is another. Neither is inferred from a fixture or from a numeric error.
+A native initialization that was permanently refused requires a new app process
+before another read can be attempted; restarting alone does not promise recovery.
 
 The native backend checks default-Keychain availability before a fresh
 enrollment intent is written and checks again when creating the protected item.

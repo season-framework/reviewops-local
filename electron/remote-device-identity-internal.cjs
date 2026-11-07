@@ -163,6 +163,27 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
       finally {der?.fill(0);bundle?.index.bytes.fill(0);bundle?.certificate?.bytes.fill(0);}
     });
   }
+  // An explicit recovery probe may only read the originally persisted identity.
+  // It has no enrollment, certificate renewal, intent cleanup or ACL capability.
+  async function retryExisting(options) {
+    let guard;
+    try{if(!exact(options,['assertCurrent']))fail('STALE_IDENTITY_REQUEST');const descriptor=Object.getOwnPropertyDescriptor(options,'assertCurrent');
+      if(!descriptor||!Object.hasOwn(descriptor,'value')||typeof descriptor.value!=='function')fail('STALE_IDENTITY_REQUEST');guard=originalGuard(descriptor.value);guard();
+    }catch{fail('STALE_IDENTITY_REQUEST');}
+    return serial(async()=>{
+      let bundle,der,nativeFailure;
+      try {
+        guard();bundle=readBundle(guard);if(!bundle)fail('IDENTITY_NOT_INITIALIZED');
+        if(!bundle.pub)fail('CERTIFICATE_REISSUE_REQUIRED');
+        der=material(bundle.parsed,guard,(error,stage)=>{nativeFailure=captureIdentityDiagnostic({stage,error,mayRemain:true,cleanup:'not-attempted'});});
+        currentBundle(bundle,guard);
+        const identity=certificateValue({certificatePEM:bundle.pub.certificatePEM,identity:{address:bundle.pub.address,keyFingerprint:bundle.pub.keyFingerprint,
+          certificateFingerprint:bundle.pub.certificateFingerprint,validUntil:bundle.pub.validUntil,certificatePEM:bundle.pub.certificatePEM}},der,bundle.pub.address,now);
+        guard();publishPublic({deviceId:bundle.parsed.deviceId,...identity});return state();
+      }catch(error){const code=codeOf(error);if(code==='STALE_IDENTITY_REQUEST')throw error;operationalFailure(code,nativeFailure,bundle,guard);guard();return state();}
+      finally{wipe(der);wipe(bundle?.index?.bytes);wipe(bundle?.certificate?.bytes);}
+    });
+  }
   function metadataFailure(code){throw Object.assign(new Error('The pending metadata observation was refused.'),{code});}
   function metadataReason(error){
     let code='METADATA_UNAVAILABLE',osStatus=null;
@@ -305,6 +326,6 @@ function createIdentityOwner({files,loadNative,tls,ownerCurrent,now=Date.now,uui
       if(!failed){try{files.close();}catch{failed=true;}}if(failed)fail('IDENTITY_UNAVAILABLE');
     })();return closePromise;
   }
-  return Object.freeze({state,initialize,inspectPendingMetadata,acquireServerTLS,publicCertificate,sealCredential,openCredential,closeAndDrain});
+  return Object.freeze({state,initialize,retryExisting,inspectPendingMetadata,acquireServerTLS,publicCertificate,sealCredential,openCredential,closeAndDrain});
 }
 module.exports={createIdentityOwner};

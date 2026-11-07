@@ -28,14 +28,16 @@ function text(value, maximum, required = false) {
 }
 function identifier(value) { if (typeof value !== 'string' || !ID.test(value)) fail('INVALID_COMMAND'); return value; }
 function intent(input) {
-  const row = object(input, ['operation', 'requestId', 'projectId', 'reviewId', 'epoch', 'expectedRevision', 'payload']);
+  const row = object(input, ['operation', 'requestId', 'projectId', 'reviewId', 'epoch', 'expectedProjectBirth', 'expectedReviewGeneration', 'expectedRevision', 'payload']);
   if (!OPERATIONS.has(row.operation) || typeof row.epoch !== 'string' || !EPOCH.test(row.epoch)) fail('INVALID_COMMAND');
   identifier(row.requestId); identifier(row.projectId);
+  if (!Number.isSafeInteger(row.expectedProjectBirth) || row.expectedProjectBirth < 1 ||
+      !Number.isSafeInteger(row.expectedReviewGeneration) || row.expectedReviewGeneration < 0) fail('INVALID_COMMAND');
   if (row.operation === 'review.create') {
-    if (row.reviewId !== '' || row.expectedRevision !== 0) fail('INVALID_COMMAND');
+    if (row.reviewId !== '' || row.expectedRevision !== 0 || row.expectedReviewGeneration !== 0) fail('INVALID_COMMAND');
   } else {
     identifier(row.reviewId);
-    if (!Number.isSafeInteger(row.expectedRevision) || row.expectedRevision < 1) fail('INVALID_COMMAND');
+    if (!Number.isSafeInteger(row.expectedRevision) || row.expectedRevision < 1 || row.expectedReviewGeneration < 1) fail('INVALID_COMMAND');
   }
   let payload;
   if (['review.create', 'review.update'].includes(row.operation)) {
@@ -86,11 +88,13 @@ function createRemoteAppCommands({store, authorize, executeAgent, onCommitted = 
     if (epoch !== row.epoch) fail('STALE_EPOCH');
     const birth = store.db.prepare('SELECT birth FROM peer_project_births WHERE projectId=?').get(row.projectId)?.birth;
     if (!birth || expected && birth !== expected.projectBirth) fail('NOT_FOUND');
+    if (!expected && birth !== row.expectedProjectBirth) fail('STALE_REVIEW');
     if (row.operation === 'review.create' && !expected) return {projectBirth: birth, reviewGeneration: 0, serviceId: null};
     const review = store.db.prepare(`SELECT r.projectId,r.serviceId,v.revision,v.generation,v.deleted
       FROM reviews r JOIN review_revisions v ON v.reviewId=r.id WHERE r.id=?`).get(expected?.reviewId || row.reviewId);
     if (!review || review.deleted || review.projectId !== row.projectId ||
         expected && review.generation !== expected.reviewGeneration) fail('NOT_FOUND');
+    if (!expected && review.generation !== row.expectedReviewGeneration) fail('STALE_REVIEW');
     return {projectBirth: birth, reviewGeneration: review.generation, serviceId: review.serviceId, revision: review.revision};
   }
   function acknowledgement(row) {
@@ -231,14 +235,16 @@ function createRemoteAppCommands({store, authorize, executeAgent, onCommitted = 
       authority(session, query.projectId, 'read');
       const epoch = store.db.prepare('SELECT epoch FROM dataset_meta WHERE singleton=1').get()?.epoch;
       if (typeof epoch !== 'string' || !EPOCH.test(epoch) || !store.db.prepare('SELECT 1 FROM projects WHERE id=?').get(query.projectId)) fail('NOT_FOUND');
-      let revision = 0, status = '';
+      const projectBirth = store.db.prepare('SELECT birth FROM peer_project_births WHERE projectId=?').get(query.projectId)?.birth;
+      if (!Number.isSafeInteger(projectBirth) || projectBirth < 1) fail('NOT_FOUND');
+      let revision = 0, reviewGeneration = 0, status = '';
       if (query.reviewId) {
-        const row = store.db.prepare(`SELECT r.status,v.revision FROM reviews r JOIN review_revisions v ON v.reviewId=r.id
+        const row = store.db.prepare(`SELECT r.status,v.revision,v.generation FROM reviews r JOIN review_revisions v ON v.reviewId=r.id
           WHERE r.id=? AND r.projectId=? AND v.deleted=0`).get(query.reviewId, query.projectId);
         if (!row || !Number.isSafeInteger(row.revision) || row.revision < 1 || !STATUS.has(row.status)) fail('NOT_FOUND');
-        revision = row.revision; status = row.status;
+        revision = row.revision; reviewGeneration = row.generation; status = row.status;
       }
-      return {version: 1, epoch, projectId: query.projectId, reviewId: query.reviewId, revision, status};
+      return {version: 1, epoch, projectId: query.projectId, reviewId: query.reviewId, projectBirth, reviewGeneration, revision, status};
     });
   }
   return Object.freeze({execute, result, writeState});

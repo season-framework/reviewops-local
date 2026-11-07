@@ -97,7 +97,7 @@ test('lost response stays unresolved across manager reopen; NOT_FOUND does not c
   const f = await fixture(t), first = f.manager(), id = await f.pair(first);
   const metadata = await first.writeState({id, projectId: f.project.id, reviewId: f.review.id}, f.guard);
   const envelope = {operation: 'comment.add', requestId: crypto.randomUUID(), projectId: f.project.id, reviewId: f.review.id,
-    epoch: metadata.epoch, expectedRevision: metadata.revision, payload: {body: 'Private prompt text must not be stored in the client ledger'}};
+    epoch: metadata.epoch, expectedProjectBirth: metadata.projectBirth, expectedReviewGeneration: metadata.reviewGeneration, expectedRevision: metadata.revision, payload: {body: 'Private prompt text must not be stored in the client ledger'}};
   f.dropNextResponse(); await assert.rejects(first.command({id, envelope}, f.guard));
   assert.equal(f.store.snapshot().activities.filter(row => row.body === envelope.payload.body).length, 1);
   assert.equal(first.state({}, f.guard).pendingCommands.length, 1);
@@ -137,7 +137,7 @@ test('unresolved command identity retains its original intent and host while a l
   const f = await fixture(t), first = f.manager(), id = await f.pair(first);
   const metadata = await first.writeState({id, projectId: f.project.id, reviewId: f.review.id}, f.guard);
   const envelope = {operation: 'comment.add', requestId: crypto.randomUUID(), projectId: f.project.id, reviewId: f.review.id,
-    epoch: metadata.epoch, expectedRevision: metadata.revision, payload: {body: 'Original ambiguous intent'}};
+    epoch: metadata.epoch, expectedProjectBirth: metadata.projectBirth, expectedReviewGeneration: metadata.reviewGeneration, expectedRevision: metadata.revision, payload: {body: 'Original ambiguous intent'}};
   f.dropNextResponse(); await assert.rejects(first.command({id, envelope}, f.guard));
   const original = first.state({}, f.guard).pendingCommands;
   assert.match(original[0].intentSHA256, /^[a-f0-9]{64}$/);
@@ -153,7 +153,7 @@ test('an explicit pre-admission revision conflict clears the lookup ledger and p
   const metadata = await connections.writeState({id, projectId: f.project.id, reviewId: f.review.id}, f.guard);
   f.store.addActivity({reviewId: f.review.id, body: 'Concurrent local change'});
   const envelope = {operation: 'comment.add', requestId: crypto.randomUUID(), projectId: f.project.id, reviewId: f.review.id,
-    epoch: metadata.epoch, expectedRevision: metadata.revision, payload: {body: 'Draft remains on the client'}};
+    epoch: metadata.epoch, expectedProjectBirth: metadata.projectBirth, expectedReviewGeneration: metadata.reviewGeneration, expectedRevision: metadata.revision, payload: {body: 'Draft remains on the client'}};
   await assert.rejects(connections.command({id, envelope}, f.guard), code('REVISION_CONFLICT'));
   assert.equal(connections.state({}, f.guard).pendingCommands.length, 0);
   assert.equal(f.store.snapshot().activities.filter(row => row.body === envelope.payload.body).length, 0);
@@ -168,4 +168,24 @@ test('saved outgoing credentials refuse symlink or broadly readable profile file
   }
   const original = f.profileFile + '.original'; fs.renameSync(f.profileFile, original); fs.symlinkSync(original, f.profileFile);
   assert.throws(() => f.manager(), code('REMOTE_CONNECTIONS_UNAVAILABLE'));
+});
+
+test('credential denial preserves the exact saved connection and explicit retry restores the original approval',async t=>{
+ const f=await fixture(t),first=f.manager(),id=await f.pair(first),original=first.state({},f.guard).connections[0].remote.id;
+ await first.closeAndDrain();const second=f.manager(),before=fs.readFileSync(f.profileFile);
+ const open=f.identityProvider.openCredential;f.identityProvider.openCredential=async()=>{throw Object.assign(new Error('Controlled denial; not an OS Keychain result'),{code:'IDENTITY_UNAVAILABLE'});};
+ await assert.rejects(second.refresh({id},f.guard),code('IDENTITY_UNAVAILABLE'));
+ assert.equal(second.state({},f.guard).connections[0].state,'credential_locked');assert.deepEqual(fs.readFileSync(f.profileFile),before);
+ f.identityProvider.openCredential=open;
+ const restored=await second.refresh({id},f.guard);assert.equal(restored.remote.id,original);
+ assert.equal(second.state({},f.guard).connections[0].state,'approved');assert.deepEqual(fs.readFileSync(f.profileFile),before);
+});
+test('a failed saved-host replacement cannot erase the original protected credential or endpoint',async t=>{
+ const f=await fixture(t),first=f.manager(),id=await f.pair(first);await first.closeAndDrain();
+ const second=f.manager(),before=JSON.parse(fs.readFileSync(f.profileFile,'utf8')).hosts[0];
+ // An invalid one-use secret fails deterministically without changing the old
+ // enrollment. Production network errors use the same replacement rollback.
+ await assert.rejects(second.connect({...f.connectInput(),id,label:'Replacement label',invitation:'bad'},f.guard),code('INVALID_REQUEST'));
+ const after=JSON.parse(fs.readFileSync(f.profileFile,'utf8')).hosts[0];assert.deepEqual(after,before);
+ assert.equal((await second.refresh({id},f.guard)).remote.state,'approved');
 });

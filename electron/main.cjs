@@ -57,6 +57,7 @@ let remoteRestoreOwner = null;
 const remoteControlFields = Object.freeze({
   'remoteManagement.state': [],
   'remoteManagement.initializeIdentity': ['expectedGeneration', 'address'],
+  'remoteManagement.retryExistingIdentity': ['expectedGeneration'],
   'remoteManagement.exportPublicCertificate': ['expectedGeneration'],
   'remoteManagement.configureWeb': ['expectedGeneration', 'bindAddress', 'port', 'enabled'],
   'remoteManagement.configureApp': ['expectedGeneration', 'bindAddress', 'port', 'enabled'],

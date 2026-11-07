@@ -26,6 +26,8 @@ function fixture(t) {
   };
   const envelope = (operation, payload, requestId = operation.replaceAll('.', '-'), reviewId = review.id) => ({operation, requestId,
     projectId: project.id, reviewId, epoch: store.peerReadDataset().epoch,
+    expectedProjectBirth: store.db.prepare('SELECT birth FROM peer_project_births WHERE projectId=?').get(project.id).birth,
+    expectedReviewGeneration: reviewId ? store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(reviewId).generation : 0,
     expectedRevision: reviewId ? store.db.prepare('SELECT revision FROM review_revisions WHERE reviewId=?').get(reviewId).revision : 0, payload});
   return {group, service, project, other, review, session, authorize, envelope,
     get store() { return store; }, setRights(value) { ({allowed = allowed, write = write, execute = execute} = value); },
@@ -159,4 +161,26 @@ test('host change notification follows the first business commit and excludes re
   f.store.addActivity({reviewId: f.review.id, body: 'Concurrent local save'});
   await assert.rejects(commands.execute(f.session, conflict), code('REVISION_CONFLICT'));
   assert.equal(notifications.length, 2);
+});
+
+test('an original draft cannot target a deleted and recreated review with matching ID and revision', async t => {
+  const f=fixture(t),commands=createRemoteAppCommands({store:f.store,authorize:f.authorize,executeAgent:unreachable});
+  const stale=f.envelope('comment.add',{body:'Do not attach to the replacement'}),original=f.store.get('reviews',f.review.id);
+  f.store.deleteReview(f.review.id);f.store.upsert('reviews',original);
+  const current=commands.writeState(f.session,{projectId:f.project.id,reviewId:f.review.id});
+  // Even if a replacement's revision numerically matches the observed draft,
+  // its monotonic incarnation must reject the original intent before receipts.
+  await assert.rejects(commands.execute(f.session,{...stale,expectedRevision:current.revision}),code('STALE_REVIEW'));
+  assert.notEqual(current.reviewGeneration,stale.expectedReviewGeneration);
+  assert.equal(f.store.snapshot().activities.filter(row=>row.body===stale.payload.body).length,0);
+  assert.equal(f.store.db.prepare('SELECT COUNT(*) AS count FROM remote_app_commands').get().count,0);
+});
+
+test('a create draft cannot follow a project deleted and reinserted in the same epoch', async t => {
+  const f=fixture(t),commands=createRemoteAppCommands({store:f.store,authorize:f.authorize,executeAgent:unreachable});
+  const stale=f.envelope('review.create',{title:'Old project draft',body:'Retained',priority:'normal',category:'ux'},'old-project','');
+  const original={...f.store.db.prepare('SELECT * FROM projects WHERE id=?').get(f.project.id)};
+  f.store.deleteProject(f.project.id);f.store.upsert('projects',original);
+  await assert.rejects(commands.execute(f.session,stale),code('STALE_REVIEW'));
+  assert.equal(f.store.snapshot().reviews.some(row=>row.title==='Old project draft'),false);
 });

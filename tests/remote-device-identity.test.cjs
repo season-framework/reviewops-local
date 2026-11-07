@@ -279,3 +279,34 @@ test('credential operations refuse missing identities, malformed tokens and reti
   const secret=crypto.randomBytes(32).toString('base64url'),pending=f.owner.sealCredential({scope,secret,assertCurrent(){}});
   f.setCurrent(false);await assert.rejects(pending,isCode('STALE_IDENTITY_REQUEST'));await f.owner.closeAndDrain();
 });
+
+test('explicit existing-identity retry recovers a readable original reference without enrollment or writes',async()=>{
+ const f=await enrolled(),original=f.owner.publicCertificate(),before=storedBytes(f);
+ f.n.native.readError={code:'ITEM_READ_FAILED',osStatus:-25293};
+ const denied=await f.owner.retryExisting({assertCurrent:f.request(A).assertCurrent});
+ assert.equal(denied.status,'unavailable');assert.equal(denied.diagnostic.osStatus,-25293);
+ f.n.native.readError=null;const recovered=await f.owner.retryExisting({assertCurrent:f.request(A).assertCurrent});
+ assert.equal(recovered.status,'ready');assert.equal(recovered.identity.deviceId,original.deviceId);
+ assert.equal(recovered.identity.keyFingerprint,original.keyFingerprint);assert.equal(f.n.calls.create,1);
+ assert.deepEqual(storedBytes(f),before);assert.equal(f.counts().certificateCalls,1);assert.equal(f.counts().reissueCalls,0);
+ await f.owner.closeAndDrain();
+});
+test('existing-identity retry on absent or pending profile never creates a new identity',async()=>{
+ const f=fixture();assert.equal((await f.owner.retryExisting({assertCurrent:f.request(A).assertCurrent})).status,'not_initialized');
+ assert.equal(f.files.store.exists,false);assert.equal(f.n.calls.create,0);assert.equal(f.counts().certificateCalls,0);
+ await f.owner.closeAndDrain();
+ const pending=fixture();pending.n.native.createError={code:'ITEM_CREATE_FAILED',osStatus:-25293};await pending.owner.initialize(pending.request(A));
+ const before=storedBytes(pending),creates=pending.n.calls.create;
+ assert.equal((await pending.owner.retryExisting({assertCurrent:pending.request(A).assertCurrent})).status,'pending');
+ assert.equal(pending.n.calls.create,creates);assert.deepEqual(storedBytes(pending),before);await pending.owner.closeAndDrain();
+});
+
+
+test('existing-identity retry rejects accessor and retired owners before protected operations',async()=>{
+ const f=await enrolled(),reads=f.n.calls.read;let accessed=0;
+ const value={};Object.defineProperty(value,'assertCurrent',{enumerable:true,get(){accessed++;return()=>{};}});
+ await assert.rejects(f.owner.retryExisting(value),isCode('STALE_IDENTITY_REQUEST'));
+ assert.equal(accessed,0);assert.equal(f.n.calls.read,reads);
+ f.setCurrent(false);await assert.rejects(f.owner.retryExisting({assertCurrent(){}}),isCode('STALE_IDENTITY_REQUEST'));
+ assert.equal(f.n.calls.read,reads);await f.owner.closeAndDrain();
+});

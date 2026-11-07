@@ -1,5 +1,6 @@
 import React,{useEffect,useRef,useState} from 'react';
 import {t,useLocale} from './i18n/index.js';
+import {readObservedReview,observedCommand,sameWriteObservation,captureWriteObservation} from './remote/write-observation.mjs';
 import {uploadRemoteAttachment,downloadRemoteAttachment,captureTimelineAttachment,REMOTE_FILE_BYTES} from './remote/attachments.mjs';
 
 export default function RemoteAppConnections({invoke,active=true}){
@@ -10,24 +11,26 @@ export default function RemoteAppConnections({invoke,active=true}){
  const [detail,setDetail]=useState(null),[timeline,setTimeline]=useState(null),[editor,setEditor]=useState({title:'',body:'',priority:'normal',category:'ux'});
  const [comment,setComment]=useState(''),[prompt,setPrompt]=useState(''),[followup,setFollowup]=useState(null),[pendingCommand,setPendingCommand]=useState(null);
  const [uploadFile,setUploadFile]=useState(null),[uploadActivity,setUploadActivity]=useState(''),[transfer,setTransfer]=useState(null),[pendingUploads,setPendingUploads]=useState([]);
+ const [observed,setObserved]=useState(null),[freshness,setFreshness]=useState({at:null,stale:true}),[draftConflict,setDraftConflict]=useState(false);
+ const observedRef=useRef(null);
  const alive=useRef(true),pending=useRef(false);
  const selection=useRef(null),fileInput=useRef(null);selection.current={id:selected,projectId,reviewId,active};
  const drafts=useRef(new Map()),draftKey=[selected,projectId,reviewId].join(':');
- const saveDraft=patch=>drafts.current.set(draftKey,{...(drafts.current.get(draftKey)||{}),...patch});
- const editReview=patch=>setEditor(previous=>{const value={...previous,...patch};saveDraft({editor:value});return value;});
- useEffect(()=>{const draft=drafts.current.get(draftKey);setEditor(draft?.editor||{title:'',body:'',priority:'normal',category:'ux'});setComment(draft?.comment||'');setPrompt(draft?.prompt||'');setUploadFile(null);setUploadActivity('');setTransfer(null);},[draftKey]);
+ const saveDraft=patch=>{const draft={...(drafts.current.get(draftKey)||{}),...patch};if(!draft.editor&&!draft.comment&&!draft.prompt)drafts.current.delete(draftKey);else drafts.current.set(draftKey,draft);};
+ const editReview=patch=>setEditor(previous=>{const value={...previous,...patch};saveDraft({editor:value,binding:drafts.current.get(draftKey)?.binding||observedRef.current});return value;});
+ useEffect(()=>{const draft=drafts.current.get(draftKey);setEditor(draft?.editor||{title:'',body:'',priority:'normal',category:'ux'});setComment(draft?.comment||'');setPrompt(draft?.prompt||'');setUploadFile(null);setUploadActivity('');setTransfer(null);observedRef.current=null;setObserved(null);setDraftConflict(false);setFreshness({at:null,stale:true});},[draftKey]);
  useEffect(()=>{alive.current=true;return()=>{alive.current=false}},[]);
  const state=async()=>{
   const result=await invoke('remoteApp.state');if(!Array.isArray(result?.connections)||!Array.isArray(result.pendingCommands))throw new Error();
   if(alive.current){setHosts(result.connections);setPendingCommand(current=>{
    const saved=result.pendingCommands.find(row=>row.id===current?.id&&row.requestId===current?.envelope?.requestId)||result.pendingCommands[0];
-   return saved?{id:saved.id,envelope:{requestId:saved.requestId,epoch:saved.epoch,projectId:saved.projectId,operation:saved.operation}}:null;
+   return saved?current?.id===saved.id&&current?.envelope?.requestId===saved.requestId?current:{id:saved.id,envelope:{requestId:saved.requestId,epoch:saved.epoch,projectId:saved.projectId,operation:saved.operation}}:null;
   });setPendingUploads(Array.isArray(result.pendingUploads)?result.pendingUploads:[]);}
  };
  const perform=async(action)=>{
   if(pending.current||!active)return;pending.current=true;setBusy(true);setError('');setMessage('');
   try{await action();await state();}
-  catch(cause){if(alive.current)setError(t('원격 요청을 완료하지 못했습니다. 연결과 권한을 확인하십시오. ({0})',[typeof cause?.code==='string'?cause.code:'CONNECTION_UNAVAILABLE']));
+  catch(cause){if(alive.current){setFreshness(previous=>({...previous,stale:true}));setError(t('원격 요청을 완료하지 못했습니다. 연결과 권한을 확인하십시오. ({0})',[typeof cause?.code==='string'?cause.code:'CONNECTION_UNAVAILABLE']));}
    // A lost reply can still have a durable host result. Refresh the main-owned
    // request ledger before offering another upload or command.
    try{await state();}catch{}
@@ -45,33 +48,80 @@ export default function RemoteAppConnections({invoke,active=true}){
    setForm(previous=>({...previous,certificatePEM:pem,certificateFingerprint:fingerprint}));setVerified(false);
   }catch{setError(t('공개 인증서를 읽지 못했습니다. 작업 PC에서 내보낸 인증서를 선택하십시오.'));}
  };
- const host=hosts.find(row=>row.id===selected),grant=host?.remote?.grants?.find(row=>row.projectId===projectId);
+ const host=hosts.find(row=>row.id===selected),grant=host?.state==='approved'?host?.remote?.grants?.find(row=>row.projectId===projectId):null;
  const read=(operation,payload)=>invoke('remoteApp.read',{id:selected,operation,payload});
  const loadProjects=()=>perform(async()=>{await invoke('remoteApp.refresh',{id:selected});const value=await read('projects.list',{});setProjects(value.projects);});
- const loadReviews=()=>perform(async()=>{const value=await read('reviews.list',{projectId});setReviews(value.reviews);});
+ const loadReviews=()=>perform(async()=>{const {original,assertCurrent}=viewOwner();const value=await read('reviews.list',{projectId});assertCurrent();setReviews(value.reviews);if(!original.reviewId)await loadCreateState(original,assertCurrent);});
+ const viewOwner=()=>{
+  const original={id:selected,projectId,reviewId},key=draftKey;
+  const assertCurrent=()=>{const current=selection.current;if(!alive.current||!current.active||
+   current.id!==original.id||current.projectId!==original.projectId||current.reviewId!==original.reviewId)
+   throw Object.assign(new Error(),{code:'STALE_REMOTE_VIEW'});};
+  assertCurrent();return {original,key,assertCurrent};
+ };
+ const loadCreateState=async(original,assertCurrent)=>{
+  const target={projectId:original.projectId,reviewId:''},binding=captureWriteObservation(await invoke('remoteApp.writeState',{id:original.id,...target}),target);assertCurrent();
+  observedRef.current=binding;setObserved(binding);const draft=drafts.current.get([original.id,original.projectId,''].join(':'));
+  setDraftConflict(Boolean(draft?.binding&&!sameWriteObservation(draft.binding,binding)));setFreshness({at:Date.now(),stale:false});
+ };
  const loadDetail=async()=>{
-  const value=await read('reviews.get',{projectId,reviewId}),history=await read('reviews.timeline',{projectId,reviewId});
-  setDetail(value.review);setTimeline(history);if(!drafts.current.get(draftKey)?.editor)setEditor(({title:value.review.title,body:value.review.body,priority:value.review.priority,category:value.review.category}));
+  const {original,key,assertCurrent}=viewOwner();
+  const result=await readObservedReview({projectId:original.projectId,reviewId:original.reviewId,assertCurrent,
+   writeState:payload=>invoke('remoteApp.writeState',{id:original.id,...payload}),
+   read:(operation,payload)=>invoke('remoteApp.read',{id:original.id,operation,payload})});
+  assertCurrent();observedRef.current=result.binding;setObserved(result.binding);setDetail(result.review);setTimeline(result.timeline);
+  const draft=drafts.current.get(key);setDraftConflict(Boolean(draft?.binding&&!sameWriteObservation(draft.binding,result.binding)));
+  if(!draft?.editor)setEditor(({title:result.review.title,body:result.review.body,priority:result.review.priority,category:result.review.category}));
+  setFreshness({at:Date.now(),stale:false});return result;
+ };
+ const refreshView=async()=>{
+  const {original,assertCurrent}=viewOwner();await invoke('remoteApp.refresh',{id:original.id});assertCurrent();
+  const value=await invoke('remoteApp.read',{id:original.id,operation:'projects.list',payload:{}});assertCurrent();setProjects(value.projects);
+  if(original.projectId){const value=await invoke('remoteApp.read',{id:original.id,operation:'reviews.list',payload:{projectId:original.projectId}});assertCurrent();setReviews(value.reviews);}
+  if(original.reviewId)await loadDetail();else if(original.projectId)await loadCreateState(original,assertCurrent);else setFreshness({at:Date.now(),stale:false});
+ };
+ // A background read never sends a mutation or substitutes a fresh revision for
+ // a draft. Selection ownership is checked after every asynchronous boundary.
+ useEffect(()=>{
+  if(!active||!selected)return;let retired=false;
+  const refresh=async()=>{if(retired||pending.current)return;pending.current=true;setBusy(true);
+   try{await refreshView();if(!retired)await state();}
+   catch{if(!retired&&alive.current){setFreshness(previous=>({...previous,stale:true}));try{await state();}catch{}}}
+   finally{pending.current=false;if(alive.current)setBusy(false);}
+  };
+  const timer=setInterval(refresh,15000);return()=>{retired=true;clearInterval(timer);};
+ },[active,selected,projectId,reviewId,invoke]);
+ const finishCommand=async(record,value)=>{
+  if(value.state==='pending'){setMessage(t('처리 결과를 기다리고 있습니다. 요청을 다시 실행하지 마십시오.'));return;}
+  if(value.state!=='completed')throw Object.assign(new Error(),{code:value.errorCode||'COMMAND_FAILED'});
+  setPendingCommand(null);if(value.result?.followupId)setFollowup(value.result.followupId);
+  // Clear only the exact submitted draft after its durable success. A lost
+  // reply followed by result lookup takes this same path and cannot resend it.
+  if(record.key&&record.payload){const draft=drafts.current.get(record.key);
+   if(record.envelope.operation==='comment.add'&&draft?.comment===record.payload.body){draft.comment='';if(record.key===draftKey)setComment('');}
+   if(['agent.start','agent.followup'].includes(record.envelope.operation)&&draft?.prompt===record.payload.prompt){draft.prompt='';if(record.key===draftKey)setPrompt('');}
+   if(record.envelope.operation==='agent.followup.start')setFollowup(null);
+   if(['review.create','review.update'].includes(record.envelope.operation)&&draft?.editor&&JSON.stringify(draft.editor)===JSON.stringify(record.payload))delete draft.editor;
+   if(draft&&!draft.editor&&!draft.comment&&!draft.prompt)drafts.current.delete(record.key);
+  }
+  setMessage(t('작업 PC에서 요청을 처리했습니다. 결과를 새로고침하여 확인하십시오.'));
+  if(record.id===selected&&reviewId)await loadDetail();
  };
  const command=(operation,payload)=>perform(async()=>{
   if(pendingCommand)throw Object.assign(new Error(),{code:'UNRESOLVED_COMMAND'});
-  const revision=await invoke('remoteApp.writeState',{id:selected,projectId,reviewId:operation==='review.create'?'':reviewId});
-  const envelope={operation,requestId:crypto.randomUUID(),projectId,reviewId:operation==='review.create'?'':reviewId,epoch:revision.epoch,expectedRevision:operation==='review.create'?0:revision.revision,payload};
-  setPendingCommand({id:selected,envelope});
+  const {original,key,assertCurrent}=viewOwner(),draft=drafts.current.get(key);
+  const binding=draft?.binding||observedRef.current;
+  assertCurrent();const envelope=observedCommand({operation,requestId:crypto.randomUUID(),projectId,reviewId,payload,binding});
+  const record={id:original.id,envelope,key,payload};setPendingCommand(record);
   let value;
-  try{value=await invoke('remoteApp.command',{id:selected,envelope});}
-  catch(cause){if(['INVALID_COMMAND','REVISION_CONFLICT'].includes(cause?.code))setPendingCommand(null);throw cause;}
-  if(value.state!=='pending')setPendingCommand(null);
-  if(value.result?.followupId)setFollowup(value.result.followupId);
-  if(['review.create','review.update'].includes(operation)){const draft=drafts.current.get(draftKey);if(draft)delete draft.editor;}
-  setMessage(t('작업 PC에서 요청을 처리했습니다. 결과를 새로고침하여 확인하십시오.'));
-  if(operation==='comment.add'){setComment('');saveDraft({comment:''});}
+  try{value=await invoke('remoteApp.command',{id:original.id,envelope});}
+  catch(cause){if(['INVALID_COMMAND','REVISION_CONFLICT','STALE_REVIEW'].includes(cause?.code))setPendingCommand(null);if(['REVISION_CONFLICT','STALE_REVIEW'].includes(cause?.code))setDraftConflict(true);throw cause;}
+  assertCurrent();await finishCommand(record,value);
  });
  const checkResult=()=>perform(async()=>{
-  const {id,envelope}=pendingCommand;
+  const record=pendingCommand,{id,envelope}=record;
   const value=await invoke('remoteApp.result',{id,requestId:envelope.requestId,epoch:envelope.epoch,projectId:envelope.projectId});
-  if(value.state!=='pending')setPendingCommand(null);
-  setMessage(value.state==='pending'?t('처리 결과를 기다리고 있습니다. 요청을 다시 실행하지 마십시오.'):t('작업 PC의 저장된 처리 결과를 확인했습니다.'));
+  await finishCommand(record,value);
  });
  const transferOwner=()=>{
   const original=Object.freeze({id:selected,projectId,reviewId});
@@ -127,7 +177,7 @@ export default function RemoteAppConnections({invoke,active=true}){
    <button className="button primary" type="submit" disabled={busy||!verified}>{t('원격 접속 추가')}</button>
   </form>
   <h3>{t('저장한 원격 연결')}</h3>{!hosts.length&&<p>{t('저장한 연결이 없습니다.')}</p>}
-  {hosts.map(row=><div className="remote-host" key={row.id}><strong>{row.label}</strong><p>{row.address}:{row.port} · {row.state}</p><code>{row.certificateFingerprint}</code><div>
+  {hosts.map(row=><div className="remote-host" key={row.id}><strong>{row.label}</strong><p>{row.address}:{row.port} · {row.state}</p>{row.state==='credential_locked'&&<p role="alert">{t('저장한 연결의 보안 자격 증명을 읽지 못했습니다. 기존 연결은 보존했습니다. 운영체제 보안 저장소의 잠금과 앱 접근 권한을 확인한 뒤 연결 상태를 다시 확인하십시오.')}</p>}{row.errorCode&&<code>{row.errorCode}</code>}<code>{row.certificateFingerprint}</code><div>
    <button type="button" className="button" disabled={busy} onClick={()=>{setSelected(row.id);setProjects([]);setReviews([]);setProjectId('');setReviewId('');setDetail(null);setTimeline(null);}}>{t('이 원격 PC 선택')}</button>
    <button type="button" className="button" disabled={busy} onClick={()=>perform(()=>invoke('remoteApp.refresh',{id:row.id}))}>{t('연결 상태 확인')}</button>
    <button type="button" className="button" disabled={busy} onClick={()=>perform(()=>invoke('remoteApp.disconnect',{id:row.id}))}>{t('연결 해제')}</button>
@@ -142,7 +192,7 @@ export default function RemoteAppConnections({invoke,active=true}){
     })}>{t('임시 전송 취소')}</button>}
    </div>)}
   </section>}
-  {host&&<div className="remote-host"><h3>{t('원격 작업 공간: {0}',[host.label])}</h3><p>{host.address}:{host.port}</p>
+  {host&&<div className="remote-host"><h3>{t('원격 작업 공간: {0}',[host.label])}</h3><p>{host.address}:{host.port}</p><p role="status">{freshness.stale?t('연결 또는 최신 상태를 확인하지 못했습니다. 저장된 화면과 초안을 보존하고 있습니다.'):t('마지막 확인: {0} · 15초마다 자동 새로고침',[new Date(freshness.at).toLocaleTimeString()])}</p>{draftConflict&&<section aria-label={t('원격 변경과 초안 비교')}><p role="alert">{t('초안을 작성한 뒤 작업 PC의 리뷰가 바뀌었습니다. 초안을 보존했습니다. 최신 내용과 비교한 뒤 새로 작성하십시오.')}</p><h4>{freshness.stale?t('마지막으로 확인한 내용'):t('작업 PC의 최신 내용')}</h4><p>{detail?.title}</p><pre className="user-text">{detail?.body}</pre><button className="button" type="button" disabled={busy||!observed||freshness.stale} onClick={()=>{const draft=drafts.current.get(draftKey);if(draft)drafts.current.set(draftKey,{...draft,binding:observed});setDraftConflict(false);}}>{t('최신 내용을 확인하고 현재 초안 유지')}</button></section>}
    <button type="button" className="button" disabled={busy} onClick={loadProjects}>{t('공유 프로젝트 불러오기')}</button>
    <label>{t('원격 프로젝트')}<select value={projectId} disabled={busy} onChange={event=>{setProjectId(event.target.value);setReviewId('');setReviews([]);setDetail(null);setTimeline(null);}}><option value="">{t('프로젝트 선택')}</option>{projects.map(row=><option key={row.id} value={row.id}>{row.name}</option>)}</select></label>
    <button type="button" className="button" disabled={busy||!projectId} onClick={loadReviews}>{t('리뷰 불러오기')}</button>
@@ -165,12 +215,12 @@ export default function RemoteAppConnections({invoke,active=true}){
     </fieldset>
    </section>}
    {pendingCommand&&<div role="status"><p>{t('처리 결과가 확인되지 않은 요청이 있습니다. 새 요청을 보내지 말고 저장된 결과를 확인하십시오.')}</p><button type="button" className="button" disabled={busy} onClick={checkResult}>{t('요청 결과 확인')}</button></div>}
-   <fieldset disabled={busy||!grant?.write||Boolean(pendingCommand)}><legend>{t('원격 리뷰 작성')}</legend><label>{t('제목')}<input value={editor.title} onChange={event=>editReview({title:event.target.value})} maxLength={300}/></label><label>{t('내용')}<textarea value={editor.body} onChange={event=>editReview({body:event.target.value})} maxLength={100000}/></label>
+   <fieldset disabled={busy||!grant?.write||Boolean(pendingCommand)||!observed}><legend>{t('원격 리뷰 작성')}</legend><label>{t('제목')}<input value={editor.title} onChange={event=>editReview({title:event.target.value})} maxLength={300}/></label><label>{t('내용')}<textarea value={editor.body} onChange={event=>editReview({body:event.target.value})} maxLength={100000}/></label>
     <button className="button primary" type="button" disabled={!projectId||!editor.title.trim()} onClick={()=>command(reviewId?'review.update':'review.create',editor)}>{reviewId?t('원격 리뷰 수정'):t('원격 리뷰 등록')}</button>
     {detail&&<label>{t('상태 변경')}<select value={detail.status} onChange={event=>command('review.status.set',{status:event.target.value})}>{['open','in_progress','in_review','resolved','recheck','closed'].map(status=><option key={status}>{status}</option>)}</select></label>}
-    <label>{t('댓글')}<textarea value={comment} onChange={event=>{setComment(event.target.value);saveDraft({comment:event.target.value});}} maxLength={100000}/></label><button type="button" className="button" disabled={!reviewId||!comment.trim()} onClick={()=>command('comment.add',{body:comment})}>{t('원격 댓글 저장')}</button>
+    <label>{t('댓글')}<textarea value={comment} onChange={event=>{setComment(event.target.value);saveDraft({comment:event.target.value,binding:drafts.current.get(draftKey)?.binding||observedRef.current});}} maxLength={100000}/></label><button type="button" className="button" disabled={!reviewId||!comment.trim()} onClick={()=>command('comment.add',{body:comment})}>{t('원격 댓글 저장')}</button>
    </fieldset>
-   <fieldset disabled={busy||!grant?.execute||!reviewId||Boolean(pendingCommand)}><legend>{t('작업 PC의 에이전트 제어')}</legend><label>{t('작업 요청')}<textarea value={prompt} onChange={event=>{setPrompt(event.target.value);saveDraft({prompt:event.target.value});}} maxLength={100000}/></label><button type="button" className="button primary" disabled={!prompt.trim()} onClick={()=>command('agent.start',{prompt})}>{t('작업 PC에서 실행')}</button><button type="button" className="button" disabled={!prompt.trim()} onClick={()=>command('agent.followup',{prompt})}>{t('후속 요청 저장')}</button>{followup&&<button type="button" className="button" onClick={()=>command('agent.followup.start',{followupId:followup})}>{t('후속 요청 실행')}</button>}
+   <fieldset disabled={busy||!grant?.execute||!reviewId||!observed||Boolean(pendingCommand)}><legend>{t('작업 PC의 에이전트 제어')}</legend><label>{t('작업 요청')}<textarea value={prompt} onChange={event=>{setPrompt(event.target.value);saveDraft({prompt:event.target.value,binding:drafts.current.get(draftKey)?.binding||observedRef.current});}} maxLength={100000}/></label><button type="button" className="button primary" disabled={!prompt.trim()} onClick={()=>command('agent.start',{prompt})}>{t('작업 PC에서 실행')}</button><button type="button" className="button" disabled={!prompt.trim()} onClick={()=>command('agent.followup',{prompt})}>{t('후속 요청 저장')}</button>{followup&&<button type="button" className="button" onClick={()=>command('agent.followup.start',{followupId:followup})}>{t('후속 요청 실행')}</button>}
     {timeline?.agentRuns.map(run=><div key={run.id}><p>{run.status}</p>{['queued','running'].includes(run.status)&&<button className="button" type="button" onClick={()=>command('agent.stop',{runId:run.id})}>{t('이 작업 중지')}</button>}<pre className="user-text">{run.response}</pre></div>)}
    </fieldset>
    {timeline&&<section><h3>{t('원격 작업 이력')}</h3>{timeline.activities.map(row=><article key={row.id}><p>{row.type} · {row.createdAt}</p><pre className="user-text">{row.body}</pre></article>)}</section>}

@@ -34,6 +34,8 @@ async function fixture(t, executeAgent = () => { throw new Error('Unexpected hos
   });
   const command = (operation, payload, requestId = operation.replaceAll('.', '-')) => ({operation, requestId,
     projectId: project.id, reviewId: review.id, epoch: store.peerReadDataset().epoch,
+    expectedProjectBirth: store.db.prepare('SELECT birth FROM peer_project_births WHERE projectId=?').get(project.id).birth,
+    expectedReviewGeneration: store.db.prepare('SELECT generation FROM review_revisions WHERE reviewId=?').get(review.id).generation,
     expectedRevision: store.db.prepare('SELECT revision FROM review_revisions WHERE reviewId=?').get(review.id).revision, payload});
   return {store, service, project, other, review, generated, listener, port, client, command};
 }
@@ -175,7 +177,7 @@ test('approved app token hashes and original principal survive host reopen; the 
   first.listener.approve({id: pending.id, grants: [{projectId: project.id, read: true, write: true, execute: false}]});
   const metadata = await client.writeState({projectId: project.id, reviewId: review.id});
   const command = {operation: 'comment.add', requestId: 'durable-over-https', projectId: project.id, reviewId: review.id,
-    epoch: metadata.epoch, expectedRevision: metadata.revision, payload: {body: 'Created before host restart'}};
+    epoch: metadata.epoch, expectedProjectBirth: metadata.projectBirth, expectedReviewGeneration: metadata.reviewGeneration, expectedRevision: metadata.revision, payload: {body: 'Created before host restart'}};
   const original = await client.command(command);
   const file = fs.readFileSync(path.join(directory, 'access', 'approved-apps.json'), 'utf8');
   assert.equal(file.includes(savedToken), false); assert.match(savedToken, /^[A-Za-z0-9_-]{43}$/);

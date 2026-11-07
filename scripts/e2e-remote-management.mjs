@@ -25,7 +25,7 @@ fs.mkdirSync(path.join(dataPath,'updates'),{recursive:true});
 fs.writeFileSync(path.join(dataPath,'updates/settings.json'),JSON.stringify({automatic:false,intervalMinutes:10}));
 const require=createRequire(import.meta.url),{createStore}=require('../electron/store.cjs');
 const fixture=createStore({dbPath:path.join(dataPath,'reviewops.sqlite')});
-const withAttachments=process.argv.includes('--attachments');
+const withAttachments=process.argv.includes('--attachments'),integration=process.argv.includes('--integration');
 const uploadBytes=withAttachments?Buffer.alloc(131089,0xa7):null,uploadPath=path.join(temporary,'owned-upload.txt');
 let project,review,ordinaryComment;
 try {
@@ -157,7 +157,7 @@ try {
   await outgoing.getByRole('button',{name:'공유 프로젝트 불러오기',exact:true}).click();
   await outgoing.getByRole('combobox',{name:'원격 프로젝트',exact:true}).selectOption(project.id);await outgoing.getByRole('button',{name:'리뷰 불러오기',exact:true}).click();
   await outgoing.getByRole('combobox',{name:'원격 리뷰',exact:true}).selectOption(review.id);await outgoing.getByRole('button',{name:'상세·작업 결과 새로고침',exact:true}).click();
-  await expect(outgoing.getByLabel('댓글',{exact:true})).toBeEnabled();await outgoing.getByLabel('댓글',{exact:true}).fill('Actual self-connected comment');
+  await expect(outgoing.getByRole('textbox',{name:'댓글',exact:true})).toBeEnabled();await outgoing.getByRole('textbox',{name:'댓글',exact:true}).fill('Actual self-connected comment');
   await outgoing.getByRole('button',{name:'원격 댓글 저장',exact:true}).click();
   await expect(outgoing.getByText('작업 PC에서 요청을 처리했습니다. 결과를 새로고침하여 확인하십시오.',{exact:true})).toBeVisible();
   await outgoing.getByRole('button',{name:'상세·작업 결과 새로고침',exact:true}).click();
@@ -184,6 +184,67 @@ try {
     assert.equal(createHash('sha256').update(fs.readFileSync(destination)).digest('hex'),saved[0].sha256);
     await screenshot('app-verified-attachment-roundtrip.png',attachments);
     checks.push('Explicit app download verified the whole original metadata/SHA-256 and saved byte-exact content.');
+  }
+  if(integration){
+    // Real renderer + HTTPS + Store. The competing write is an ordinary local
+    // IPC edit in this owned source app, not another physical computer.
+    await outgoing.getByRole('textbox',{name:'제목',exact:true}).fill('Original remote draft retained');
+    await outgoing.getByRole('group',{name:'원격 리뷰 작성',exact:true}).locator('textarea').first().fill('Do not silently overwrite a concurrent host edit');
+    await ipc('review.save',{id:review.id,title:'Concurrent host saved first',body:'Latest host body must survive the old draft'});
+    await outgoing.getByRole('button',{name:'원격 리뷰 수정',exact:true}).click();
+    await expect(outgoing.getByRole('alert').first()).toContainText('REVISION_CONFLICT');
+    assert.equal((await ipc('snapshot')).reviews.find(row=>row.id===review.id).title,'Concurrent host saved first');
+    await expect(outgoing.getByRole('textbox',{name:'제목',exact:true})).toHaveValue('Original remote draft retained');
+    await outgoing.getByRole('button',{name:'상세·작업 결과 새로고침',exact:true}).click();
+    const comparison=outgoing.getByRole('region',{name:'원격 변경과 초안 비교',exact:true});
+    await expect(comparison).toContainText('Latest host body must survive the old draft');
+    await screenshot('concurrent-host-edit-draft-preserved.png',comparison);
+    await comparison.getByRole('button',{name:'최신 내용을 확인하고 현재 초안 유지',exact:true}).click();
+    await outgoing.getByRole('button',{name:'원격 리뷰 수정',exact:true}).click();
+    await expect(outgoing.getByRole('button',{name:'원격 리뷰 수정',exact:true})).toBeEnabled();
+    assert.equal((await ipc('snapshot')).reviews.find(row=>row.id===review.id).title,'Original remote draft retained');
+    checks.push('Actual UI stale draft rejected after an ordinary competing host edit; comparison preserves input and only explicit review rebases it.');
+    await outgoing.getByRole('textbox',{name:'댓글',exact:true}).fill('One comment after a controlled HTTPS response loss');
+    await application.evaluate(()=>{
+      const https=process.mainModule.require('node:https'),original=https.request;let drop=true;
+      global.__ownedRemoteRequestRestore=()=>{https.request=original;delete global.__ownedRemoteRequestRestore;};
+      https.request=function(options,callback){const lose=drop&&options.path==='/api/app/command';if(lose)drop=false;
+        return original.call(this,options,response=>{if(lose)response.once('data',()=>response.destroy(Object.assign(new Error('Owned controlled HTTPS response loss'),{code:'ECONNRESET'})));callback(response);});};
+    });
+    try{
+      await outgoing.getByRole('button',{name:'원격 댓글 저장',exact:true}).click();
+      await expect(outgoing.getByRole('button',{name:'요청 결과 확인',exact:true})).toBeEnabled();
+      await expect(outgoing.getByRole('textbox',{name:'댓글',exact:true})).toHaveValue('One comment after a controlled HTTPS response loss');
+      await screenshot('lost-reply-original-result-lookup.png',outgoing.getByRole('button',{name:'요청 결과 확인',exact:true}));
+      await outgoing.getByRole('button',{name:'요청 결과 확인',exact:true}).click();
+      await expect(outgoing.getByRole('button',{name:'요청 결과 확인',exact:true})).toHaveCount(0);
+      await expect(outgoing.getByRole('textbox',{name:'댓글',exact:true})).toHaveValue('');
+      assert.equal((await ipc('snapshot')).activities.filter(row=>row.body==='One comment after a controlled HTTPS response loss').length,1);
+    }finally{await application.evaluate(()=>global.__ownedRemoteRequestRestore?.());}
+    checks.push('Controlled loss of the actual HTTPS reply preserves one original pending request and input; exact durable result clears the successful comment without resending.');
+    await outgoing.getByRole('textbox',{name:'댓글',exact:true}).fill('Draft survives disconnected host and reconnect');
+    let current=await ipc('remoteManagement.state');await ipc('remoteManagement.configureApp',{expectedGeneration:current.generation,enabled:false,bindAddress:'127.0.0.1',port:appPort});
+    await expect(outgoing.getByText('연결 또는 최신 상태를 확인하지 못했습니다. 저장된 화면과 초안을 보존하고 있습니다.',{exact:true})).toBeVisible({timeout:22000});
+    await expect(outgoing.getByRole('textbox',{name:'댓글',exact:true})).toHaveValue('Draft survives disconnected host and reconnect');
+    await expect(outgoing.getByRole('button',{name:'원격 댓글 저장',exact:true})).toBeDisabled();
+    await screenshot('disconnected-host-draft-retained.png',outgoing.getByRole('textbox',{name:'댓글',exact:true}));
+    current=await ipc('remoteManagement.state');await ipc('remoteManagement.configureApp',{expectedGeneration:current.generation,enabled:true,bindAddress:'127.0.0.1',port:appPort});
+    await expect(outgoing.getByRole('button',{name:'원격 댓글 저장',exact:true})).toBeEnabled({timeout:22000});
+    await expect(outgoing.getByRole('textbox',{name:'댓글',exact:true})).toHaveValue('Draft survives disconnected host and reconnect');
+    await outgoing.getByRole('textbox',{name:'댓글',exact:true}).fill('');
+    await ipc('review.save',{id:review.id,title:'Automatically reflected host title',body:'Auto refresh reads the latest host body'});
+    await expect(outgoing.getByRole('textbox',{name:'제목',exact:true})).toHaveValue('Automatically reflected host title',{timeout:22000});
+    await screenshot('reconnected-automatic-host-refresh.png',outgoing.getByRole('textbox',{name:'제목',exact:true}));
+    checks.push('Actual listener interruption disables writes while preserving input; original saved connection reconnects and automatic polling reflects a later ordinary host edit.');
+    await outgoing.getByRole('combobox',{name:'원격 리뷰',exact:true}).selectOption('');
+    await outgoing.getByRole('button',{name:'리뷰 불러오기',exact:true}).click();
+    await outgoing.getByRole('textbox',{name:'제목',exact:true}).fill('Observed project new review');
+    await outgoing.getByRole('group',{name:'원격 리뷰 작성',exact:true}).locator('textarea').first().fill('Creation bound to the observed project incarnation');
+    await outgoing.getByRole('button',{name:'원격 리뷰 등록',exact:true}).click();
+    await expect(outgoing.getByRole('button',{name:'원격 리뷰 등록',exact:true})).toBeEnabled();
+    assert.equal((await ipc('snapshot')).reviews.filter(row=>row.projectId===project.id&&row.title==='Observed project new review').length,1);
+    checks.push('Actual UI creates one new review only after observing the selected project binding.');
+
   }
   await section('앱 기기와 프로젝트 권한').getByRole('button',{name:'앱 승인 취소·연결 해제',exact:true}).click();
   await outgoing.getByRole('button',{name:'연결 상태 확인',exact:true}).click();await expect(outgoing.getByRole('alert')).toBeVisible();
@@ -216,7 +277,7 @@ try {
     await application.evaluate(({app})=>{app.quit();}).catch(()=>{});await exited;
     if(originalExit?.code!==0||originalExit?.signal!==null){cleanupError||='ORIGINAL_EXIT_UNCONFIRMED';process.exitCode=1;}
   }
-  const result={ok:checks.length===(withAttachments?8:5)&&identityCleaned&&cleanupError===null,checks,rendererErrors,identityCleaned,cleanupError,originalExit,output,
+  const result={ok:checks.length===(withAttachments?8:5)+(integration?4:0)&&identityCleaned&&cleanupError===null,checks,rendererErrors,identityCleaned,cleanupError,originalExit,output,
     retainedProfile:identityAttempted&&!identityCleaned?temporary:null,
     scope:'Source Electron and external Chromium on one computer; synthetic temporary data; not installed/two-PC/release QA',
     browserTrust:'Explicit public SPKI allowlist in this test Chromium process only; OS trust unchanged'};

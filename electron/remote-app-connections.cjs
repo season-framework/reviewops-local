@@ -101,8 +101,13 @@ function createRemoteAppConnections({dataPath,identityProvider}) {
     const secret=await identityProvider.openCredential({scope:scope(row),ciphertext:row.ciphertext,assertCurrent:()=>check(guard)});
     check(guard);row.client=client(row,guard,secret);
   }
+  function connectionState(row){
+    if (row.errorCode && /^IDENTITY_|^CREDENTIAL_/.test(row.errorCode)) return 'credential_locked';
+    if (row.errorCode && /^(?:E[A-Z]+|CONNECTION_|CERTIFICATE_|INVALID_RESPONSE|AUTH_REQUIRED|ACCESS_DENIED|STALE_EPOCH)/.test(row.errorCode)) return 'unavailable';
+    return row.remote?.state || (row.ciphertext ? 'saved' : 'disconnected');
+  }
   function snapshot(){return {connections:[...entries.values()].map(row=>({id:row.profile.id,label:row.profile.label,address:row.profile.address,port:row.profile.port,
-    certificateFingerprint:row.profile.certificateFingerprint,state:row.remote?.state||(row.ciphertext?'saved':'disconnected'),remote:row.remote,errorCode:row.errorCode,busy:row.busy})),pendingCommands:[...unresolved.values()].map(row=>({...row})),pendingUploads:[...pendingUploads.values()].map(row=>({...row}))};}
+    certificateFingerprint:row.profile.certificateFingerprint,state:connectionState(row),remote:row.remote,errorCode:row.errorCode,busy:row.busy})),pendingCommands:[...unresolved.values()].map(row=>({...row})),pendingUploads:[...pendingUploads.values()].map(row=>({...row}))};}
   async function use(input,keys,guard,action){
     check(guard);const value=fields(input,['id',...keys]),row=entries.get(value.id);
     if(!row)fail('NOT_FOUND');if(row.busy)fail('REMOTE_MANAGEMENT_BUSY');row.busy=true;row.guard=guard;
@@ -129,7 +134,15 @@ function createRemoteAppConnections({dataPath,identityProvider}) {
       if(opened!==probe)fail('IDENTITY_UNAVAILABLE');
       row={profile:selected,client:null,remote:null,busy:true,errorCode:null,ciphertext:'',guard};row.client=client(row,guard);entries.set(id,row);save();
       try{row.remote=publicRemote(await row.client.connect({invitation:value.invitation,label:selected.label}));check(guard);return {id,remote:row.remote};}
-      catch(error){row.errorCode=error.code||'CONNECTION_UNAVAILABLE';await row.client.disconnect().catch(()=>{});row.client=null;throw error;}
+      catch(error){
+        row.errorCode=/^[A-Z][A-Z0-9_]{0,79}$/.test(error.code)?error.code:'CONNECTION_UNAVAILABLE';
+        await row.client.close().catch(()=>{});row.client=null;
+        // A failed replacement must not discard the previous protected token,
+        // endpoint, or unresolved request ownership. New ambiguous connections
+        // retain any sealed token for an explicit status retry.
+        if(original){entries.set(id,original);original.errorCode=row.errorCode;}
+        save();throw error;
+      }
       finally{row.busy=false;}
       }finally{connecting.delete(id);if(original)original.busy=false;}
     },
@@ -145,7 +158,7 @@ function createRemoteAppConnections({dataPath,identityProvider}) {
       try{
         const result=await row.client.command(intent);check(guard);if(result.state!=='pending'){unresolved.delete(key);save();}return result;
       }catch(error){
-        if(['INVALID_COMMAND','REVISION_CONFLICT'].includes(error.code)){check(guard);unresolved.delete(key);save();}
+        if(['INVALID_COMMAND','REVISION_CONFLICT','STALE_REVIEW'].includes(error.code)){check(guard);unresolved.delete(key);save();}
         throw error;
       }
     });},
