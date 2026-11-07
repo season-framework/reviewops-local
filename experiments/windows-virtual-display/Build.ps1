@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Path $out -Force | Out-Null
 $reportPath = Join-Path $out 'build-report.json'
 $record = [ordered]@{
     schema = 1
-    scope = 'Unsigned x64 UMDF/IddCx prototype compilation and static inspection'
+    scope = 'Unsigned x64 UMDF/IddCx compilation, static inspection and no-driver client admission'
     status = 'running'
     startedAtUTC = [DateTime]::UtcNow.ToString('o')
     driverInstalled = $false
@@ -43,8 +43,9 @@ try {
     if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio discovery is unavailable.' }
     $vs = (& $vswhere -latest -products '*' -version '[17.0,18.0)' -requires Microsoft.Component.MSBuild -property installationPath | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or -not $vs) { throw 'Supported Visual Studio 2022 is required.' }
-    $msbuild = Join-Path $vs 'MSBuild\Current\Bin\MSBuild.exe'
-    if (-not (Test-Path -LiteralPath $msbuild)) { throw 'MSBuild is unavailable.' }
+    # The pinned WDK ships native x64 InfVerif; the 32-bit host would seek a missing x86 DLL.
+    $msbuild = Join-Path $vs 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+    if (-not (Test-Path -LiteralPath $msbuild)) { throw 'Native x64 MSBuild is unavailable.' }
     $toolset = Join-Path $vs 'MSBuild\Microsoft\VC\v170\Platforms\x64\PlatformToolsets\WindowsUserModeDriver10.0\Toolset.props'
     if (-not (Test-Path -LiteralPath $toolset)) { throw 'The WDK Visual Studio extension is required; no machine installation was attempted.' }
     $vcVersion = (Get-Content -LiteralPath (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt') -Raw).Trim()
@@ -57,6 +58,7 @@ try {
         compilerVersion = (Get-Item -LiteralPath $compiler).VersionInfo.FileVersion
         compilerSHA256 = (Get-FileHash -LiteralPath $compiler -Algorithm SHA256).Hash.ToLowerInvariant()
         msbuildVersion = (Get-Item -LiteralPath $msbuild).VersionInfo.FileVersion
+        msbuildHostArchitecture = 'AMD64'
         msbuildSHA256 = (Get-FileHash -LiteralPath $msbuild -Algorithm SHA256).Hash.ToLowerInvariant()
         nugetVersion = (Get-Item -LiteralPath $nuget).VersionInfo.FileVersion
         nugetSHA256 = (Get-FileHash -LiteralPath $nuget -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -99,6 +101,45 @@ try {
         executed = $false
         monitorControlTested = $false
     }
+    $admissionResults = @()
+    $admissionCases = @(
+        @{ name = 'list-without-driver'; arguments = @('--list'); exitCode = 0; operation = 'list'; error = $null },
+        @{ name = 'refuse-unlisted-instance'; arguments = @('--control', 'ROOT\REVIEWOPS_UNINSTALLED_QA_INSTANCE'); exitCode = 2; operation = 'admission'; error = 'SELECTED_INTERFACE_UNAVAILABLE' },
+        @{ name = 'refuse-unsupported-arguments'; arguments = @('--unsupported'); exitCode = 2; operation = 'arguments'; error = 'USE_LIST_OR_CONTROL_EXACT_INSTANCE_ID' }
+    )
+    foreach ($case in $admissionCases) {
+        $start = [Diagnostics.ProcessStartInfo]::new($client)
+        $start.UseShellExecute = $false
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        foreach ($argument in $case.arguments) { $start.ArgumentList.Add($argument) }
+        $process = [Diagnostics.Process]::new()
+        $process.StartInfo = $start
+        try {
+            if (-not $process.Start()) { throw 'The client admission process could not start.' }
+            $record['client']['executed'] = $true
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(10000)) {
+                $process.Kill()
+                if (-not $process.WaitForExit(2000)) { throw 'The owned admission process did not exit after termination.' }
+                throw 'The client admission check exceeded its deadline.'
+            }
+            $raw = $stdout.GetAwaiter().GetResult()
+            $errorText = $stderr.GetAwaiter().GetResult()
+            $raw | Set-Content -LiteralPath (Join-Path $out ($case.name + '.log')) -Encoding utf8
+            if ($process.ExitCode -ne $case.exitCode -or $errorText) { throw "Unexpected client admission exit: $($case.name)" }
+            $reply = $raw | ConvertFrom-Json
+            if ($reply.schema -ne 1 -or $reply.scope -ne 'build-only-virtual-display-prototype' -or $reply.operation -ne $case.operation) { throw 'Unexpected client admission response.' }
+            if ($case.error) {
+                if ($reply.ok -ne $false -or $reply.error -ne $case.error) { throw 'The client did not refuse the unsupported request.' }
+            } elseif ($reply.ok -ne $true -or @($reply.devices).Count -ne 0 -or $reply.availability -ne 'not-enumerated' -or $reply.deviceOpened -ne $false -or $reply.displayChangeRequested -ne $false) {
+                throw 'The fresh build host did not report an empty, unopened prototype interface class.'
+            }
+            $admissionResults += [ordered]@{ name = $case.name; exitCode = $process.ExitCode; response = $reply; status = 'passed' }
+        } finally { $process.Dispose() }
+    }
+    $record['client']['noDriverAdmission'] = $admissionResults
     $dll = Join-Path $out 'ReviewOpsVirtualDisplay.dll'
     if (-not (Test-Path -LiteralPath $dll)) { throw 'The expected driver DLL was not produced.' }
     $stream = [IO.File]::OpenRead($dll)
@@ -127,7 +168,7 @@ try {
         ForEach-Object { [ordered]@{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
     $dirtyAfter = (& git -C $root status --porcelain --untracked-files=all -- . | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $dirtyAfter) { throw 'The build changed committed prototype inputs.' }
-    $record['status'] = 'passed-compilation-only'
+    $record['status'] = 'passed-build-and-no-driver-admission'
 } catch {
     $record['status'] = 'failed'
     $record['error'] = $_.Exception.Message

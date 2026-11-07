@@ -329,7 +329,8 @@ NTSTATUS ReviewOpsDeviceAdd(WDFDRIVER driver, PWDFDEVICE_INIT init) {
     UNREFERENCED_PARAMETER(driver);
     WDF_PNPPOWER_EVENT_CALLBACKS power; WDF_PNPPOWER_EVENT_CALLBACKS_INIT(&power); power.EvtDeviceD0Entry = ReviewOpsD0Entry;
     WdfDeviceInitSetPnpPowerEventCallbacks(init, &power);
-    WdfDeviceInitSetCharacteristics(init, FILE_DEVICE_SECURE_OPEN, TRUE);
+    // UMDF uses the INF's per-device Security and DeviceCharacteristics settings.
+    // WdfDeviceInitSetCharacteristics is a KMDF-only API.
     WDF_FILEOBJECT_CONFIG files; WDF_FILEOBJECT_CONFIG_INIT(&files, ReviewOpsFileCreate, ReviewOpsFileClose, ReviewOpsFileCleanup);
     WDF_OBJECT_ATTRIBUTES fileAttributes; WDF_OBJECT_ATTRIBUTES_INIT_CONTEXT_TYPE(&fileAttributes, FileContext);
     fileAttributes.SynchronizationScope = WdfSynchronizationScopeNone; fileAttributes.ExecutionLevel = WdfExecutionLevelPassive;

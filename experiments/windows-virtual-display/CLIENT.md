@@ -1,8 +1,12 @@
 # Prototype control client
 
-This source is a build-only Windows console client. Compilation does not prove
+This source is an experimental Windows console client. Compilation does not prove
 installation, standard-user access, display lifecycle, signing or product UI
 acceptance. It contains no installer or elevation request.
+
+The native build also checks read-only enumeration on a fresh host without this
+driver, refusal of an unlisted instance and refusal of unsupported arguments.
+These checks do not open a device, send IOCTLs or qualify monitor control.
 
 `ReviewOpsVirtualDisplayClient.exe --list` enumerates only the protocol's device
 interface class with SetupDi. JSON lists exact device instance IDs and interface

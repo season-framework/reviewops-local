@@ -34,6 +34,8 @@ HKR,"WUDF",DeviceGroupId,0x00000000,"ReviewOpsVirtualDisplayPrototype"
 ; Only an explicitly elevated future diagnostic/broker may open the interface.
 ; This prototype never grants Everyone access or changes an existing device.
 HKR,,Security,0x00000000,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
+; FILE_DEVICE_SECURE_OPEN: PnP applies this per-device flag to the entire stack.
+; UMDF cannot call the KMDF-only WdfDeviceInitSetCharacteristics API.
 HKR,,DeviceCharacteristics,0x00010001,0x00000100
 
 [Install.NT.Services]
