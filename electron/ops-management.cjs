@@ -96,6 +96,7 @@ class OpsManagement {
     if (row.executionState === 'unknown') fail('OPS_DELIVERY_UNKNOWN', '원래 관리 대화의 전달 결과를 먼저 다시 연결하여 확인하십시오.');
     // Repeated UI submissions during a pending acknowledgement share admission.
     const binding = this.adapter?.captureContext?.(input.context || {view: 'ops', section: 'conversation'}, internal.origin);
+    if (binding?.context.goalId && !this.manager.store.data.goals.some(goal => goal.id === binding.context.goalId && (!binding.context.projectId || goal.projectId === binding.context.projectId))) fail('OPS_GOAL_NOT_FOUND', '선택한 원래 목표와 프로젝트가 일치하지 않습니다. 목표를 다시 선택하십시오.');
     const selection = {...(binding ? {context: binding.context} : {}), ...(input.skillIds !== undefined ? {skillIds: input.skillIds} : {}), ...(input.taskKinds !== undefined ? {taskKinds: input.taskKinds} : {})};
     if (row.requests.some(request => ['queued', ...IN_FLIGHT].includes(request.status) && request.instruction === input.instruction && canonical(request.selection || {}) === canonical(selection))) return this.manager.snapshot();
     const deliveryId = randomUUID();
@@ -256,17 +257,36 @@ class OpsManagement {
       return value?.message !== undefined ? value : {data: value, message: 'ReviewOps 자료를 확인했습니다.', links: []};
     })});
     const target = {projectId: string(128), reviewId: string(128)};
+    const bound = args => this._boundRequest(id, args.requestId);
+    const goalGuard = (args, guard, goalId, requestedProjectId) => {
+      const {request, binding} = bound(args), context = binding?.context || {};
+      const check = () => {
+        guard(); binding?.guard(); const goal = goalId ? this.manager._goal(this.manager.store.data, goalId) : null, candidateProject = requestedProjectId !== undefined ? requestedProjectId : goal?.projectId;
+        if (context.goalId && goalId && context.goalId !== goalId || context.projectId && candidateProject !== context.projectId || context.projectId && goal && goal.projectId !== context.projectId) fail('OPS_TARGET_MISMATCH', '이 요청을 시작한 원래 프로젝트와 목표만 변경하거나 실행할 수 있습니다. 대상을 선택하여 새 요청을 보내십시오.');
+      };
+      check(); return {request, binding, check};
+    };
     const tools = [
       define('ops_projects_list', 'List existing project IDs, groups and working folders before selecting a project.', schema({}), async (_args, guard) => { if (!this.adapter?.listProjects) fail('OPS_MANAGEMENT_UNAVAILABLE', '프로젝트 관리를 사용할 수 없습니다.'); return {data: await this.adapter.listProjects(guard), message: '프로젝트 목록을 확인했습니다.', links: []}; }),
-      define('ops_projects_create', 'Create a real local project with a working directory. Use an existing groupId or an optional new groupName. Never invent a directory.', schema({name: string(120), groupId: string(128), groupName: string(120), description: string(10000), workPath: string(4096)}, ['name', 'workPath']), async (args, guard) => { if (!this.adapter?.createProject) fail('OPS_MANAGEMENT_UNAVAILABLE', '프로젝트 추가 기능을 사용할 수 없습니다.'); const project = await this.adapter.createProject(args, guard); return {data: {id: project.id, name: project.name, groupId: project.groupId}, message: '프로젝트를 추가했습니다: ' + project.name, links: [projectLink(project)]}; }),
+      define('ops_projects_create', 'Create a real local project with a working directory. Include requestId to retain the original selected group; otherwise use an existing groupId or optional new groupName. Never invent a directory.', schema({requestId: string(128), name: string(120), groupId: string(128), groupName: string(120), description: string(10000), workPath: string(4096)}, ['name', 'workPath']), async (args, guard) => {
+        if (!this.adapter?.createProject) fail('OPS_MANAGEMENT_UNAVAILABLE', '프로젝트 추가 기능을 사용할 수 없습니다.');
+        const {binding} = this._boundRequest(id, args.requestId), {requestId, ...input} = args;
+        if (binding?.context.groupId) { if (input.groupName || input.groupId && input.groupId !== binding.context.groupId) fail('OPS_TARGET_MISMATCH', '이 요청을 시작한 원래 그룹에 프로젝트를 추가하십시오.'); input.groupId = binding.context.groupId; }
+        const originalGuard = () => { guard(); binding?.guard(); }, project = await this.adapter.createProject(input, originalGuard);
+        return {data: {id: project.id, name: project.name, groupId: project.groupId}, message: '프로젝트를 추가했습니다: ' + project.name, links: [projectLink(project)]};
+      }),
       define('ops_goals_list', 'List real goals, execution state, prompts and schedules. This does not start a goal.', schema({}), async () => ({data: {goals: this.manager.store.read().goals.map(goalSummary)}, message: '목표 목록을 확인했습니다.', links: []})),
-      define('ops_goals_save', 'Create or update a goal using its ID. A new goal requires name, prompt and a projectId or absolute workPath. Existing configuration and history are preserved. Saving does not start it.', schema(properties), async (args, guard) => { fields(args, Object.keys(properties)); const before = new Set(this.manager.store.data.goals.map(goal => goal.id)); await this.manager.saveGoal(args, guard); const goal = args.id ? this.manager._goal(this.manager.store.data, args.id) : this.manager.store.data.goals.find(goal => !before.has(goal.id)); return {data: goalSummary(goal), message: '목표를 저장했습니다: ' + goal.name, links: [goalLink(goal)]}; }),
-      define('ops_schedules_save', 'Create or edit a goal schedule using goalId and optional schedule id. Explicit enabled is required. A finished goal is never automatically restarted.', schema({goalId: string(128), id: string(128), name: string(200), prompt: string(100000), cron: string(100), timezone: string(100), enabled: {type: 'boolean'}}, ['goalId', 'name', 'prompt', 'cron', 'timezone', 'enabled']), async (args, guard) => { fields(args, ['goalId', 'id', 'name', 'prompt', 'cron', 'timezone', 'enabled']); guard(); this.manager.saveSchedule(args); const goal = this.manager._goal(this.manager.store.data, args.goalId); return {data: {goalId: goal.id, schedules: goal.schedules}, message: '예약을 저장했습니다: ' + args.name, links: [goalLink(goal)]}; }),
-      define('ops_schedules_delete', 'Delete one existing goal schedule by its original goalId and schedule id.', schema({goalId: string(128), id: string(128)}, ['goalId', 'id']), async (args, guard) => { fields(args, ['goalId', 'id']); guard(); this.manager.deleteSchedule(args); const goal = this.manager._goal(this.manager.store.data, args.goalId); return {data: {goalId: goal.id, schedules: goal.schedules}, message: '예약을 삭제했습니다.', links: [goalLink(goal)]}; }),
+      define('ops_goals_save', 'Create or update a goal in this request original project/goal. Include requestId. A new goal requires name, prompt and a projectId or absolute workPath. Saving preserves its history and never starts it.', schema({requestId: string(128), ...properties}, ['requestId']), async (args, guard) => {
+        fields(args, ['requestId', ...Object.keys(properties)]); const {requestId, ...input} = args, binding = bound(args).binding;
+        if (!input.id && !input.projectId && binding?.context.projectId) input.projectId = binding.context.projectId;
+        if (!input.id && binding?.context.goalId) fail('OPS_TARGET_MISMATCH', '선택한 기존 목표를 수정하려면 그 목표 ID를 지정하십시오.');
+        const original = goalGuard(args, guard, input.id, input.projectId), before = new Set(this.manager.store.data.goals.map(goal => goal.id)); await this.manager.saveGoal(input, original.check);
+        const goal = input.id ? this.manager._goal(this.manager.store.data, input.id) : this.manager.store.data.goals.find(goal => !before.has(goal.id)); return {data: goalSummary(goal), message: '목표를 저장했습니다: ' + goal.name, links: [goalLink(goal)]};
+      }),
+      define('ops_schedules_save', 'Create or edit a schedule of this request original goal/project. Include requestId; enabled must be explicit. A finished goal is never automatically restarted.', schema({requestId: string(128), goalId: string(128), id: string(128), name: string(200), prompt: string(100000), cron: string(100), timezone: string(100), enabled: {type: 'boolean'}}, ['requestId', 'goalId', 'name', 'prompt', 'cron', 'timezone', 'enabled']), async (args, guard) => { fields(args, ['requestId', 'goalId', 'id', 'name', 'prompt', 'cron', 'timezone', 'enabled']); const original = goalGuard(args, guard, args.goalId), {requestId, ...input} = args; original.check(); this.manager.saveSchedule(input); const goal = this.manager._goal(this.manager.store.data, args.goalId); return {data: {goalId: goal.id, schedules: goal.schedules}, message: '예약을 저장했습니다: ' + args.name, links: [goalLink(goal)]}; }),
+      define('ops_schedules_delete', 'Delete one schedule of this request original goal/project. Include requestId and original goal/schedule IDs.', schema({requestId: string(128), goalId: string(128), id: string(128)}, ['requestId', 'goalId', 'id']), async (args, guard) => { fields(args, ['requestId', 'goalId', 'id']); const original = goalGuard(args, guard, args.goalId), {requestId, ...input} = args; original.check(); this.manager.deleteSchedule(input); const goal = this.manager._goal(this.manager.store.data, args.goalId); return {data: {goalId: goal.id, schedules: goal.schedules}, message: '예약을 삭제했습니다.', links: [goalLink(goal)]}; }),
       define('ops_goals_action', 'Explicitly start/restart, resume, pause, finish, reconnect or send a request to a goal in that goal\'s original conversation. Include this requestId to inherit its frozen skills; start only when requested by the user.', schema({requestId: string(128), goalId: string(128), action: {type: 'string', enum: ['start', 'resume', 'pause', 'finish', 'request', 'reconnect']}, instruction: string(100000)}, ['requestId', 'goalId', 'action']), async (args, guard) => {
-        fields(args, ['requestId', 'goalId', 'action', 'instruction']); const row = this._conversation(id), current = [...row.requests].reverse().find(value => value.turnId === row.turnId || value.status === 'prepared');
-        if (!args.requestId && current && this.requestBindings.has(current.id)) fail('INVALID_OPS_REQUEST', '이 목표 작업을 요청한 원래 요청 ID를 지정하십시오.');
-        const request = args.requestId ? this._request(id, args.requestId, {threadId: row.threadId, turnId: row.turnId}) : current, {requestId, ...action} = args; await this.manager.goalAction(action, guard, {skillSnapshot: request?.skills});
+        fields(args, ['requestId', 'goalId', 'action', 'instruction']); const original = goalGuard(args, guard, args.goalId), {requestId, ...action} = args; await this.manager.goalAction(action, original.check, {skillSnapshot: original.request?.skills});
         if (['start', 'resume', 'request'].includes(args.action)) await this.manager.pump(args.goalId);
         guard(); const goal = this.manager._goal(this.manager.store.data, args.goalId), unresolved = ['error', 'unknown'].includes(goal.executionState);
         return {ok: !unresolved, data: goalSummary(goal), ...(unresolved ? {error: {code: 'OPS_GOAL_ACTION_UNCONFIRMED', message: goal.lastError || '목표 실행 결과를 확인하지 못했습니다.'}} : {}), message: unresolved ? goal.lastError || '목표 실행 결과를 확인하지 못했습니다.' : '목표 작업을 적용했습니다: ' + goal.name + ' (' + goal.status + ')', links: [goalLink(goal)]};
@@ -295,6 +315,13 @@ class OpsManagement {
     text(requestId, 128, true); const row = this._conversation(id), request = row.requests.find(value => value.id === requestId);
     if (!request || request.threadId !== context.threadId && request.status !== 'prepared' || request.turnId && request.turnId !== context.turnId || !['prepared', 'accepted'].includes(request.status)) fail('OPS_MANAGEMENT_STALE', '원래 관리 요청의 실행 식별자가 일치하지 않습니다.');
     return request;
+  }
+  _boundRequest(id, requestId) {
+    const row = this._conversation(id), current = [...row.requests].reverse().find(value => value.turnId === row.turnId || value.status === 'prepared');
+    if (!requestId && current && this.requestBindings.has(current.id)) fail('INVALID_OPS_REQUEST', '이 작업을 시작한 원래 요청 ID를 지정하십시오.');
+    const request = requestId ? this._request(id, requestId, {threadId: row.threadId, turnId: row.turnId}) : current, binding = this.requestBindings.get(request?.id);
+    if (request?.context && !binding) fail('OPS_CONTEXT_UNAVAILABLE', '원래 작업 대상의 현재 앱 연결이 없습니다. 현재 창에서 새 요청을 보내십시오.');
+    binding?.guard(); return {request, binding};
   }
   async _tool(id, name, args, context, execute) {
     const definition = this.toolsSchema(name); fields(args, Object.keys(definition.properties));

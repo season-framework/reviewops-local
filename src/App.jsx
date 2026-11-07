@@ -30,7 +30,7 @@ export default function App() {
  const storageKeys=windowStorageKeys(windowContext.projectId);
  const [initialWorkspace]=useState(()=>{let saved='';try{saved=localStorage.getItem(storageKeys.tabs)||''}catch{}return restoreWindowTabs(saved,windowContext.projectId)});
  const opsController=useOps(windowContext.projectId?null:window.opsManager),[managementUi,setManagementUi]=useState(initialManagementUi),[opsPanelOpen,setOpsPanelOpen]=useState(()=>{try{return localStorage.getItem('reviewops.ops.panelOpen')==='true'}catch{return false}}),[screenSelections,setScreenSelections]=useState({}),[goalNavigation,setGoalNavigation]=useState(null);
- const opsNavigateRef=useRef(null);
+ const opsNavigateRef=useRef(null),opsNavigationSequence=useRef(0);
  useEffect(()=>{try{localStorage.setItem('reviewops.ops.panelOpen',String(opsPanelOpen))}catch{}},[opsPanelOpen]);
  const [data,setData]=useState(EMPTY),[ready,setReady]=useState(false),[tabs,setTabs]=useState(initialWorkspace.tabs),[active,setActive]=useState(initialWorkspace.active);
  const [deletedDraftNotice,setDeletedDraftNotice]=useState(false);
@@ -269,14 +269,26 @@ export default function App() {
   } finally {setBusy(false)}
  };
  const applyOpsNavigation=async target=>{
+  const sequence=++opsNavigationSequence.current;
   if(modal)throw new Error(t('열려 있는 대화상자의 작업을 마친 뒤 화면을 이동하십시오.'));
-  const latest=await reload(),plan=opsNavigationPlan({target,data:latest,tabs:tabsRef.current,dirtyIds:dirtyTabs.current,qaScoped:qaScoped||Boolean(windowContext.projectId)}),request=Date.now();
+  const latest=await reload();if(sequence!==opsNavigationSequence.current)throw new Error(t('다른 화면 이동 요청이 시작되었습니다. 원래 표시 결과를 확인하십시오.'));const plan=opsNavigationPlan({target,data:latest,tabs:tabsRef.current,dirtyIds:dirtyTabs.current,qaScoped:qaScoped||Boolean(windowContext.projectId)}),request=Date.now();
+  let destination='home';
   if(plan.kind==='home')setActive('home');
-  else{const extra={...plan.extra,sectionRequest:request,selectionRequest:request},id=plan.existingId||unique();setTabs(current=>plan.existingId?current.map(row=>row.id===id?{...row,...extra}:row):[...current,{id,kind:plan.kind,entityId:plan.entityId,...extra}]);setActive(id);}
-  if(plan.goalId)setGoalNavigation({goalId:plan.goalId,section:target.section,request});
+  else{const extra={...plan.extra,sectionRequest:request,selectionRequest:request},id=plan.existingId||unique();destination=id;setTabs(current=>plan.existingId?current.map(row=>row.id===id?{...row,...extra}:row):[...current,{id,kind:plan.kind,entityId:plan.entityId,...extra}]);setActive(id);}
+  if(plan.goalId)setGoalNavigation({tabId:destination,goalId:plan.goalId,section:target.section,request});
   if(plan.document){const loaded=await invoke('attachment.read',{id:plan.document.id});setModal({type:'preview',file:{...loaded,name:plan.document.name}});}
   const started=Date.now();
-  while(Date.now()-started<3000){await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));const pane=document.querySelector('.workspace-pane:not([hidden])');if(!pane)continue;const project=pane.querySelector('.original-project');if(plan.kind==='project'&&project?.dataset.projectId!==plan.entityId)continue;if(target.reviewId&&project?.dataset.reviewId!==target.reviewId)continue;if(plan.goalId&&pane.querySelector('.ops-workspace')?.dataset.selectedGoal!==plan.goalId)continue;return {shown:true};}
+  while(Date.now()-started<3000){
+   await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+   if(sequence!==opsNavigationSequence.current)throw new Error(t('다른 화면 이동 요청이 시작되어 원래 표시를 확인하지 못했습니다.'));
+   const pane=document.querySelector('.workspace-pane:not([hidden])');if(pane?.id!==`pane-${destination}`)continue;
+   const project=pane.querySelector('.original-project'),group=pane.querySelector('[data-ops-group-id]'),ops=pane.querySelector('.ops-workspace');
+   if(plan.kind==='project'&&(project?.dataset.projectId!==plan.entityId||project?.dataset.section!==plan.extra.section))continue;
+   if(plan.kind==='group'&&(group?.dataset.opsGroupId!==plan.entityId||group?.dataset.opsSection!==plan.extra.section))continue;
+   if(target.reviewId&&project?.dataset.reviewId!==target.reviewId)continue;
+   if(plan.goalId&&(ops?.dataset.selectedGoal!==plan.goalId||target.section&&target.section!=='goals'&&ops?.dataset.goalSection!==target.section))continue;
+   return {shown:true};
+  }
   throw new Error(t('요청한 항목의 화면 표시를 확인하지 못했습니다. 작성 중인 내용은 유지됩니다.'));
  };
  opsNavigateRef.current=applyOpsNavigation;
@@ -342,11 +354,11 @@ export default function App() {
    {!ready?<div className="loading"><span className="spinner"/>{t("자료 불러오는 중")}</div>:<div className="workspace-panes">{tabs.map(tab=><section id={`pane-${tab.id}`} key={tab.id} className="workspace-pane" role="tabpanel" aria-labelledby={`tab-${tab.id}`} hidden={visibleActive!==tab.id||qaScoped&&!visibleTabs.some(item=>item.id===tab.id)}>
     {tab.kind==='home'&&<WorkHome key={workspaceRevision} data={visibleData} projectOnly={qaScoped} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onEditReview={review=>edit('review',review)} onCreateReview={createReview} onPreview={previewFile} onError={setError} onRefresh={()=>run(reload)} onGroups={qaScoped?()=>openProject(qaProject):openGroups} initialReviewId={homeSelection.id} selectionRequest={homeSelection.request} storageScope={storageKeys.home} windowProjectId={windowContext.projectId} onDirtyChange={dirty=>dirty?dirtyTabs.current.add('home'):dirtyTabs.current.delete('home')} active={visibleActive===tab.id} onContextChange={value=>receiveScreen(tab.id,value)}/>}
     {['accounts','hosts'].includes(tab.kind)&&!qaScoped&&visibleActive===tab.id&&<CodexManagement page={tab.kind}/>}
-    {tab.kind==='ops'&&!windowContext.projectId&&!qaScoped&&<OpsWorkspace data={visibleData} invoke={invoke} controller={opsController} managementUi={managementUi} setManagementUi={setManagementUi} screenContext={screenContext} onNavigate={followOpsLink} goalNavigation={goalNavigation} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
+    {tab.kind==='ops'&&!windowContext.projectId&&!qaScoped&&<OpsWorkspace data={visibleData} invoke={invoke} controller={opsController} managementUi={managementUi} setManagementUi={setManagementUi} screenContext={screenContext} onNavigate={followOpsLink} goalNavigation={goalNavigation?.tabId===tab.id?goalNavigation:null} active={visibleActive===tab.id} onContextChange={value=>receiveScreen(tab.id,value)} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
     {tab.kind==='groups'&&<GroupsList data={data} onOpen={openGroup} onCreate={()=>edit('group')}/>}
-    {tab.kind==='group'&&<GroupPane data={data} groupId={tab.entityId} initialSection={tab.section} sectionRequest={tab.sectionRequest} onGroups={openGroups} onOpenProject={openProject} onOpenService={openService} onEdit={edit} onDelete={remove} mutate={mutate} busy={busy} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
+    {tab.kind==='group'&&<GroupPane data={data} groupId={tab.entityId} initialSection={tab.section} sectionRequest={tab.sectionRequest} onGroups={openGroups} onOpenProject={openProject} onOpenService={openService} onEdit={edit} onDelete={remove} mutate={mutate} busy={busy} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)} active={visibleActive===tab.id} onContextChange={value=>receiveScreen(tab.id,value)}/>}
     {['project','service'].includes(tab.kind)&&<ProjectWorkspace qaScoped={qaScoped} data={visibleData} projectId={tab.kind==='project'?tab.entityId:undefined} serviceId={tab.kind==='service'?tab.entityId:undefined} resourceMode={tab.kind} onOpenWindow={windowContext.projectId?undefined:openProjectWindow} windowOpening={Boolean(openingProject)} invoke={invoke} mutate={mutate} busy={busy} onOpenGroup={openGroup} onOpenProject={openProject} onOpenService={openService} onDelete={remove} onError={setError} onCreateService={createService} onOpenHosts={openHosts} initialSection={tab.section} sectionRequest={tab.sectionRequest} initialReviewId={tab.reviewId} initialReviewMode={tab.reviewMode} selectionRequest={tab.selectionRequest} integrationRequest={tab.integrationRequest} active={visibleActive===tab.id} onContextChange={value=>receiveScreen(tab.id,value)} onIntegrationReady={value=>invoke('integration.displayed',value).catch(error=>setError(error.message))} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
-    {tab.kind==='settings'&&<><ResourceHeader title={t("설정")}/><DataSettings data={data} invoke={invoke} run={run} reload={reload} setToast={setToast} onBeforeRestore={beforeRestore} onRestored={restoreWorkspace} active={visibleActive===tab.id&&!qaScoped} managementAllowed={!windowContext.projectId&&!qaScoped}/></>}
+    {tab.kind==='settings'&&<><ResourceHeader title={t("설정")}/><DataSettings data={data} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)} invoke={invoke} run={run} reload={reload} setToast={setToast} onBeforeRestore={beforeRestore} onRestored={restoreWorkspace} active={visibleActive===tab.id&&!qaScoped} managementAllowed={!windowContext.projectId&&!qaScoped}/></>}
     {tab.kind==='editor'&&<RegistrationScreen type={tab.entityType} record={tab.record} data={data} busy={busy} onClose={()=>closeTab(tab.id)} onSave={record=>save(tab.entityType,record,tab.id)} onCreateService={createService} onOpenHosts={openHosts} onDirtyChange={dirty=>dirty?dirtyTabs.current.add(tab.id):dirtyTabs.current.delete(tab.id)}/>}
    </section>)}</div>}
   </main>
@@ -380,13 +392,15 @@ function ResourceHeader({title,children,onBack,backLabel,actions,inlineBack=fals
  return <PageHeader className={inlineBack?'resource-header group-resource-header':'resource-header'} title={title} leading={onBack&&<button type="button" className="group-resource-back" onClick={onBack} aria-label={t("그룹 목록")} title={backLabel||t("그룹 목록")}><GroupListIcon name="back" size={15}/></button>} controls={children} actions={actions}/>;
 }
 function ResourceTabs({items,value,onChange,label}) {return <nav className="resource-tabs reviewops-tab-strip reviewops-tab-strip--text" aria-label={label} onKeyDown={tabKeyboard}>{items.map(([key,name,count])=><button type="button" key={key} aria-label={name} aria-pressed={value===key} tabIndex={value===key?0:-1} className={`reviewops-tab ${value===key?'active is-active':''}`} onClick={()=>onChange(key)}>{count===undefined?name:`${name}(${count})`}</button>)}</nav>}
-function GroupPane({data,groupId,initialSection='projects',sectionRequest,onGroups,onOpenProject,onOpenService,onEdit,onDelete,mutate,busy,onDirtyChange}) {
+function GroupPane({data,groupId,initialSection='projects',sectionRequest,onGroups,onOpenProject,onOpenService,onEdit,onDelete,mutate,busy,onDirtyChange,onContextChange,active=true}) {
  const normalize=section=>['info','projects','settings'].includes(section)?section:'projects';
  const [section,setSection]=useState(()=>normalize(initialSection));
+ const contextCallback=useRef(onContextChange);contextCallback.current=onContextChange;
+ useEffect(()=>{if(active)contextCallback.current?.({view:'group',section,groupId})},[active,section,groupId]);
  useEffect(()=>{setSection(normalize(initialSection))},[initialSection,sectionRequest]);
  const group=data.groups.find(item=>item.id===groupId),projects=data.projects.filter(item=>item.groupId===groupId);
  if(!group)return <Empty icon="group" title={t("그룹을 찾을 수 없습니다.")}><Button onClick={onGroups}>{t("그룹 목록")}</Button></Empty>;
- return <><ResourceHeader title={group.name} onBack={onGroups} backLabel={t("그룹")} inlineBack><ResourceTabs label={t("그룹 기능")} value={section} onChange={setSection} items={[["info",t("그룹정보")],["projects",t("프로젝트"),projects.length],["settings",t("설정")]]}/></ResourceHeader><div className="resource-content group-resource-content"><div className="group-resource-workspace">
+ return <><ResourceHeader title={group.name} onBack={onGroups} backLabel={t("그룹")} inlineBack><ResourceTabs label={t("그룹 기능")} value={section} onChange={setSection} items={[["info",t("그룹정보")],["projects",t("프로젝트"),projects.length],["settings",t("설정")]]}/></ResourceHeader><div className="resource-content group-resource-content" data-ops-group-id={groupId} data-ops-section={section}><div className="group-resource-workspace">
   {section==='projects'?<GroupResourceList key={`${groupId}-${sectionRequest||''}`} type="project" groupId={groupId} projects={projects} services={data.services} reviews={data.reviews} onOpenProject={onOpenProject} onEdit={onEdit}/>:<div className="resource-detail" hidden={section!=='info'}>{section==='info'?<dl><dt>{t("그룹 이름")}</dt><dd>{group.name}</dd><dt>{t("설명")}</dt><dd>{group.description||t("설명 없음")}</dd><dt>{t("프로젝트")}</dt><dd>{projects.length}{t("개")}</dd><dt>{t("등록일")}</dt><dd>{date(group.createdAt)}</dd></dl>:null}</div>}<div className="resource-detail" hidden={section!=='settings'}><GroupSettings group={group} data={data} mutate={mutate} busy={busy} onDelete={()=>onDelete('group',group)} onDirtyChange={onDirtyChange}/></div>
  </div></div></>;
 }

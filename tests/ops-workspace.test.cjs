@@ -58,3 +58,27 @@ test('renderer navigation opens a new pane for dirty resource drafts and rejects
  const {opsNavigationPlan}=await import('../src/ops-navigation.mjs'),data={projects:[{id:'p'}],groups:[{id:'g'}],reviews:[{id:'r',projectId:'p'}],attachments:[]},tabs=[{id:'dirty-project',kind:'project',entityId:'p'},{id:'home',kind:'home'}],input={target:{view:'project',projectId:'p',reviewId:'r'},data,tabs,dirtyIds:new Set(['dirty-project','home'])};
  assert.equal(opsNavigationPlan(input).existingId,'');assert.equal(opsNavigationPlan({...input,dirtyIds:new Set()}).existingId,'dirty-project');assert.equal(opsNavigationPlan({...input,target:{view:'home',reviewId:'r'}}).kind,'project');assert.throws(()=>opsNavigationPlan({...input,qaScoped:true}),/QA/);assert.equal(tabs[0].id,'dirty-project');
 });
+
+test('explicit deleted review/document targets never fall back to another visible project',async()=>{
+ const {targetContext}=await import('../src/ops-target.mjs'),screen={view:'project',projectId:'B'},data={projects:[{id:'B'}],groups:[],reviews:[],attachments:[]};
+ for(const target of ['review:deletedA','document:deletedA','project:deletedA','group:deletedA'])assert.throws(()=>targetContext(target,screen,data),/대상을 다시 선택/);assert.deepEqual(targetContext('screen',screen,data),screen);
+});
+
+test('goal and schedule mutations reject another project or a replaced original project birth',async t=>{
+ const h=await harness(t);h.manager.resolveTarget=async input=>({projectId:input.projectId||'',workPath:h.root,targetKind:'local',targetIdentity:'local',serviceId:null});
+ await h.manager.saveGoal({name:'A goal',prompt:'A',projectId:h.a.id});await h.manager.saveGoal({name:'B goal',prompt:'B',projectId:h.b.id});const [a,b]=h.manager.snapshot().goals,requestId=await h.start({view:'project',section:'review',projectId:h.a.id});
+ for(const [name,args]of [['ops_goals_save',{id:a.id,projectId:'',workPath:h.root,name:'Must not detach A'}],['ops_goals_save',{id:b.id,name:'Must not change B'}],['ops_goals_save',{name:'Must not create B',prompt:'B',projectId:h.b.id}],['ops_goals_action',{goalId:b.id,action:'start'}],['ops_schedules_save',{goalId:b.id,name:'No schedule B',prompt:'B',cron:'0 0 * * *',timezone:'UTC',enabled:false}],['ops_schedules_delete',{goalId:b.id,id:randomUUID()}]]){const result=await h.call(name,{requestId,...args});assert.equal(result.ok,false,name);assert.equal(result.error.code,'OPS_TARGET_MISMATCH',name);}
+ assert.equal(h.manager.snapshot().goals.length,2);assert.equal(h.manager.snapshot().goals.find(row=>row.id===b.id).executionState,'idle');
+ const raw=h.store.db.prepare('SELECT * FROM projects WHERE id=?').get(h.a.id);h.store.deleteProject(h.a.id);h.store.upsert('projects',raw);
+ for(const [name,args]of [['ops_goals_save',{id:a.id,name:'Must not change replacement'}],['ops_goals_action',{goalId:a.id,action:'start'}]]){const result=await h.call(name,{requestId,...args});assert.equal(result.ok,false);assert.equal(result.error.code,'OPS_MANAGEMENT_STALE');}
+});
+
+test('logical restore rejects the original request even when every visible ID is unchanged',async t=>{
+ const h=await harness(t),requestId=await h.start(),original=h.store.exportData();h.store.importData(original);
+ await assert.rejects(h.call('ops_reviews_respond',{requestId,operationId:'after-restore',body:'Must not be saved'}),{code:'STALE_EPOCH'});assert.ok(!h.store.snapshot().activities.some(row=>row.body==='Must not be saved'));
+});
+test('reconnected project/goal mutations cannot drop persisted scope when its live binding is absent',async t=>{
+ const h=await harness(t),requestId=await h.start({view:'group',section:'projects',groupId:h.group.id});h.manager.management.requestBindings.delete(requestId);
+ for(const [name,args]of [['ops_projects_create',{name:'Must not create',workPath:h.root}],['ops_goals_save',{name:'Must not create',prompt:'No',workPath:h.root}]]){const result=await h.call(name,{requestId,...args});assert.equal(result.ok,false);assert.equal(result.error.code,'OPS_CONTEXT_UNAVAILABLE');}
+ assert.equal(h.store.snapshot().projects.length,2);assert.equal(h.manager.snapshot().goals.length,0);
+});

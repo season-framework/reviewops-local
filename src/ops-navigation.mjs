@@ -6,6 +6,8 @@ export function opsNavigationPlan({target,data,tabs,dirtyIds,qaScoped=false}){
  const projectId=target.projectId||review?.projectId||'',groupId=target.groupId||'';
  if(projectId&&!data.projects.some(row=>row.id===projectId)||review&&review.projectId!==projectId||groupId&&!data.groups.some(row=>row.id===groupId)||document&&(review&&document.reviewId!==review.id||projectId&&!data.reviews.some(row=>row.id===document.reviewId&&row.projectId===projectId)))throw new Error('표시할 항목의 프로젝트와 리뷰가 일치하지 않습니다.');
  let kind=target.view,entityId=kind==='project'?projectId:kind==='group'?groupId:'';
+ const sections={home:[''],groups:[''],group:['','info','projects','settings'],project:['','review','dashboard','file','terminal','settings'],ops:['','conversation','goals','info','schedules','prompts']};
+ if(!sections[kind].includes(target.section||'')||target.goalId&&kind!=='ops'||kind==='ops'&&['info','schedules','prompts'].includes(target.section)&&!target.goalId)throw new Error('이 화면에서 요청한 탭을 열 수 없습니다.');
  if(kind==='project'&&!entityId||kind==='group'&&!entityId)throw new Error('표시할 대상을 선택하십시오.');
  // Keep dirty home and resource panes mounted. A review goes to another project
  // pane rather than replacing the user's home review editor.
