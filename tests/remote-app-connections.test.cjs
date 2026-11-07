@@ -199,3 +199,12 @@ test('trusted main transport selection receives only the immutable public host a
  assert.equal((await manager.writeState({id,projectId:f.project.id,reviewId:f.review.id},f.guard)).reviewId,f.review.id);
  assert.equal(fs.readFileSync(f.profileFile,'utf8').includes('requestAgent'),false);
 });
+
+
+test('an application execution error does not mislabel a live approved connection as disconnected',async t=>{
+ const f=await fixture(t),manager=f.manager(),id=await f.pair(manager);
+ // This fixture intentionally has no browsing callback. The listener returns a
+ // business capability error over a successful authenticated HTTPS connection.
+ await assert.rejects(manager.read({id,operation:'reviews.get',payload:{projectId:f.project.id,reviewId:f.review.id}},f.guard),code('EXECUTION_UNAVAILABLE'));
+ const state=manager.state({},f.guard).connections[0];assert.equal(state.state,'approved');assert.equal(state.errorCode,'EXECUTION_UNAVAILABLE');
+});

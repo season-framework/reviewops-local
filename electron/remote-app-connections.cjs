@@ -103,7 +103,7 @@ function createRemoteAppConnections({dataPath,identityProvider,requestAgentForPr
   }
   function connectionState(row){
     if (row.errorCode && /^IDENTITY_|^CREDENTIAL_/.test(row.errorCode)) return 'credential_locked';
-    if (row.errorCode && /^(?:E[A-Z]+|CONNECTION_|CERTIFICATE_|INVALID_RESPONSE|AUTH_REQUIRED|ACCESS_DENIED|STALE_EPOCH)/.test(row.errorCode)) return 'unavailable';
+    if (row.errorCode && /^(?:ECONN[A-Z]+|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|ENOTFOUND|EAI_AGAIN|EPROTO|ERR_TLS_|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|UNABLE_TO_VERIFY_LEAF_SIGNATURE|CONNECTION_|CERTIFICATE_|INVALID_RESPONSE|AUTH_REQUIRED|ACCESS_DENIED|STALE_EPOCH)/.test(row.errorCode)) return 'unavailable';
     return row.remote?.state || (row.ciphertext ? 'saved' : 'disconnected');
   }
   function snapshot(){return {connections:[...entries.values()].map(row=>({id:row.profile.id,label:row.profile.label,address:row.profile.address,port:row.profile.port,
