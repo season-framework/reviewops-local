@@ -17,7 +17,8 @@ concurrency:
 jobs:
   compile:
     if: github.repository == 'season-framework/reviewops-local' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype'
-    runs-on: windows-2025
+    # The pinned WDK requires VS2022; windows-2025 now selects VS2026.
+    runs-on: windows-2022
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
