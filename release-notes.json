@@ -26,10 +26,11 @@
     {
       "category": "features",
       "title": "Manage ReviewOps in a persistent Codex conversation",
-      "description": "Create projects and goals, update schedules and explicitly start or finish work through typed app tools. Keep management conversations separate from each goal, retain previous conversations and open the related project or goal from a confirmed result.",
+      "description": "Create projects and goals, update schedules and explicitly start or finish work through typed app tools. Keep management conversations separate from each goal, retain previous conversations and the original position of replayed messages and open the related project or goal from a confirmed result.",
       "commits": [
         "a79197d499bc21b9154984c95efeeef67fa09d9a",
-        "9e4debe5828da34d3a5b25851dab35d7a2ca0e8f"
+        "9e4debe5828da34d3a5b25851dab35d7a2ca0e8f",
+        "97e1f7b1b9d885c2affbd7b2f1ce373e4339bd01"
       ]
     },
     {
