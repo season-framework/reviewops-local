@@ -3,6 +3,6 @@
   "previousVersion": "1.6.0",
   "version": "1.7.0",
   "bump": "minor",
-  "reason": "Add conversational Ops management with project-bound runtimes and Markdown editing, direct remote browser and app access with revision-safe recovery, and consistent page headers.",
+  "reason": "Add a persistent global Ops assistant with frozen review and navigation targets, editable versioned skill packages delivered to actual goal and management runtimes, conversational goal management, direct remote app access and consistent headers.",
   "baseCommit": "a38ae6c38fa8e0005748948f1b546410227fb9e0"
 }

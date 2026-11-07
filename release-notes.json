@@ -4,6 +4,23 @@
   "entries": [
     {
       "category": "features",
+      "title": "Use the same Ops assistant across app screens",
+      "description": "Keep a resizable right-hand conversation while moving through Home, groups and projects. Explicitly select its work target, retain drafts and use typed review, reply, document and navigation tools bound to the request’s original project and review generation.",
+      "commits": [
+        "f9719291f403026e59d9a61534e12d992eb5ca32"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Manage versioned skills and deliver their resources to Ops",
+      "description": "Inspect bundled skills, import ZIP packages, author and edit Markdown, manage task assignment, enable or remove packages and preserve resources through updates and backups. Goal and management requests retain an immutable skill version and expose its text and resources through typed runtime tools. Report-tool availability is shown separately from ordinary review work.",
+      "commits": [
+        "9ef46e0e694c33aef931b2cbbecfadae71e3be0d",
+        "815bd58a6c79b77d6474a955566fe9649f5b6e26"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Manage ReviewOps in a persistent Codex conversation",
       "description": "Create projects and goals, update schedules and explicitly start or finish work through typed app tools. Keep management conversations separate from each goal, retain previous conversations and open the related project or goal from a confirmed result.",
       "commits": [
