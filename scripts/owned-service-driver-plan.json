@@ -254,8 +254,8 @@
       },
       {
         "path": "src/ProjectWorkspace.jsx",
-        "sha256": "1863a860004d889450cc6771ea32a574c30bdd81e12e7fce9a21c5d7cc1acb67",
-        "bytes": 51576
+        "sha256": "344b28fe3d196033f2bcb12f86df4c839c0399a96d2ccaa0a9415116ba763435",
+        "bytes": 52033
       },
       {
         "path": "src/service-runtime-draft.mjs",
@@ -268,7 +268,7 @@
         "bytes": 16531
       }
     ],
-    "description": "Reviewed against integrated source e8fc1f4ffd7900189e353554df367292c622102e: ProjectWorkspace uses the common PageHeader for project and feature headings. Managed-service controls, labels, source surface, dirty callback, project/window binding and D3 connection-draft review behavior remain unchanged. The other three frozen files retain their original exact bytes.",
+    "description": "Reviewed against integrated source 96925c65edf0ac692d694dbd685b3bbd87001207 (UI bytes unchanged from 8a199195e0dba718adc13206b4ed8d42f9a8b8cb): ProjectWorkspace adds active-only Ops screen context reporting, preserves an explicitly requested section when selecting an existing review, and exposes the actual section for navigation acknowledgement. Managed-service controls, accessible labels, source surface, dirty callback, project/window binding and D3 connection-draft review behavior remain unchanged. The other three frozen files retain their original exact bytes. This refresh records compatibility only; it does not claim native execution or installed feature acceptance.",
     "backend": "The four reviewed UI files remain separate from the final exact clean source SHA, complete checkout-file manifest and source-bound renderer build record required before --run. Both reviewed Git blob hashes and actual checkout hashes remain mandatory; this compatibility update does not assert native execution or backend acceptance."
   },
   "additionalActualUIRegressions": [
