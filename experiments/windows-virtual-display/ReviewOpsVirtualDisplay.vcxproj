@@ -39,6 +39,10 @@
     <Inf2CatUseLocalTime>false</Inf2CatUseLocalTime>
   </PropertyGroup>
   <ItemDefinitionGroup>
+    <Inf>
+      <DateStamp>$(ReviewOpsDriverDate)</DateStamp>
+      <TimeStamp>$(ReviewOpsDriverVersion)</TimeStamp>
+    </Inf>
     <ClCompile>
       <LanguageStandard>stdcpp17</LanguageStandard>
       <ExceptionHandling>Sync</ExceptionHandling>
@@ -54,4 +58,7 @@
   <ItemGroup><Inf Include="ReviewOpsVirtualDisplay.inf" /></ItemGroup>
   <ItemGroup><FilesToPackage Include="$(TargetPath)" /></ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <Target Name="RequirePrototypeDriverIdentity" BeforeTargets="StampInf">
+    <Error Condition="'$(ReviewOpsDriverDate)' == '' Or '$(ReviewOpsDriverVersion)' == ''" Text="Build.ps1 must supply the explicit prototype driver date and version." />
+  </Target>
 </Project>

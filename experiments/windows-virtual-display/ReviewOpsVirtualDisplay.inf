@@ -11,22 +11,55 @@ DriverVer=11/07/2026,0.1.0.0
 PnpLockDown=1
 
 [Manufacturer]
-%Manufacturer%=Models,NTamd64.10.0...17134
+%Manufacturer%=Models,NTamd64.10.0...17134,NTamd64.10.0...22000
 
 [Models.NTamd64.10.0...17134]
-%DeviceName%=Install,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
-%DeviceName%=Install,ReviewOpsVirtualDisplayPrototype
+%DeviceName%=InstallWin10,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
+%DeviceName%=InstallWin10,ReviewOpsVirtualDisplayPrototype
+
+[Models.NTamd64.10.0...22000]
+%DeviceName%=InstallWin11,ROOT\REVIEWOPS_VIRTUAL_DISPLAY_PROTO
+%DeviceName%=InstallWin11,ReviewOpsVirtualDisplayPrototype
 
 [SourceDisksNames]
 1=%DiskName%
 [SourceDisksFiles]
 ReviewOpsVirtualDisplay.dll=1
 
-[Install.NT]
+; Windows 10 has no inbox WUDFRD.inf. Preserve existing reflector configuration.
+[InstallWin10.NT]
 CopyFiles=DriverCopy
 
-[Install.NT.HW]
+[InstallWin10.NT.HW]
 AddReg=DeviceSettings
+
+[InstallWin10.NT.Services]
+AddService=WUDFRd,0x000001fa,WUDFRDService
+
+[InstallWin10.NT.Wdf]
+UmdfService=ReviewOpsVirtualDisplay,DriverService
+UmdfServiceOrder=ReviewOpsVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
+
+; Windows 11 uses the inbox reflector INF rather than redeclaring its service.
+[InstallWin11.NT]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT
+CopyFiles=DriverCopy
+
+[InstallWin11.NT.HW]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.HW
+AddReg=DeviceSettings
+
+[InstallWin11.NT.Services]
+Include=WUDFRD.inf
+Needs=WUDFRD.NT.Services
+
+[InstallWin11.NT.Wdf]
+UmdfService=ReviewOpsVirtualDisplay,DriverService
+UmdfServiceOrder=ReviewOpsVirtualDisplay
+UmdfKernelModeClientPolicy=AllowKernelModeClients
 
 [DeviceSettings]
 HKR,,UpperFilters,0x00010000,"IndirectKmd"
@@ -38,9 +71,6 @@ HKR,,Security,0x00000000,"D:P(A;;GA;;;SY)(A;;GA;;;BA)"
 ; UMDF cannot call the KMDF-only WdfDeviceInitSetCharacteristics API.
 HKR,,DeviceCharacteristics,0x00010001,0x00000100
 
-[Install.NT.Services]
-AddService=WUDFRd,0x000001fa,WUDFRDService
-
 [WUDFRDService]
 DisplayName=%WudfDisplayName%
 ServiceType=1
@@ -48,20 +78,16 @@ StartType=3
 ErrorControl=1
 ServiceBinary=%12%\WUDFRd.sys
 
-[Install.NT.Wdf]
-UmdfService=ReviewOpsVirtualDisplay,DriverService
-UmdfServiceOrder=ReviewOpsVirtualDisplay
-UmdfKernelModeClientPolicy=AllowKernelModeClients
-
 [DriverService]
 UmdfLibraryVersion=2.25
-ServiceBinary=%12%\UMDF\ReviewOpsVirtualDisplay.dll
+ServiceBinary=%13%\ReviewOpsVirtualDisplay.dll
 UmdfExtensions=IddCx0102
 
 [DriverCopy]
 ReviewOpsVirtualDisplay.dll
 [DestinationDirs]
-DriverCopy=12,UMDF
+; UMDF run-from-Driver-Store is supported from Windows 10 version 1803.
+DriverCopy=13
 
 [Strings]
 Manufacturer="Season Framework"

@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Path $out -Force | Out-Null
 $reportPath = Join-Path $out 'build-report.json'
 $record = [ordered]@{
     schema = 1
-    scope = 'Unsigned x64 UMDF/IddCx compilation, static inspection and no-driver client admission'
+    scope = 'Unsigned x64 prototype build, target INF validation, catalog and no-driver client admission'
     status = 'running'
     startedAtUTC = [DateTime]::UtcNow.ToString('o')
     driverInstalled = $false
@@ -38,6 +38,16 @@ try {
     }
     $dirty = (& git -C $root status --porcelain --untracked-files=all -- . | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Commit the prototype inputs before building.' }
+    if (Test-Path Env:PRIVATE_DRIVER_PACKAGE) { throw 'PRIVATE_DRIVER_PACKAGE would override the reviewed driver identity.' }
+    $identity = Get-Content -LiteralPath (Join-Path $root 'DriverPackage.json') -Raw | ConvertFrom-Json
+    if ($identity.schema -ne 1 -or $identity.version -notmatch '^\d+\.\d+\.\d+\.\d+$' -or $identity.dateUTC -notmatch '^\d{4}-\d{2}-\d{2}$') { throw 'Invalid prototype driver identity.' }
+    foreach ($part in $identity.version.Split('.')) {
+        if ([uint64]$part -gt 65535) { throw 'A driver version component exceeds the INF range.' }
+    }
+    $identityDate = [DateTime]::ParseExact($identity.dateUTC, 'yyyy-MM-dd', [Globalization.CultureInfo]::InvariantCulture)
+    if ($identityDate.Date -gt [DateTime]::UtcNow.Date) { throw 'The driver date cannot be in the UTC future.' }
+    $driverDate = $identityDate.ToString('MM/dd/yyyy', [Globalization.CultureInfo]::InvariantCulture)
+    $record['driverPackageIdentity'] = [ordered]@{ version = $identity.version; dateUTC = $identity.dateUTC; generatedINFVerified = $false }
 
     $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere)) { throw 'Visual Studio discovery is unavailable.' }
@@ -86,9 +96,39 @@ try {
         sha256 = (Get-FileHash -LiteralPath $stampInf -Algorithm SHA256).Hash.ToLowerInvariant()
         bytes = (Get-Item -LiteralPath $stampInf).Length
     }
-    & $msbuild (Join-Path $root 'ReviewOpsVirtualDisplay.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" "/p:InfToolPath=$infToolPath" /p:InfToolArchitecture=Native64Bit /p:SignMode=Off /p:EnableInf2cat=false 2>&1 |
+    & $msbuild (Join-Path $root 'ReviewOpsVirtualDisplay.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" "/p:InfToolPath=$infToolPath" /p:InfToolArchitecture=Native64Bit "/p:ReviewOpsDriverDate=$driverDate" "/p:ReviewOpsDriverVersion=$($identity.version)" /p:SignMode=Off /p:EnableInf2cat=false 2>&1 |
         Tee-Object -FilePath (Join-Path $out 'msbuild.log')
     if ($LASTEXITCODE -ne 0) { throw 'The native driver compilation failed.' }
+    $generatedInf = Join-Path $out 'ReviewOpsVirtualDisplay.inf'
+    $infText = Get-Content -LiteralPath $generatedInf -Raw
+    $driverVerPattern = '(?im)^\s*DriverVer\s*=\s*' + [regex]::Escape($driverDate) + '\s*,\s*' + [regex]::Escape($identity.version) + '\s*$'
+    if ([regex]::Matches($infText, $driverVerPattern).Count -ne 1) { throw 'Generated INF identity differs from DriverPackage.json.' }
+    $record['driverPackageIdentity']['generatedINFVerified'] = $true
+    $selectionReport = Join-Path $out 'inf-section-selection.json'
+    & (Join-Path $root 'Inspect-InfSelection.ps1') -InfPath $generatedInf -OutputPath $selectionReport
+    $selection = Get-Content -LiteralPath $selectionReport -Raw | ConvertFrom-Json
+    if ($selection.status -ne 'passed-read-only-section-selection') { throw 'Native INF section selection did not pass.' }
+    $record['infSectionSelection'] = $selection
+    foreach ($profile in $selection.profiles) {
+        Write-Output "SetupAPI build $($profile.BuildNumber): $($profile.ModelsSection) -> $($profile.Models.ActualInstallSection -join ', ')"
+    }
+    $infVerif = Join-Path $root 'packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\tools\10.0.26100.0\x64\infverif.exe'
+    if (-not (Test-Path -LiteralPath $infVerif)) { throw 'The pinned native INF verifier is unavailable.' }
+    $record['infVerifier'] = [ordered]@{
+        sha256 = (Get-FileHash -LiteralPath $infVerif -Algorithm SHA256).Hash.ToLowerInvariant()
+        bytes = (Get-Item -LiteralPath $infVerif).Length
+    }
+    $profiles = @()
+    foreach ($build in @(17134, 19045, 22000, 26100)) {
+        $target = "NTAMD64.10.0...$build"
+        $log = Join-Path $out ("inf-applicability-$build.log")
+        Write-Output "INF static applicability: /u /v /info /osver $target ReviewOpsVirtualDisplay.inf"
+        & $infVerif /u /v /info /osver $target $generatedInf 2>&1 | Tee-Object -FilePath $log
+        $code = $LASTEXITCODE
+        $profiles += [ordered]@{ targetOS = $target; exitCode = $code; log = "inf-applicability-$build.log"; installedOrExecuted = $false }
+        $record['infApplicability'] = $profiles
+        if ($code -ne 0) { throw "INF static validation failed for $target." }
+    }
     & $msbuild (Join-Path $root 'ReviewOpsDisplayControl.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" 2>&1 |
         Tee-Object -FilePath (Join-Path $out 'client-build.log')
     if ($LASTEXITCODE -ne 0) { throw 'The native control client compilation failed.' }
@@ -163,9 +203,33 @@ try {
         machine = 'AMD64'
         signature = [string]$signature.Status
     }
+    # Prepare only this fresh output directory; no driver is staged or installed.
+    $packageDir = Join-Path $out 'unsigned-driver-package'
+    New-Item -ItemType Directory -Path $packageDir -ErrorAction Stop | Out-Null
+    Copy-Item -LiteralPath $dll -Destination (Join-Path $packageDir 'ReviewOpsVirtualDisplay.dll')
+    Copy-Item -LiteralPath $generatedInf -Destination (Join-Path $packageDir 'ReviewOpsVirtualDisplay.inf')
+    $inf2Cat = Join-Path $root 'packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\bin\10.0.26100.0\x86\Inf2Cat.exe'
+    if (-not (Test-Path -LiteralPath $inf2Cat)) { throw 'The pinned catalog generator is unavailable.' }
+    $catalogTargets = '10_RS4_X64,10_VB_X64,10_CO_X64,10_GE_X64'
+    Write-Output "Unsigned catalog preparation: Inf2Cat /driver:unsigned-driver-package /os:$catalogTargets /verbose"
+    & $inf2Cat "/driver:$packageDir" "/os:$catalogTargets" /verbose 2>&1 | Tee-Object -FilePath (Join-Path $out 'inf2cat.log')
+    if ($LASTEXITCODE -ne 0) { throw 'The unsigned catalog/package-layout validation failed.' }
+    $catalog = Join-Path $packageDir 'ReviewOpsVirtualDisplay.cat'
+    if (-not (Test-Path -LiteralPath $catalog)) { throw 'The unsigned driver catalog was not produced.' }
+    $catalogSignature = Get-AuthenticodeSignature -LiteralPath $catalog
+    if ($catalogSignature.Status -ne 'NotSigned') { throw 'The prototype catalog unexpectedly has a signature.' }
+    $record['unsignedDriverPackage'] = [ordered]@{
+        inf2catSHA256 = (Get-FileHash -LiteralPath $inf2Cat -Algorithm SHA256).Hash.ToLowerInvariant()
+        targets = $catalogTargets.Split(',')
+        catalogSignature = [string]$catalogSignature.Status
+        installed = $false
+        files = @(Get-ChildItem -LiteralPath $packageDir -File | ForEach-Object {
+            [ordered]@{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() }
+        })
+    }
     $record['outputs'] = @(Get-ChildItem -LiteralPath $out -File -Recurse |
-        Where-Object { $_.Extension -in @('.dll', '.inf', '.exe') } |
-        ForEach-Object { [ordered]@{ name = $_.Name; bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
+        Where-Object { $_.Extension -in @('.dll', '.inf', '.exe', '.cat') } |
+        ForEach-Object { [ordered]@{ name = $_.Name; relativePath = [IO.Path]::GetRelativePath($out, $_.FullName); bytes = $_.Length; sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant() } })
     $dirtyAfter = (& git -C $root status --porcelain --untracked-files=all -- . | Out-String).Trim()
     if ($LASTEXITCODE -ne 0 -or $dirtyAfter) { throw 'The build changed committed prototype inputs.' }
     $record['status'] = 'passed-build-and-no-driver-admission'

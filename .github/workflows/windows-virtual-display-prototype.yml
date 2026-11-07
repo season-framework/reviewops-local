@@ -38,5 +38,6 @@ jobs:
             experiments/windows-virtual-display/_out/*.dll
             experiments/windows-virtual-display/_out/*.exe
             experiments/windows-virtual-display/_out/**/*.inf
+            experiments/windows-virtual-display/_out/unsigned-driver-package/*
           retention-days: 7
           if-no-files-found: warn
