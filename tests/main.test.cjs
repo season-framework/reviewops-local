@@ -193,7 +193,9 @@ async function harness(t, options = {}) {
       const qa = require('../electron/qa-automation.cjs');
       return {...qa, createQaAutomation(options) { state.qaOptions = options;state.qaApi=qa.createQaAutomation(options);return state.qaApi; }};
     }
-    if (['./ops-management.cjs','./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    // Main's workspace/skill entry points use the actual scoped adapters and
+    // temporary persisted registry, just like its existing project adapter.
+    if (['./ops-management.cjs','./ops-workspace-tools.cjs','./ops-skills.cjs','./ops-skills-ipc.cjs','./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './codex/runtime.cjs') return {findRuntime:options.opsFindRuntime||require('../electron/codex/runtime.cjs').findRuntime};
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
@@ -4434,7 +4436,11 @@ test('Ops management IPC creates persistent conversations and typed tools add a 
  const created=await h.ops('managementCreate',{name:'Actual project management'},h.event(home)),id=created.managementConversations[0].id;
  await h.ops('managementRequest',{conversationId:id,instruction:'Create the requested local project.'},h.event(home));await h.state.opsManager.management.pump(id);
  const session=fixture.sessions.get(id),tool=session.options.tools.find(row=>row.name==='ops_projects_create'),context={callId:'ipc-project-add',threadId:session.threadId,turnId:session.turnId};
- const result=await tool.execute({name:'Created from management',workPath:h.root},context);
+ const request=(await h.ops('snapshot')).managementConversations.find(row=>row.id===id).requests.at(-1),before=(await h.success('snapshot')).projects.length;
+ assert.ok(request?.id,'Use the original request admitted through the actual management IPC.');
+ const missing=await tool.execute({name:'Must not create without a request',workPath:h.root},{...context,callId:'ipc-project-missing-request'});
+ assert.equal(missing.ok,false);assert.equal(missing.error.code,'INVALID_OPS_REQUEST');assert.equal((await h.success('snapshot')).projects.length,before);
+ const result=await tool.execute({requestId:request.id,name:'Created from management',workPath:h.root},context);
  assert.equal(result.ok,true,result.error?.message);const project=(await h.success('snapshot')).projects.find(row=>row.id===result.data.id);
  assert.equal(project.name,'Created from management');assert.equal(project.connection.rootPath,fs.realpathSync(h.root));
  const snapshot=await h.ops('snapshot');assert.ok(snapshot.managementConversations[0].conversation.some(row=>row.links?.some(link=>link.kind==='project'&&link.id===project.id)));
