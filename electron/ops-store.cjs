@@ -40,10 +40,22 @@ function validateOpsData(value){
     for(const h of g.history){if(!h||!UUID.test(h.id)||!text(h.type,80)||!text(h.reason||'',100000)||h.prompt!==undefined&&!text(h.prompt,2*1024*1024))fail();if(h.type==='qa.operation')validateQaReceipt(h,true);}
     for(const item of g.conversation)if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();
   }
+  if(value.managementConversations!==undefined){
+    if(!Array.isArray(value.managementConversations)||value.managementConversations.length>100)fail();
+    const conversations=new Set();
+    for(const row of value.managementConversations){
+      if(!row||!UUID.test(row.id)||conversations.has(row.id)||ids.has(row.id)||!text(row.name,200)||!row.name.trim()||!text(row.model,256)||!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(row.reasoningEffort)||!['idle','starting','running','unknown','error'].includes(row.executionState)||row.threadId!==null&&(!text(row.threadId,256)||!row.threadId||threads.has(row.threadId))||row.turnId!==null&&!text(row.turnId,256)||row.lastError!==null&&!text(row.lastError,2000)||!Array.isArray(row.conversation)||!Array.isArray(row.requests)||row.requests.length>10000||!Array.isArray(row.toolReceipts)||row.toolReceipts.length>10000)fail();
+      conversations.add(row.id);if(row.threadId)threads.add(row.threadId);
+      for(const item of row.conversation){if(!item||!text(item.id,256)||!['user','assistant','system','tool'].includes(item.role)||!text(item.text,4*1024*1024))fail();if(item.links!==undefined&&(!Array.isArray(item.links)||item.links.length>100||item.links.some(link=>!link||!['goal','project'].includes(link.kind)||!UUID.test(link.id)||!text(link.name,200))))fail();}
+      const requests=new Set(),calls=new Set();
+      for(const request of row.requests){if(!request||!UUID.test(request.id)||requests.has(request.id)||!text(request.instruction,100000)||!text(request.prompt,256*1024)||!['queued','prepared','accepted','unknown','completed','failed','interrupted','cancelled'].includes(request.status)||request.threadId!==null&&!text(request.threadId,256)||request.turnId!==null&&!text(request.turnId,256))fail();requests.add(request.id);}
+      for(const receipt of row.toolReceipts){if(!receipt||!text(receipt.callId,512)||!receipt.callId||calls.has(receipt.callId)||!/^ops_(projects|goals|schedules)_[a-z]+$/.test(receipt.tool)||!/^[a-f0-9]{64}$/.test(receipt.digest)||!text(receipt.threadId,256)||!text(receipt.turnId,256)||!['prepared','completed','failed','unknown'].includes(receipt.status)||receipt.result!==undefined&&(!receipt.result||typeof receipt.result!=='object'||Array.isArray(receipt.result)||typeof receipt.result.ok!=='boolean'||Buffer.byteLength(JSON.stringify(receipt.result))>256*1024))fail();calls.add(receipt.callId);}
+    }
+  }
   if(Buffer.byteLength(JSON.stringify(value))>MAX_STATE_BYTES)fail('Ops 기록이 64 MiB를 초과합니다. 기존 자료는 보존했습니다.');
-  return structuredClone(value);
+  const result=structuredClone(value);result.managementConversations??=[];return result;
 }
-function initial(){return {version:1,revision:0,commonPrompt:DEFAULT_PROMPT,goals:[]};}
+function initial(){return {version:1,revision:0,commonPrompt:DEFAULT_PROMPT,goals:[],managementConversations:[]};}
 class OpsStore{
   constructor({dataPath}){
     if(typeof dataPath!=='string'||!path.isAbsolute(dataPath))fail();
@@ -64,6 +76,6 @@ class OpsStore{
   }
   read(){return structuredClone(this.data);}
   update(change){const next=this.read();change(next);next.revision=this.data.revision+1;validateOpsData(next);this.persist(next);this.data=next;return this.read();}
-  restore(value,{pause=true}={}){const next=validateOpsData(value);next.revision=this.data.revision+1;for(const goal of next.goals){if(pause){if(goal.status!=='finished')goal.status='paused';goal.executionState=goal.threadId?'unknown':'idle';goal.waitingReason='백업에서 복원했습니다. 기존 세션을 확인한 뒤 재개하십시오.';}if(goal.qaBinding&&goal.qaBinding.state!=='unavailable')goal.qaBinding={...goal.qaBinding,state:'stale',reason:'복원한 QA 기록은 현재 앱의 창 연결 소유권을 부여하지 않습니다.'};for(const receipt of goal.qaReceipts||[])if(receipt.status==='prepared'){receipt.status='unknown';const history=goal.history.find(row=>row.type==='qa.operation'&&row.callId===receipt.callId);if(history)history.status='unknown';}}this.persist(next);this.data=next;return this.read();}
+  restore(value,{pause=true}={}){const next=validateOpsData(value);next.revision=this.data.revision+1;for(const goal of next.goals){if(pause){if(goal.status!=='finished')goal.status='paused';goal.executionState=goal.threadId?'unknown':'idle';goal.waitingReason='백업에서 복원했습니다. 기존 세션을 확인한 뒤 재개하십시오.';}if(goal.qaBinding&&goal.qaBinding.state!=='unavailable')goal.qaBinding={...goal.qaBinding,state:'stale',reason:'복원한 QA 기록은 현재 앱의 창 연결 소유권을 부여하지 않습니다.'};for(const receipt of goal.qaReceipts||[])if(receipt.status==='prepared'){receipt.status='unknown';const history=goal.history.find(row=>row.type==='qa.operation'&&row.callId===receipt.callId);if(history)history.status='unknown';}}for(const row of next.managementConversations){if(pause){row.executionState=row.threadId?'unknown':'idle';row.turnId=null;row.backgroundState=row.threadId?'unknown':'empty';row.backgroundCount=row.threadId?null:0;row.lastError=row.threadId?'백업에서 복원한 관리 대화입니다. 원래 실행을 다시 연결하여 확인하십시오.':null;for(const request of row.requests){if(request.status==='queued')request.status='cancelled';else if(['prepared','accepted'].includes(request.status))request.status='unknown';}for(const receipt of row.toolReceipts)if(receipt.status==='prepared')receipt.status='unknown';}}this.persist(next);this.data=next;return this.read();}
 }
 module.exports={OpsStore,validateOpsData,RECOVERY_POLICY,DEFAULT_PROMPT};

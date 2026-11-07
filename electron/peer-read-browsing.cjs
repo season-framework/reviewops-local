@@ -45,7 +45,7 @@ function captureApproval(input) {
 }
 function captureQuery(operation, payload) {
   const keys = operation === 'projects.list' ? [] : operation === 'reviews.list' ? ['projectId'] :
-    operation === 'reviews.get' ? ['projectId', 'reviewId'] : null;
+    ['reviews.get','reviews.timeline'].includes(operation) ? ['projectId', 'reviewId'] : null;
   if (!keys) fail('INVALID_QUERY');
   const captured = captureRecord(payload, keys, 'INVALID_QUERY');
   for (const key of keys) if (typeof captured[key] !== 'string' || !ID.test(captured[key])) fail('INVALID_QUERY');

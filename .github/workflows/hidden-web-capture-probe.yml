@@ -1,0 +1,50 @@
+name: Hidden owned web capture probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/hidden-web-capture-probe
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/hidden-web-capture-probe') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: win32-x64
+            runner: windows-latest
+          - target: darwin-x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 10
+    env:
+      REVIEWOPS_HOSTED_CAPTURE_PROBE: '1'
+      REVIEWOPS_MANUAL_CAPTURE_PROBE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          architecture: x64
+          cache: npm
+      - run: npm ci
+      - name: Check probe boundaries without launching Electron
+        run: node --test tests/hidden-web-capture-probe.test.cjs
+      - name: Observe independent synthetic owned windows
+        timeout-minutes: 6
+        run: node scripts/hidden-web-capture-probe.mjs
+      - name: Preserve diagnostic JSON only
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-hidden-capture-probe-${{ matrix.target }}
+          path: test-results/hidden-web-capture-probe/*.json
+          if-no-files-found: warn
+          retention-days: 1

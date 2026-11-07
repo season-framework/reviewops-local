@@ -14,8 +14,8 @@ const files = require('../electron/files.cjs');
 const MAIN_PATH = path.resolve(__dirname, '../electron/main.cjs');
 const MAIN_SOURCE = fs.readFileSync(MAIN_PATH, 'utf8');
 
-// Only Electron's process/window boundary and SSH are mocked. Persistence uses the
-// production store and vault on temporary files, including real SQL rollback.
+// Electron/SSH and the explicitly selected remote manager/provider seams are
+// mocked. Persistence uses the production store/vault on temporary files.
 async function harness(t, options = {}) {
   const root = fs.mkdtempSync('/tmp/reviewops-main-test-');
   const dataPath = path.join(root, options.defaultDataRoot ? 'ReviewOps Local' : 'data');
@@ -109,7 +109,7 @@ async function harness(t, options = {}) {
     ipcMain: { handle(name, callback) { handlers.set(name, callback); },removeHandler(name){handlers.delete(name);} },
     dialog: {
       async showOpenDialog(host,options) { state.dialogCalls.push({kind:'open',host,options});if(state.openHandler)return state.openHandler(host,options);return state.openResult || { canceled: true, filePaths: [] }; },
-      async showSaveDialog(host,options) { state.dialogCalls.push({kind:'save',host,options});return state.saveResult || { canceled: true }; },
+      async showSaveDialog(host,options) { state.dialogCalls.push({kind:'save',host,options});if(state.saveHandler)return state.saveHandler(host,options);return state.saveResult || { canceled: true }; },
       async showMessageBox() { state.messageCalls++; return { response: state.messageResponse }; },
       showMessageBoxSync(host,options) { state.unloadCalls++;(state.unloadPrompts||=[]).push({windowId:host.id,draft:host.draftText||'',options});return state.syncDialogHandler?state.syncDialogHandler(host,options):host.unloadResponse ?? state.unloadResponse; },
       showErrorBox(title, message) { state.startupErrors.push({ title, message }); }
@@ -130,6 +130,18 @@ async function harness(t, options = {}) {
   }
   const customRequire = name => {
     if (name === 'electron') return electron;
+    if (name === './remote-device-identity.cjs') return {createRemoteDeviceIdentity() {
+      return options.remoteIdentityProvider || Object.freeze({testOnly: true});
+    }};
+    if (name === './remote-management.cjs') return {createRemoteManagement(config) {
+      state.remoteConfig = config;
+      state.remoteManager = options.remoteManagementFactory?.({config,state});
+      return state.remoteManager;
+    }};
+    if (name === './remote-app-connections.cjs') return {createRemoteAppConnections(config) {
+      state.remoteConnections = options.remoteAppConnectionsFactory?.({config,state}) || {closeAndDrain:async()=>{}};
+      return state.remoteConnections;
+    }};
     if (name === './store.cjs') return { createStore(options) {
       const store = createStore(options); stores.push(store);
       if (options.dbPath === path.join(dataPath, 'reviewops.sqlite')) state.liveStore = store;
@@ -181,8 +193,9 @@ async function harness(t, options = {}) {
       const qa = require('../electron/qa-automation.cjs');
       return {...qa, createQaAutomation(options) { state.qaOptions = options;state.qaApi=qa.createQaAutomation(options);return state.qaApi; }};
     }
-    if (['./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./ops-management.cjs','./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
+    if (name === './codex/runtime.cjs') return {findRuntime:options.opsFindRuntime||require('../electron/codex/runtime.cjs').findRuntime};
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
     if (name === './model-targets.cjs') return require('../electron/model-targets.cjs');
@@ -208,8 +221,10 @@ async function harness(t, options = {}) {
     if(name==='./viewer-sessions.cjs')return require('../electron/viewer-sessions.cjs');
     throw new Error(`Unexpected module: ${name}`);
   };
-  t.after(() => {
-    appEvents.emit('will-quit');
+  t.after(async () => {
+    try { await state.remoteManager?.closeAndDrain(); }
+    catch (error) { state.remoteFixtureCloseError = error; }
+    appEvents.emit('will-quit',{preventDefault(){state.finalQuitPrevented=true;}});
     for (const store of stores) store.close();
     fs.rmSync(root, { recursive: true, force: true });
   });
@@ -4154,6 +4169,255 @@ test('local shared comment attachments observe queued deletion without widening 
   }
 });
 
+// These main-boundary tests mock the remote coordinator/provider. Actual Store
+// epochs and project-birth triggers remain real; this is not TLS or OS-key QA.
+const remotePayload = value => Object.assign(Object.create(null), value);
+function remoteGate() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return {promise, resolve, reject};
+}
+function syntheticRemoteManager(hooks = {}) {
+  return ({config,state}) => {
+    let closed = false, closing;
+    state.remoteCalls = [];
+    const manager = {
+      state() { state.remoteCalls.push('state'); return {generation: 1}; },
+      hasActiveWork() { return false; },
+      storeClosed() { return closed; },
+      pause() { state.remoteCalls.push('pause'); return hooks.pause?.({config,state}); },
+      closeAndDrain() {
+        if (!closing) closing = Promise.resolve().then(async () => {
+          state.remoteCalls.push('closeAndDrain'); await hooks.close?.({config,state}); closed = true;
+        });
+        return closing;
+      },
+      async publicCertificate(input, guard) {
+        guard(); state.remoteCalls.push('publicCertificate');
+        await hooks.publicCertificate?.({config,state,input,guard}); guard();
+        return {deviceId:'owned-test-device',address:'127.0.0.1',certificateFingerprint:'a'.repeat(64),
+          certificatePEM:'-----BEGIN CERTIFICATE-----\nTEST_ONLY\n-----END CERTIFICATE-----\n'};
+      }
+    };
+    for (const name of ['initializeIdentity','configureWeb','inviteBrowser','approveBrowser','revoke','disconnect',
+      'configureApp','inviteApp','approveApp','revokeApp']) {
+      manager[name] = async (input, guard) => {
+        guard(); state.remoteCalls.push(name); await hooks[name]?.({config,state,input,guard}); guard(); return {generation: 1};
+      };
+    }
+    return manager;
+  };
+}
+
+test('remote management admits only the original unbound main frame', async t => {
+  const h = await harness(t,{remoteManagementFactory:syntheticRemoteManager()}), a = await seed(h);
+  const main = h.forWindow(h.state.primaryWindow);
+  assert.deepEqual(await main.success('remoteManagement.state', remotePayload({})), {generation:1});
+  await main.success('window.openProject',{projectId:a.project.id});
+  const project = h.forWindow(await projectHost(h,a.project.id));
+  const result = await project.invoke('remoteManagement.state',remotePayload({}));
+  assert.equal(result.ok,false); assert.equal(result.error.code,'TARGET_MISMATCH');
+  assert.equal(h.state.remoteCalls.filter(name=>name==='state').length,1);
+  const foreign = {sender:h.state.primaryWindow.webContents,senderFrame:{url:'https://foreign.example'}};
+  assert.equal((await h.invoke('remoteManagement.state',remotePayload({}),foreign)).ok,false);
+});
+
+test('remote management queued admission cannot adopt a replacement main frame', async t => {
+  const h = await harness(t,{remoteManagementFactory:syntheticRemoteManager()}), a = await seed(h);
+  const main = h.forWindow(h.state.primaryWindow), unblock = await holdWriteAdmissionQueue(t,h,a.service.id);
+  let pending;
+  try {
+    pending = main.invoke('remoteManagement.configureWeb',remotePayload({expectedGeneration:1,bindAddress:'127.0.0.1',port:9443,enabled:true}));
+    h.state.primaryWindow.webContents.mainFrame = {url:'reviewops://app/index.html'};
+    await unblock(); const result = await pending;
+    assert.equal(result.ok,false); assert.equal(result.error.code,'ACCESS_DENIED');
+    assert.equal(h.state.remoteCalls.includes('configureWeb'),false);
+  } finally { await unblock(); if(pending)await pending; }
+});
+
+test('remote management approval captures project births before its queue wait', async t => {
+  const h = await harness(t,{remoteManagementFactory:syntheticRemoteManager()}), a = await seed(h);
+  const store=h.state.liveStore, main=h.forWindow(h.state.primaryWindow), before=store.peerReadDataset();
+  const unblock=await holdWriteAdmissionQueue(t,h,a.service.id); let pending;
+  try {
+    pending=main.invoke('remoteManagement.approveBrowser',remotePayload({expectedGeneration:1,pendingId:'pending-browser',projectIds:[a.project.id]}));
+    const row=store.db.prepare('SELECT * FROM projects WHERE id=?').get(a.project.id);
+    store.transaction(()=>{
+      store.db.prepare('DELETE FROM project_services WHERE projectId=?').run(a.project.id);
+      store.db.prepare('DELETE FROM reviews WHERE projectId=?').run(a.project.id);
+      store.db.prepare('DELETE FROM projects WHERE id=?').run(a.project.id);
+      store.db.prepare('INSERT INTO projects(id,groupId,name,description,createdAt,updatedAt) VALUES(?,?,?,?,?,?)')
+        .run(row.id,row.groupId,row.name,row.description,row.createdAt,row.updatedAt);
+    });
+    const after=store.peerReadDataset();
+    assert.equal(after.epoch,before.epoch);
+    assert.notEqual(after.projects.find(row=>row.projectId===a.project.id).birth,before.projects.find(row=>row.projectId===a.project.id).birth);
+    await unblock(); const result=await pending;
+    assert.equal(result.ok,false); assert.equal(result.error.code,'STALE_REMOTE_REQUEST');
+    assert.equal(h.state.remoteCalls.includes('approveBrowser'),false);
+  } finally { await unblock(); if(pending)await pending; }
+});
+
+test('remote management async control does not hold the read mutation queue', async t => {
+  const release=remoteGate(), entered=remoteGate(); let queued, readRan=false;
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({configureWeb:async({config})=>{
+    entered.resolve(); queued=config.enqueueRead(()=>{readRan=true; return 'read ran';});
+    await Promise.race([queued,release.promise]);
+  }})});
+  let pending;
+  try {
+    pending=h.invoke('remoteManagement.configureWeb',remotePayload({expectedGeneration:1,bindAddress:'127.0.0.1',port:9443,enabled:true}));
+    await entered.promise;
+    await waitForValue(()=>readRan,'Queued browser read was blocked by async control');
+    assert.equal((await pending).ok,true); assert.equal(await queued,'read ran');
+  } finally { release.resolve(); if(pending)await pending; if(queued)await queued; }
+});
+
+for(const order of ['read-before-import','read-after-import']) {
+  test(`remote management restore drains without a queue cycle: ${order}`,async t=>{
+    let closedAdmission=false, readPending;
+    const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({pause:()=>{
+      closedAdmission=true; return readPending;
+    }})}), a=await seed(h), main=h.forWindow(h.state.primaryWindow);
+    const unblock=await holdWriteAdmissionQueue(t,h,a.service.id); let restore, attempted;
+    const requestRead=()=>closedAdmission?Promise.reject(Object.assign(new Error('retired'),{code:'ACCESS_DENIED'})):
+      h.state.remoteConfig.enqueueRead(()=> 'earlier read');
+    try {
+      if(order==='read-before-import') readPending=requestRead();
+      restore=main.invoke('backup.import');
+      assert.equal(closedAdmission,true,'Pause must start before reserving the import queue slot');
+      attempted=requestRead().catch(error=>error);
+      await unblock();
+      assert.equal((await attempted).code,'ACCESS_DENIED');
+      if(readPending)assert.equal(await readPending,'earlier read');
+      assert.equal((await restore).data.cancelled,true);
+    } finally {
+      await unblock(); await Promise.allSettled([restore,attempted,readPending].filter(Boolean));
+    }
+  });
+}
+
+test('remote management restore reserves its original position before a delayed pause settles',async t=>{
+  const pause=remoteGate();
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({pause:()=>pause.promise})}), a=await seed(h), main=h.forWindow(h.state.primaryWindow);
+  h.state.openResult={canceled:false,filePaths:[sameIDAdmissionBackup(h,a.review.id)]};
+  const unblock=await holdWriteAdmissionQueue(t,h,a.service.id); let restore,edit,editSettled=false;
+  try {
+    restore=main.invoke('backup.import');
+    edit=main.invoke('review.save',{id:a.review.id,title:'Must not overtake restore'}).then(value=>{editSettled=true;return value;});
+    await unblock(); await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(editSettled,false,'A later local mutation overtook the reserved import');
+    pause.resolve(); assert.equal((await restore).ok,true);
+    assert.equal((await edit).error.code,'STALE_EPOCH');
+    assert.equal(h.state.liveStore.get('reviews',a.review.id).title,'Restored same-ID title');
+  } finally { pause.resolve(); await unblock(); await Promise.allSettled([restore,edit].filter(Boolean)); }
+});
+
+test('remote management public certificate export refuses a late replaced window before writing',async t=>{
+  const chosen=remoteGate(), entered=remoteGate();
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager()});
+  h.state.saveHandler=()=>{entered.resolve();return chosen.promise;};
+  const file=path.join(h.root,'public-test.crt'); let pending;
+  try {
+    pending=h.invoke('remoteManagement.exportPublicCertificate',remotePayload({expectedGeneration:1}));
+    await entered.promise; h.state.primaryWindow.webContents.mainFrame={url:'reviewops://app/index.html'};
+    chosen.resolve({canceled:false,filePath:file});
+    const result=await pending; assert.equal(result.ok,false); assert.equal(result.error.code,'ACCESS_DENIED');
+    assert.equal(fs.existsSync(file),false);
+  } finally { chosen.resolve({canceled:true});if(pending)await pending; }
+});
+
+test('remote management final Store retirement follows the original agent final callback',async t=>{
+  const final=remoteGate(), entered=remoteGate(); let run, closes=0;
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({close:({config})=>{
+    assert.equal(config.store.get('agent_runs',run.id).status,'completed'); config.store.close(); closes++;
+  }})}), a=await seed(h);
+  await h.success('service.save',{id:a.service.id,agentEnabled:1});
+  run=await h.success('agent.start',{reviewId:a.review.id,prompt:'Owned final callback'});
+  h.state.agentCloseGate=async()=>{entered.resolve();await final.promise;h.state.agentUpdate({...run,status:'completed',response:'Recorded before Store close',finishedAt:new Date().toISOString()});};
+  try {
+    h.state.primaryWindow.close(); h.appEvents.emit('before-quit',{preventDefault(){}}); await entered.promise;
+    assert.equal(closes,0); assert.equal(h.state.liveStore.get('agent_runs',run.id).status,'running');
+    final.resolve(); await waitForValue(()=>h.state.appQuitCalls,'Final app drain did not finish');
+    assert.equal(closes,1);
+    h.appEvents.emit('will-quit',{preventDefault(){assert.fail('Confirmed final close should permit quit');}});
+    assert.equal(closes,1,'will-quit must not close the manager-owned Store again');
+  } finally { final.resolve(); await h.state.remoteManager.closeAndDrain(); }
+});
+
+test('integrated quit waits for Ops cleanup before remote Store retirement',async t=>{
+  const draining=remoteGate(), release=remoteGate();let remoteCloses=0,opsClosed=false;
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({close:({config})=>{
+    assert.equal(opsClosed,true,'Remote Store retired before the original Ops cleanup');
+    config.store.close();remoteCloses++;
+  }})});
+  const closeOps=h.state.opsManager.close.bind(h.state.opsManager);
+  h.state.opsManager.close=async()=>{draining.resolve();await release.promise;await closeOps();opsClosed=true;};
+  try{
+    h.state.primaryWindow.close();h.appEvents.emit('before-quit',{preventDefault(){}});await draining.promise;
+    assert.equal(remoteCloses,0);assert.equal(h.state.appQuitCalls,0);assert.deepEqual(h.state.liveStore.snapshot().projects,[]);
+    release.resolve();await waitForValue(()=>h.state.appQuitCalls,'Integrated final drain did not finish');
+    assert.equal(remoteCloses,1);assert.equal(opsClosed,true);
+  }finally{release.resolve();await closeOps();await h.state.remoteManager.closeAndDrain();}
+});
+
+test('remote management retains the Store when an earlier app drain rejects',async t=>{
+  let closes=0;
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager({close:()=>{closes++;}})});
+  h.state.codexCloseError=true;
+  h.state.primaryWindow.close(); h.appEvents.emit('before-quit',{preventDefault(){}});
+  await waitForValue(()=>h.state.startupErrors.length,'Failed app drain did not report failure');
+  assert.equal(closes,0); assert.equal(h.state.appQuitCalls,0);
+  assert.equal(h.state.liveStore.snapshot().projects.length,0);
+  h.state.codexCloseError=false;
+});
+
+test('remote management app approval preserves selected births before its queue wait',async t=>{
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager()}),a=await seed(h),store=h.state.liveStore;
+  const unblock=await holdWriteAdmissionQueue(t,h,a.service.id);let pending;
+  try {
+    pending=h.invoke('remoteManagement.approveApp',remotePayload({expectedGeneration:1,id:'pending-app',
+      grants:[remotePayload({projectId:a.project.id,read:true,write:true,execute:true})]}));
+    const row=store.db.prepare('SELECT * FROM projects WHERE id=?').get(a.project.id);
+    store.transaction(()=>{
+      store.db.prepare('DELETE FROM project_services WHERE projectId=?').run(a.project.id);
+      store.db.prepare('DELETE FROM reviews WHERE projectId=?').run(a.project.id);
+      store.db.prepare('DELETE FROM projects WHERE id=?').run(a.project.id);
+      store.db.prepare('INSERT INTO projects(id,groupId,name,description,createdAt,updatedAt) VALUES(?,?,?,?,?,?)')
+        .run(row.id,row.groupId,row.name,row.description,row.createdAt,row.updatedAt);
+    });
+    await unblock();const result=await pending;assert.equal(result.error.code,'STALE_REMOTE_REQUEST');
+    assert.equal(h.state.remoteCalls.includes('approveApp'),false);
+  }finally{await unblock();if(pending)await pending;}
+});
+
+test('remote management agent launch rechecks its original peer guard after preflight',async t=>{
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager()}),a=await seed(h),release=remoteGate();
+  await h.success('service.save',{id:a.service.id,agentEnabled:1});h.state.preflightGate=release.promise;
+  let active=true,pending;
+  const guard=()=>{if(!active)throw Object.assign(new Error('Original peer revoked'),{code:'ACCESS_DENIED'});};
+  try {
+    pending=h.state.remoteConfig.executeAgent('agent.start',remotePayload({projectId:a.project.id,reviewId:a.review.id,prompt:'Owned remote task',requestId:'remote-main-owned'}),guard);
+    const refusal=assert.rejects(pending,{code:'ACCESS_DENIED'});
+    await waitForValue(()=>h.state.agentPreflights.length,'Remote launch did not enter preflight');
+    active=false;release.resolve();await refusal;
+    assert.equal(h.state.agentStarts.length,0);assert.equal(h.state.liveStore.listAgentRuns().length,0);
+  }finally{release.resolve();if(pending)await Promise.allSettled([pending]);}
+});
+
+test('remote app IPC withholds a late response after its original main frame is replaced',async t=>{
+  const entered=remoteGate(),release=remoteGate();
+  const h=await harness(t,{remoteManagementFactory:syntheticRemoteManager(),remoteAppConnectionsFactory:()=>({
+    async read(_input,guard){guard();entered.resolve();await release.promise;guard();return {version:1,projects:[]};},
+    async closeAndDrain(){}
+  })});let pending;
+  try {
+    pending=h.invoke('remoteApp.read',remotePayload({id:'owned-connection',operation:'projects.list',payload:remotePayload({})}));
+    await entered.promise;h.state.primaryWindow.webContents.mainFrame={url:'reviewops://app/index.html'};release.resolve();
+    const result=await pending;assert.equal(result.ok,false);assert.equal(result.error.code,'ACCESS_DENIED');
+  }finally{release.resolve();if(pending)await pending;}
+});
+
 test('Ops IPC permits the trusted home frame and denies project, QA and foreign frames',async t=>{
  const h=await harness(t),main=h.state.primaryWindow,a=await seed(h);
  const saved=await h.ops('saveGoal',{name:'Isolated Ops goal',description:'',prompt:'Inspect this target',workPath:h.root},h.event(main));
@@ -4163,6 +4427,30 @@ test('Ops IPC permits the trusted home frame and denies project, QA and foreign 
  const foreign={sender:main.webContents,senderFrame:{url:'https://example.invalid'}};
  await assert.rejects(h.ops('snapshot',undefined,foreign),{code:'OPS_ACCESS_DENIED'});
  assert.equal((await h.ops('snapshot',undefined,h.event(main))).goals.length,1);
+});
+
+test('Ops management IPC creates persistent conversations and typed tools add a real application project',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),home=h.state.primaryWindow;
+ const created=await h.ops('managementCreate',{name:'Actual project management'},h.event(home)),id=created.managementConversations[0].id;
+ await h.ops('managementRequest',{conversationId:id,instruction:'Create the requested local project.'},h.event(home));await h.state.opsManager.management.pump(id);
+ const session=fixture.sessions.get(id),tool=session.options.tools.find(row=>row.name==='ops_projects_create'),context={callId:'ipc-project-add',threadId:session.threadId,turnId:session.turnId};
+ const result=await tool.execute({name:'Created from management',workPath:h.root},context);
+ assert.equal(result.ok,true,result.error?.message);const project=(await h.success('snapshot')).projects.find(row=>row.id===result.data.id);
+ assert.equal(project.name,'Created from management');assert.equal(project.connection.rootPath,fs.realpathSync(h.root));
+ const snapshot=await h.ops('snapshot');assert.ok(snapshot.managementConversations[0].conversation.some(row=>row.links?.some(link=>link.kind==='project'&&link.id===project.id)));
+ assert.ok(h.state.windowMessages.some(row=>row.channel==='reviewops:data-change'));
+ await assert.rejects(h.ops('managementCreate',{action:'project.delete'}),{code:'INVALID_OPS_REQUEST'});
+ await assert.rejects(h.ops('managementDispatch',{action:'project.delete',id:project.id}),/지원하지 않는 Ops 요청/);
+ await h.ops('managementAction',{conversationId:id,action:'stop'});assert.equal((await h.ops('snapshot')).managementConversations[0].executionState,'idle');
+});
+
+test('Ops management methods are denied to project and foreign frames before conversations or tools are created',async t=>{
+ const h=await harness(t),home=h.state.primaryWindow,a=await seed(h);await h.forWindow(home).success('window.openProject',{projectId:a.project.id});const project=await projectHost(h,a.project.id);
+ for(const method of ['managementCreate','managementRequest','managementAction']){
+  await assert.rejects(h.ops(method,{},h.event(project)),{code:'OPS_ACCESS_DENIED'});
+  await assert.rejects(h.ops(method,{}, {sender:home.webContents,senderFrame:{url:'https://example.invalid'}}),{code:'OPS_ACCESS_DENIED'});
+ }
+ assert.equal((await h.ops('snapshot',undefined,h.event(home))).managementConversations.length,0);
 });
 
 test('Ops goal save revalidates its original window after asynchronous target resolution',async t=>{
@@ -4200,6 +4488,29 @@ test('Ops project targets retain committed birth and require confirmation after 
  const saved=await h.ops('saveGoal',input),goal=saved.goals[0];assert.ok(Number.isSafeInteger(goal.projectBirth));assert.equal((await h.state.opsOptions.resolveTarget(goal)).workPath,fs.realpathSync(h.root));
  h.state.liveStore.importData(h.state.liveStore.exportData());await assert.rejects(h.state.opsOptions.resolveTarget(goal),{code:'OPS_PROJECT_CHANGED'});
  const confirmed=await h.ops('saveGoal',{...input,id:goal.id});assert.notEqual(confirmed.goals[0].projectEpoch,goal.projectEpoch);assert.equal((await h.state.opsOptions.resolveTarget(confirmed.goals[0])).workPath,fs.realpathSync(h.root));
+});
+
+test('Ops local project execution resolves its catalog binary while management keeps the global runtime',async t=>{
+ const looked=[],custom='/explicit/project-codex',fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create,opsFindRuntime:async binary=>{looked.push(binary);return {available:true,command:binary,path:binary,args:[],version:'0.166.0-alpha.5.1'};}}),a=await seed(h);
+ await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentWorkPath:'',agentBinary:custom});
+ const saved=await h.ops('saveGoal',{name:'Custom local runtime',prompt:'Use this environment.',projectId:a.project.id,serviceId:a.service.id,workPath:''}),goal=saved.goals[0];
+ const runtime=await h.state.opsOptions.resolveRuntime(goal);assert.equal(runtime.command,custom);assert.deepEqual(looked,[custom]);
+ const catalogs=await h.success('modelCache.state');assert.ok(catalogs.targets.some(row=>row.label.includes(custom)),'The selected project catalog is bound to that same custom executable');
+ await h.ops('goalAction',{goalId:goal.id,action:'start'});await h.state.opsManager.pumpAll();assert.equal((await fixture.sessions.get(goal.id).options.resolveRuntime()).command,custom);
+ const created=await h.ops('managementCreate',{}),id=created.managementConversations[0].id;await h.ops('managementRequest',{conversationId:id,instruction:'Read existing goals.'});await h.state.opsManager.management.pump(id);
+ assert.equal(fixture.sessions.get(id).options.resolveRuntime,h.state.opsOptions.runtime,'Management conversations keep the configured global runtime');
+});
+
+test('Ops runtime resolution refuses a project binary changed during asynchronous validation',async t=>{
+ let release,entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve),h=await harness(t,{opsFindRuntime:async binary=>{entered();await gate;return {available:true,command:binary,args:[],version:'0.166.0-alpha.5.1'};}}),a=await seed(h);t.after(()=>release());
+ await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentBinary:'/original/codex'});const goal=(await h.ops('saveGoal',{name:'Original binary',prompt:'Preserve target.',projectId:a.project.id,serviceId:a.service.id,workPath:''})).goals[0];
+ const pending=h.state.opsOptions.resolveRuntime(goal);await ready;await h.success('service.save',{id:a.service.id,agentBinary:'/replacement/codex'});release();await assert.rejects(pending,{code:'OPS_TARGET_CHANGED'});
+});
+
+test('Ops delivery requires explicit target confirmation after an external local binary change',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await seed(h);await h.success('service.save',{id:a.service.id,kind:'local',rootPath:h.root,agentBinary:'codex'});
+ const goal=(await h.ops('saveGoal',{name:'Retained global default',prompt:'Use original target.',projectId:a.project.id,serviceId:a.service.id,workPath:''})).goals[0];await h.success('service.save',{id:a.service.id,agentBinary:'/changed/codex'});
+ await h.ops('goalAction',{goalId:goal.id,action:'start'});await h.state.opsManager.pumpAll();const changed=(await h.ops('snapshot')).goals[0];assert.equal(changed.executionState,'error');assert.match(changed.lastError,/Codex/);assert.equal(fixture.sessions.size,0,'A changed executable cannot start or adopt a session silently');
 });
 
 

@@ -41,3 +41,21 @@
 .model-catalog-list dt{min-width:100px;color:var(--muted);font-size:11px}
 .model-catalog-list dd{margin:0;color:var(--text);font-size:12px}
 @media(max-width:800px){.workspace-app .settings-content.settings-layout{grid-template-columns:minmax(0,1fr);grid-template-rows:auto minmax(0,1fr)}.settings-section-menu{flex-direction:row;gap:6px;border-right:0;border-bottom:1px solid var(--border);padding:10px 12px;overflow-x:auto}.settings-section-menu>button{min-height:40px;flex:1 0 auto;justify-content:center;white-space:nowrap}.settings-section-menu svg{display:none}.settings-section-content{padding:0 16px 24px}.model-cache-targets summary small{margin-left:24px;width:100%}}
+
+.remote-management-settings .settings-panel{padding-bottom:24px;border-bottom:1px solid var(--border)}
+.remote-management-settings .field-row{display:flex;flex-wrap:wrap;gap:12px;margin:16px 0}
+.remote-management-settings .field{display:flex;flex-direction:column;gap:8px;margin:12px 0;max-width:100%;min-width:0}
+.remote-management-settings input:not([type=checkbox]),.remote-app-connections input,.remote-app-connections textarea{border:1px solid var(--border);border-radius:5px;background:var(--input);color:var(--text);padding:9px 10px;font:inherit;min-width:0;max-width:100%}
+.remote-management-settings input[type=checkbox]{accent-color:var(--accent);margin-right:8px}
+.remote-management-settings .button{margin:4px 8px 4px 0}
+.remote-management-settings fieldset{border:1px solid var(--border);border-radius:6px;padding:16px;margin:12px 0;min-width:0}
+.remote-management-settings code,.remote-app-connections code{overflow-wrap:anywhere;white-space:pre-wrap}
+.remote-management-settings dl{display:grid;grid-template-columns:minmax(100px,180px) minmax(0,1fr);gap:8px;margin:16px 0}
+.remote-management-settings dd{margin:0;overflow-wrap:anywhere}
+.remote-management-settings dt{color:var(--muted)}
+.remote-project-grant{display:flex;flex-wrap:wrap;gap:8px 20px;margin:12px 0}
+.remote-secret{display:block;padding:12px;background:var(--app);border:1px solid var(--border)}
+.remote-app-connections label{display:flex;flex-direction:column;gap:6px;margin:12px 0}
+.remote-app-connections textarea{min-height:100px;width:100%}
+.remote-app-connections .remote-host{border:1px solid var(--border);border-radius:6px;padding:16px;margin:12px 0}
+@media(max-width:600px){.remote-management-settings dl{grid-template-columns:minmax(0,1fr)}.remote-management-settings dd{margin-bottom:8px}}

@@ -1,0 +1,57 @@
+name: Experimental macOS virtual display lifecycle
+on:
+  workflow_dispatch:
+    inputs:
+      acknowledge_disposable_runner:
+        description: 'Create one experimental display on a disposable hosted runner; may alter runner topology'
+        required: true
+        type: boolean
+        default: false
+  push:
+    branches: [codex/macos-virtual-display-prototype]
+permissions:
+  contents: read
+concurrency:
+  group: macos-virtual-display-prototype-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  lifecycle:
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/macos-virtual-display-prototype') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.acknowledge_disposable_runner == true))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            runner: macos-15
+            arch: arm64
+          - target: darwin-x64
+            runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    env:
+      REVIEWOPS_MANUAL_DISPLAY_PROBE: ${{ github.event_name == 'workflow_dispatch' && inputs.acknowledge_disposable_runner == true && '1' || '0' }}
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          architecture: ${{ matrix.arch }}
+      - name: Check execution gates and inventory result contracts
+        run: node --test tests/macos-virtual-display-probe.test.cjs
+      - name: Create, observe and release exactly one disposable owned display
+        env:
+          PROBE_EXPECTED_ARCH: ${{ matrix.arch }}
+        run: node experiments/macos-virtual-display/run-probe.mjs --ci
+      - name: Upload bounded lifecycle evidence even when unsupported or failed
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-virtual-display-probe-${{ matrix.target }}
+          path: |
+            test-results/virtual-display-probe/*.json
+            test-results/virtual-display-probe/*.log
+          retention-days: 7
+          if-no-files-found: warn

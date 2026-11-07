@@ -77,6 +77,7 @@ const invokeOps=method=>(...args)=>ipcRenderer.invoke('ops:invoke',method,...arg
 contextBridge.exposeInMainWorld('opsManager',Object.freeze({
   snapshot:invokeOps('snapshot'),saveGoal:invokeOps('saveGoal'),deleteGoal:invokeOps('deleteGoal'),goalAction:invokeOps('goalAction'),
   saveSchedule:invokeOps('saveSchedule'),deleteSchedule:invokeOps('deleteSchedule'),preview:invokeOps('preview'),configure:invokeOps('configure'),
+  managementCreate:invokeOps('managementCreate'),managementRequest:invokeOps('managementRequest'),managementAction:invokeOps('managementAction'),
   onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-state',listener);}
 }));
 

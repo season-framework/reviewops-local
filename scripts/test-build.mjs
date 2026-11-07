@@ -58,9 +58,9 @@ export async function buildRenderer({ directory = root, generateLicenses = true 
     await run(process.execPath, args, { cwd: directory, timeout: 180000, maxBuffer: 8 * 1024 ** 2 });
   }
 }
-export async function buildNativePackage(target, packageRoot) {
+export async function buildNativePackage(target, packageRoot, {execute = run, env = process.env} = {}) {
   const arch = target.split('-')[1], platformArgs = target.startsWith('darwin') ? ['--mac', 'dmg'] : ['--win', 'nsis'];
-  await run(process.execPath, [require.resolve('electron-builder/cli.js'), ...platformArgs, `--${arch}`, `--config.directories.output=${packageRoot}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...process.env, CSC_IDENTITY_AUTO_DISCOVERY: 'false' } });
+  await execute(process.execPath, [require.resolve('electron-builder/cli.js'), '--config', path.join(root,'scripts/electron-builder.config.cjs'), ...platformArgs, `--${arch}`, '--publish', 'never'], { cwd: root, timeout: 900000, maxBuffer: 8 * 1024 ** 2, env: { ...env, REVIEWOPS_PACKAGE_OUTPUT: packageRoot, CSC_IDENTITY_AUTO_DISCOVERY: env.CSC_IDENTITY_AUTO_DISCOVERY ?? 'false' } });
 }
 export async function packageTestBuild({ target, number, developmentNumber, commit, builtAt }) {
   if (!TARGETS.includes(target) || target !== `${process.platform}-${process.arch}`) throw new Error('해당 운영체제에서 빌드를 실행하십시오.');
