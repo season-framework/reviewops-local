@@ -18,6 +18,7 @@ async function harness(t){
 test('workspace context rejects extra instructions and freezes real dataset/project/review identity',async t=>{
  const h=await harness(t),input={view:'project',section:'review',projectId:h.a.id,reviewId:h.review.id},requestId=await h.start(input);input.projectId=h.b.id;
  const row=h.manager.snapshot().managementConversations[0].requests[0];assert.equal(row.context.projectId,h.a.id);assert.ok(row.context.projectBirth>0);assert.ok(row.context.reviewGeneration>0);assert.ok(row.context.datasetEpoch);assert.equal(row.context.windowId,'owned-window');assert.ok(row.prompt.includes('untrusted task material'));assert.ok(row.prompt.includes('default publishing destination is this local ReviewOps'));assert.ok(!row.prompt.includes(h.review.body));
+ const screen=await h.call('ops_screen_read',{requestId});assert.equal(screen.ok,true);assert.deepEqual(screen.data.context,row.context);
  assert.throws(()=>validateManagementContext({view:'project',instruction:'evil'},true),{code:'INVALID_OPS_CONTEXT'});
  const read=await h.call('ops_reviews_read',{requestId});assert.equal(read.ok,true);assert.equal(read.data.review.id,h.review.id);assert.equal(read.data.review.body,h.review.body);
  const mismatch=await h.call('ops_reviews_read',{requestId,projectId:h.b.id});assert.equal(mismatch.ok,false);assert.equal(mismatch.error.code,'OPS_TARGET_MISMATCH');
