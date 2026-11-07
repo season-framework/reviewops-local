@@ -1,0 +1,57 @@
+name: Experimental Windows driver package staging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-virtual-display-prototype]
+    paths:
+      - 'experiments/windows-virtual-display/ExperimentCIContext.ps1'
+      - 'experiments/windows-virtual-display/Test-ExperimentCIContext.ps1'
+      - 'experiments/windows-virtual-display/PackageStaging.h'
+      - 'experiments/windows-virtual-display/PackageStaging.cpp'
+      - 'experiments/windows-virtual-display/PackageStagingTests.cpp'
+      - 'experiments/windows-virtual-display/PackageAdmission.h'
+      - 'experiments/windows-virtual-display/PackageAdmission.cpp'
+      - 'experiments/windows-virtual-display/ReviewOpsPackageStaging.vcxproj'
+      - 'experiments/windows-virtual-display/ReviewOpsPackageStagingTests.vcxproj'
+      - 'experiments/windows-virtual-display/Build-PackageStaging.ps1'
+      - 'experiments/windows-virtual-display/Directory.Build.props'
+      - 'experiments/windows-virtual-display/packages.config'
+      - '.github/workflows/windows-driver-package-staging.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-driver-package-staging
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: github.repository == 'season-framework/reviewops-local' && ((github.event_name == 'push' && github.ref == 'refs/heads/codex/windows-virtual-display-prototype') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'))
+    runs-on: windows-2022
+    env:
+      REVIEWOPS_MANUAL_DISPLAY_PROBE: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Check explicit CI admission without native effects
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Test-ExperimentCIContext.ps1
+      - name: Compile production staging and inspect owned copy primitives
+        shell: pwsh
+        run: ./experiments/windows-virtual-display/Build-PackageStaging.ps1
+      - name: Preserve native staging evidence
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-windows-package-staging
+          path: |
+            experiments/windows-virtual-display/_out/package-staging-build.json
+            experiments/windows-virtual-display/_out/package-staging-*.log
+            experiments/windows-virtual-display/_out/staging/*.exe
+            experiments/windows-virtual-display/_out/staging/*.lib
+          retention-days: 7
+          if-no-files-found: warn
