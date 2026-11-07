@@ -166,6 +166,41 @@ test('unfinished executions are marked interrupted after restart and completed c
   assert.equal(reopened.snapshot().activities.filter(item=>item.role==='agent').length,1);
 });
 
+test('restart keeps the latest 100 progress entries and counts omissions once without changing preserved runs', t => {
+  const f=setup(t),cases=[
+    {count:100,omitted:23,kept:100,first:2,nextOmitted:24},
+    {count:0,omitted:undefined,kept:1,first:1,nextOmitted:0},
+    {count:99,omitted:undefined,kept:100,first:1,nextOmitted:0},
+    {count:200,omitted:undefined,kept:100,first:102,nextOmitted:101},
+    {count:100,omitted:Number.MAX_SAFE_INTEGER,kept:100,first:2,nextOmitted:Number.MAX_SAFE_INTEGER}
+  ];
+  const runs=cases.map((value,index)=>start(f,{
+    status:index%2?'queued':'running',response:`Partial response ${index}`,
+    progress:Array.from({length:value.count},(_,i)=>({sequence:i+1,state:'running',message:`Step ${i+1}`,step:'execution',createdAt:'2026-11-07T07:00:00.000Z'})),
+    ...(value.omitted===undefined?{}:{progressOmitted:value.omitted})
+  }));
+  const completed=start(f,{status:'completed',response:'Completed response',progressOmitted:23});
+  const remote=f.store.saveService({groupId:f.group.id,name:'Preserved SSH',kind:'ssh',host:'example.test',username:'test',rootPath:'/tmp/project'});
+  f.store.saveProject({id:f.project.id,serviceIds:[f.service.id,remote.id]});
+  const preserved=start(f,{serviceId:remote.id,workPath:'/tmp/project',remoteExecution:{version:1,ready:true,stdoutOffset:1,stderrOffset:0}});
+  f.store.close();const reopened=f.open();
+  assert.equal(reopened.interruptAgentRuns({preserveRemote:true}).length,cases.length);
+  for(let index=0;index<cases.length;index++){
+    const value=cases[index],run=reopened.get('agent_runs',runs[index].id);
+    assert.equal(run.status,'interrupted');assert.equal(run.response,`Partial response ${index}`);
+    assert.equal(run.progress.length,value.kept);assert.equal(run.progress[0].sequence,value.first);
+    assert.equal(run.progress.at(-1).sequence,value.count+1);assert.equal(run.progress.at(-1).state,'interrupted');
+    assert.equal(run.progress.at(-1).message,run.error);assert.ok(run.finishedAt);
+    assert.equal(run.progressOmitted,value.nextOmitted);
+  }
+  assert.deepEqual(reopened.get('agent_runs',completed.id),completed);
+  assert.deepEqual(reopened.get('agent_runs',preserved.id),preserved);
+  const before=reopened.exportData();
+  assert.equal(reopened.interruptAgentRuns({preserveRemote:true}).length,0);
+  assert.deepEqual(reopened.exportData(),before);
+  reopened.close();assert.deepEqual(f.open().exportData(),before);
+});
+
 test('restart preserves only confirmed remote agent jobs and backup restore still interrupts them',t=>{
   const f=setup(t),remote=f.store.saveService({groupId:f.group.id,name:'SSH 작업',kind:'ssh',host:'example.test',username:'test',rootPath:'/tmp/project'});
   f.store.saveProject({id:f.project.id,serviceIds:[f.service.id,remote.id]});
