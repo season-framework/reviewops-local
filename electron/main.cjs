@@ -164,12 +164,31 @@ function setQaScope(record,active){
   if(record.qaActive===active)return;
   qaScopeIncarnations.set(record,Object.freeze(Object.create(null)));
   record.qaActive=active;
+  if(!active&&record.qaControllerMetadata)setQaController(record,null);
   record.qaScopeReady=false;
   if(!active)record.pendingQaScope?.reject(new Error('프로젝트 QA 연결이 해제되었습니다.'));
   if(!record.host.isDestroyed()){
     record.host.webContents.send('reviewops:qa-scope',{projectId:active?record.projectId:''});
     record.host.webContents.send('reviewops:data-change',{revision:++dataRevision});
   }
+}
+function setQaController(record,value){
+  record.qaControllerMetadata=value;
+  if(!record.host.isDestroyed())record.host.webContents.send('reviewops:qa-controller',value);
+}
+function captureQaControllerTarget({projectId,reviewId}){
+  const originalStore=store,dataset=originalStore.peerReadDataset(),birth=dataset.projects.find(row=>row.projectId===projectId)?.birth;
+  if(!birth)throw Object.assign(new Error('The original QA project is unavailable.'),{code:'QA_CONTROLLER_STALE'});
+  const admission=originalStore.captureWriteAdmission(),review=reviewId?originalStore.captureAttachmentWriteAdmission(admission,Object.assign(Object.create(null),{reviewId,projectId})):null;
+  return ()=>{
+    try{
+      if(restoring||quitting||updater?.installing||store!==originalStore)throw new Error();
+      originalStore.assertWriteAdmission(admission);
+      const current=originalStore.peerReadDataset();
+      if(current.epoch!==dataset.epoch||current.projects.find(row=>row.projectId===projectId)?.birth!==birth)throw new Error();
+      if(review)originalStore.assertAttachmentWriteAdmission(review);
+    }catch{throw Object.assign(new Error('The original QA project or review changed. No request was replayed.'),{code:'QA_CONTROLLER_STALE'});}
+  };
 }
 async function waitForQaScope(record){
   if(record.qaScopeReady)return;
@@ -1154,7 +1173,7 @@ async function dispatch(action, payload = {}, originalFrame, originalReader) {
     throw new Error('지원하지 않는 모델 목록 요청입니다.');
   }
   if (updater?.installing && !['snapshot','app.info','integration.pending','integration.displayed'].includes(action) && !windowActions.has(action)) throw new Error('ReviewOps is restarting to install an update.');
-  if (action === 'window.context') {const record=currentWindowRecord();return {windowId:record.id,projectId:record.projectId,...(record.qaActive?{qaProjectId:record.projectId}:{})};}
+  if (action === 'window.context') {const record=currentWindowRecord();return {windowId:record.id,projectId:record.projectId,...(record.qaActive?{qaProjectId:record.projectId}:{}),...(record.qaControllerMetadata?{qaController:record.qaControllerMetadata}:{})};}
   if (action === 'window.qaReady') {const record=currentWindowRecord();if(!record.qaActive||payload.projectId!==record.projectId)return {accepted:false};record.qaScopeReady=true;record.pendingQaScope?.resolve();return {accepted:true};}
   if (action === 'window.navigation') return currentWindowRecord().pendingNavigation || null;
   if (action === 'window.openProject') {
@@ -1899,6 +1918,8 @@ else {
       const result=actionQueue.then(execute);actionQueue=result.catch(()=>{});return result;
     };
     qaAutomation=require('./qa-automation.cjs').createQaAutomation({
+      appInstanceId,captureControllerTarget:captureQaControllerTarget,
+      onControllerChange:(windowId,value)=>{const record=[...windowContexts.values()].find(item=>item.id===windowId);if(record&&record.projectId===value.projectId)setQaController(record,value);},
       getProject:id=>store.snapshot().projects.find(project=>project.id===id),
       getWindow:id=>[...windowContexts.values()].find(record=>record.id===id),
       openWindow:async({projectId,reviewId},guard=()=>{})=>{

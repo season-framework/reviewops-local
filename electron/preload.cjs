@@ -14,6 +14,12 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
     ipcRenderer.on('reviewops:qa-scope',listener);
     return()=>ipcRenderer.removeListener('reviewops:qa-scope',listener);
   },
+  ...(process.isMainFrame?{onQaController:callback=>{
+    if(typeof callback!=='function')return()=>{};
+    const listener=(_event,value)=>callback(value);
+    ipcRenderer.on('reviewops:qa-controller',listener);
+    return()=>ipcRenderer.removeListener('reviewops:qa-controller',listener);
+  }}:{}),
   ...(process.isMainFrame?{copyText:text=>invoke('clipboard.writeText',{text})}:{}),
   onUpdateState: callback => {
     if (typeof callback !== 'function') return () => {};

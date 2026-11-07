@@ -11,6 +11,7 @@ import {displayBuildVersion} from './build-version.mjs';
 import useWorkspaceTabOrder from './useWorkspaceTabOrder.js';
 import {CodexManagement} from './codex/CodexManagement.jsx';
 import OpsWorkspace from './OpsWorkspace.jsx';
+import {qaControllerMetadata,QaControllerBadge} from './qa-controller-badge.mjs';
 import {deletionTargets,deletedTab,clearDeletionDrafts} from './deletion.mjs';
 import {HOME_TAB,readWindowContext,windowStorageKeys,restoreWindowTabs,externalProjectRequest,projectNavigationUpdate,dirtyTabSet,preserveDeletedDrafts,qaWindowView} from './window-context.mjs';
 import {EMPTY, date, invoke, Button, Empty, Field, Dialog, TrustDialog, EntityDialog, FileContent, DataSettings} from './components.jsx';
@@ -37,6 +38,7 @@ export default function App() {
  const [dark,setDark]=useState(()=>localStorage.getItem('reviewops.theme')==='dark'),[expanded,setExpanded]=useState(()=>localStorage.getItem('reviewops.sidebar.expanded')==='true');
  const [windowState,setWindowState]=useState({maximized:false,fullScreen:false}),[windowChanging,setWindowChanging]=useState(false);
  const [qaProject,setQaProject]=useState(''),qaScopeRef=useRef('');
+ const [qaController,setQaController]=useState(null);
  const qaScoped=Boolean(windowContext.projectId&&qaProject===windowContext.projectId);
  const [openingProject,setOpeningProject]=useState(''),projectWindowPending=useRef(false);
  const [homeSelection,setHomeSelection]=useState({id:'',request:0});
@@ -58,11 +60,13 @@ export default function App() {
  };
  useEffect(()=>{reload().catch(e=>{setError(e.message);setReady(true)})},[]);
  useEffect(()=>{
-  let live=true;
+  let live=true,scopeEventSeen=false,controllerEventSeen=false;
   const apply=value=>{if(!live)return;const project=value===windowContext.projectId?value:'';if(project===qaScopeRef.current)return;qaScopeRef.current=project;setQaProject(project);if(project){setModal(null);setClosePending(null);}reload().catch(error=>{if(live)setError(error.message)});};
-  const unsubscribe=window.reviewops?.onQaScope?.(apply);
-  invoke('window.context').then(value=>apply(value.qaProjectId||'')).catch(()=>{});
-  return()=>{live=false;unsubscribe?.()};
+  const applyController=value=>{if(live)setQaController(qaControllerMetadata(value,windowContext.projectId));};
+  const unsubscribe=window.reviewops?.onQaScope?.(value=>{scopeEventSeen=true;if(!value&&live)setQaController(null);apply(value)});
+  const unsubscribeController=window.reviewops?.onQaController?.(value=>{controllerEventSeen=true;applyController(value)});
+  invoke('window.context').then(value=>{if(!scopeEventSeen)apply(value.qaProjectId||'');if(!controllerEventSeen)applyController(value.qaController??null)}).catch(()=>{});
+  return()=>{live=false;unsubscribe?.();unsubscribeController?.()};
  },[]);
  useEffect(()=>{if(qaScoped)invoke('window.qaReady',{projectId:qaProject}).catch(error=>setError(error.message));},[qaScoped,qaProject]);
  useEffect(()=>{
@@ -306,7 +310,7 @@ export default function App() {
   </aside>
   <main className="workspace-main" aria-label={windowProject?`${windowProject.name} · ReviewOps`:'ReviewOps'}>
    <div className="workspace-tabs" role="tablist" aria-label={t("작업 탭")}><div ref={tabOrder.listRef} className={`workspace-tab-list reviewops-tab-strip ${tabOrder.draggedTabId?'is-reordering':''}`}>{visibleTabs.map((tab,index)=><div key={tab.id} data-tab-id={tab.id} className={`workspace-tab reviewops-tab-item ${visibleActive===tab.id?'active is-active':''} ${tabOrder.draggedTabId===tab.id?'dragging':''}`} role="presentation" onPointerDown={event=>tabOrder.beginDrag(event,tab.id)} onDragStart={event=>event.preventDefault()}><button id={`tab-${tab.id}`} type="button" className="workspace-tab-select reviewops-tab-label" role="tab" aria-label={tabTitle(tab)} aria-selected={visibleActive===tab.id} aria-controls={`pane-${tab.id}`} aria-describedby={tab.id==='home'?undefined:'workspace-tab-move-help'} aria-keyshortcuts={tab.id==='home'?undefined:'Alt+Shift+ArrowLeft Alt+Shift+ArrowRight'} tabIndex={visibleActive===tab.id?0:-1} onClick={()=>setActive(tab.id)} onKeyDown={event=>tabKey(event,index)}><Icon name={tabIcon(tab)} size={16}/><span className="tab-title">{tabTitle(tab)}</span></button>{tab.id!=='home'&&<button className="tab-close reviewops-tab-close" onClick={()=>requestClose(tab.id)} aria-label={t("{0} 닫기",[tabTitle(tab)])} title={t("탭 닫기")}><Icon name="close" size={12}/></button>}</div>)}<button className="workspace-add-tab" aria-label={t("새 작업 탭")} title={t("새 작업 탭")} onClick={duplicateTab}><Icon name="plus" size={17}/></button></div><button className="workspace-refresh" aria-label={t("새로고침")} title={t("새로고침")} onClick={()=>run(reload)} disabled={busy}><Icon name="refresh" size={18}/></button>
-    {qaScoped?<span className="workspace-qa-scope" role="status">{t("프로젝트 QA")}</span>:<button type="button" className="workspace-project-window" onClick={()=>{setError('');setModal({type:'project-window'})}} title={t("프로젝트 창 열기")} aria-label={t("프로젝트 창 열기")} disabled={!ready}><Icon name="external" size={16}/><span>{t("프로젝트 창 열기")}</span></button>}<div className="window-controls" role="group" aria-label={t("창 제어")}><button type="button" className="window-control" onClick={()=>controlWindow('window.fullscreen')} title={fullscreenLabel} aria-label={fullscreenLabel} aria-pressed={windowState.fullScreen} disabled={windowChanging}><Icon name={windowState.fullScreen?'compress':'expand'} size={17}/></button><button type="button" className="window-control window-control-close" onClick={()=>controlWindow('window.close')} title={t("창 닫기")} aria-label={t("창 닫기")}><Icon name="close" size={17}/></button></div>
+    {qaScoped?<QaControllerBadge projectId={qaProject} projectName={windowProject?.name} controller={qaController} t={t}/>:<button type="button" className="workspace-project-window" onClick={()=>{setError('');setModal({type:'project-window'})}} title={t("프로젝트 창 열기")} aria-label={t("프로젝트 창 열기")} disabled={!ready}><Icon name="external" size={16}/><span>{t("프로젝트 창 열기")}</span></button>}<div className="window-controls" role="group" aria-label={t("창 제어")}><button type="button" className="window-control" onClick={()=>controlWindow('window.fullscreen')} title={fullscreenLabel} aria-label={fullscreenLabel} aria-pressed={windowState.fullScreen} disabled={windowChanging}><Icon name={windowState.fullScreen?'compress':'expand'} size={17}/></button><button type="button" className="window-control window-control-close" onClick={()=>controlWindow('window.close')} title={t("창 닫기")} aria-label={t("창 닫기")}><Icon name="close" size={17}/></button></div>
    </div>
    <span id="workspace-tab-move-help" className="workspace-tab-assistive">{t("드래그하거나 Alt와 Shift를 누른 채 좌우 방향키로 탭 순서를 바꿀 수 있습니다. 홈 탭은 고정되어 있습니다.")}</span><span className="workspace-tab-assistive" role="status" aria-live="polite">{tabOrder.announcement}</span>
    {error&&<div className="error-banner" role="alert"><Icon name="warning" size={17}/><span>{t(error)}</span><button className="icon-button" onClick={()=>setError('')} aria-label={t("오류 닫기")}><Icon name="close" size={15}/></button></div>}

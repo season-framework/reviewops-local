@@ -6,6 +6,27 @@ const fail = (message, code = 'INVALID_REQUEST') => { throw Object.assign(new Er
 const ID = { type: 'string', minLength: 1, maxLength: 128, pattern: '^[A-Za-z0-9_-]+$' };
 const string = maxLength => ({ type: 'string', maxLength });
 const schema = (properties, required = []) => ({ type: 'object', properties, required, additionalProperties: false });
+const controllerUUID={type:'string',pattern:'^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$'};
+const controllerProof={type:'string',pattern:'^[A-Za-z0-9_-]{43}$',minLength:43,maxLength:43};
+const controllerBinding={projectId:ID,appInstanceId:controllerUUID,controllerId:controllerUUID,controllerProof};
+const controllerRequired=Object.keys(controllerBinding),controllerSurface={...controllerBinding,browserId:ID},controllerPoint={x:{type:'number',minimum:0,maximum:20000},y:{type:'number',minimum:0,maximum:20000}};
+const controllerInput={...controllerSurface,observationId:controllerUUID},controllerInputRequired=[...controllerRequired,'observationId'];
+const qaControllerSchemas={
+  open:schema({projectId:ID,reviewId:ID,label:{...string(120),minLength:1,pattern:'^[^\\x00-\\x1f\\x7f]+$'}},['projectId']),
+  status:schema(controllerBinding,controllerRequired),detach:schema(controllerBinding,controllerRequired),reconnect:schema(controllerBinding,controllerRequired),release:schema(controllerBinding,controllerRequired),
+  state:schema(controllerSurface,controllerRequired),capture:schema(controllerSurface,controllerRequired),
+  click:schema({...controllerInput,...controllerPoint,button:{type:'string',enum:['left','right']},clickCount:{type:'integer',enum:[1,2]}},[...controllerInputRequired,'x','y']),
+  type:schema({...controllerInput,text:string(100000)},[...controllerInputRequired,'text']),
+  key:schema({...controllerInput,key:{...string(30),minLength:1},modifiers:{type:'array',items:{type:'string',enum:['Shift','Control','Alt','Meta']},maxItems:4}},[...controllerInputRequired,'key']),
+  scroll:schema({...controllerInput,...controllerPoint,deltaX:{type:'number',minimum:-20000,maximum:20000},deltaY:{type:'number',minimum:-20000,maximum:20000}},[...controllerInputRequired,'x','y','deltaY']),
+  navigate:schema({...controllerSurface,url:{...string(8192),minLength:1}},[...controllerRequired,'browserId','url']),reload:schema(controllerSurface,controllerRequired)
+};
+const qaControllerSchema=schema({...Object.assign({},...Object.values(qaControllerSchemas).map(value=>value.properties)),operation:{type:'string',enum:Object.keys(qaControllerSchemas)}},['operation','projectId']);
+function validateQaControllerArguments(payload){
+  if(!payload||![Object.prototype,null].includes(Object.getPrototypeOf(payload))||Reflect.ownKeys(payload).some(key=>typeof key!=='string'||!Object.hasOwn(Object.getOwnPropertyDescriptor(payload,key),'value')))fail('Controller arguments must be a plain data object.');
+  const {operation,...fields}=payload;if(typeof operation!=='string'||!Object.hasOwn(qaControllerSchemas,operation))fail('Choose a supported controller operation.');
+  validate(qaControllerSchemas[operation],fields);return payload;
+}
 const target = { projectId: ID, reviewId: ID };
 const reviewFields = { title: { ...string(300), minLength: 1 }, body: string(100000), status: { type: 'string', enum: ['open','in_progress','in_review','resolved','recheck','closed'] }, priority: { type: 'string', enum: ['low','normal','high','critical'] }, category: { ...string(128), description: 'Review category ID, not a display name. Call reviewops_review_categories_list with projectId for allowed built-in and custom IDs. When omitted, new reviews default to ux and updates preserve the current category.', examples: ['ux','other'] }, targetPath: string(4096), targetUrl: string(8192) };
 const dataTools = [
@@ -157,6 +178,7 @@ function createAutomationApi({ dispatch, qa } = {}) {
   async function handle(action, payload = {}) {
     if (action.startsWith('automation.qa.')) {
       if (typeof qa !== 'function') fail('창 조작 기능을 사용할 수 없습니다.', 'UNAVAILABLE');
+      if(action==='automation.qa.controller')validateQaControllerArguments(payload);
       return qa(action.slice('automation.qa.'.length), payload);
     }
     const tool = dataTools.find(item => item.action === action);
@@ -166,4 +188,4 @@ function createAutomationApi({ dispatch, qa } = {}) {
   }
   return { handle };
 }
-module.exports = { createAutomationApi, dataTools, validate, schema, ID, string };
+module.exports = { createAutomationApi, dataTools, validate, schema, ID, string, qaControllerSchema, validateQaControllerArguments };

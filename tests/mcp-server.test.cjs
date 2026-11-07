@@ -25,7 +25,7 @@ test('MCP initializes, advertises schemas and rejects calls before initializatio
     const init=await c.initialize('2025-06-18');assert.equal(init.result.protocolVersion,'2025-06-18');assert.deepEqual(init.result.capabilities,{tools:{listChanged:false}});
     const listed=await c.read(c.send('tools/list'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_review_create'));assert.ok(listed.result.tools.some(t=>t.name==='reviewops_qa_capture'));
     const categories=listed.result.tools.find(t=>t.name==='reviewops_review_categories_list');assert.ok(categories.annotations.readOnlyHint);assert.deepEqual(categories.inputSchema.required,['projectId']);
-    assert.equal(listed.result.tools.length,28);
+    assert.equal(listed.result.tools.length,29);
     const info=listed.result.tools.find(t=>t.name==='reviewops_connection_info');assert.deepEqual(info.inputSchema,{type:'object',properties:{},required:[],additionalProperties:false});assert.deepEqual(info.annotations,{readOnlyHint:true,destructiveHint:false,openWorldHint:false});
     for(const suffix of ['create','list','get','cancel']){
       const tool=listed.result.tools.find(t=>t.name==='reviewops_followup_'+suffix);assert.ok(tool);assert.equal(tool.annotations.readOnlyHint,['list','get'].includes(suffix));assert.equal(tool.annotations.openWorldHint,false);
@@ -339,7 +339,7 @@ test('the document tool is explicitly mixed, browser-scoped and validates operat
  const calls=[],doc='11111111-1111-4111-8111-111111111111',base={sessionId:'s',projectId:'A',windowId:'w',browserId:'b'},c=client({projectId:'A',invoke:async(action,args)=>{calls.push({action,args});return {...base,contract:'observed-web-document-v1',documentId:doc,text:'observed'};}});
  try{
   await c.initialize();const listed=(await c.read(c.send('tools/list'))).result.tools,tool=listed.find(value=>value.name==='reviewops_qa_document');
-  assert.equal(listed.length,28);assert.deepEqual(tool.annotations,{readOnlyHint:false,destructiveHint:false,openWorldHint:true});assert.ok(tool.inputSchema.required.includes('browserId'));
+    assert.equal(listed.length,29);assert.deepEqual(tool.annotations,{readOnlyHint:false,destructiveHint:false,openWorldHint:true});assert.ok(tool.inputSchema.required.includes('browserId'));
   assert.equal((await c.call(tool.name,{...base,operation:'state'})).result.structuredContent.documentId,doc);assert.equal(calls[0].action,'automation.qa.document');
   for(const args of [{...base,operation:'state',documentId:doc},{...base,operation:'type',text:'missing token'},{...base,operation:'capture',x:1},{...base,operation:'type',documentId:doc,text:'bad',unknown:true},{...base,projectId:'B',operation:'state'},{...base,browserId:undefined,operation:'state'}])assert.equal((await c.call(tool.name,args)).result.isError,true);
   assert.equal(calls.length,1);assert.equal((await c.call(tool.name,{...base,operation:'type',documentId:doc,text:'explicit'})).result.isError,false);assert.equal(calls.length,2);

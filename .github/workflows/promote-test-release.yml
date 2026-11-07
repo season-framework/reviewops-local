@@ -1,0 +1,61 @@
+name: Promote verified test preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Reviewed producer candidate JSON with original run, source, context hash and four artifact IDs/digests
+        type: string
+        required: true
+      publish:
+        description: Publish the original verified bytes after whole-product QA
+        type: boolean
+        required: false
+        default: false
+      qa:
+        description: Completed whole-product QA declaration JSON for this exact producer (required for publication)
+        type: string
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+# Share the original publisher's lock. No package jobs or metadata regeneration.
+concurrency:
+  group: reviewops-test-latest
+  cancel-in-progress: false
+
+env:
+  REVIEWOPS_PUBLICATION_GROUP: reviewops-test-latest
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+      - name: Verify the selected producer and promote only its original bytes
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          REVIEWOPS_PROMOTION_CANDIDATE: ${{ inputs.candidate }}
+          REVIEWOPS_TEST_PUBLISH: ${{ inputs.publish == true }}
+          REVIEWOPS_PROMOTION_QA: ${{ inputs.qa }}
+        run: node scripts/test-release-promotion.mjs
+      - name: Retain the producer and real publisher receipt
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: reviewops-test-promotion-receipt
+          path: release/test-promotion/receipt.json
+          if-no-files-found: warn
+          retention-days: 1

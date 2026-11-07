@@ -4494,3 +4494,23 @@ test('Ops paused cleanup proves its original lease absent without releasing a re
  const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),a=await mainQaGoal(h,'QA-original-cleanup'),opened=await qaCall(fixture.sessions,a.id,'ops_qa_open',{},'original-open');assert.equal(opened.success,true,opened.text);const original=JSON.parse(opened.text),originalRequest={sessionId:original.sessionId,projectId:original.projectId,windowId:original.windowId};await h.state.qaApi.handle('release',originalRequest);const replacement=await h.state.qaApi.handle('open',{projectId:a.project.id,clientId:'replacement-qa-client'});
  await h.ops('goalAction',{goalId:a.id,action:'pause'},h.event(h.state.primaryWindow));const goal=h.state.opsManager.snapshot().goals.find(g=>g.id===a.id);assert.equal(goal.status,'paused');assert.equal(goal.executionState,'idle');assert.equal(goal.qaBinding.state,'released');assert.equal(h.state.qaApi.leaseStatus(replacement).leaseState,'attached');assert.equal(h.state.qaOptions.getWindow(replacement.windowId).qaActive,true);
 });
+
+test('logical QA controller metadata is visible only in its original project window',async t=>{
+ const h=await harness(t),a=await seed(h),b=await seed(h),api=h.state.qaApi;
+ const aBinding=await api.handle('controller',{operation:'open',projectId:a.project.id,label:'Chat A'}),bBinding=await api.handle('controller',{operation:'open',projectId:b.project.id,label:'Chat B'});
+ const aHost=await projectHost(h,a.project.id),bHost=await projectHost(h,b.project.id),call=(binding,operation)=>api.handle('controller',{operation,projectId:binding.projectId,appInstanceId:binding.appInstanceId,controllerId:binding.controllerId,controllerProof:binding.controllerProof});
+ const contextA=await h.forWindow(aHost).success('window.context'),contextB=await h.forWindow(bHost).success('window.context');
+ assert.deepEqual(contextA.qaController,{contract:'logical-qa-controller-v1',label:'Chat A',projectId:a.project.id,state:'attached',generation:1});assert.equal(contextB.qaController.label,'Chat B');assert.equal((await h.forWindow(h.state.primaryWindow).success('window.context')).qaController,undefined);
+ const publicText=JSON.stringify([contextA,contextB]);for(const value of [aBinding.controllerProof,bBinding.controllerProof,aBinding.controllerId,bBinding.controllerId,aBinding.sessionId,bBinding.sessionId,aBinding.clientId,bBinding.clientId])assert.equal(publicText.includes(value),false);
+ await call(bBinding,'detach');assert.equal((await h.forWindow(bHost).success('window.context')).qaController.state,'detached');assert.deepEqual(await h.forWindow(aHost).success('window.context'),contextA);
+ await call(bBinding,'reconnect');await call(bBinding,'release');assert.equal((await h.forWindow(bHost).success('window.context')).qaController.state,'released');assert.deepEqual(await h.forWindow(aHost).success('window.context'),contextA);
+});
+
+test('logical QA proof retains original Store epoch and review birth without adopting restored IDs',async t=>{
+ for(const replacement of ['epoch','review']){
+  const h=await harness(t),a=await seed(h),api=h.state.qaApi;
+  const binding=await api.handle('controller',{operation:'open',projectId:a.project.id,reviewId:a.review.id,label:'Original target'});
+  if(replacement==='epoch')h.state.liveStore.importData(h.state.liveStore.exportData());else recreateOwnedReview(h.state.liveStore,a.review.id);
+  await assert.rejects(async()=>api.handle('controller',{operation:'status',projectId:binding.projectId,appInstanceId:binding.appInstanceId,controllerId:binding.controllerId,controllerProof:binding.controllerProof}),{code:'QA_CONTROLLER_STALE'});
+ }
+});

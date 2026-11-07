@@ -14,7 +14,7 @@ native packages, validation, publication and cleanup. A publication request adds
 one reservation to `reviewops-test-development` in the existing `test-latest`
 release body. Only the matching workflow's `metadata` job, with explicit
 publication enabled, may write it. Validation-only runs read the next candidate
-number without changing the release.
+number without changing the release. The explicit [preflight promotion workflow](test-preflight-promotion.md) can later reserve that exact predicted identity after authenticating its original producer and artifacts; it does not rebuild or allocate an identity for the publisher run.
 
 A reservation binds base version, development number, global build number,
 full source SHA, the original ISO/UTC timestamp and the actual previous public
@@ -76,7 +76,7 @@ package identity must match it exactly. A failed publication job consumes that
 original snapshot on retry; it does not re-query mutable PR titles or bodies.
 The artifact is retained with partial package jobs and cleaned up with the
 matching workflow's installers. A complete metadata rerun is a new build and
-can reserve another development number.
+can reserve another development number. Promotion consumes the original context and packages from a selected successful validation-only run through its separate strict authority. A changed public predecessor or occupied predicted number stops promotion; package metadata is never relabeled to fit a new number.
 
 Each published development version has a source-bound JSON history asset. It
 records its build identity, predecessor, actual change list, manifest digest and

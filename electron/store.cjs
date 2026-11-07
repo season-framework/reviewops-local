@@ -1048,7 +1048,10 @@ class LocalStore {
     return this.transaction(() => {
       const pending = this.db.prepare("SELECT * FROM agent_runs WHERE status IN ('queued','running')").all().map(plain);
       const message = '앱이 다시 시작되어 실행 연결이 끊겼습니다. 작업 결과를 확인한 뒤 다시 실행하십시오.';
-      return pending.filter(run=>!(preserveRemote&&run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready&&this.db.prepare('SELECT kind FROM services WHERE id=?').get(run.serviceId)?.kind==='ssh')).map(run => this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}]}));
+      return pending.filter(run=>!(preserveRemote&&run.status==='running'&&run.remoteExecution?.version===1&&run.remoteExecution.ready&&this.db.prepare('SELECT kind FROM services WHERE id=?').get(run.serviceId)?.kind==='ssh')).map(run => {
+        const progress=[...run.progress,{sequence:(run.progress.at(-1)?.sequence || 0)+1,state:'interrupted',message,step:'execution',createdAt:timestamp()}];
+        return this.saveAgentRun({...run,status:'interrupted',error:message,finishedAt:timestamp(),progress:progress.slice(-100),progressOmitted:Math.min(Number.MAX_SAFE_INTEGER,(run.progressOmitted||0)+Math.max(0,progress.length-100))});
+      });
     });
   }
   addAttachment(input) {
