@@ -58,4 +58,5 @@
 .remote-app-connections label{display:flex;flex-direction:column;gap:6px;margin:12px 0}
 .remote-app-connections textarea{min-height:100px;width:100%}
 .remote-app-connections .remote-host{border:1px solid var(--border);border-radius:6px;padding:16px;margin:12px 0}
+.remote-app-connections .remote-host>code{display:block;max-width:100%;overflow-wrap:anywhere;margin:4px 0}
 @media(max-width:600px){.remote-management-settings dl{grid-template-columns:minmax(0,1fr)}.remote-management-settings dd{margin-bottom:8px}}
