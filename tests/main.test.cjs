@@ -181,7 +181,7 @@ async function harness(t, options = {}) {
       const qa = require('../electron/qa-automation.cjs');
       return {...qa, createQaAutomation(options) { state.qaOptions = options;state.qaApi=qa.createQaAutomation(options);return state.qaApi; }};
     }
-    if (['./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
+    if (['./ops-management.cjs','./ops-qa.cjs','./work-directory.cjs','./review-versions.cjs','./review-copy.cjs','./agent-requests.cjs','./agent-copy-draft.cjs','./agent-execution-settings.cjs','./local-shared-data-query.cjs','./project-qa-scope.cjs','./service-readiness.cjs','./project-service-runtime.cjs'].includes(name))return require('../electron/'+name.slice(2));
     if (name === './updates.cjs') return require('../electron/updates.cjs');
     if (name === './build-info.cjs') return {...require('../electron/build-info.cjs'),getBuildInfo:version=>options.buildInfo||({channel:'stable',version})};
     if (name === './model-cache.cjs') return require('../electron/model-cache.cjs');
@@ -4163,6 +4163,30 @@ test('Ops IPC permits the trusted home frame and denies project, QA and foreign 
  const foreign={sender:main.webContents,senderFrame:{url:'https://example.invalid'}};
  await assert.rejects(h.ops('snapshot',undefined,foreign),{code:'OPS_ACCESS_DENIED'});
  assert.equal((await h.ops('snapshot',undefined,h.event(main))).goals.length,1);
+});
+
+test('Ops management IPC creates persistent conversations and typed tools add a real application project',async t=>{
+ const fixture=controlledOpsSessions(),h=await harness(t,{opsCreateSession:fixture.create}),home=h.state.primaryWindow;
+ const created=await h.ops('managementCreate',{name:'Actual project management'},h.event(home)),id=created.managementConversations[0].id;
+ await h.ops('managementRequest',{conversationId:id,instruction:'Create the requested local project.'},h.event(home));await h.state.opsManager.management.pump(id);
+ const session=fixture.sessions.get(id),tool=session.options.tools.find(row=>row.name==='ops_projects_create'),context={callId:'ipc-project-add',threadId:session.threadId,turnId:session.turnId};
+ const result=await tool.execute({name:'Created from management',workPath:h.root},context);
+ assert.equal(result.ok,true,result.error?.message);const project=(await h.success('snapshot')).projects.find(row=>row.id===result.data.id);
+ assert.equal(project.name,'Created from management');assert.equal(project.connection.rootPath,fs.realpathSync(h.root));
+ const snapshot=await h.ops('snapshot');assert.ok(snapshot.managementConversations[0].conversation.some(row=>row.links?.some(link=>link.kind==='project'&&link.id===project.id)));
+ assert.ok(h.state.windowMessages.some(row=>row.channel==='reviewops:data-change'));
+ await assert.rejects(h.ops('managementCreate',{action:'project.delete'}),{code:'INVALID_OPS_REQUEST'});
+ await assert.rejects(h.ops('managementDispatch',{action:'project.delete',id:project.id}),/지원하지 않는 Ops 요청/);
+ await h.ops('managementAction',{conversationId:id,action:'stop'});assert.equal((await h.ops('snapshot')).managementConversations[0].executionState,'idle');
+});
+
+test('Ops management methods are denied to project and foreign frames before conversations or tools are created',async t=>{
+ const h=await harness(t),home=h.state.primaryWindow,a=await seed(h);await h.forWindow(home).success('window.openProject',{projectId:a.project.id});const project=await projectHost(h,a.project.id);
+ for(const method of ['managementCreate','managementRequest','managementAction']){
+  await assert.rejects(h.ops(method,{},h.event(project)),{code:'OPS_ACCESS_DENIED'});
+  await assert.rejects(h.ops(method,{}, {sender:home.webContents,senderFrame:{url:'https://example.invalid'}}),{code:'OPS_ACCESS_DENIED'});
+ }
+ assert.equal((await h.ops('snapshot',undefined,h.event(home))).managementConversations.length,0);
 });
 
 test('Ops goal save revalidates its original window after asynchronous target resolution',async t=>{

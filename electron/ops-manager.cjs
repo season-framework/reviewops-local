@@ -7,6 +7,7 @@ const {OpsScheduler,validateSchedule,nextOccurrence}=require('./ops-scheduler.cj
 const {requireDirectory}=require('./work-directory.cjs');
 const {requestTargetKey,conflictingTargets,executionIdentity}=require('./agent-requests.cjs');
 const {executionSettings,requestContext}=require('./agent-execution-settings.cjs');
+const {OpsManagement,EXECUTION}=require('./ops-management.cjs');
 const CONFIG=['model','reasoningEffort','sandboxMode','approvalPolicy'];
 const GOAL_FIELDS=['id','name','description','projectId','serviceId','workPath','prompt',...CONFIG];
 function fail(code,message){throw Object.assign(new Error(message),{code});}
@@ -18,11 +19,12 @@ function terminalStatus(status){return status==='failed'?'failed':['interrupted'
 function qaResult(value){const keys=['projectId','clientId','sessionId','windowId','browserId','documentId','contract','url','title','applied','released','closed','reloaded','availability','bindingState','capturedAt','width','height','mimeType'],result=Object.fromEntries(keys.filter(key=>['string','number','boolean'].includes(typeof value?.[key])).map(key=>[key,typeof value[key]==='string'?value[key].slice(0,4096):value[key]]));for(const [field,allowed]of [['viewport',['width','height','scrollX','scrollY']],['imageToCss',['scaleX','scaleY']]])if(value?.[field])result[field]=Object.fromEntries(allowed.filter(key=>typeof value[field][key]==='number').map(key=>[key,value[field][key]]));return result;}
 
 class OpsManager{
-  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,runtime,createSession,createQaBridge,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
+  constructor({dataPath,onChange=()=>{},resolveTarget=async input=>({workPath:await requireDirectory(input.workPath),projectId:input.projectId||'',targetKind:'local',targetIdentity:'local'}),resolveSessionTarget,runtime,createSession,createQaBridge,managementAdapter,validateQaContext=()=>{},appInstanceId=randomUUID(),now=Date.now,schedulerOptions={}}){
     this.store=new OpsStore({dataPath});this.onChange=onChange;this.resolveTarget=resolveTarget;this.resolveSessionTarget=resolveSessionTarget;this.runtime=runtime;this.createSession=createSession;this.now=now;
     this.sessions=new Map();this.pumps=new Map();this.messages=new Map();this.reconciling=new Map();this.lifecycle=new Map();this.draining=new Set();this.closed=false;this.suspended=false;this.revision=this.store.data.revision;
     this.dataPath=dataPath;this.appInstanceId=appInstanceId;this.createQaBridge=createQaBridge;this.validateQaContext=validateQaContext;this.qaBridges=new Map();this.qaTokens=new Map();this.qaReleases=new Map();this.retiring=new Map();this.retirementFailures=new Map();this.qaOperations=new Map();this.closing=false;
     this.scheduler=new OpsScheduler({tick:at=>this.tick(at),nextDue:()=>this.nextDue(),now,...schedulerOptions,onError:error=>this._schedulerError(error)});
+    this.management=new OpsManagement(this,managementAdapter);
   }
   _open(){if(this.closed)fail('OPS_CLOSED','Ops가 종료되고 있습니다.');}
   _goal(data,id){const goal=data.goals.find(row=>row.id===id);if(!goal)fail('OPS_GOAL_NOT_FOUND','Ops 목표를 찾을 수 없습니다.');return goal;}
@@ -62,11 +64,14 @@ class OpsManager{
     goal.history.push(row);goal.updatedAt=row.createdAt;return row;}
   _mutate(change){this._open();this.store.update(change);this._notify();this.scheduler.arm();return this.snapshot();}
   _notify(){this.revision++;try{this.onChange(this.snapshot());}catch{/* Renderer listeners do not own persistence. */}}
-  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
+  snapshot(){const data=this.store.read(),runtime=typeof this.runtime==='function'?this.runtime():this.runtime;return {...data,managementConversations:this.management.snapshot(),revision:this.revision,recoveryPolicy:RECOVERY_POLICY,runtime:runtime?{available:runtime.available!==false,path:runtime.path||runtime.command||'',version:runtime.version||'',error:runtime.error||null}:null,
     goals:data.goals.map(goal=>({...goal,qaBinding:goal.qaBinding||(!goal.projectId?{state:'unavailable',projectId:'',reason:'등록된 프로젝트를 사용하는 목표에서만 QA 창에 연결할 수 있습니다.'}:null),nextRunAt:goal.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt).filter(Boolean).sort()[0]||null,
       conversation:[...goal.conversation.filter(row=>!this.messages.has(goal.id+':'+row.id)),...[...this.messages].filter(([key])=>key.startsWith(goal.id+':')).map(([,value])=>value)]}))};}
   nextDue(){if(this.suspended||this.closed)return null;return this.store.data.goals.filter(g=>g.status==='active').flatMap(g=>g.schedules.filter(s=>s.enabled).map(s=>s.nextRunAt)).filter(Boolean).sort()[0]||null;}
   async init(){
+    // Apply the same actual execution contract to retained and new goals.
+    if(this.store.data.goals.some(goal=>goal.sandboxMode!==EXECUTION.sandboxMode||goal.approvalPolicy!==EXECUTION.approvalPolicy))this._mutate(data=>{for(const goal of data.goals)Object.assign(goal,EXECUTION);});
+    this.management.init();
     const goals=this.store.read().goals.filter(g=>g.threadId||activeDelivery(g));
     // Restore ownership before opening any connection. One unavailable server
     // must not delay the window or independently owned goals.
@@ -77,7 +82,7 @@ class OpsManager{
   }
   async saveGoal(input,guard=()=>{}){
     this._open();fields(input,GOAL_FIELDS);const before=input.id?this._goal(this.store.data,input.id):null;
-    const raw={name:before?.name||'',description:before?.description||'',projectId:before?.projectId||'',serviceId:before?.serviceId||null,workPath:before?.workPath||'',prompt:before?.prompt||'',model:before?.model||'',reasoningEffort:before?.reasoningEffort||'',sandboxMode:before?.sandboxMode||'workspace-write',approvalPolicy:before?.approvalPolicy||'never',...input};
+    const raw={name:before?.name||'',description:before?.description||'',projectId:before?.projectId||'',serviceId:before?.serviceId||null,workPath:before?.workPath||'',prompt:before?.prompt||'',model:before?.model||'',reasoningEffort:before?.reasoningEffort||'',...input,...EXECUTION};
     string(raw.name,200,'목표 이름',true);string(raw.description,100000,'설명');string(raw.prompt,100000,'목표 프롬프트');string(raw.model,256,'모델');
     string(raw.projectId,128,'프로젝트');string(raw.workPath,4096,'작업 폴더');if(raw.serviceId!==null)string(raw.serviceId,128,'프로젝트 연결');
     if(!['','none','minimal','low','medium','high','xhigh','max','ultra'].includes(raw.reasoningEffort)||!['read-only','workspace-write','danger-full-access'].includes(raw.sandboxMode)||!['never','untrusted','on-request'].includes(raw.approvalPolicy))fail('INVALID_OPS_REQUEST','Codex 실행 설정을 확인하십시오.');
@@ -162,7 +167,7 @@ class OpsManager{
     ].concat(this._qa(id)?.tools||[]);
   }
   _session(id){let session=this.sessions.get(id);if(session)return session;const goal=this._goal(this.store.data,id),factory=this.createSession||require('./ops-session.cjs').createOpsSession;
-    session=factory({goalId:id,workPath:goal.workPath,target:{kind:goal.targetKind||'local',identityKey:goal.targetIdentity||'local',projectId:goal.projectId,serviceId:goal.serviceId},resolveSessionTarget:this.resolveSessionTarget?()=>this.resolveSessionTarget(structuredClone(this._goal(this.store.data,id))):undefined,config:Object.fromEntries(CONFIG.map(k=>[k,goal[k]])),threadId:goal.threadId,runtime:typeof this.runtime==='function'?this.runtime():this.runtime,resolveRuntime:typeof this.runtime==='function'?this.runtime:()=>this.runtime,onEvent:event=>this._event(id,event),tools:this._tools(id)});this.sessions.set(id,session);return session;}
+    session=factory({goalId:id,workPath:goal.workPath,target:{kind:goal.targetKind||'local',identityKey:goal.targetIdentity||'local',projectId:goal.projectId,serviceId:goal.serviceId},resolveSessionTarget:this.resolveSessionTarget?()=>this.resolveSessionTarget(structuredClone(this._goal(this.store.data,id))):undefined,config:{...Object.fromEntries(CONFIG.map(k=>[k,goal[k]])),...EXECUTION},threadId:goal.threadId,runtime:typeof this.runtime==='function'?this.runtime():this.runtime,resolveRuntime:typeof this.runtime==='function'?this.runtime:()=>this.runtime,onEvent:event=>this._event(id,event),tools:this._tools(id)});this.sessions.set(id,session);return session;}
   _event(id,event){
     if(this.closed)return;const current=this.store.data.goals.find(g=>g.id===id);if(!current)return;
     try{
@@ -245,21 +250,22 @@ class OpsManager{
       this._mutate(data=>{const g=this._goal(data,id);g.turnId=null;g.modelState='idle';g.backgroundState='empty';g.backgroundCount=0;g.executionState='idle';g.waitingReason=null;g.lastError=null;});
     }finally{this.draining.delete(id);}
   }
-  async goalAction(input){fields(input,['goalId','action','instruction']);const {goalId:id,action}=input;this._goal(this.store.data,id);
+  async goalAction(input,guard=()=>{}){fields(input,['goalId','action','instruction']);const {goalId:id,action}=input;this._goal(this.store.data,id);guard();
     if(action==='request'){this._enqueue(id,{reason:'사용자의 추가 지시',instruction:string(input.instruction,100000,'추가 지시',true)});return this.snapshot();}
-    if(action==='reconnect'){await this.reconnect(id);return this.snapshot();}
+    if(action==='reconnect'){await this.reconnect(id);guard();return this.snapshot();}
     if(!['start','resume','pause','finish'].includes(action))fail('INVALID_OPS_REQUEST','목표 작업을 확인하십시오.');
-    if(this.lifecycle.has(id))return this.lifecycle.get(id);
+    if(this.lifecycle.has(id)){await this.lifecycle.get(id);return this.snapshot();}
     const task=(async()=>{
       if(action==='pause'||action==='finish'){
         void this._releaseQa(id,'사용자가 목표를 일시정지하거나 종료했습니다.');
         this._mutate(data=>{const goal=this._goal(data,id);goal.status=action==='pause'?'paused':'finished';if(goal.threadId)goal.executionState='unknown';this._history(goal,`goal.${goal.status}`,'사용자가 목표 실행을 변경했습니다.');if(action==='finish')for(const h of goal.history)if(h.type==='delivery'&&h.status==='queued')h.status='cancelled';});
         const pending=this.pumps.get(id);if(pending)await pending;try{await this._interrupt(id);}catch(error){this._deliveryError(id,error);}return;
       }
-      const current=this._goal(this.store.data,id);if(current.status==='finished')fail('OPS_GOAL_FINISHED','종료한 목표를 새 목표로 복사하거나 설정을 확인하십시오.');
+      const current=this._goal(this.store.data,id);if(current.status==='active')return;
+      if(current.status==='finished'&&action!=='start')fail('OPS_GOAL_FINISHED','종료한 목표는 시작 버튼으로 다시 시작하십시오.');
       if(current.executionState==='unknown')await this.reconnect(id,false);
       if(this._goal(this.store.data,id).executionState==='unknown')fail('OPS_DELIVERY_UNKNOWN','원래 전달 결과를 확인한 뒤 재개하십시오.');
-      this._mutate(data=>{const goal=this._goal(data,id);goal.status='active';this._history(goal,`goal.${action}`,'사용자가 목표 실행을 변경했습니다.');});
+      guard();this._mutate(data=>{const goal=this._goal(data,id);goal.status='active';Object.assign(goal,EXECUTION);this._history(goal,`goal.${action}`,current.status==='finished'?'사용자가 종료한 목표를 기존 설정과 대화로 다시 시작했습니다.':'사용자가 목표 실행을 변경했습니다.');});
       this._enqueue(id,{reason:action==='start'?'목표 시작':'목표 재개',instruction:input.instruction||''});
     })().finally(()=>{this.lifecycle.delete(id);void this.pumpAll();});this.lifecycle.set(id,task);await task;return this.snapshot();
   }
@@ -280,13 +286,16 @@ class OpsManager{
     for(const goal of this.store.data.goals)if(goal.status==='active')void this.pump(goal.id);
   }
   async pumpAll(){await Promise.allSettled(this.store.data.goals.filter(g=>g.status==='active').map(g=>this.pump(g.id)));}
-  hasActiveWork(){return this.pumps.size>0||this.reconciling.size>0||this.qaReleases.size>0||this.retiring.size>0||this.retirementFailures.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
+  managementCreate(input,guard){return this.management.create(input,guard);}
+  managementRequest(input,guard){return this.management.request(input,guard);}
+  managementAction(input,guard){return this.management.action(input,guard);}
+  hasActiveWork(){return this.management.hasActiveWork()||this.pumps.size>0||this.reconciling.size>0||this.qaReleases.size>0||this.retiring.size>0||this.retirementFailures.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
   runtimeChanged(){if(this.closed)return;for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal))void this._retireIdleSession(goal.id,'실행 환경 변경으로 유휴 QA 연결을 해제했습니다.').catch(()=>{});this._notify();}
   exportData(){return this.store.read();}
   validateImport(value){return validateOpsData(value);}
-  restore(value,options){if(this.hasActiveWork()&&!(this.suspended&&options?.pause===false))fail('OPS_GOAL_BUSY','실행 중이거나 확인되지 않은 Ops 목표를 정리한 뒤 복원하십시오.');for(const id of this.qaBridges.keys())void this._releaseQa(id,'자료 복원으로 이전 QA 연결을 해제했습니다.');for(const session of this.sessions.values())Promise.resolve(session.close?.()).catch(()=>{});this.sessions.clear();this.store.restore(value,options);this._notify();return this.snapshot();}
+  restore(value,options){if(this.hasActiveWork()&&!(this.suspended&&options?.pause===false))fail('OPS_GOAL_BUSY','실행 중이거나 확인되지 않은 Ops 목표를 정리한 뒤 복원하십시오.');void this.management.reset();for(const id of this.qaBridges.keys())void this._releaseQa(id,'자료 복원으로 이전 QA 연결을 해제했습니다.');for(const session of this.sessions.values())Promise.resolve(session.close?.()).catch(()=>{});this.sessions.clear();this.store.restore(value,options);this.store.update(data=>{for(const goal of data.goals)Object.assign(goal,EXECUTION);});this._notify();return this.snapshot();}
   setSuspended(value){this.suspended=Boolean(value);this.scheduler.arm();if(!value)void this.scheduler.wake();}
-  async close(){if(this.closeTask)return this.closeTask;this.closing=true;this.scheduler.close();this.closeTask=(async()=>{await Promise.allSettled([...this.qaBridges.keys()].map(id=>this._releaseQa(id,'앱 종료로 목표 QA 연결을 해제했습니다.')));await Promise.allSettled([...this.retiring.values()]);this.closed=true;await Promise.allSettled([...new Set([...this.sessions.values(),...[...this.retirementFailures.values()].map(row=>row.session).filter(Boolean)])].map(session=>session.close?.()));this.sessions.clear();this.qaBridges.clear();this.retirementFailures.clear();})();return this.closeTask;}
+  async close(){if(this.closeTask)return this.closeTask;this.closing=true;this.scheduler.close();this.closeTask=(async()=>{await this.management.close();await Promise.allSettled([...this.qaBridges.keys()].map(id=>this._releaseQa(id,'앱 종료로 목표 QA 연결을 해제했습니다.')));await Promise.allSettled([...this.retiring.values()]);this.closed=true;await Promise.allSettled([...new Set([...this.sessions.values(),...[...this.retirementFailures.values()].map(row=>row.session).filter(Boolean)])].map(session=>session.close?.()));this.sessions.clear();this.qaBridges.clear();this.retirementFailures.clear();})();return this.closeTask;}
 }
 async function createOpsManager(options){const manager=new OpsManager(options);await manager.init();return manager;}
 module.exports={OpsManager,createOpsManager};

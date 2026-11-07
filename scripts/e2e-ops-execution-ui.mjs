@@ -44,7 +44,7 @@ async function createGoal(name,workPath,prompt){
  await form.getByLabel('목표 이름',{exact:true}).fill(name);await form.getByLabel('목표 설명',{exact:true}).fill('실제 Codex · 격리된 임시 폴더 실행 검증');await form.getByLabel('대상 폴더',{exact:true}).fill(workPath);await form.getByLabel('목표 프롬프트',{exact:true}).fill(prompt);
  await selectControl(form.getByRole('combobox',{name:'파일 접근 범위',exact:true}),'workspace-write');await selectControl(form.getByRole('combobox',{name:'실행 승인 정책',exact:true}),'never');
  await form.getByRole('button',{name:'목표 저장',exact:true}).click();await expect(form).toHaveCount(0);await expect(detail().getByRole('heading',{name,exact:true})).toBeVisible();
- const saved=(await snapshot()).goals.find(row=>row.name===name);assert.equal(saved.sandboxMode,'workspace-write');assert.equal(saved.approvalPolicy,'never');assert.equal(saved.model,'');assert.equal(saved.reasoningEffort,'');return saved;
+ const saved=(await snapshot()).goals.find(row=>row.name===name);assert.equal(saved.sandboxMode,'danger-full-access');assert.equal(saved.approvalPolicy,'never');assert.equal(saved.model,'');assert.equal(saved.reasoningEffort,'');return saved;
 }
 async function lifecycle(name,button){await card(name).click();await detail().locator('.ops-goal-actions').getByRole('button',{name:button,exact:true}).click();}
 try{
