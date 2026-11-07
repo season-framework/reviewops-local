@@ -62,7 +62,7 @@ function createProjectAdapter({getStore, assertReady = () => {}, enqueue = callb
 
 class OpsManagement {
   constructor(manager, adapter) {
-    this.manager = manager; this.adapter = adapter; this.sessions = new Map(); this.pumps = new Map(); this.actions = new Map(); this.reconciling = new Map(); this.messages = new Map(); this.scopes = new Map(); this.generation = Object.freeze({});
+    this.manager = manager; this.adapter = adapter; this.sessions = new Map(); this.sessionTokens = new Map(); this.pendingRetirement = new Set(); this.retiring = new Map(); this.retirementFailures = new Map(); this.pumps = new Map(); this.actions = new Map(); this.reconciling = new Map(); this.messages = new Map(); this.scopes = new Map(); this.generation = Object.freeze({});
   }
   get data() { return this.manager.store.data.managementConversations || []; }
   _conversation(id, data = this.manager.store.data) { const value = (data.managementConversations || []).find(row => row.id === id); if (!value) fail('OPS_CONVERSATION_NOT_FOUND', '관리 대화를 찾을 수 없습니다.'); return value; }
@@ -111,9 +111,10 @@ class OpsManagement {
   }
   _session(id) {
     if (this.sessions.has(id)) return this.sessions.get(id);
-    const row = this._conversation(id), generation = this.generation, workPath = path.join(this.manager.dataPath, 'ops', 'management', id);
+    const row = this._conversation(id), generation = this.generation, token = Object.freeze({}), workPath = path.join(this.manager.dataPath, 'ops', 'management', id);
     fs.mkdirSync(workPath, {recursive: true, mode: 0o700}); this.manager.store.check(workPath, true);
-    const session = (this.manager.createSession || require('./ops-session.cjs').createOpsSession)({goalId: id, workPath, target: {kind: 'local', identityKey: 'local'}, threadId: row.threadId, config: {model: row.model, reasoningEffort: row.reasoningEffort, ...EXECUTION}, runtime: this.manager.runtime, resolveRuntime: typeof this.manager.runtime === 'function' ? this.manager.runtime : undefined, onEvent: event => generation === this.generation ? this._event(id, event) : undefined, tools: this.tools(id)});
+    this.sessionTokens.set(id, token);
+    const session = (this.manager.createSession || require('./ops-session.cjs').createOpsSession)({goalId: id, workPath, target: {kind: 'local', identityKey: 'local'}, threadId: row.threadId, config: {model: row.model, reasoningEffort: row.reasoningEffort, ...EXECUTION}, runtime: this.manager.runtime, resolveRuntime: typeof this.manager.runtime === 'function' ? this.manager.runtime : undefined, onEvent: event => generation === this.generation && this.sessionTokens.get(id) === token ? this._event(id, event) : undefined, tools: this.tools(id)});
     this.sessions.set(id, session); return session;
   }
   _event(id, event) {
@@ -145,7 +146,7 @@ class OpsManagement {
       const request = row.requests.find(value => value.id === requestId) || [...row.requests].reverse().find(value => IN_FLIGHT.has(value.status));
       const uncertain = request && request.status !== 'queued' && error.deliveryState !== 'not_sent';
       if (request) { request.status = uncertain ? 'unknown' : 'failed'; request.error = String(error.message || error).slice(0, 2000); }
-      row.executionState = uncertain || row.turnId || row.backgroundState === 'active' ? 'unknown' : 'error'; row.lastError = String(error.message || error).slice(0, 2000); row.updatedAt = this.manager._time();
+      row.executionState = this.retirementFailures.has(id) || uncertain || row.turnId || row.backgroundState === 'active' ? 'unknown' : 'error'; row.lastError = String(error.message || error).slice(0, 2000); row.updatedAt = this.manager._time();
       row.conversation.push({id: randomUUID(), role: 'system', text: row.lastError, createdAt: this.manager._time()});
     });
   }
@@ -157,6 +158,8 @@ class OpsManagement {
   async _pump(id) {
     const generation = this.generation;
     while (!this.manager.closed && !this.manager.closing && !this.manager.suspended && !this.actions.has(id) && !this.reconciling.has(id)) {
+      if (this.pendingRetirement.has(id) || this.retiring.has(id) || this.retirementFailures.has(id)) await this._retireIdle(id);
+      if (generation !== this.generation || this.manager.closed || this.manager.closing) return;
       const row = this._conversation(id), request = row.requests.find(value => value.status === 'queued');
       if (!request || row.executionState === 'unknown') return;
       this.scopes.get(id)?.();
@@ -190,6 +193,7 @@ class OpsManagement {
     const task = (async () => {
       const pending = this.pumps.get(id); if (pending) await pending;
       guard();
+      if (this.pendingRetirement.has(id) || this.retiring.has(id) || this.retirementFailures.has(id)) await this._retireIdle(id, true);
       if (input.action === 'reconnect') { this.scopes.set(id, this.adapter?.capture ? this.adapter.capture() : () => {}); await this.reconnect(id); }
       else {
         const before = this._conversation(id);
@@ -203,12 +207,14 @@ class OpsManagement {
           this._change(id, current => { current.turnId = null; current.executionState = 'idle'; current.modelState = 'idle'; current.backgroundState = 'empty'; current.backgroundCount = 0; current.lastError = null; for (const request of current.requests) if (IN_FLIGHT.has(request.status)) request.status = 'interrupted'; });
         }
       }
-    })().catch(error => { this._error(id, error); throw error; }).finally(() => this.actions.delete(id));
+    })().catch(error => { this._error(id, error); throw error; }).finally(() => { this.actions.delete(id); if (!this.manager.closed && (this.pendingRetirement.has(id) || this._conversation(id).requests.some(request => request.status === 'queued'))) void this.pump(id); });
     this.actions.set(id, task); await task; return this.manager.snapshot();
   }
   async reconnect(id) {
     if (this.reconciling.has(id)) return this.reconciling.get(id);
     const generation = this.generation, task = (async () => {
+      if (this.retiring.has(id)) await this.retiring.get(id);
+      if (this.retirementFailures.has(id)) fail('OPS_SESSION_CLEANUP_UNKNOWN', '원래 관리 대화 연결의 종료 결과를 확인한 뒤 다시 연결하십시오.');
       const row = this._conversation(id), request = [...row.requests].reverse().find(value => IN_FLIGHT.has(value.status)) || [...row.requests].reverse().find(value => value.threadId);
       if (!row.threadId) { if (request) fail('OPS_DELIVERY_UNKNOWN', '원래 관리 대화의 식별자를 확인하지 못했습니다. 요청을 자동으로 반복하지 않았습니다.'); return; }
       const result = await this._session(id).reconcile({threadId: row.threadId, turnId: row.turnId, deliveryId: request?.id, prompt: request?.prompt});
@@ -289,8 +295,35 @@ class OpsManagement {
     // Recover metadata without sending a new turn or replaying a tool mutation.
     for (const row of this.data) if (row.threadId) void this.reconnect(row.id).catch(error => this._error(row.id, error));
   }
-  hasActiveWork() { return this.pumps.size > 0 || this.actions.size > 0 || this.reconciling.size > 0 || this.data.some(row => ['starting', 'running', 'unknown'].includes(row.executionState) || row.requests.some(request => IN_FLIGHT.has(request.status))); }
-  async reset() { this.generation = Object.freeze({}); this.scopes.clear(); const sessions = [...this.sessions.values()]; this.sessions.clear(); this.messages.clear(); await Promise.allSettled(sessions.map(session => session.close?.())); }
+  _quiescent(row) { return !row.turnId && row.modelState === 'idle' && row.backgroundState === 'empty' && row.backgroundCount === 0 && !row.requests.some(request => IN_FLIGHT.has(request.status)); }
+  _retireIdle(id, retry = false) {
+    if (this.retiring.has(id)) return this.retiring.get(id);
+    const row = this._conversation(id), failed = this.retirementFailures.get(id);
+    if (failed && !retry) fail('OPS_SESSION_CLEANUP_UNKNOWN', '원래 관리 대화 연결의 종료를 다시 연결 버튼으로 확인하십시오.');
+    if (!this._quiescent(row)) return Promise.resolve(false); // Keep active/background/unknown owners on their original adapter.
+    const session = failed?.session || this.sessions.get(id), generation = this.generation;
+    if (!session) { this.pendingRetirement.delete(id); return Promise.resolve(true); }
+    if (this.sessions.get(id) === session) this.sessions.delete(id);
+    this.sessionTokens.delete(id);
+    const task = Promise.resolve().then(() => session.close?.()).then(() => {
+      if (generation !== this.generation) return false;
+      this.retirementFailures.delete(id); this.pendingRetirement.delete(id);
+      if (failed && !this.manager.closed) this._change(id, current => { current.executionState = 'idle'; current.lastError = null; });
+      return true;
+    }).catch(error => {
+      if (generation === this.generation && !this.manager.closed) { this.retirementFailures.set(id, {session}); this._change(id, current => { current.executionState = 'unknown'; current.lastError = String(error.message || error).slice(0, 2000); }); }
+      throw error;
+    }).finally(() => { if (this.retiring.get(id) === task) this.retiring.delete(id); });
+    this.retiring.set(id, task); return task;
+  }
+  runtimeChanged() {
+    for (const id of new Set([...this.sessions.keys(), ...this.retirementFailures.keys()])) {
+      this.pendingRetirement.add(id);
+      if (!this.retirementFailures.has(id) && this._quiescent(this._conversation(id))) void this.pump(id);
+    }
+  }
+  hasActiveWork() { return this.retiring.size > 0 || this.retirementFailures.size > 0 || this.pumps.size > 0 || this.actions.size > 0 || this.reconciling.size > 0 || this.data.some(row => ['starting', 'running', 'unknown'].includes(row.executionState) || row.requests.some(request => IN_FLIGHT.has(request.status))); }
+  async reset() { this.generation = Object.freeze({}); this.scopes.clear(); const sessions = new Set([...this.sessions.values(), ...[...this.retirementFailures.values()].map(row => row.session)]), retiring = [...this.retiring.values()]; this.sessions.clear(); this.sessionTokens.clear(); this.pendingRetirement.clear(); this.retirementFailures.clear(); this.messages.clear(); await Promise.allSettled([...retiring, ...[...sessions].map(session => session.close?.())]); }
   async close() { await this.reset(); }
 }
 

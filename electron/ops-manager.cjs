@@ -290,7 +290,7 @@ class OpsManager{
   managementRequest(input,guard){return this.management.request(input,guard);}
   managementAction(input,guard){return this.management.action(input,guard);}
   hasActiveWork(){return this.management.hasActiveWork()||this.pumps.size>0||this.reconciling.size>0||this.qaReleases.size>0||this.retiring.size>0||this.retirementFailures.size>0||this.store.data.goals.some(g=>this._ownsTarget(g));}
-  runtimeChanged(){if(this.closed)return;for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal))void this._retireIdleSession(goal.id,'실행 환경 변경으로 유휴 QA 연결을 해제했습니다.').catch(()=>{});this._notify();}
+  runtimeChanged(){if(this.closed)return;this.management.runtimeChanged();for(const goal of this.store.data.goals)if(['idle','error'].includes(goal.executionState)&&!this._ownsTarget(goal))void this._retireIdleSession(goal.id,'실행 환경 변경으로 유휴 QA 연결을 해제했습니다.').catch(()=>{});this._notify();}
   exportData(){return this.store.read();}
   validateImport(value){return validateOpsData(value);}
   restore(value,options){if(this.hasActiveWork()&&!(this.suspended&&options?.pause===false))fail('OPS_GOAL_BUSY','실행 중이거나 확인되지 않은 Ops 목표를 정리한 뒤 복원하십시오.');void this.management.reset();for(const id of this.qaBridges.keys())void this._releaseQa(id,'자료 복원으로 이전 QA 연결을 해제했습니다.');for(const session of this.sessions.values())Promise.resolve(session.close?.()).catch(()=>{});this.sessions.clear();this.store.restore(value,options);this.store.update(data=>{for(const goal of data.goals)Object.assign(goal,EXECUTION);});this._notify();return this.snapshot();}

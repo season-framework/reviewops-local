@@ -15,13 +15,14 @@ async function harness(t, extra = {}) {
   const projectStore = createStore({dbPath: path.join(root, 'projects.sqlite')}); let changed = 0;
   const adapter = createProjectAdapter({getStore: () => projectStore, onChange: () => changed++, ...extra.adapterOptions});
   const createSession = options => {
-    const state = {options, threadId: options.threadId, turnId: null}; sessions.set(options.goalId, state);
+    const state = {options, threadId: options.threadId, turnId: null, runtime: null}; sessions.set(options.goalId, state);
     const deliver = kind => async input => {
       const saved = JSON.parse(fs.readFileSync(path.join(dataPath, 'ops', 'state.json'), 'utf8'));
       const owner = saved.managementConversations?.find(row => row.id === options.goalId) || saved.goals.find(row => row.id === options.goalId);
       const request = (owner.requests || owner.history).find(row => row.id === input.deliveryId);
       assert.equal(request.status, 'prepared', 'Every model input is durably prepared before it is sent');
       calls.push({kind, id: options.goalId, ...input});
+      state.runtime ||= await (options.resolveRuntime ? options.resolveRuntime() : options.runtime);
       if (extra.beforeDeliver) await extra.beforeDeliver(input, state);
       state.threadId ||= 'thread_' + options.goalId; state.turnId ||= 'turn_' + randomUUID();
       await options.onEvent({type: 'thread', threadId: state.threadId});
@@ -35,13 +36,13 @@ async function harness(t, extra = {}) {
       start: deliver('start'), steer: deliver('steer'),
       async reconcile(input) { calls.push({kind: 'reconcile', id: options.goalId, ...input}); return extra.reconcile ? extra.reconcile(input, state, external) : external.get(input.deliveryId) || {threadId: input.threadId, state: 'idle', backgroundState: 'empty', backgroundCount: 0, delivery: 'not_found', safeToRetry: true}; },
       async interrupt(input) { calls.push({kind: 'interrupt', id: options.goalId, ...input}); await options.onEvent({type: 'turn.completed', threadId: state.threadId || input.threadId, turnId: state.turnId || input.turnId, status: 'interrupted', backgroundState: 'empty', backgroundCount: 0}); return {confirmed: true, state: 'idle', turnId: state.turnId || input.turnId}; },
-      async close() { calls.push({kind: 'close', id: options.goalId}); }
+      async close() { calls.push({kind: 'close', id: options.goalId}); if(extra.close)await extra.close(state); }
     };
   };
   const options = {dataPath, createSession, managementAdapter: adapter, schedulerOptions: {setTimer: () => 1, clearTimer: () => {}}, resolveTarget: async input => {
     const project = input.projectId && projectStore.project(input.projectId), workPath = project ? project.connection.rootPath : input.workPath;
     return {workPath: fs.realpathSync(workPath), projectId: project?.id || '', targetKind: 'local', targetIdentity: 'local', serviceId: project?.connection?.id || null};
-  }};
+  },...extra.managerOptions};
   const manager = new OpsManager(options); managers.push(manager);
   t.after(async () => { await Promise.allSettled(managers.map(item => item.close())); projectStore.close(); fs.rmSync(root, {recursive: true, force: true}); });
   const create = async (input = {}) => (await manager.managementCreate(input)).managementConversations.at(-1).id;
@@ -211,4 +212,31 @@ test('actual project adapter retains original write admission across async direc
   const guard = h.adapter.capture(), pending = h.adapter.createProject({name: 'Stale project', workPath: h.root}, guard); await ready;
   const backup = h.projectStore.exportData(); h.projectStore.importData(backup); release();
   await assert.rejects(pending, {code: 'STALE_EPOCH'}); assert.equal(h.projectStore.snapshot().projects.length, 0); assert.equal(h.changed(), 0);
+});
+
+test('a global runtime change retires only a proven-idle management adapter and resumes its original thread', async t => {
+  let runtime={command:'/original/codex',available:true};const h=await harness(t,{managerOptions:{runtime:()=>runtime}}),id=await h.create();await h.request(id);const old=h.sessions.get(id),threadId=old.threadId;await h.complete(id);
+  runtime={command:'/replacement/codex',available:true};h.manager.runtimeChanged();await h.manager.management.pump(id);
+  assert.equal(h.calls.filter(row=>row.kind==='close').length,1);assert.equal(h.manager.snapshot().managementConversations[0].threadId,threadId);assert.equal(h.manager.snapshot().managementConversations[0].requests.length,1);
+  await h.request(id,'Resume after the selected runtime changed.');const current=h.sessions.get(id);assert.notEqual(current,old);assert.equal(current.options.threadId,threadId);assert.equal(current.threadId,threadId);assert.equal(current.runtime.command,'/replacement/codex');
+  await old.options.onEvent({type:'error',message:'Late old adapter close error'});await old.options.onEvent({type:'message',itemId:'late-old',role:'assistant',text:'Stale original connection'});
+  const row=h.manager.snapshot().managementConversations[0];assert.equal(row.executionState,'running');assert.equal(row.lastError,null);assert.equal(row.conversation.some(message=>message.id==='late-old'),false);
+});
+
+test('global runtime retirement preserves an active or background management owner until explicit idle proof', async t => {
+  let runtime={command:'/original/codex',available:true};const h=await harness(t,{managerOptions:{runtime:()=>runtime}}),id=await h.create();await h.request(id);const old=h.sessions.get(id);
+  runtime={command:'/replacement/codex',available:true};h.manager.runtimeChanged();await h.manager.management.pump(id);await h.request(id,'Steer the already active original turn.');assert.equal(h.sessions.get(id),old);assert.equal(old.runtime.command,'/original/codex');assert.equal(h.calls.filter(row=>row.kind==='close').length,0);
+  await old.options.onEvent({type:'turn.completed',threadId:old.threadId,turnId:old.turnId,status:'completed',backgroundState:'active',backgroundCount:1});await h.manager.management.pump(id);assert.equal(h.sessions.get(id),old);assert.equal(h.calls.filter(row=>row.kind==='close').length,0);assert.equal(h.manager.hasActiveWork(),true);
+  await h.manager.managementAction({conversationId:id,action:'stop'});await h.manager.management.pump(id);assert.equal(h.calls.filter(row=>row.kind==='interrupt').length,1);assert.equal(h.calls.filter(row=>row.kind==='close').length,1);
+  await h.request(id,'Start new work only after confirmed original cleanup.');assert.notEqual(h.sessions.get(id),old);assert.equal(h.sessions.get(id).threadId,old.threadId);assert.equal(h.sessions.get(id).runtime.command,'/replacement/codex');
+  const unknown=h.sessions.get(id);await unknown.options.onEvent({type:'error',message:'Original turn acknowledgement is uncertain'});runtime={command:'/third/codex',available:true};h.manager.runtimeChanged();await h.manager.management.pump(id);assert.equal(h.manager.snapshot().managementConversations[0].executionState,'unknown');assert.equal(h.sessions.get(id),unknown);assert.equal(h.calls.filter(row=>row.kind==='close').length,1,'An unknown owner is not retired on another runtime change');
+});
+
+test('pending or failed management adapter close fences delivery until original cleanup is explicitly recovered', async t => {
+  let runtime={command:'/original/codex',available:true},release,entered,first=true;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+  const h=await harness(t,{managerOptions:{runtime:()=>runtime},close:async()=>{if(first){first=false;entered();await gate;throw new Error('Original adapter close failed');}}}),id=await h.create();t.after(()=>release());await h.request(id);await h.complete(id);
+  runtime={command:'/replacement/codex',available:true};h.manager.runtimeChanged();await ready;await h.manager.managementRequest({conversationId:id,instruction:'Known unsent request during original close.'});assert.equal(h.calls.filter(row=>row.kind==='start').length,1);assert.equal(h.manager.hasActiveWork(),true);
+  release();await h.manager.management.pump(id);let row=h.manager.snapshot().managementConversations[0];assert.equal(row.executionState,'unknown');assert.equal(row.requests.at(-1).status,'queued');assert.equal(h.manager.hasActiveWork(),true);assert.equal(h.manager.management.retirementFailures.has(id),true);
+  await assert.rejects(h.manager.managementRequest({conversationId:id,instruction:'Must not skip failed cleanup'}),{code:'OPS_DELIVERY_UNKNOWN'});assert.equal(h.calls.filter(row=>row.kind==='start').length,1);
+  await h.manager.managementAction({conversationId:id,action:'reconnect'});await h.manager.management.pump(id);row=h.manager.snapshot().managementConversations[0];assert.equal(h.manager.management.retirementFailures.has(id),false);assert.equal(row.executionState,'running');assert.equal(h.calls.filter(call=>call.kind==='start'&&call.deliveryId===row.requests.at(-1).id).length,1);assert.equal(h.sessions.get(id).runtime.command,'/replacement/codex');assert.equal(h.calls.filter(call=>call.kind==='close').length,2);
 });
