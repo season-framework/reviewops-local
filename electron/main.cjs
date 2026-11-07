@@ -1907,7 +1907,9 @@ else {
     updater.start();
     codexManager=await require('./codex/index.cjs').createCodexManager({dataPath,getWindow:getRequestWindow,getWindows:()=>liveWindows().filter(host=>!qaProjectId(windowContexts.get(host))),withWindow:(event,callback)=>{const host=senderWindow(event);if(!host)throw new Error('허용되지 않은 요청입니다.');return requestWindowContext.run({host,qaProjectId:qaProjectId(windowContexts.get(host))},callback);},trusted:event=>{if(!trustedSender(event))throw new Error('허용되지 않은 요청입니다.');if(requestQaProjectId())throw Object.assign(new Error('프로젝트 QA 연결 중에는 전체 계정·호스트 관리를 사용할 수 없습니다.'),{code:'TARGET_MISMATCH'});if(updater?.installing)throw new Error('ReviewOps is restarting to install an update.');},shell,dialog,clipboard,powerMonitor,configPath:process.env.REVIEWOPS_SSH_CONFIG||process.env.REVIEWOPS_CODEX_SSH_CONFIG,onHostState:reconcileHostModels,onRuntimeChange:()=>{modelCache?.reconcile();opsManager?.runtimeChanged();}});
     codexManager.registerHandlers(ipcMain);
-    const managementAdapter=require('./ops-management.cjs').createProjectAdapter({getStore:()=>store,assertReady:()=>{if(restoring||quitting||updater?.installing)throw Object.assign(new Error('앱 자료 변경이 끝난 뒤 관리 요청을 다시 보내십시오.'),{code:'OPS_MANAGEMENT_UNAVAILABLE'});},enqueue:callback=>{const result=actionQueue.then(callback);actionQueue=result.catch(()=>{});return result;},onChange:()=>{dataChanged();modelCache?.reconcile();}});
+    const managementOptions={getStore:()=>store,assertReady:()=>{if(restoring||quitting||updater?.installing)throw Object.assign(new Error('앱 자료 변경이 끝난 뒤 관리 요청을 다시 보내십시오.'),{code:'OPS_MANAGEMENT_UNAVAILABLE'});},enqueue:callback=>{const result=actionQueue.then(callback);actionQueue=result.catch(()=>{});return result;},onChange:()=>{dataChanged();modelCache?.reconcile();},attachmentPath};
+    const managementAdapter=Object.assign(require('./ops-management.cjs').createProjectAdapter(managementOptions),require('./ops-workspace-tools.cjs').createWorkspaceAdapter(managementOptions));
+
     try{skillsManager=new(require('./ops-skills.cjs').OpsSkills)({dataPath,onChange:state=>{sendToWindows('reviewops:ops-skills-state',state);opsManager?._notify();}});opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,managementAdapter,skillProvider:skillsManager,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,resolveRuntime:resolveOpsRuntime,onChange:sendOpsState});}
     catch{console.warn('Ops state could not be opened. Existing Ops files were preserved.');}
     const skillsHandler=require('./ops-skills-ipc.cjs').createSkillsHandler({registry:skillsManager,dialog,getWindow:getRequestWindow});
@@ -1918,12 +1920,28 @@ else {
       const result=actionQueue.then(()=>skillsHandler(method,input,assertCurrent));actionQueue=result.catch(()=>{});return result;
     });
     const opsResume=()=>{void opsManager?.scheduler.wake();};powerMonitor?.on('resume',opsResume);
+    const opsNavigations=new Map();
     ipcMain.handle('ops:invoke',async(event,method,input)=>{
       const host=senderWindow(event),record=host&&windowContexts.get(host),originalStore=store,manager=opsManager,incarnation=record?qaScopeIncarnation(record):null;
       const guard=()=>{if(!host||senderWindow(event)!==host||windowContexts.get(host)!==record||record.projectId!==''||qaProjectId(record)||qaScopeIncarnation(record)!==incarnation||restoring||quitting||updater?.installing||store!==originalStore||opsManager!==manager)throw Object.assign(new Error('기본 창에서 Ops를 사용하십시오.'),{code:'OPS_ACCESS_DENIED'});};
       guard();if(!manager)throw Object.assign(new Error('Ops 자료를 열지 못했습니다. 데이터 폴더의 원본을 보존하고 다시 실행하십시오.'),{code:'OPS_UNAVAILABLE'});
       const admission=store.captureWriteAdmission(),assertCurrent=()=>{guard();originalStore.assertWriteAdmission(admission);};
-      const actions={snapshot:()=>manager.snapshot(),saveGoal:()=>manager.saveGoal(input,assertCurrent),deleteGoal:()=>manager.deleteGoal(input,assertCurrent),goalAction:()=>manager.goalAction(input,assertCurrent),saveSchedule:()=>manager.saveSchedule(input),deleteSchedule:()=>manager.deleteSchedule(input),preview:()=>manager.preview(input),configure:()=>manager.configure(input),managementCreate:()=>manager.managementCreate(input,assertCurrent),managementRequest:()=>manager.managementRequest(input,assertCurrent),managementAction:()=>manager.managementAction(input,assertCurrent)};
+      const origin={windowId:record.id,navigate:(target,scopeGuard)=>{
+        assertCurrent();scopeGuard();
+        if(target.goalId&&!manager.snapshot().goals.some(goal=>goal.id===target.goalId))throw Object.assign(new Error('표시할 목표를 찾을 수 없습니다.'),{code:'OPS_GOAL_NOT_FOUND'});
+        return new Promise((resolve,reject)=>{
+          const id=crypto.randomUUID(),finish=(error,result)=>{const pending=opsNavigations.get(id);if(!pending)return;opsNavigations.delete(id);clearTimeout(pending.timer);error?reject(error):resolve(result);};
+          const timer=setTimeout(()=>finish(Object.assign(new Error('원래 앱 창의 화면 표시 결과를 확인하지 못했습니다. 화면을 확인한 뒤 새 요청으로 조회하십시오.'),{code:'OPS_NAVIGATION_UNCONFIRMED'})),10000);timer.unref?.();
+          opsNavigations.set(id,{host,record,assertCurrent,scopeGuard,finish,timer});
+          host.webContents.send('reviewops:ops-navigate',{id,target});
+        });
+      }};
+      const navigationResult=()=>{
+        if(!input||typeof input.id!=='string'||typeof input.ok!=='boolean'||Object.keys(input).some(key=>!['id','ok','error'].includes(key))||input.error!==undefined&&(typeof input.error!=='string'||input.error.length>2000))throw new Error('화면 표시 결과가 올바르지 않습니다.');
+        const pending=opsNavigations.get(input.id);if(!pending||pending.host!==host||pending.record!==record)throw Object.assign(new Error('이 창에서 요청한 화면 표시가 아닙니다.'),{code:'OPS_ORIGIN_MISMATCH'});
+        try{pending.assertCurrent();pending.scopeGuard();pending.finish(input.ok?null:Object.assign(new Error(input.error||'화면을 표시하지 못했습니다.'),{code:'OPS_NAVIGATION_FAILED'}),{shown:input.ok,windowId:record.id});}catch(error){pending.finish(error);throw error;}return {accepted:true};
+      };
+      const actions={snapshot:()=>manager.snapshot(),saveGoal:()=>manager.saveGoal(input,assertCurrent),deleteGoal:()=>manager.deleteGoal(input,assertCurrent),goalAction:()=>manager.goalAction(input,assertCurrent),saveSchedule:()=>manager.saveSchedule(input),deleteSchedule:()=>manager.deleteSchedule(input),preview:()=>manager.preview(input),configure:()=>manager.configure(input),managementCreate:()=>manager.managementCreate(input,assertCurrent),managementRequest:()=>manager.managementRequest(input,assertCurrent,{origin}),managementAction:()=>manager.managementAction(input,assertCurrent),navigationResult};
       if(!Object.hasOwn(actions,method))throw new Error('지원하지 않는 Ops 요청입니다.');assertCurrent();return actions[method]();
     });
     app.on('will-quit',()=>{powerMonitor?.removeListener('resume',opsResume);ipcMain.removeHandler('ops:invoke');ipcMain.removeHandler('ops-skills:invoke');opsManager?.close().catch(()=>{});});

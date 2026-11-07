@@ -26,7 +26,7 @@ const viewportPreset=viewport=>VIEWER_PRESETS.find(([,width,height])=>width===vi
 const viewportDraft=viewport=>({width:String(viewport.width),height:String(viewport.height)});
 const fileType=file=>file?.mimeType?.startsWith('image/')?t("이미지"):/\.(md|markdown)$/i.test(file?.name||file?.path||'')||file?.mimeType==='text/markdown'?'Markdown':/\.csv$/i.test(file?.name||file?.path||'')||file?.mimeType==='text/csv'?'CSV':file?.mimeType==='application/pdf'?'PDF':/html/.test(file?.mimeType||'')?'HTML':t("파일");
 
-export default function ProjectWorkspace({data,projectId,qaScoped=false,resourceMode='project',invoke,mutate,busy,onOpenGroup,onOpenWindow,windowOpening=false,onError,onDirtyChange,onDelete,onOpenHosts,initialReviewId='',selectionRequest=0,initialSection='',sectionRequest=0,initialReviewMode='detail',integrationRequest=0,active=true,onIntegrationReady}) {
+export default function ProjectWorkspace({data,projectId,qaScoped=false,resourceMode='project',invoke,mutate,busy,onOpenGroup,onOpenWindow,windowOpening=false,onError,onDirtyChange,onDelete,onOpenHosts,initialReviewId='',selectionRequest=0,initialSection='',sectionRequest=0,initialReviewMode='detail',integrationRequest=0,active=true,onIntegrationReady,onContextChange}) {
  const isService=false;
  const resource=data.projects.find(item=>item.id===projectId);
  const group=data.groups.find(item=>item.id===resource?.groupId);
@@ -36,6 +36,8 @@ export default function ProjectWorkspace({data,projectId,qaScoped=false,resource
  const [tab,setTab]=useState(initialSection||'review');
  const [selectedReviewId,setSelectedReviewId]=useState(initialReviewId),[creating,setCreating]=useState(initialReviewMode==='create'),[reviewMode,setReviewMode]=useState(initialReviewMode),[closeRequest,setCloseRequest]=useState(0);
  const [file,setFile]=useState(null),[fileMode,setFileMode]=useState('preview'),[previewFile,setPreviewFile]=useState(null),[previewUrl,setPreviewUrl]=useState(''),[previewRequest,setPreviewRequest]=useState(0),[trust,setTrust]=useState(null);
+ const contextCallback=useRef(onContextChange);contextCallback.current=onContextChange;
+ useEffect(()=>{if(active)contextCallback.current?.({view:'project',section:tab,projectId,reviewId:selectedReviewId||'',documentId:data.attachments.some(row=>row.id===previewFile?.id)?previewFile.id:''})},[active,tab,projectId,selectedReviewId,previewFile?.id,data.attachments]);
  const [mobilePane,setMobilePane]=useState('workspace');
  const [width,setWidth]=useState(()=>bound(safeStored('reviewops.project.panelWidth',560),420,900));
  const dirtyParts=useRef({}),dirtyCallback=useRef(onDirtyChange);dirtyCallback.current=onDirtyChange;
@@ -53,7 +55,7 @@ export default function ProjectWorkspace({data,projectId,qaScoped=false,resource
  };
  useEffect(()=>{if(initialSection){setTab(initialSection);setMobilePane(initialSection==='viewer'?'preview':'workspace')}},[initialSection,sectionRequest]);
  useEffect(()=>{if(initialReviewId||initialReviewMode==='create'){
-  setSelectedReviewId(initialReviewId);setCreating(initialReviewMode==='create');setReviewMode(initialReviewMode);setTab('review');setMobilePane('workspace');
+  setSelectedReviewId(initialReviewId);setCreating(initialReviewMode==='create');setReviewMode(initialReviewMode);setTab(initialReviewMode==='create'?'review':initialSection||'review');setMobilePane('workspace');
   const requested=data.reviews.find(item=>item.id===initialReviewId&&item.projectId===projectId);
   if(requested){setPreviewFile(null);setPreviewUrl(requested.targetUrl||'');setPreviewRequest(value=>value+1);}
  }},[initialReviewId,initialReviewMode,selectionRequest]);
@@ -101,7 +103,7 @@ export default function ProjectWorkspace({data,projectId,qaScoped=false,resource
  const currentLabel=tabs.find(([key])=>key===tab)?.[1]||t("리뷰");
  if(!resource)return <Empty title={t("프로젝트를 찾을 수 없습니다.")}/>;
  const fullViewer=isService&&tab==='viewer';
- return <div className="original-project" data-resource-mode={resourceMode} data-project-id={isService?'':projectId} data-review-id={selectedReview?.id||''}>
+ return <div className="original-project" data-resource-mode={resourceMode} data-project-id={isService?'':projectId} data-review-id={selectedReview?.id||''} data-section={tab}>
   <PageHeader className="original-project-header" title={resource.name} leading={<button className="original-project-back" aria-label={t("목록으로 돌아가기")} title={t("목록으로 돌아가기")} onClick={()=>onOpenGroup(resource.groupId,'projects')}><Icon name="back" size={14}/></button>} subtitle={<span className="original-project-connection-label" title={service?.rootPath||''}><Icon name={service?.kind==='ssh'?'terminal':'folder'} size={14}/>{connectionLabel(service)}</span>} controls={<nav className="original-project-nav reviewops-tab-strip reviewops-tab-strip--text reviewops-tab-strip--desktop-text" aria-label={t("프로젝트 기능")} onKeyDown={tabKeyboard}>{tabs.map(([key,name])=><button key={key} type="button" className={`reviewops-tab ${tab===key?'active is-active':''}`} tabIndex={tab===key?0:-1} aria-pressed={tab===key} onClick={()=>selectTab(key)}>{name}</button>)}</nav>} actions={onOpenWindow&&<button type="button" className="original-project-open-window" aria-label={t("별도 창에서 열기")} title={t("별도 창에서 열기")} disabled={windowOpening} onClick={()=>onOpenWindow(projectId,{section:tab,reviewId:selectedReview?.id||''})}><Icon name="external" size={16}/></button>}/>
   {!fullViewer&&<div className="original-mobile-pane-switcher"><div className="original-mobile-panes reviewops-tab-strip" role="group" aria-label={t("프로젝트 화면 전환")} onKeyDown={tabKeyboard}><button type="button" className={`reviewops-tab ${mobilePane==='preview'?'active is-active':''}`} aria-pressed={mobilePane==='preview'} tabIndex={mobilePane==='preview'?0:-1} onClick={()=>setMobilePane('preview')}>{dashboard?t("통계"):t("화면")}</button><button type="button" className={`reviewops-tab ${mobilePane==='workspace'?'active is-active':''}`} aria-pressed={mobilePane==='workspace'} tabIndex={mobilePane==='workspace'?0:-1} onClick={()=>setMobilePane('workspace')}>{dashboard?t("소개"):currentLabel}</button></div></div>}
   <div ref={container} className={`original-project-workspace ${dashboard?'is-dashboard':''} ${fullViewer?'viewer-only':''}`} data-mobile-pane={mobilePane}>

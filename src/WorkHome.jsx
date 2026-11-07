@@ -20,9 +20,11 @@ function ProjectIcon() {
   return <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="1" y="2" width="4" height="4" rx="1"/><rect x="10" y="1" width="5" height="4" rx="1"/><rect x="10" y="10" width="5" height="4" rx="1"/><path d="M4 3h5v1h2v2H8V5H4zm0 1h2v7h5v2H4z"/></svg>;
 }
 
-export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpenProject, onEditReview, onCreateReview, onPreview, onError, onRefresh, onGroups, onDirtyChange, initialReviewId = '', selectionRequest = 0, storageScope='reviewops.home', windowProjectId='',projectOnly=false}) {
+export default function WorkHome({data, invoke, mutate, busy, onOpenGroup, onOpenProject, onEditReview, onCreateReview, onPreview, onError, onRefresh, onGroups, onDirtyChange, initialReviewId = '', selectionRequest = 0, storageScope='reviewops.home', windowProjectId='',projectOnly=false,onContextChange,active=true}) {
   const selectedKey=`${storageScope}.selected`,favoritesKey=`${storageScope}.favorites`;
   const [selectedId, setSelectedId] = useState(() => initialReviewId || storage.get(selectedKey));
+  const contextCallback=useRef(onContextChange);contextCallback.current=onContextChange;
+  useEffect(()=>{if(active){const review=data.reviews.find(row=>row.id===selectedId);contextCallback.current?.({view:'home',section:'',projectId:review?.projectId||'',reviewId:review?.id||''})}},[active,selectedId,data.reviews]);
   const [scope, setScope] = useState('active');
   const [search, setSearch] = useState('');
   const [collapsed, setCollapsed] = useState({});
