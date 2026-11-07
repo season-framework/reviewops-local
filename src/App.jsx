@@ -275,7 +275,7 @@ export default function App() {
   let destination='home';
   if(plan.kind==='home')setActive('home');
   else{const extra={...plan.extra,sectionRequest:request,selectionRequest:request},id=plan.existingId||unique();destination=id;setTabs(current=>plan.existingId?current.map(row=>row.id===id?{...row,...extra}:row):[...current,{id,kind:plan.kind,entityId:plan.entityId,...extra}]);setActive(id);}
-  if(plan.goalId)setGoalNavigation({tabId:destination,goalId:plan.goalId,section:target.section,request});
+  if(plan.kind==='ops')setGoalNavigation({tabId:destination,goalId:plan.goalId,section:target.section||'conversation',request});
   if(plan.document){const loaded=await invoke('attachment.read',{id:plan.document.id});setModal({type:'preview',file:{...loaded,name:plan.document.name}});}
   const started=Date.now();
   while(Date.now()-started<3000){
@@ -286,6 +286,7 @@ export default function App() {
    if(plan.kind==='project'&&(project?.dataset.projectId!==plan.entityId||project?.dataset.section!==plan.extra.section))continue;
    if(plan.kind==='group'&&(group?.dataset.opsGroupId!==plan.entityId||group?.dataset.opsSection!==plan.extra.section))continue;
    if(target.reviewId&&project?.dataset.reviewId!==target.reviewId)continue;
+   if(plan.kind==='ops'&&(target.section==='conversation'||!target.section?ops?.dataset.page!=='conversation':ops?.dataset.page!=='goals'))continue;
    if(plan.goalId&&(ops?.dataset.selectedGoal!==plan.goalId||target.section&&target.section!=='goals'&&ops?.dataset.goalSection!==target.section))continue;
    return {shown:true};
   }

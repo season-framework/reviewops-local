@@ -82,3 +82,8 @@ test('reconnected project/goal mutations cannot drop persisted scope when its li
  for(const [name,args]of [['ops_projects_create',{name:'Must not create',workPath:h.root}],['ops_goals_save',{name:'Must not create',prompt:'No',workPath:h.root}]]){const result=await h.call(name,{requestId,...args});assert.equal(result.ok,false);assert.equal(result.error.code,'OPS_CONTEXT_UNAVAILABLE');}
  assert.equal(h.store.snapshot().projects.length,2);assert.equal(h.manager.snapshot().goals.length,0);
 });
+test('parallel goal creates return each own committed ID and link after deferred target resolution',async t=>{
+ const h=await harness(t),requestId=await h.start({view:'project',section:'review',projectId:h.a.id}),pending=new Map();h.manager.resolveTarget=input=>new Promise(resolve=>pending.set(input.name,()=>resolve({projectId:input.projectId,workPath:h.root,targetKind:'local',targetIdentity:'local',serviceId:null})));
+ const first=h.call('ops_goals_save',{requestId,name:'First parallel',prompt:'First'}),second=h.call('ops_goals_save',{requestId,name:'Second parallel',prompt:'Second'});await new Promise(resolve=>setImmediate(resolve));pending.get('Second parallel')();const b=await second;pending.get('First parallel')();const a=await first;
+ assert.equal(a.ok,true);assert.equal(b.ok,true);assert.equal(a.data.name,'First parallel');assert.equal(b.data.name,'Second parallel');assert.notEqual(a.data.id,b.data.id);assert.equal(a.links[0].id,a.data.id);assert.equal(b.links[0].id,b.data.id);
+});

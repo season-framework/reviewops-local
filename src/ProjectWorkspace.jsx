@@ -55,7 +55,7 @@ export default function ProjectWorkspace({data,projectId,qaScoped=false,resource
  };
  useEffect(()=>{if(initialSection){setTab(initialSection);setMobilePane(initialSection==='viewer'?'preview':'workspace')}},[initialSection,sectionRequest]);
  useEffect(()=>{if(initialReviewId||initialReviewMode==='create'){
-  setSelectedReviewId(initialReviewId);setCreating(initialReviewMode==='create');setReviewMode(initialReviewMode);setTab('review');setMobilePane('workspace');
+  setSelectedReviewId(initialReviewId);setCreating(initialReviewMode==='create');setReviewMode(initialReviewMode);setTab(initialReviewMode==='create'?'review':initialSection||'review');setMobilePane('workspace');
   const requested=data.reviews.find(item=>item.id===initialReviewId&&item.projectId===projectId);
   if(requested){setPreviewFile(null);setPreviewUrl(requested.targetUrl||'');setPreviewRequest(value=>value+1);}
  }},[initialReviewId,initialReviewMode,selectionRequest]);
