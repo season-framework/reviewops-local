@@ -254,8 +254,8 @@
       },
       {
         "path": "src/ProjectWorkspace.jsx",
-        "sha256": "47b4301a3979d1dd14fd4806071f47bae94c05ed96152a696fe4579011d3df8b",
-        "bytes": 51645
+        "sha256": "1863a860004d889450cc6771ea32a574c30bdd81e12e7fce9a21c5d7cc1acb67",
+        "bytes": 51576
       },
       {
         "path": "src/service-runtime-draft.mjs",
@@ -268,7 +268,8 @@
         "bytes": 16531
       }
     ],
-    "backend": "D1 final-unload-only ordering read; final D/E clean full SHA, complete reviewed source manifest and renderer-build record still required before --run. UI4 hashes do not assert final backend freeze."
+    "description": "Reviewed against integrated source e8fc1f4ffd7900189e353554df367292c622102e: ProjectWorkspace uses the common PageHeader for project and feature headings. Managed-service controls, labels, source surface, dirty callback, project/window binding and D3 connection-draft review behavior remain unchanged. The other three frozen files retain their original exact bytes.",
+    "backend": "The four reviewed UI files remain separate from the final exact clean source SHA, complete checkout-file manifest and source-bound renderer build record required before --run. Both reviewed Git blob hashes and actual checkout hashes remain mandatory; this compatibility update does not assert native execution or backend acceptance."
   },
   "additionalActualUIRegressions": [
     {
