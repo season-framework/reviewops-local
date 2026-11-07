@@ -86,6 +86,14 @@
     },
     {
       "category": "fixes",
+      "title": "Keep restarted execution history within its displayed limit",
+      "description": "When the app restarts during an agent run, retain the latest 100 progress entries including the interruption notice and update the omitted-entry count. Completed runs and confirmed remote executions keep their existing records.",
+      "commits": [
+        "2d6fd966ba3425d4d67208c37e172ccb6776a267"
+      ]
+    },
+    {
+      "category": "fixes",
       "title": "Update desktop certificate validation",
       "description": "Update the desktop runtime to Electron 44.9.1, including its certificate validation fixes.",
       "commits": [
