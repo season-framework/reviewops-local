@@ -38,7 +38,7 @@ const dialog=appLanguage.dialog(nativeDialog);
 protocol.registerSchemesAsPrivileged([{ scheme: 'reviewops', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 const devUrl = !app.isPackaged ? process.env.REVIEWOPS_DEV_URL : null;
 const attachmentPath = path.join(dataPath, 'attachments');
-let window, store, vault, agents, codexManager, updater, modelCache, remoteManagement, remoteAppConnections, opsManager;
+let window, store, vault, agents, codexManager, updater, modelCache, remoteManagement, remoteAppConnections, opsManager, skillsManager;
 let seasonIntegration, toolIntegration, qaAutomation;
 let managedServices;
 const windowContexts = new Map(), projectWindows = new Map(), terminalOwners = new Map();
@@ -953,7 +953,7 @@ async function backupBundle() {
     if (total > 200 * 1024 * 1024) throw new Error('첨부파일 합계가 200 MB를 초과합니다. 데이터 폴더를 복사해 백업하십시오.');
     files[item.storageName] = bytes.toString('base64');
   }
-  const bundle={format:'reviewops-local-backup', version:1, createdAt:new Date().toISOString(), data, files,...(opsManager?{ops:opsManager.exportData()}: {})};
+  const bundle={format:'reviewops-local-backup', version:1, createdAt:new Date().toISOString(), data, files,...(opsManager?{ops:opsManager.exportData()}: {}),...(skillsManager?{skills:skillsManager.exportData()}: {})};
   if(Buffer.byteLength(JSON.stringify(bundle))>300*1024*1024)throw new Error('전체 백업이 300 MB를 초과합니다. 데이터 폴더를 복사해 백업하십시오.');
   return bundle;
 }
@@ -977,6 +977,8 @@ async function importBackup() {
   const bundle = JSON.parse(await fsp.readFile(file, 'utf8'));
   if (bundle.format !== 'reviewops-local-backup' || bundle.version !== 1 || !bundle.data || !bundle.files || !Array.isArray(bundle.data.attachments)) throw new Error('지원하지 않는 백업 파일입니다.');
   if(bundle.ops!==undefined){if(!opsManager)throw new Error('Ops 자료를 안전하게 복원할 수 없습니다. 원래 파일은 보존했습니다.');opsManager.validateImport(bundle.ops);}
+  if(bundle.skills!==undefined){if(!skillsManager)throw new Error('스킬 자료를 안전하게 복원할 수 없습니다. 원본을 보존했습니다.');skillsManager.validateImport(bundle.skills);}
+  skillsManager?.validateReferences(bundle.ops||opsManager?.exportData(),bundle.skills||skillsManager.exportData());
   const validatedFiles = [];
   let total = 0;
   for (const attachment of bundle.data.attachments) {
@@ -993,7 +995,7 @@ async function importBackup() {
   // Validate the complete relationship graph before modifying the working database.
   const tempDir = await fsp.mkdtemp(path.join(app.getPath('temp'),'reviewops-restore-'));
   let validation;
-  const previousOps=opsManager?.exportData();
+  const previousOps=opsManager?.exportData(),previousSkills=skillsManager?.exportData();
   try {
     managedServices?.assertMutationAllowed({all:true});
     validation = createStore({dbPath:path.join(tempDir,'validate.sqlite')});
@@ -1014,10 +1016,12 @@ async function importBackup() {
     managedServices.withConfigurationReset(() => changeWithCredentials(() => {
       vault.clear();
       store.importData(bundle.data);
+      if(bundle.skills!==undefined)skillsManager.restore(bundle.skills);
       if(bundle.ops!==undefined)opsManager.restore(bundle.ops);
       else if(previousOps)opsManager.restore(previousOps);
     }));
   } catch(error) {
+    if(previousSkills)try{skillsManager.restore(previousSkills);}catch(rollback){throw new AggregateError([error,rollback],'스킬 복원 결과를 확인하지 못했습니다. recovery 폴더의 원본 백업을 보존하십시오.');}
     if(previousOps)try{opsManager.restore(previousOps,{pause:false});}catch(rollback){throw new AggregateError([error,rollback],'Ops 복원 결과를 확인하지 못했습니다. recovery 폴더의 원본 백업을 보존하십시오.');}
     for (const item of validatedFiles) await fsp.rm(path.join(attachmentPath,item.storageName),{force:true});
     throw error;
@@ -1905,8 +1909,15 @@ else {
     codexManager.registerHandlers(ipcMain);
     const managementOptions={getStore:()=>store,assertReady:()=>{if(restoring||quitting||updater?.installing)throw Object.assign(new Error('앱 자료 변경이 끝난 뒤 관리 요청을 다시 보내십시오.'),{code:'OPS_MANAGEMENT_UNAVAILABLE'});},enqueue:callback=>{const result=actionQueue.then(callback);actionQueue=result.catch(()=>{});return result;},onChange:()=>{dataChanged();modelCache?.reconcile();},attachmentPath};
     const managementAdapter=Object.assign(require('./ops-management.cjs').createProjectAdapter(managementOptions),require('./ops-workspace-tools.cjs').createWorkspaceAdapter(managementOptions));
-    try{opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,managementAdapter,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,resolveRuntime:resolveOpsRuntime,onChange:sendOpsState});}
+    try{skillsManager=new(require('./ops-skills.cjs').OpsSkills)({dataPath,onChange:state=>{sendToWindows('reviewops:ops-skills-state',state);opsManager?._notify();}});opsManager=await require('./ops-manager.cjs').createOpsManager({dataPath,appInstanceId,managementAdapter,skillProvider:skillsManager,createQaBridge:options=>createOpsQaBridge(options,appInstanceId),validateQaContext:assertOpsQaContext,runtime:()=>codexManager.localRuntime(),resolveTarget:resolveOpsTarget,resolveSessionTarget:resolveOpsSessionTarget,resolveRuntime:resolveOpsRuntime,onChange:sendOpsState});}
     catch{console.warn('Ops state could not be opened. Existing Ops files were preserved.');}
+    const skillsHandler=require('./ops-skills-ipc.cjs').createSkillsHandler({registry:skillsManager,dialog,getWindow:getRequestWindow});
+    ipcMain.handle('ops-skills:invoke',async(event,method,input)=>{
+      const host=senderWindow(event),record=host&&windowContexts.get(host),originalStore=store,registry=skillsManager,incarnation=record?qaScopeIncarnation(record):null;
+      const guard=()=>{if(!host||senderWindow(event)!==host||windowContexts.get(host)!==record||record.projectId!==''||qaProjectId(record)||qaScopeIncarnation(record)!==incarnation||restoring||quitting||updater?.installing||store!==originalStore||skillsManager!==registry)throw Object.assign(new Error('기본 창의 설정에서 스킬을 관리하십시오.'),{code:'OPS_ACCESS_DENIED'});};
+      guard();const admission=store.captureWriteAdmission(),assertCurrent=()=>{guard();originalStore.assertWriteAdmission(admission);};
+      const result=actionQueue.then(()=>skillsHandler(method,input,assertCurrent));actionQueue=result.catch(()=>{});return result;
+    });
     const opsResume=()=>{void opsManager?.scheduler.wake();};powerMonitor?.on('resume',opsResume);
     const opsNavigations=new Map();
     ipcMain.handle('ops:invoke',async(event,method,input)=>{
@@ -1932,7 +1943,7 @@ else {
       const actions={snapshot:()=>manager.snapshot(),saveGoal:()=>manager.saveGoal(input,assertCurrent),deleteGoal:()=>manager.deleteGoal(input,assertCurrent),goalAction:()=>manager.goalAction(input,assertCurrent),saveSchedule:()=>manager.saveSchedule(input),deleteSchedule:()=>manager.deleteSchedule(input),preview:()=>manager.preview(input),configure:()=>manager.configure(input),managementCreate:()=>manager.managementCreate(input,assertCurrent),managementRequest:()=>manager.managementRequest(input,assertCurrent,{origin}),managementAction:()=>manager.managementAction(input,assertCurrent),navigationResult};
       if(!Object.hasOwn(actions,method))throw new Error('지원하지 않는 Ops 요청입니다.');assertCurrent();return actions[method]();
     });
-    app.on('will-quit',()=>{powerMonitor?.removeListener('resume',opsResume);ipcMain.removeHandler('ops:invoke');opsManager?.close().catch(()=>{});});
+    app.on('will-quit',()=>{powerMonitor?.removeListener('resume',opsResume);ipcMain.removeHandler('ops:invoke');ipcMain.removeHandler('ops-skills:invoke');opsManager?.close().catch(()=>{});});
     startModelCache();
     createWindow();
     const integrationDispatch=(action,payload)=>{

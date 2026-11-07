@@ -1,4 +1,5 @@
 'use strict';
+const yaml=require('js-yaml');
 const path=require('node:path'),zlib=require('node:zlib'),crypto=require('node:crypto');
 const LIMITS=Object.freeze({zip:20*1024**2,package:32*1024**2,file:8*1024**2,files:500,text:256*1024,store:128*1024**2});
 const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
@@ -36,8 +37,7 @@ function readZip(bytes){
  if(prefix!=='.'&&files.some(row=>!row.path.startsWith(prefix+'/')))fail('OPS_SKILL_REQUIRED','스킬 폴더 밖에 파일이 있습니다.');
  return files.map(row=>({...row,path:prefix==='.'?row.path:row.path.slice(prefix.length+1)}));
 }
-function scalar(value){const trimmed=value.trim();if(trimmed.startsWith('"')){try{return JSON.parse(trimmed);}catch{return trimmed.slice(1,-1);}}if(trimmed.startsWith("'"))return trimmed.slice(1,-1).replaceAll("''", "'");return trimmed.replace(/\s+#.*$/,'').trim();}
-function yamlFields(text){const result={};for(const line of text.split('\n')){const m=/^\s*([a-z_]+)\s*:\s*(.*)$/.exec(line);if(m&&m[2])result[m[1]]=scalar(m[2]);}return result;}
+function yamlFields(value,location='SKILL.md',lineOffset=0){if(Buffer.byteLength(value)>LIMITS.text)fail('OPS_SKILL_LIMIT','YAML 지침은 256 KiB 이하여야 합니다.',location);let document;try{document=yaml.load(value,{schema:yaml.JSON_SCHEMA,json:false});}catch(error){fail('OPS_SKILL_METADATA','YAML 문법을 확인하십시오: '+String(error.reason||'잘못된 형식'),location+':'+((error.mark?.line||0)+1+lineOffset));}if(!document||typeof document!=='object'||Array.isArray(document))fail('OPS_SKILL_METADATA','YAML 항목이 필요합니다.',location+':'+(lineOffset+1));const result={};for(const key of ['name','description','version','display_name','default_prompt'])if(document[key]!==undefined){if(typeof document[key]!=='string')fail('OPS_SKILL_METADATA','YAML '+key+' 값은 문자열이어야 합니다.',location+':'+(lineOffset+1));result[key]=document[key];}if(document.interface!==undefined){if(!document.interface||typeof document.interface!=='object'||Array.isArray(document.interface))fail('OPS_SKILL_METADATA','interface 항목을 확인하십시오.',location+':'+(lineOffset+1));for(const key of ['display_name','default_prompt'])if(document.interface[key]!==undefined){if(typeof document.interface[key]!=='string')fail('OPS_SKILL_METADATA','interface '+key+' 값은 문자열이어야 합니다.',location+':'+(lineOffset+1));result[key]=document.interface[key];}}return result;}
 function textFile(bytes,name){const value=bytes.toString('utf8');if(!Buffer.from(value).equals(bytes)||value.includes('\0'))fail('OPS_SKILL_TEXT','UTF-8 텍스트 파일이 아닙니다.',name);return value;}
 function validatePackage(files,overrides={}){
  if(!Array.isArray(files)||!files.length||files.length>LIMITS.files)fail('OPS_SKILL_REQUIRED','스킬 파일이 없습니다.');
@@ -45,7 +45,8 @@ function validatePackage(files,overrides={}){
  for(const name of names)if([...names].some(other=>other.startsWith(name+'/')))fail('OPS_SKILL_PATH','파일과 폴더 경로가 겹칩니다.',name);
  const main=files.find(row=>row.path==='SKILL.md');if(!main)fail('OPS_SKILL_REQUIRED','필수 지침 파일이 없습니다.','SKILL.md');if(main.bytes.length>LIMITS.text)fail('OPS_SKILL_LIMIT','지침 파일은 256 KiB 이하여야 합니다.','SKILL.md');
  const instruction=textFile(main.bytes,'SKILL.md'),front=/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(instruction);if(!front)fail('OPS_SKILL_METADATA','name과 description을 포함한 YAML 머리말이 필요합니다.','SKILL.md:1');
- const meta=yamlFields(front[1]);if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(meta.name||'')||typeof meta.description!=='string'||!meta.description.trim()||meta.description.length>4000)fail('OPS_SKILL_METADATA','name 또는 description을 확인하십시오.','SKILL.md:2');
+ if(!instruction.slice(front[0].length).trim())fail('OPS_SKILL_REQUIRED','실행할 지침 본문이 없습니다.','SKILL.md');
+ const meta=yamlFields(front[1],'SKILL.md',1);if(!/^[a-z0-9][a-z0-9-]{0,63}$/.test(meta.name||'')||typeof meta.description!=='string'||!meta.description.trim()||meta.description.length>4000)fail('OPS_SKILL_METADATA','name 또는 description을 확인하십시오.','SKILL.md:2');
  const dependencies=[];for(const row of files.filter(row=>/\.md$/i.test(row.path))){const value=textFile(row.bytes,row.path);let fence=null;for(const [i,line]of value.split('\n').entries()){
    const marker=/^\s*(`{3,}|~{3,})/.exec(line);if(marker){if(!fence)fence=marker[1][0];else if(fence===marker[1][0])fence=null;continue;}if(fence)continue;
    const links=[...line.matchAll(/\[[^\]]*\]\(([^)]+)\)/g)].map(m=>m[1].split(/\s+['"]/)[0]);for(const match of line.matchAll(/\x60((?:references|assets|scripts|agents)\/[^\x60\s]+)\x60/g))links.push(match[1]);
@@ -54,7 +55,7 @@ function validatePackage(files,overrides={}){
     if(!files.some(file=>file.path===resolved))fail('OPS_SKILL_REFERENCE','참조 파일이 없습니다: '+resolved,row.path+':'+(i+1));
    }
   }}
- const agent=files.find(row=>row.path==='agents/openai.yaml'),agentFields=agent?yamlFields(textFile(agent.bytes,agent.path)):{};
+ const agent=files.find(row=>row.path==='agents/openai.yaml'),agentFields=agent?yamlFields(textFile(agent.bytes,agent.path),agent.path):{};
  const metadata={slug:meta.name,name:overrides.name??agentFields.display_name??meta.name,description:overrides.description??meta.description,defaultPrompt:overrides.defaultPrompt??agentFields.default_prompt??'',version:overrides.version??meta.version??'',dependencies:[...new Set(dependencies)]};
  for(const [key,max]of [['name',200],['description',4000],['defaultPrompt',20000],['version',100]])if(typeof metadata[key]!=='string'||metadata[key].length>max||metadata[key].includes('\0')||key==='name'&&!metadata[key].trim())fail('OPS_SKILL_METADATA','스킬 설명이나 기본 요청을 확인하십시오.',key);
  return {...metadata,files:files.slice().sort((a,b)=>a.path.localeCompare(b.path)).map(row=>({path:row.path,sha256:sha(row.bytes),size:row.bytes.length}))};

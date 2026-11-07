@@ -35,7 +35,7 @@ function validateOpsData(value){
       !['read-only','workspace-write','danger-full-access'].includes(g.sandboxMode)||!['never','untrusted','on-request'].includes(g.approvalPolicy)||
       !['draft','active','paused','finished'].includes(g.status)||!['idle','starting','running','waiting','unknown','error'].includes(g.executionState)||!Array.isArray(g.schedules)||g.schedules.length>100||!Array.isArray(g.history)||!Array.isArray(g.conversation)||
       g.threadId!==null&&(!text(g.threadId,256)||!g.threadId||threads.has(g.threadId))||g.turnId!==null&&!text(g.turnId,256))fail();
-    ids.add(g.id);
+    ids.add(g.id);selection({skillIds:g.skillIds,taskKinds:g.taskKinds});
     if(g.targetLockIdentities!==undefined&&(!Array.isArray(g.targetLockIdentities)||g.targetLockIdentities.length<1||g.targetLockIdentities.length>8||g.targetLockIdentities.some(value=>!text(value,512)||!value)))fail();
     if(g.projectConnectionSignature!==undefined&&!/^[a-f0-9]{64}$/.test(g.projectConnectionSignature))fail();
     if(g.qaBinding!==undefined&&g.qaBinding!==null)validateQaBinding(g.qaBinding);
