@@ -38,7 +38,7 @@ const detail=()=>ops().locator('.ops-detail');
 const pass=(name,details={})=>{checks.push({name,...details});console.log('PASS: '+name);};
 const protocol=()=>fs.existsSync(path.join(directory,'protocol.jsonl'))?fs.readFileSync(path.join(directory,'protocol.jsonl'),'utf8').trim().split('\n').filter(Boolean).map(line=>JSON.parse(line)):[];
 async function content(key,expression){return app.evaluate(({webContents},{url,expression})=>webContents.getAllWebContents().find(row=>row.getURL()===url)?.executeJavaScript(expression),{url:observations.origin+'/'+key.toLowerCase(),expression});}
-async function selectGoal(key){await ops().locator('.ops-goal-list').getByRole('button').filter({has:main.getByText(goals[key].name,{exact:true})}).click();await expect(detail().getByRole('heading',{name:goals[key].name,exact:true})).toBeVisible();}
+async function selectGoal(key){await ops().locator('.ops-main-tabs').getByRole('button',{name:'목표',exact:true}).click();await ops().locator('.ops-goal-list').getByRole('button').filter({has:main.getByText(goals[key].name,{exact:true})}).click();await expect(detail().getByRole('heading',{name:goals[key].name,exact:true})).toBeVisible();await detail().getByRole('navigation',{name:'목표 상세 항목',exact:true}).getByRole('button',{name:'정보',exact:true}).click();}
 async function photo(name){await main.screenshot({path:path.join(output,name)});}
 async function control(key,tool,args={},success=true){
  const id='qa-'+(++sequence)+'-'+randomUUID();fs.appendFileSync(path.join(work[key],'qa-controls.jsonl'),JSON.stringify({id,tool,args})+'\n');
@@ -52,7 +52,7 @@ async function locale(){
  else await setTestLocale(main);
 }
 async function start(key){await callOps('goalAction',{goalId:goals[key].id,action:'start'});await until(async()=>{const row=await goal(key);if(['error','unknown'].includes(row.executionState))throw new Error('Goal '+key+': '+row.lastError);return row.executionState==='running'||row.history.some(entry=>entry.type==='delivery'&&entry.status==='completed');},'goal '+key+' running');}
-async function pause(key){await selectGoal(key);await detail().getByRole('button',{name:'일시정지',exact:true}).click();await until(async()=>{const value=await goal(key);return value.status==='paused'&&value.executionState==='idle';},'goal '+key+' pause');}
+async function pause(key){await selectGoal(key);await detail().getByRole('button',{name:'일시정지',exact:true}).click();await until(async()=>{const value=await goal(key);return value.status==='paused'&&value.executionState==='idle';},'goal '+key+' pause');await expect(detail().getByRole('button',{name:'목표 시작',exact:true})).toBeVisible();}
 async function controlled(){
  if(!lifecycleOnly){
  await Promise.all([start('A'),start('B'),start('C')]);
@@ -62,8 +62,8 @@ async function controlled(){
  observations.originalBindings={A:a.qaBinding,B:b.qaBinding};await selectGoal('A');await expect(detail().getByRole('region',{name:'목표 QA 연결'})).toContainText('연결됨');
  await detail().getByText('QA 연결 식별자',{exact:true}).click();await expect(detail().getByRole('region',{name:'목표 QA 연결'})).toContainText(a.qaBinding.sessionId);await photo('01-independent-qa-bindings.png');
  pass('Actual goal tools acquire distinct project QA windows and UI displays the original goal/thread/turn binding');
- const states={A:data(await control('A','ops_qa_state')),B:data(await control('B','ops_qa_state'))},browsers={};
- for(const key of ['A','B']){browsers[key]=states[key].browsers.find(row=>row.url===observations.origin+'/'+key.toLowerCase()).browserId;assert.ok(browsers[key]);await until(async()=>await content(key,'document.readyState')==='complete','loaded source '+key);}
+ const browsers={};
+ for(const key of ['A','B']){const binding=observations.originalBindings[key],browser=await until(async()=>{const state=data(await control(key,'ops_qa_state'));assert.equal(state.projectId,binding.projectId);assert.equal(state.windowId,binding.windowId);assert.equal(state.clientId,binding.clientId);assert.equal(state.sessionId,binding.sessionId);assert.ok(Array.isArray(state.browsers));return state.browsers.find(row=>row.url===observations.origin+'/'+key.toLowerCase());},'original bound browser '+key);browsers[key]=browser.browserId;assert.ok(browsers[key]);await until(async()=>await content(key,'document.readyState')==='complete','loaded source '+key);}
  const docs={};
  for(const key of ['A','B']){
   const observed=data(await control(key,'ops_qa_document',{operation:'state',browserId:browsers[key]}));docs[key]=observed.documentId;assert.ok(docs[key]);const input=observed.elements.find(row=>row.tag==='input'),point={x:input.rect.x+input.rect.width/2,y:input.rect.y+input.rect.height/2};
@@ -72,7 +72,7 @@ async function controlled(){
  }
  const captured=await control('A','ops_qa_document',{operation:'capture',browserId:browsers.A});assert.equal(captured.images.length,1);assert.equal(captured.images[0].sha256,captured.receipt.capture.sha256);assert.equal(captured.images[0].size,captured.receipt.capture.size);assert.equal(captured.receipt.capture.mimeType,'image/png');
  observations.capture={...captured.images[0],receipt:captured.receipt};assert.equal(JSON.stringify(await snapshot()).includes('data:image/'),false);
- await selectGoal('A');const receipts=detail().getByRole('region',{name:'QA 처리 기록'});await receipts.locator('details').first().locator('summary').click();await expect(receipts).toContainText(captured.receipt.capture.sha256);await photo('02-actual-capture-receipt.png');
+ await selectGoal('A');await detail().getByRole('navigation',{name:'목표 상세 항목',exact:true}).getByRole('button',{name:'대화와 실행',exact:true}).click();const receipts=detail().getByRole('region',{name:'QA 처리 기록'});await receipts.locator('details').first().locator('summary').click();await expect(receipts).toContainText(captured.receipt.capture.sha256);await photo('02-actual-capture-receipt.png');
  pass('Bound document input changes only its own source; actual PNG reaches the controlled CLI and matches durable metadata without base64 in product state');
  await control('A','ops_qa_capture',{browserId:browsers.B},false);await control('A','ops_qa_capture',{projectId:b.qaBinding.projectId,sessionId:b.qaBinding.sessionId,windowId:b.qaBinding.windowId},false);
  await control('C','ops_qa_open',{},false);assert.equal((await goal('A')).qaBinding.sessionId,a.qaBinding.sessionId);assert.equal((await goal('B')).qaBinding.sessionId,b.qaBinding.sessionId);assert.equal(await content('B','document.querySelector("#draft").value'),'OWN_B');
