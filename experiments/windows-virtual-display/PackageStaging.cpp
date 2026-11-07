@@ -196,7 +196,9 @@ struct OwnedStage {
 void InitializeStage(OwnedStage& stage) {
     RequireElevated();
     struct Com { bool release = false; Com() { const HRESULT h = CoInitializeEx(nullptr, COINIT_MULTITHREADED); if (h != S_OK && h != S_FALSE && h != RPC_E_CHANGED_MODE) Fail("STAGING_PARENT_REFUSED", h); release = h == S_OK || h == S_FALSE; } ~Com() { if (release) CoUninitialize(); } } com;
-    PWSTR raw = nullptr; const HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramData, KF_FLAG_DONT_VERIFY, nullptr, &raw);
+    // This x64 component uses the OS-known application installation directory. Its ACL
+    // and retained ancestors must still pass Security(); the name grants no trust.
+    PWSTR raw = nullptr; const HRESULT hr = SHGetKnownFolderPath(FOLDERID_ProgramFilesX64, KF_FLAG_DONT_VERIFY, nullptr, &raw);
     struct TaskMemory { PWSTR value; ~TaskMemory() { CoTaskMemFree(value); } } memory{raw};
     if (FAILED(hr) || !raw) Fail("STAGING_PARENT_REFUSED", hr);
     std::wstring path(raw);

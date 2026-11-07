@@ -304,7 +304,7 @@ int wmain(int argc, wchar_t** argv) {
             impl::RequireElevated();
             Observe("restoredGateReturned", 1);
         }},
-        {"protected-stage-acl", "CreateStage + independent GetSecurityInfo + Cleanup", "Real fresh ProgramData directory, production owner/DACL and volume-bound identity", [] {
+        {"protected-stage-acl", "CreateStage + independent GetSecurityInfo + Cleanup", "Real fresh native Program Files directory, production owner/DACL and volume-bound identity", [] {
             StageOwner stage;
             Observe("aceCount", ExactPrivateAcl(stage.value->directory.value));
             Need(BoundPath(stage.value->directory.value) == stage.value->directoryPath && stage.value->directoryPath.rfind(L"\\\\?\\Volume{", 0) == 0, "TEST_STAGE_PATH_DIFFERENT");
