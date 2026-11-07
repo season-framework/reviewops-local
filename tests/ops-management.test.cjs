@@ -66,12 +66,15 @@ test('management conversations use separate persistent threads, private working 
   if (process.platform !== 'win32') assert.equal(fs.statSync(first.options.workPath).mode & 0o077, 0);
   await first.options.onEvent({type: 'message', role: 'assistant', itemId: 'answer', text: 'Working', partial: true});
   assert.equal(h.manager.snapshot().managementConversations[0].conversation.at(-1).text, 'Working');
+  assert.equal(h.manager.snapshot().managementConversations[0].conversation.at(-1).partial, true);
+  assert.ok(h.manager.snapshot().managementConversations[0].conversation.at(-1).createdAt);
   await first.options.onEvent({type: 'message', role: 'assistant', itemId: 'answer', text: 'Finished the requested inspection.', partial: false});
   await h.complete(a); await h.request(a, 'Continue the same planning conversation.');
   assert.equal(h.sessions.get(a), first); assert.equal(h.calls.filter(row => row.id === a && row.kind === 'start').length, 2);
   const restored = new OpsStore({dataPath: h.dataPath}).read();
   assert.equal(restored.managementConversations[0].threadId, first.threadId);
   assert.equal(restored.managementConversations[0].conversation.filter(row => row.id === 'answer').length, 1);
+  assert.equal(restored.managementConversations[0].conversation.find(row => row.id === 'answer').partial, false);
   assert.equal(restored.goals.length, 0);
 });
 

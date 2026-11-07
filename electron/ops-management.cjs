@@ -104,7 +104,8 @@ class OpsManagement {
     this._change(row.id, current => {
       if (current.requests.length >= 10000) fail('OPS_LIMIT', '관리 대화의 요청 기록이 한도에 도달했습니다. 새 대화를 만드십시오.');
       current.requests.push({id: deliveryId, instruction: input.instruction, prompt, status: 'queued', threadId: current.threadId, turnId: null, createdAt: this.manager._time()});
-      current.conversation.push({id: deliveryId, role: 'user', text: input.instruction}); current.lastError = null; current.updatedAt = this.manager._time();
+      if (current.requests.length === 1 && current.name === '새 관리 대화') current.name = input.instruction.trim().split('\n')[0].slice(0, 60);
+      current.conversation.push({id: deliveryId, role: 'user', text: input.instruction, createdAt: this.manager._time()}); current.lastError = null; current.updatedAt = this.manager._time();
     });
     void this.pump(row.id); return this.manager.snapshot();
   }
@@ -119,7 +120,8 @@ class OpsManagement {
     if (this.manager.closed || !this.data.some(row => row.id === id)) return;
     if (event.type === 'message') {
       if (event.role === 'user') return; // The raw user request is already stored.
-      const item = {id: event.itemId, role: event.role || 'assistant', text: String(event.text || '').slice(0, 4 * 1024 * 1024)}, key = id + ':' + item.id;
+      const key = id + ':' + event.itemId, previous = this.messages.get(key) || this._conversation(id).conversation.find(item => item.id === event.itemId);
+      const item = {id: event.itemId, role: event.role || 'assistant', text: String(event.text || '').slice(0, 4 * 1024 * 1024), createdAt: previous?.createdAt || this.manager._time(), partial: Boolean(event.partial)};
       if (event.partial) { this.messages.set(key, item); this.manager._notify(); }
       else { this.messages.delete(key); this._change(id, row => { row.conversation = row.conversation.filter(message => message.id !== item.id); row.conversation.push(item); row.updatedAt = this.manager._time(); }); }
       return;
@@ -144,7 +146,7 @@ class OpsManagement {
       const uncertain = request && request.status !== 'queued' && error.deliveryState !== 'not_sent';
       if (request) { request.status = uncertain ? 'unknown' : 'failed'; request.error = String(error.message || error).slice(0, 2000); }
       row.executionState = uncertain || row.turnId || row.backgroundState === 'active' ? 'unknown' : 'error'; row.lastError = String(error.message || error).slice(0, 2000); row.updatedAt = this.manager._time();
-      row.conversation.push({id: randomUUID(), role: 'system', text: row.lastError});
+      row.conversation.push({id: randomUUID(), role: 'system', text: row.lastError, createdAt: this.manager._time()});
     });
   }
   pump(id) {
@@ -264,14 +266,14 @@ class OpsManagement {
       // Keep a prepared receipt uncertain when its original scope disappeared.
       if (generation !== this.generation || this.manager.closed) return result;
       if (error.code === 'OPS_MANAGEMENT_STALE' || error.code === 'STALE_EPOCH') {
-        this._change(id, row => { row.toolReceipts.find(value => value.callId === context.callId).status = 'unknown'; row.lastError = '원래 관리 도구 호출 중 대상이나 실행이 변경되어 결과를 재확인해야 합니다.'; row.conversation.push({id: randomUUID(), role: 'system', text: row.lastError}); });
+        this._change(id, row => { row.toolReceipts.find(value => value.callId === context.callId).status = 'unknown'; row.lastError = '원래 관리 도구 호출 중 대상이나 실행이 변경되어 결과를 재확인해야 합니다.'; row.conversation.push({id: randomUUID(), role: 'system', text: row.lastError, createdAt: this.manager._time()}); });
         return {...result, uncertain: true};
       }
     }
     this._change(id, row => {
       const receipt = row.toolReceipts.find(value => value.callId === context.callId); receipt.status = result.ok ? 'completed' : 'failed'; receipt.result = result; receipt.completedAt = this.manager._time();
       row.lastError = result.ok ? null : result.error.message;
-      if (name !== 'ops_projects_list' && name !== 'ops_goals_list' || !result.ok) row.conversation.push({id: randomUUID(), role: 'tool', text: result.message, links: result.links});
+      if (name !== 'ops_projects_list' && name !== 'ops_goals_list' || !result.ok) row.conversation.push({id: randomUUID(), role: 'tool', text: result.message, links: result.links, createdAt: this.manager._time()});
       row.updatedAt = this.manager._time();
     });
     return result;
