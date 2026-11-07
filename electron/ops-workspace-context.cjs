@@ -2,7 +2,7 @@
 
 const VIEWS = ['home', 'groups', 'group', 'project', 'ops', 'settings', 'accounts', 'hosts'];
 const SECTIONS = ['', 'projects', 'services', 'review', 'dashboard', 'file', 'terminal', 'settings', 'conversation', 'goals', 'info', 'schedules', 'prompts'];
-const INPUT_FIELDS = ['view', 'section', 'groupId', 'projectId', 'reviewId', 'documentId'];
+const INPUT_FIELDS = ['view', 'section', 'groupId', 'projectId', 'reviewId', 'documentId', 'goalId'];
 const CONTEXT_FIELDS = [...INPUT_FIELDS, 'groupName', 'projectName', 'reviewTitle', 'documentName', 'datasetEpoch', 'projectBirth', 'reviewGeneration', 'windowId'];
 function invalid() { throw Object.assign(new Error('작업할 화면과 대상을 다시 선택하십시오.'), {code: 'INVALID_OPS_CONTEXT'}); }
 function validateManagementContext(value, input = false) {
