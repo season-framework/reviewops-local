@@ -41,11 +41,12 @@ function attachmentReply(operation,payload,value){
 // Trust is scoped to one explicitly paired host and its exact certificate.
 // No global CA store, TLS defaults, local path or SSH settings are modified.
 function createRemoteAppClient({address, port, certificatePEM, certificateFingerprint,
-  sessionToken: savedToken = '', onSessionToken = () => {}}) {
+  sessionToken: savedToken = '', onSessionToken = () => {}, requestAgent = false}) {
   if (isIP(address) !== 4 || !Number.isInteger(port) || port < 1 || port > 65535 ||
       typeof certificatePEM !== 'string' || certificatePEM.length > 32768 ||
       typeof certificateFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(certificateFingerprint) ||
-      typeof savedToken !== 'string' || savedToken !== '' && !TOKEN.test(savedToken) || typeof onSessionToken !== 'function') fail('INVALID_CONNECTION');
+      typeof savedToken !== 'string' || savedToken !== '' && !TOKEN.test(savedToken) || typeof onSessionToken !== 'function' ||
+      requestAgent !== false && !(requestAgent instanceof https.Agent)) fail('INVALID_CONNECTION');
   let certificate;
   try { certificate = new X509Certificate(certificatePEM); } catch { fail('INVALID_CONNECTION'); }
   if (createHash('sha256').update(certificate.raw).digest('hex') !== certificateFingerprint ||
@@ -60,7 +61,7 @@ function createRemoteAppClient({address, port, certificatePEM, certificateFinger
     if (typeof body !== 'string' || Buffer.byteLength(body) > 256 * 1024) fail('INVALID_REQUEST');
     return new Promise((resolve, reject) => {
       const connection = https.request({hostname: address, port, method: 'POST', path: route,
-        ca: certificatePEM, allowPartialTrustChain: true, rejectUnauthorized: true, agent: false, minVersion: 'TLSv1.2',
+        ca: certificatePEM, allowPartialTrustChain: true, rejectUnauthorized: true, agent: requestAgent, minVersion: 'TLSv1.2',
         checkServerIdentity(host, peer) {
           const error = tls.checkServerIdentity(host, peer);
           if (error) return error;
