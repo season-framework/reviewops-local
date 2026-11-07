@@ -80,6 +80,7 @@
     "@xterm/xterm": "6.0.0",
     "electron": "44.9.1",
     "electron-builder": "26.15.3",
+    "monaco-editor": "0.57.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
     "vite": "8.3.4"
@@ -159,5 +160,10 @@
   "homepage": "https://season-framework.github.io/reviewops-local/",
   "bugs": {
     "url": "https://github.com/season-framework/reviewops-local/issues"
+  },
+  "overrides": {
+    "monaco-editor": {
+      "dompurify": "3.4.17"
+    }
   }
 }

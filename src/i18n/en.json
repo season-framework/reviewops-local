@@ -1965,5 +1965,21 @@
   "QA 제어자: {0}": "QA controller: {0}",
   "QA 제어 연결됨": "Connected",
   "QA 제어 연결 끊김": "Disconnected",
-  "QA 제어 상태 확인 필요": "Status unavailable"
+  "QA 제어 상태 확인 필요": "Status unavailable",
+  "Ops 화면": "Ops views",
+  "ReviewOps 관리 대화": "ReviewOps management chat",
+  "ReviewOps에 요청": "Ask ReviewOps",
+  "ReviewOps에서 할 일을 이야기하세요.": "Tell ReviewOps what you want to do.",
+  "기존 작업 대상 유지": "Keep the existing target",
+  "대화로 관리하고 목표별 작업을 이어갑니다.": "Manage in chat and continue work in each goal.",
+  "모델 불러오는 중": "Loading models",
+  "목표 열기": "Open goal",
+  "목표 정보": "Goal information",
+  "목표를 만들거나 프로젝트와 예약 작업을 관리해 보세요.": "Create goals or manage projects and schedules.",
+  "새 대화를 준비하지 못했습니다.": "Could not prepare a new conversation.",
+  "에이전트 응답 본문": "Agent response text",
+  "저장된 모델": "Saved model",
+  "프로젝트 열기": "Open project",
+  "프로젝트 추가, 목표 설정, 예약 작업 변경을 대화로 처리합니다.": "Add projects, configure goals and update schedules in a conversation.",
+  "프롬프트 편집기를 불러오지 못했습니다.": "Could not load the prompt editor."
 }
