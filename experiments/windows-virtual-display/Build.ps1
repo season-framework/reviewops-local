@@ -75,7 +75,16 @@ try {
         $packageRecords += [ordered]@{ id = $id; version = '10.0.26100.6584'; sha256 = $hash; bytes = (Get-Item -LiteralPath $package).Length }
     }
     $record['packages'] = $packageRecords
-    & $msbuild (Join-Path $root 'ReviewOpsVirtualDisplay.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" /p:SignMode=Off /p:EnableInf2cat=false 2>&1 |
+    # This x64 WDK package has no x86 stampinf; avoid the legacy targets' x86 fallback.
+    $infToolPath = Join-Path $root 'packages\Microsoft.Windows.WDK.x64.10.0.26100.6584\c\bin\10.0.26100.0\x64'
+    $stampInf = Join-Path $infToolPath 'stampinf.exe'
+    if (-not (Test-Path -LiteralPath $stampInf)) { throw 'The pinned native x64 INF stamping tool is unavailable.' }
+    $record['infStampingTool'] = [ordered]@{
+        architecture = 'AMD64'
+        sha256 = (Get-FileHash -LiteralPath $stampInf -Algorithm SHA256).Hash.ToLowerInvariant()
+        bytes = (Get-Item -LiteralPath $stampInf).Length
+    }
+    & $msbuild (Join-Path $root 'ReviewOpsVirtualDisplay.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" "/p:InfToolPath=$infToolPath" /p:InfToolArchitecture=Native64Bit /p:SignMode=Off /p:EnableInf2cat=false 2>&1 |
         Tee-Object -FilePath (Join-Path $out 'msbuild.log')
     if ($LASTEXITCODE -ne 0) { throw 'The native driver compilation failed.' }
     & $msbuild (Join-Path $root 'ReviewOpsDisplayControl.vcxproj') /t:Build /m:1 /v:minimal /p:Configuration=Release /p:Platform=x64 "/p:VCToolsVersion=$vcVersion" 2>&1 |
