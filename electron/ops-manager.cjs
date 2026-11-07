@@ -60,6 +60,7 @@ class OpsManager{
       // Reuse the native follow-up request's immutable execution contract. Ops
       // adds its own thread/turn journal rather than inventing review FK rows.
       Object.assign(row,{serviceId:goal.serviceId||null,targetKey:this._requestKey(goal),model:goal.model,reasoningEffort:goal.reasoningEffort,binary:'',settingsRecorded:true,newConversation:false,executionSettings:executionSettings(undefined,{model:goal.model,reasoningEffort:goal.reasoningEffort}),context:requestContext({instruction:true,attachmentIds:[],logIds:[]}),requestSignature:randomUUID()});
+      row.goalTarget={projectId:goal.projectId||'',projectEpoch:goal.projectEpoch||null,projectBirth:goal.projectBirth||null,workPath:goal.workPath,targetIdentity:goal.targetIdentity||'local'};
       row.executionIdentityHash=createHash('sha256').update(executionIdentity(row)).digest('hex');
     }
     goal.history.push(row);goal.updatedAt=row.createdAt;return row;}
@@ -175,7 +176,7 @@ class OpsManager{
     if(this.closed)return;const current=this.store.data.goals.find(g=>g.id===id);if(!current)return;
     try{
       if(event.type==='message'){
-        const message={id:String(event.itemId||event.id||randomUUID()),role:['user','assistant','system','tool'].includes(event.role)?event.role:'assistant',text:String(event.text||''),createdAt:this._time(),partial:Boolean(event.partial)};
+        const message={id:String(event.itemId||event.id||randomUUID()),role:['user','assistant','system','tool'].includes(event.role)?event.role:'assistant',text:String(event.text||''),createdAt:this._time(),partial:Boolean(event.partial),...(typeof event.threadId==='string'&&event.threadId?{threadId:event.threadId}:{}),...(typeof event.turnId==='string'&&event.turnId?{turnId:event.turnId}:{})};
         if(message.role==='user'){const delivery=activeDelivery(current);if(delivery?.skills)message.skills=delivery.skills;}
         if(message.partial){this.messages.set(id+':'+message.id,message);this._notify();return;}
         this.messages.delete(id+':'+message.id);this._mutate(data=>{const g=this._goal(data,id),old=g.conversation.find(row=>row.id===message.id);if(old)Object.assign(old,message,{createdAt:old.createdAt});else g.conversation.push(message);if(message.role==='assistant')g.lastWork=message.text.slice(-8000);});return;

@@ -296,7 +296,7 @@ class OpsManagement {
           if (!prior) original.binding.goalTargets.set(goal.id, {target: Object.fromEntries(['id', 'createdAt', 'projectId', 'projectEpoch', 'projectBirth', 'workPath', 'targetIdentity'].map(key => [key, goal[key] ?? null])), threadId: goal.threadId});
           else if (!prior.threadId && goal.threadId) prior.threadId = goal.threadId;
         }
-        const data = require('./ops-goal-results.cjs').readGoalResult(structuredClone(goal), args, this.manager.store.data.revision);
+        const data = require('./ops-goal-results.cjs').readGoalResult(structuredClone(goal), args, this.manager.store.data.revision, this.manager._requestKey(goal));
         original.check(); return {data, message: data.completion.resultAvailable ? '원래 목표의 완료 기록과 저장 응답을 확인했습니다: ' + goal.name : '원래 목표의 현재 상태를 확인했습니다. 완료 결과로 표시하지 않았습니다.', links: [goalLink(goal)]};
       }),
       define('ops_goals_save', 'Create or update a goal in this request original project/goal. Include requestId. A new goal requires name, prompt and a projectId or absolute workPath. Saving preserves its history and never starts it.', schema({requestId: string(128), ...properties}, ['requestId']), async (args, guard) => {
