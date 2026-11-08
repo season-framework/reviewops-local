@@ -79,9 +79,16 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
   if(!historyOnly)fitInput();
  },[draft,id,historyOnly,chatWidth,showHistory]);
  useLayoutEffect(()=>{
-  const element=textarea.current,selection=view.selections?.[id],activeSurface=document.activeElement?.closest('.ops-management-layout');
-  if(!element?.getClientRects().length||!selection||activeSurface&&activeSurface!==host.current)return;
-  const length=draft.length;element.setSelectionRange(Math.min(length,Math.max(0,selection.start||0)),Math.min(length,Math.max(0,selection.end||0)),selection.direction||'none');
+  const element=textarea.current,selection=view.selections?.[id];if(!element||!selection)return;
+  const restore=()=>{
+   const activeSurface=document.activeElement?.closest('.ops-management-layout'),latest=currentView.current.selections?.[id];
+   if(currentId.current!==id||textarea.current!==element||!element.getClientRects().length||activeSurface&&activeSurface!==host.current||!latest||latest.start!==selection.start||latest.end!==selection.end)return;
+   const length=element.value.length;element.setSelectionRange(Math.min(length,Math.max(0,selection.start||0)),Math.min(length,Math.max(0,selection.end||0)),selection.direction||'none');
+  };
+  restore();
+  // A history button's native click can clear a range after React's layout
+  // commit. Restore after that default action, unless the user changed it.
+  const frame=requestAnimationFrame(restore);return()=>cancelAnimationFrame(frame);
  },[id,historyOnly]);
  useEffect(()=>()=>{if(scrollFrame.current)cancelAnimationFrame(scrollFrame.current)},[]);
  useEffect(()=>{
@@ -168,7 +175,7 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
     <div className={`ops-management-progress is-${phase}`} data-phase={phase} role="status"><span className={`ops-progress-indicator ${activePhases.has(phase)?'is-active':''}`} aria-hidden="true"/>{t(phaseLabel[phase])}{phase==='unknown'&&<span className="ops-progress-explanation">{t('원래 실행 상태를 다시 연결하여 확인하세요.')}</span>}</div>
     {(targetError||error||conversation?.lastError)&&<p className="ops-management-error form-error" role="alert">{t(errorText(targetError||error||conversation.lastError))}</p>}
     <form className="ops-management-composer" onSubmit={submit}>
-     <label className="ops-field"><span className="sr-only">{t('ReviewOps에 요청')}</span><textarea ref={textarea} aria-label={t('ReviewOps에 요청')} rows={1} value={draft} onChange={event=>{setDraft(event.target.value);saveSelection(event.target)}} onSelect={event=>saveSelection(event.target)} onKeyDown={event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)&&!event.nativeEvent?.isComposing){event.preventDefault();event.currentTarget.form?.requestSubmit()}}} placeholder={t('ReviewOps에 요청')}/></label>
+     <label className="ops-field"><span className="sr-only">{t('ReviewOps에 요청')}</span><textarea key={id} ref={textarea} aria-label={t('ReviewOps에 요청')} rows={1} value={draft} onChange={event=>{setDraft(event.target.value);saveSelection(event.target)}} onSelect={event=>saveSelection(event.target)} onKeyDown={event=>{if(event.key==='Enter'&&(event.metaKey||event.ctrlKey)&&!event.nativeEvent?.isComposing){event.preventDefault();event.currentTarget.form?.requestSubmit()}}} placeholder={t('ReviewOps에 요청')}/></label>
      {preview&&<div className="ops-composer-preview-pane" aria-label={t('Markdown 미리보기')}><Markdown text={draft} invoke={invoke} onError={setError}/></div>}
      <div className="ops-management-composer-footer">
       <label className="ops-composer-model"><span className="sr-only">{t('Codex 모델')}</span><Select searchable aria-label={t('Codex 모델')} value={model} onChange={event=>{const value=event.target.value;update(current=>({...current,model:value,reasoningEffort:value?defaultReasoning(models.find(row=>row.id===value)):''}));setError('')}}><option value="">{environment?.defaultModel?t('호스트 기본 모델 · {0}',[environment.defaultModel]):t('Codex 기본값 사용')}</option>{model&&!models.some(row=>row.id===model)&&<option value={model}>{model} · {t('저장된 모델')}</option>}{models.map(row=><option key={row.id} value={row.id}>{row.label||row.displayName||row.id}</option>)}</Select></label>
