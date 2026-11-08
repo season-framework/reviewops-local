@@ -1,17 +1,68 @@
 {
-  "version": 1,
+  "version": 2,
   "packages": {
-    "github-issue-management": {
-      "file": "github-issue-management.zip",
-      "url": "https://github.com/user-attachments/files/34520598/github-issue-management.zip",
-      "bytes": 7177,
-      "sha256": "8cf7b066ab13095dc30d9d25ad3f0153ef82d408589e8f65b93f099eda79723b"
+    "reviewops-review-agent": {
+      "kind": "repository",
+      "name": "ReviewOps 2.0.0",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 2095,
+          "sha256": "6e62f4dc081705488f305161aade22e4b20df91ec2a1bd58212d71ebf1ed2076"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 190,
+          "sha256": "683e2755bb3a48649180803dabad1c0513691d40260ff9ff1191dd26d2efe15f"
+        },
+        {
+          "path": "references/recording.md",
+          "bytes": 1117,
+          "sha256": "e3fa5ae5679be1316f126542eb112bec6972ec28eb1fa032417945ee0b09c3ab"
+        }
+      ]
     },
-    "qa-usability-report": {
-      "file": "qa-usability-report.zip",
-      "url": "https://github.com/user-attachments/files/34520597/qa-usability-report.zip",
-      "bytes": 462609,
-      "sha256": "08a96dd27d9565f0fa04505d55ac3ff86edc703e944555727418a15149bc1aa3"
+    "reviewops-control": {
+      "kind": "repository",
+      "name": "ReviewOps 2.0.0",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 1698,
+          "sha256": "71c422f15ae064ea1265413e893d2e6e7f582fa3fee4b8d78d2bd5ea14d8860b"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 162,
+          "sha256": "1bc9bbe5925d72e269b9647de25e7dcbb210b827d2707bb501f901c5e81f8973"
+        },
+        {
+          "path": "references/control.md",
+          "bytes": 659,
+          "sha256": "d4e500edf42b86a3074fd46fee18ef13c5daad08b16306aeb40362e0f5b9e3ee"
+        }
+      ]
+    },
+    "reviewops-usage": {
+      "kind": "repository",
+      "name": "ReviewOps 2.0.0",
+      "files": [
+        {
+          "path": "SKILL.md",
+          "bytes": 1733,
+          "sha256": "48fbafcfe3751250edcee88bb800e8781b18ba330d0c0811e672baa7826d5a72"
+        },
+        {
+          "path": "agents/openai.yaml",
+          "bytes": 188,
+          "sha256": "5a99fdee0a220ee0aba7ec6ced9cbdc9f8d278c26c510e0be5212dbb8d3198ee"
+        },
+        {
+          "path": "references/usability.md",
+          "bytes": 625,
+          "sha256": "8686e44713451449b8ad06b361aae3deaeddf07fcdffd2f3d9208960ea778ba2"
+        }
+      ]
     }
   }
 }

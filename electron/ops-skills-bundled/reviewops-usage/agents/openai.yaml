@@ -1,0 +1,3 @@
+interface:
+  display_name: "ReviewOps 사용 안내·사용성 점검"
+  default_prompt: "Explain ReviewOps features and settings, or inspect a requested workflow for usability problems."

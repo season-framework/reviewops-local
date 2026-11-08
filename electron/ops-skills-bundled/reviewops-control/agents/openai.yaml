@@ -1,0 +1,3 @@
+interface:
+  display_name: "ReviewOps 제어"
+  default_prompt: "Inspect and manage ReviewOps projects, groups, reviews, goals, schedules and screen navigation."
