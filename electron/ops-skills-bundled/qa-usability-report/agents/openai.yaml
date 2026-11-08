@@ -1,4 +1,0 @@
-interface:
-  display_name: "QA 및 사용성 평가 보고서"
-  short_description: "이슈별 실제 검사와 전체 창 사진을 정리하는 HWPX 보고서"
-  default_prompt: "$qa-usability-report를 사용하여 이슈별 QA와 사용성 평가를 수행하고 전체 창 사진이 포함된 HWPX 보고서를 작성하십시오."

@@ -7,6 +7,8 @@ function createSkillsHandler({registry,dialog,getWindow}){
  return async(method,input={},guard=()=>{})=>{
   guard();if(!registry)throw Object.assign(new Error('스킬 자료를 열지 못했습니다. 원본을 보존하고 다시 실행하십시오.'),{code:'OPS_SKILLS_UNAVAILABLE'});
   if(method==='snapshot'){fields(input,[]);return registry.snapshot();}
+  if(method==='createEntry')return registry.createEntry(input);
+  if(method==='removeEntry')return registry.removeEntry(input);
   if(method==='readFile')return registry.readFile(input);
   if(method==='importZip'){
    fields(input,['mode','skillId']);if(!['new','update'].includes(input.mode)||input.mode==='update'&&typeof input.skillId!=='string')invalid();

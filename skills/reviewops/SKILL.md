@@ -1,9 +1,9 @@
 ---
 name: reviewops
-description: "Create a review for a specified ReviewOps project or open an existing review in a dedicated task window. Use to send review requests from external tools or query request status."
+description: "Create or respond to a review for a specified ReviewOps project or open an existing review in a dedicated task window. Use to send review requests from external tools or query request status."
 ---
 
-# ReviewOps review requests
+# ReviewOps review registration and agent execution
 
 This skill's `scripts/reviewops.mjs` accepts JSON on Node.js standard input and passes it to a running ReviewOps app. Codex, Claude Code, Hermes, and other command-capable environments use the same commands. Automatic skill installation and product-specific APIs are not provided.
 
@@ -41,3 +41,11 @@ JSON
 Read `ok`, `data.status`, `data.reviewId`, and `data.windowId` and report the result. `shown` means the requested review window was displayed, not that review work is complete.
 
 See the repository's [MCP integration guide](../../docs/mcp.md) for concurrent project QA and MCP tools. This skill's JSON commands provide only the review creation/opening/status actions described above.
+
+## Review creation and response rules
+
+Read the target project, existing review and relevant comments before writing. Search for the same request and update the existing review instead of duplicating it. Name the target feature and requested change; record the issue, user impact, operation sequence, actual result and expected result as needed. Distinguish a user report from an actual reproduction.
+
+Use real whole-window photographs and linked operation steps for UI problems and development results. Preserve original photographs and annotate a separate copy. Record only implemented changes and tests actually performed; retain failures, partial work and unrun checks. Re-read saved reviews, replies, status and attachments. Ordinary internal review work does not require GitHub publication or a standalone QA report.
+
+Review registration and agent execution are separate actions. The bridge above registers or opens a review and does not start an agent. If the user requests execution, use the selected app's supported agent tools, preserve the original review and execution target, and record the actual outcome on that review. Do not report opening a task window as completion.

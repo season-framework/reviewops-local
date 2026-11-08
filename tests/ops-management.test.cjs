@@ -264,3 +264,68 @@ test('pending or failed management adapter close fences delivery until original 
   await assert.rejects(h.manager.managementRequest({conversationId:id,instruction:'Must not skip failed cleanup'}),{code:'OPS_DELIVERY_UNKNOWN'});assert.equal(h.calls.filter(row=>row.kind==='start').length,1);
   await h.manager.managementAction({conversationId:id,action:'reconnect'});await h.manager.management.pump(id);row=h.manager.snapshot().managementConversations[0];assert.equal(h.manager.management.retirementFailures.has(id),false);assert.equal(row.executionState,'running');assert.equal(h.calls.filter(call=>call.kind==='start'&&call.deliveryId===row.requests.at(-1).id).length,1);assert.equal(h.sessions.get(id).runtime.command,'/replacement/codex');assert.equal(h.calls.filter(call=>call.kind==='close').length,2);
 });
+
+test('management requests freeze model settings and queue a changed model until the original turn completes', async t => {
+  const h = await harness(t), id = await h.create({model:'model-a',reasoningEffort:'low'});
+  await h.request(id,'First request');
+  const original = h.sessions.get(id), first = h.manager.snapshot().managementConversations[0].requests[0];
+  await h.manager.managementRequest({conversationId:id,instruction:'Next request',model:'model-b',reasoningEffort:'high'});
+  await h.manager.management.pump(id);
+  let row = h.manager.snapshot().managementConversations[0];
+  assert.equal(h.calls.filter(x=>['start','steer'].includes(x.kind)).length,1,'Changed settings must not steer the active turn with the old model');
+  assert.equal(row.requests[1].status,'queued');
+  assert.deepEqual(row.requests[0],first,'Later preferences do not rewrite an already delivered request');
+  assert.deepEqual(row.requests[1].executionSettings.sent,{model:'model-b',reasoningEffort:'high'});
+  assert.deepEqual(original.options.config,{model:'model-a',reasoningEffort:'low',sandboxMode:'danger-full-access',approvalPolicy:'never'});
+  const thread = original.threadId;
+  await h.complete(id); await h.manager.management.pump(id);
+  const next = h.sessions.get(id); row = h.manager.snapshot().managementConversations[0];
+  assert.notEqual(next,original); assert.equal(next.options.threadId,thread);
+  assert.deepEqual(next.options.config,{model:'model-b',reasoningEffort:'high',sandboxMode:'danger-full-access',approvalPolicy:'never'});
+  assert.equal(h.calls.filter(x=>x.kind==='close'&&x.id===id).length,1);
+  assert.equal(h.calls.filter(x=>x.kind==='start'&&x.id===id).length,2);
+  assert.equal(row.requests[1].status,'accepted');
+  assert.deepEqual(row.conversation.filter(x=>x.role==='user').map(x=>x.executionSettings.sent),[{model:'model-a',reasoningEffort:'low'},{model:'model-b',reasoningEffort:'high'}]);
+  assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].requests,row.requests);
+});
+
+test('management rejects invalid model settings before storing or submitting the request', async t => {
+  const h=await harness(t),id=await h.create();
+  for(const settings of [{model:'invalid model',reasoningEffort:'high'},{model:'valid',reasoningEffort:'invented'}])await assert.rejects(h.manager.managementRequest({conversationId:id,instruction:'Do not deliver',...settings}));
+  assert.equal(h.manager.snapshot().managementConversations[0].requests.length,0);
+  assert.equal(h.calls.length,0);
+});
+
+test('new conversations retain the caller identity despite another window creating a conversation first',async t=>{
+ const h=await harness(t),own=randomUUID(),other=randomUUID();
+ await h.manager.managementCreate({id:other,name:'Other window'});
+ const result=await h.manager.managementCreate({id:own,name:'This window'});
+ assert.equal(result.managementConversations.find(row=>row.id===own).name,'This window');
+ assert.equal(result.managementConversations.find(row=>row.id===other).name,'Other window');
+ await assert.rejects(h.manager.managementCreate({id:own}),{code:'OPS_CONVERSATION_EXISTS'});
+ await assert.rejects(h.manager.managementCreate({id:'not-a-uuid'}),{code:'INVALID_OPS_REQUEST'});
+ assert.equal(h.manager.snapshot().managementConversations.length,2);assert.equal(h.calls.length,0);
+});
+
+test('simultaneous matching requests share one durable admission after asynchronous skill capture',async t=>{
+ const h=await harness(t),id=await h.create(),input={conversationId:id,instruction:'One simultaneous request',model:'model-a',reasoningEffort:'low'};
+ await Promise.all([h.manager.managementRequest(input),h.manager.managementRequest({...input})]);
+ await h.manager.management.pump(id);
+ const row=h.manager.snapshot().managementConversations[0];
+ assert.equal(row.requests.length,1);assert.equal(row.conversation.filter(x=>x.role==='user').length,1);
+ assert.equal(h.calls.filter(x=>['start','steer'].includes(x.kind)).length,1);
+ await h.manager.managementRequest({...input,model:'model-b'});await h.manager.management.pump(id);
+ assert.equal(h.manager.snapshot().managementConversations[0].requests.length,2,'A distinct selected model is a distinct frozen request');
+});
+
+test('changing a model preserves the known conversation configuration of unfinished legacy requests',async t=>{
+ const h=await harness(t),id=await h.create({model:'legacy-model',reasoningEffort:'low'});await h.request(id,'Legacy active request');
+ h.manager.store.update(data=>{delete data.managementConversations[0].requests[0].executionSettings;});
+ await h.manager.managementRequest({conversationId:id,instruction:'Future request',model:'new-model',reasoningEffort:'high'});await h.manager.management.pump(id);
+ const row=h.manager.snapshot().managementConversations[0];
+ assert.deepEqual(row.requests[0].executionSettings.sent,{model:'legacy-model',reasoningEffort:'low'});
+ assert.equal(row.requests[0].executionSettingsOrigin,'legacy-conversation-config');
+ assert.deepEqual(row.requests[1].executionSettings.sent,{model:'new-model',reasoningEffort:'high'});
+ assert.equal(row.requests[1].status,'queued');assert.equal(h.calls.filter(x=>x.kind==='steer').length,0);
+ assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].requests,row.requests);
+});

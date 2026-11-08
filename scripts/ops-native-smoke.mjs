@@ -17,7 +17,7 @@ export function inspectOpsArchive(archive, {repository, asar}) {
     }
   };
   visit(prefix.slice(0,-1));
-  for(const slug of ['github-issue-management','qa-usability-report'])assert.ok(skillResources.includes(prefix+slug+'/SKILL.md'),`Initial skill instructions are missing: ${slug}`);
+  for(const slug of ['reviewops-review-agent','reviewops-control','reviewops-usage'])assert.ok(skillResources.includes(prefix+slug+'/SKILL.md'),`Initial skill instructions are missing: ${slug}`);
   const packagedResources=[];
   for(const entry of asar.listPackage(archive).map(name=>name.replaceAll('\\','/').replace(/^\//,''))){
     if(!entry.startsWith(prefix))continue;

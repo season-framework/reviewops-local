@@ -14,7 +14,7 @@ export default function OpsMarkdownEditor({value,onChange,disabled=false,label=t
    model=monaco.editor.createModel(current.current.value,'markdown');
    const instance=monaco.editor.create(host.current,{model,ariaLabel:current.current.label,language:'markdown',automaticLayout:true,wordWrap:'on',lineNumbers:'on',minimap:{enabled:false},scrollBeyondLastLine:false,fontSize:13,tabSize:2,readOnly:current.current.disabled,theme:document.documentElement.dataset.theme==='dark'?'vs-dark':'vs',accessibilitySupport:'on',tabFocusMode:true});
    editor.current=instance;
-   subscription=instance.onDidChangeModelContent(()=>current.current.onChange(model.getValue()));
+   subscription=instance.onDidChangeModelContent(()=>{const next=model.getValue();if(next!==current.current.value)current.current.onChange(next)});
    themeObserver=new MutationObserver(()=>monaco.editor.setTheme(document.documentElement.dataset.theme==='dark'?'vs-dark':'vs'));themeObserver.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
   }).catch(cause=>{if(live)setError(cause.message||String(cause))});
   return()=>{live=false;themeObserver?.disconnect();subscription?.dispose();editor.current?.dispose();editor.current=null;model?.dispose()};

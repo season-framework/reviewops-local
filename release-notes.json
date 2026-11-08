@@ -3,6 +3,25 @@
   "version": "1.7.0",
   "entries": [
     {
+      "category": "features",
+      "title": "Apply ReviewOps skills automatically and manage their files",
+      "description": "Use self-contained review and agent, app-control, and usage or usability skills selected from registered rules and request context. Preserve edited retired defaults and execution revisions, separate the skill list and details, edit Markdown in a folder tree, add or delete package files and folders, and keep skill management out of other settings sections.",
+      "commits": [
+        "0b5bddd663228cb0a7fed5464c05cc9dbec01245"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Use a compact Ops composer without shrinking workspace tabs",
+      "description": "Keep the Ops conversation header on one line and place model, reasoning and searchable work-target controls below the input. Share drafts and choices between the main conversation and panel. Place the resizable panel below the full-width workspace tabs, retain each request’s original target and settings, queue model changes until the previous turn is idle, and prevent duplicate concurrent submissions.",
+      "commits": [
+        "de28d197271761122d6723db5ec0f5088902fdd3",
+        "56564a307993d8fa9a530e8cfefbf4211a41cdda",
+        "ab0b8c921254619da8e0f42dbeb2429189c951eb",
+        "9e00cb59bbe3071bd823418ad22bd0b8b2c1c89f"
+      ]
+    },
+    {
       "category": "fixes",
       "title": "Use the available width for project and group navigation",
       "description": "Remove legacy width reservations that forced fixed project and group tabs to scroll despite available header space. Keep all navigation labels visible by wrapping in narrow windows, and wrap project settings and file-view controls within their pane. Preserve scrolling and keyboard navigation for an open-ended list of workspace tabs.",
