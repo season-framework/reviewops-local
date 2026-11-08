@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 const root=process.cwd(),testRoot=fs.mkdtempSync(path.join(os.tmpdir(),'reviewops-test-updates-'));
 const output=path.join(root,'test-results','test-updates-ui');fs.mkdirSync(output,{recursive:true});
 const checks=[],errors=[],requests=[],catalogs=JSON.parse(fs.readFileSync(path.join(root,'src/i18n/translations.json'),'utf8')),english=JSON.parse(fs.readFileSync(path.join(root,'src/i18n/en.json'),'utf8'));
+fs.writeFileSync(path.join(output,'fixture.json'),JSON.stringify({owner:'update-ui-qa',testRoot,dataPath:path.join(testRoot,'data')},null,2));
 let app,page;
 const settings=()=>page.locator('.workspace-pane:not([hidden]) .update-settings');
 const toggle=()=>settings().getByRole('checkbox',{name:'테스트 버전 받기',exact:true});
@@ -138,7 +139,7 @@ try{
  // stub. Only authenticated-style metadata bytes are simulated; no download,
  // installation, model, global preferences or production IPC backdoor is used.
  await app.evaluate(async({BrowserWindow,ipcMain},{root,testRoot})=>{
-  const {createRequire}=await import('node:module'),require=createRequire(root+'/package.json'),{createUpdateManager,RELEASE_API,TEST_RELEASE_API,RELEASES_URL}=require(root+'/electron/updates.cjs'),crypto=require('node:crypto');
+  const require=process.mainModule.require.bind(process.mainModule),{createUpdateManager,RELEASE_API,TEST_RELEASE_API,RELEASES_URL}=require(root+'/electron/updates.cjs'),crypto=require('node:crypto');
   const window=BrowserWindow.getAllWindows().find(item=>item.webContents.getURL().startsWith('reviewops://app/')),prior=ipcMain._invokeHandlers.get('reviewops:invoke'),offset=globalThis.testUpdateUiFixture.state.generation+1,arch=process.arch;
   const build={channel:'test',version:'1.7.0',developmentNumber:5,buildNumber:69001,commit:'5'.repeat(40),builtAt:'2026-11-08T10:00:00.000Z'},stableName=`ReviewOps-1.7.0-${arch}.zip`,testName=`ReviewOps-1.7.0-dev-5-${arch}.zip`,legacyName=`ReviewOps-1.7.0-test.69001-${arch}.zip`;
   const item=name=>({name,url:RELEASES_URL+'/download/'+(name===stableName?'v1.7.0':'test-latest')+'/'+name,size:2048,sha256:'a'.repeat(64)}),stableItem=item(stableName),testItem=item(testName),legacyItem=item(legacyName),manifestName='reviewops-test-update-69001-'+build.commit.slice(0,12)+'.json';
@@ -183,4 +184,4 @@ try{
  const report={ok:true,checks,actualManagerSelection:actualSelection,rendererErrors:errors,externalRequests:requests,calls:await calls(),dataPath,defaultProfileAccess:false,realDownloads:0,realInstallations:0};
  fs.writeFileSync(path.join(output,'results.json'),JSON.stringify(report,null,2));console.log(JSON.stringify({ok:true,checks:checks.length,realDownloads:0,realInstallations:0}));
 }catch(error){await page?.screenshot({path:path.join(output,'failure.png')}).catch(()=>{});throw error}
-finally{await app?.close().catch(()=>{})}
+finally{await app?.close();fs.rmSync(testRoot,{recursive:true,force:true});fs.writeFileSync(path.join(output,'cleanup.json'),JSON.stringify({applicationCloseAwaited:true,fixtureRemoved:!fs.existsSync(testRoot)},null,2))}
