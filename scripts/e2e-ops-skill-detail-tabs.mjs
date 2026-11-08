@@ -69,7 +69,15 @@ try{
  assert.deepEqual(errors,[]);assert.equal(checks.length,7);await close();result.ok=true;
 }catch(error){failure=error;result.error={message:error.message,stack:error.stack};console.error(error.stack||error);if(page)await photo('FAILURE').catch(()=>{})}
 finally{
- if(app){result.forcedDisposableCleanup=true;app.process().kill('SIGTERM');await new Promise(resolve=>app.process().once('close',resolve));app=null}
+ if(app){
+  const child=app.process(),row=processes.at(-1);result.forcedDisposableCleanup=true;result.forcedCleanupSignals=[];
+  const closed=row.close?Promise.resolve(true):new Promise(resolve=>child.once('close',()=>resolve(true)));
+  const bounded=async milliseconds=>{let timer;try{return await Promise.race([closed,new Promise(resolve=>{timer=setTimeout(()=>resolve(false),milliseconds)})])}finally{clearTimeout(timer)}};
+  if(!row.close){result.forcedCleanupSignals.push({signal:'SIGTERM',atUTC:new Date().toISOString()});child.kill('SIGTERM')}
+  let ended=await bounded(30000);
+  if(!ended){result.forcedCleanupSignals.push({signal:'SIGKILL',atUTC:new Date().toISOString(),reason:'Only this failed disposable UI child exceeded its graceful cleanup bound.'});child.kill('SIGKILL');ended=await bounded(10000)}
+  if(ended)app=null;else result.cleanupError='The exact disposable child did not report close after bounded SIGTERM/SIGKILL cleanup.';
+ }
  result.cleanupConfirmed=app===null;result.fixtureRemoved=false;if(result.ok&&processes.every(row=>row.exit?.code===0&&row.close?.code===0&&!row.exit.signal&&!row.close.signal)){fs.rmSync(fixture,{recursive:true,force:true});result.fixtureRemoved=true}result.finishedAtUTC=new Date().toISOString();save();console.log(JSON.stringify({ok:result.ok,checks:checks.length,output,fixtureRemoved:result.fixtureRemoved,error:result.error?.message||null}));
 }
 if(failure||!result.ok)process.exitCode=1;
