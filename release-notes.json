@@ -156,6 +156,14 @@
       "commits": [
         "f98a3965d457f8864e6945b1f7f5fc56bd7634e9"
       ]
+    },
+    {
+      "category": "fixes",
+      "title": "Keep newer official releases available with test updates enabled",
+      "description": "Compare official and test candidates, prefer higher base versions and use publication order within the same base, with official releases winning ties. Retain the test preference and installed release identity after an official update, allow later eligible test releases, and verify Windows installers before manual opening. Existing dev4 clients need the updater bootstrap or a manual official install for the same-base transition.",
+      "commits": [
+        "0a01db8e1adc52701d14ef8ff211228f419501a1"
+      ]
     }
   ]
 }

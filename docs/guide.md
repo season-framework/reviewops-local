@@ -75,7 +75,7 @@ Open **CLI diagnostics** to inspect up to 16 bounded records, including redacted
 
 Search the language selector in Settings to change the interface language. Supported languages are English, Korean, Japanese, Simplified and Traditional Chinese, Spanish, French, German, Brazilian Portuguese, Italian, Russian, and Vietnamese. Some technical messages remain in English. User content and external websites are not translated.
 
-When automatic checks are enabled, the macOS app checks for updates at startup and every ten minutes by default. Change the interval in **Settings → Automatic checks**. Re-enabling automatic checks also checks immediately. Updates use public GitHub Releases, so the app does not require a GitHub account or token. A new version appears as a notification at the bottom of the left sidebar. Select it to download, install, and restart the app. The same controls are available in Settings. The app validates the download before replacement and preserves project data.
+When automatic checks are enabled, ReviewOps checks for updates at startup and every ten minutes by default. Change the interval in **Settings → Automatic checks**. Re-enabling automatic checks also checks immediately. Updates use public GitHub Releases, so the app does not require a GitHub account or token. On macOS, a new version appears as a notification at the bottom of the left sidebar; select it to download, install, and restart the app. The same controls are available in Settings. The app validates the download before replacement and preserves project data.
 
 SSH agent tasks continue on the server after the app exits. Reopening the app reads the same task's output and result. The server requires bash, nohup, and setsid. Finish local tasks, terminals, logins, and file transfers before updating.
 
@@ -83,13 +83,15 @@ SSH task persistence applies to tasks started in version 1.2.2 or later. Finish 
 
 Photos, documents, and logs in activity appear as attachment buttons below the body. Select a button to open its popup, download the file, or delete it.
 
-For stable Windows updates, download the latest installer, close the app, and reinstall. The stable update method is unchanged. Season AI integration is not supported on Windows. Host management uses SSH key authentication.
+For official or test Windows updates, select **Download installer**, wait for verification, then select **Open installer**. Close ReviewOps and follow the installer instructions; the app does not close automatically. Downloading the matching installer from GitHub Releases remains available. Season AI integration is not supported on Windows. Host management uses SSH key authentication.
 
 ### Get test versions
 
-Enable **Settings → Automatic checks → App updates → Get test versions** to check prerelease builds. It is off by default. Test installers can be downloaded on development and QA computers. The test channel keeps the latest installer set and replaces earlier test installers when a new build is published.
+Enable **Settings → Automatic checks → App updates → Get test versions** to include prerelease builds. It is off by default. With it enabled, ReviewOps checks both official and test releases and offers the newest eligible candidate. A higher base version takes precedence. For the same base version, a later publication can replace the installed development or official release; an official release wins a publication-time tie. Installing an official release keeps your test preference, so a later eligible test release can still be selected. The test channel keeps the latest installer set and replaces earlier test installers when a new build is published.
 
 Installed and available versions are displayed separately. **Show details** displays the build number, commit, and build time; **Copy version information** copies them. macOS uses the existing update installation flow. On Windows, select **Download installer**, wait for verification, then select **Open installer**. The app does not close automatically: close it and follow the installer instructions.
+
+An installed **1.7.0-dev-4 or earlier** client still has the previous updater. First install the next updater bootstrap test release, then check again after official 1.7.0 is published to complete the automatic same-base transition. You can also install the matching official package manually. Switching the old client to official updates alone cannot offer stable 1.7.0 at its already installed base version.
 
 You can change the test-channel selection during a check or download. Disabling it selects stable updates for future checks; it does not downgrade the installed app, delete project data, or restore an older backup. Data saved by 1.2.10 cannot be opened by 1.2.9. Back up before updating if you may need to return to the older app.
 
