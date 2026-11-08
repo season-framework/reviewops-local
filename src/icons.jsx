@@ -1,4 +1,5 @@
 import React from 'react';
+import {MessagesSquare} from 'lucide-react';
 const paths = {
  users:<><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a6 6 0 0 1 12 0v3M16 4a3 3 0 0 1 0 6M18 14a5 5 0 0 1 3 4v3"/></>,
  home: <><path d="m3 10 9-7 9 7v10a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1Z"/></>,
@@ -7,6 +8,7 @@ const paths = {
  service: <><rect x="3" y="3" width="18" height="7" rx="2"/><rect x="3" y="14" width="18" height="7" rx="2"/><path d="M7 6.5h.01M7 17.5h.01M11 6.5h6M11 17.5h6"/></>,
  review: <><path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5H7l-5 2 2-5v-5.5A8.5 8.5 0 0 1 12.5 3H15"/><path d="m14 8 3 3 5-6M8 11h3M8 15h7"/></>,
  search: <><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></>,
+ eye: <><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></>,
  plus: <path d="M12 5v14M5 12h14"/>, close:<path d="m6 6 12 12M18 6 6 18"/>,
  windowMaximize: <rect x="4" y="4" width="16" height="16" rx="1"/>,
  windowRestore: <><path d="M8 8V4h12v12h-4"/><rect x="4" y="8" width="12" height="12" rx="1"/></>,
@@ -38,4 +40,4 @@ const paths = {
  warning:<><path d="M12 3 2 21h20ZM12 9v5M12 18h.01"/></>,
  dots:<><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></>
 };
-export default function Icon({name,size=18,...props}) {return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{paths[name] || paths.file}</svg>}
+export default function Icon({name,size=18,...props}) {if(name==='messagesSquare')return <MessagesSquare size={size} strokeWidth={1.7} aria-hidden="true" {...props}/>;return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}>{paths[name] || paths.file}</svg>}
