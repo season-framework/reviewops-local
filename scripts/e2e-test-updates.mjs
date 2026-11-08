@@ -115,7 +115,7 @@ try{
 
  await publish({status:'current',error:'',errorCode:'',installedBuild:{channel:'test',version:'1.2.10',buildNumber:41,commit:'def1234567890def1234567890def1234567890def',builtAt:'2026-10-30T02:30:00.000Z'}});
  await toggle().uncheck();await expect(settings()).toContainText('선택 해제 후에는 정식 업데이트를 확인합니다. 설치된 테스트 버전은 바뀌지 않습니다.');
- await expect(settings().locator('.update-version-row')).toContainText('설치된 버전 1.2.10테스트');
+ await expect(settings().locator('.update-version-row')).toContainText('설치된 버전 1.2.10-test.41테스트');
  await page.reload();await expect(page.getByRole('heading',{name:'홈',exact:true})).toBeVisible();await openSettings();await expect(toggle()).not.toBeChecked();await expect(settings().locator('.update-version-row')).toContainText('1.2.10');
  pass('선택 해제 후 설치된 테스트 버전 유지 안내와 화면을 다시 열었을 때 설정 표시');
 
