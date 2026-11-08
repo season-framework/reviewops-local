@@ -4,6 +4,39 @@
   "entries": [
     {
       "category": "features",
+      "title": "Write clear internal reviews and split independent requests",
+      "description": "Automatically apply the versioned review-writing and scope guides to Ops requests. Use specific titles and readable Markdown, retain every requested constraint, distinguish user reports from verified results, group cohesive work and split independently actionable changes without duplicate reviews.",
+      "commits": [
+        "741fa872cf5867406f6cc4a5bd549b32ec8f499f"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Separate skill information from the file workspace",
+      "description": "Use accessible full-width detail tabs for metadata and usage rules versus the folder tree and Markdown editor. Keep drafts, the same editor instance, selected files, expanded folders and scroll positions across tabs; protect unsaved changes when leaving the current document.",
+      "commits": [
+        "d83f8dd61fbaf2869fb7e6e9ec441ab25fde0417"
+      ]
+    },
+    {
+      "category": "features",
+      "title": "Keep Ops chat readable and its stop controls responsive",
+      "description": "Render Markdown responses and actual agent activity in a shared conversation timeline, grow the Markdown input with its content, and provide responsive conversation history with deletion. Keep Stop available independently of request delivery, cancel preparing inputs, preserve received responses, and never revive stopped work after delayed acknowledgements or model-session retirement.",
+      "commits": [
+        "8a2b5e5f90cfd37a7c7a3bab979025a7f0ba964a",
+        "fbf46b40bc10f9070f82aa725515611b69ce79a7"
+      ]
+    },
+    {
+      "category": "fixes",
+      "title": "Explain approval for an existing macOS remote identity",
+      "description": "Show targeted instructions after a live protected-read refusal so users can inspect the existing item and current app before a read-only retry. Preserve device identity and saved connections. This guidance does not certify operating-system approval, cross-signing identity continuity or two-PC reconnection.",
+      "commits": [
+        "57b0690026ec11c61d60b0e2af441fe96236e9d5"
+      ]
+    },
+    {
+      "category": "features",
       "title": "Apply ReviewOps skills automatically and manage their files",
       "description": "Use self-contained review and agent, app-control, and usage or usability skills selected from registered rules and request context. Preserve edited retired defaults and execution revisions, separate the skill list and details, edit Markdown in a folder tree, add or delete package files and folders, and keep skill management out of other settings sections.",
       "commits": [
