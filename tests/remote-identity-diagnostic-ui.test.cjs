@@ -9,7 +9,7 @@ function renderer(locale='ko'){
  const source=fs.readFileSync(path.join(__dirname,'../src/RemoteManagementSettings.jsx'),'utf8');
  const pure=source.slice(source.indexOf('const ID='),source.indexOf('export default function RemoteManagementSettings')).replace(/\bexport /g,'');
  const context={React,t:value=>locale==='en'?en[value]??value:value,Object,Reflect,Array,Date,Number,Set,URL};
- return vm.runInNewContext(pure+'\n;({identityDiagnosticValid,identityValid,IdentityDiagnosticNotice,identitySetupBlocked});',context);
+ return vm.runInNewContext(pure+'\n;({identityDiagnosticValid,identityValid,IdentityDiagnosticNotice,identitySetupBlocked,ExistingIdentityAccessGuidance});',context);
 }
 const legacy=()=>({version:1,source:'legacy-intent',stage:'unknown',code:'UNKNOWN',osStatus:null,mayRemain:null,cleanup:'unknown'});
 const pending=diagnostic=>({status:'pending',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_PENDING',...(diagnostic?{diagnostic}:{})});
@@ -85,4 +85,37 @@ test('legacy unknown intent renders uncertainty without promising unlock or rest
  assert.equal(html.includes('잠금 해제'),false);assert.equal(html.includes('재시작'),false);
  assert.equal(html.includes('legacy-intent'),false);assert.equal(html.includes('UNKNOWN'),false);
  assert.equal(renderToStaticMarkup(React.createElement(ui.IdentityDiagnosticNotice,{identity:pending()})),'');
+});
+
+test('existing macOS identity guidance provides item-scoped user actions without opening approval or replacing identity',()=>{
+ const diagnostic=contract.captureIdentityDiagnostic({stage:'verify-protected-item',error:{code:'ITEM_READ_FAILED',osStatus:-25293},mayRemain:true,cleanup:'not-attempted'});
+ const identity={status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic};
+ const before=JSON.stringify(identity);
+ const nativeSource=fs.readFileSync(path.join(__dirname,'../electron/native/remote-identity-darwin.mm'),'utf8');
+ const service=nativeSource.match(/constexpr char kService\[\] = "([^"]+)";/)[1];
+ for(const locale of ['ko','en']){
+  const html=renderToStaticMarkup(React.createElement(renderer(locale).ExistingIdentityAccessGuidance,{identity}));
+  assert.ok(html.startsWith('<details'));assert.equal(html.includes('<details open'),false);
+  assert.equal((html.match(/<li>/g)||[]).length,3);
+  assert.ok(html.includes('<code>'+service+'</code>'));
+  assert.ok(html.includes(locale==='ko'?'macOS 접근 승인 창을 띄우지 않습니다.':'does not open a macOS access approval dialog.'));
+  assert.ok(html.includes(locale==='ko'?'해당 앱만 개별적으로':'only that app individually'));
+  assert.ok(html.includes(locale==='ko'?'신원 확인이 성공하면':'If the identity check succeeds'));
+  assert.ok(html.includes(locale==='ko'?'같은 서비스의 항목이 여러 개':'several items use the same service'));
+  assert.ok(html.includes(locale==='ko'?'암호 표시와 모든 응용 프로그램 접근 허용은 필요하지 않습니다.':'Showing the password and allowing all applications are unnecessary.'));
+  assert.ok(html.includes(locale==='ko'?'기존 항목과 접속 정보를 보존하십시오.':'Preserve the existing item and connection information.'));
+  assert.equal(/<(?:button|a|input|form)\b/.test(html),false,'Guidance must not invoke privileged UI, mutate ACLs or create identities');
+ }
+ assert.equal(JSON.stringify(identity),before);
+});
+
+test('access-approval guidance does not reinterpret pending, non-macOS, retained or other failed operations',()=>{
+ const ui=renderer(),diagnostic={version:1,source:'live-operation',stage:'verify-protected-item',code:'ITEM_READ_FAILED',osStatus:-25293,mayRemain:true,cleanup:'not-attempted'};
+ const base={status:'unavailable',backend:'macos-default-file-keychain',identity:null,errorCode:'IDENTITY_UNAVAILABLE',diagnostic};
+ const identities=[null,{...base,status:'pending',errorCode:'IDENTITY_PENDING'},{...base,status:'identity_lost',errorCode:'IDENTITY_LOST'},
+  {...base,backend:'electron-safe-storage'},{...base,backend:'unsupported'},{...base,diagnostic:undefined},
+  ...[{source:'retained-intent'},{stage:'create-protected-item'},{code:'REFERENCE_RESOLVE_FAILED'},{code:'DEFAULT_LOCKED'},{osStatus:-25308},{osStatus:null},{path:'private-path'}].map(change=>({...base,diagnostic:{...diagnostic,...change}}))];
+ let accessed=0;const accessor={...base};Object.defineProperty(accessor,'diagnostic',{enumerable:true,get(){accessed++;return diagnostic;}});identities.push(accessor);
+ for(const identity of identities)assert.equal(renderToStaticMarkup(React.createElement(ui.ExistingIdentityAccessGuidance,{identity})), '');
+ assert.equal(accessed,0);
 });

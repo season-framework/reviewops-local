@@ -108,6 +108,22 @@ export function identitySetupBlocked(state,disabled=false){
  !(['not_initialized','ready'].includes(state?.identity.status)||state?.identity.errorCode==='CERTIFICATE_REISSUE_REQUIRED')||
  state?.web.enabled||state?.app.enabled||state?.web.state==='closing'||state?.app.state==='closing'||state?.web.errorCode==='WEB_DRAIN_UNCONFIRMED';
 }
+export function ExistingIdentityAccessGuidance({identity}){
+ if(!identityValid(identity)||identity.status!=='unavailable'||identity.backend!=='macos-default-file-keychain')return null;
+ const diagnostic=identity?.diagnostic;
+ if(!identityDiagnosticValid(diagnostic)||
+ diagnostic.source!=='live-operation'||diagnostic.stage!=='verify-protected-item'||diagnostic.code!=='ITEM_READ_FAILED'||diagnostic.osStatus!==-25293)return null;
+ const h=React.createElement;
+ return h('details',{className:'muted'},
+  h('summary',null,t('macOS에서 기존 신원 접근 확인')),
+  h('p',null,t('기존 신원 읽기 다시 시도는 macOS 접근 승인 창을 띄우지 않습니다. 접근 승인이 필요한 경우 키체인 접근에서 기존 항목과 현재 사용 중인 앱을 직접 확인하십시오.')),
+  h('ol',null,
+   h('li',null,t('Spotlight에서 키체인 접근을 열고, 기본 키체인의 기존 암호 항목에서 다음 서비스를 찾으십시오.'),' ',h('code',null,'kr.co.season.reviewops.remote-device-identity.v1')),
+   h('li',null,t('기존 항목의 정보 → 접근 제어에서 현재 설치된 ReviewOps 앱의 접근 권한을 확인하십시오. 승인이 필요하면 해당 앱만 개별적으로 추가하거나 승인하고, macOS가 요청하는 확인을 직접 완료하십시오.')),
+   h('li',null,t('ReviewOps로 돌아와 기존 신원 읽기 다시 시도를 누르십시오. 신원 확인이 성공하면 기존 저장 연결로 다시 접속하고 연결 대상과 프로젝트를 확인하십시오.'))),
+  h('p',null,t('같은 서비스의 항목이 여러 개이거나 현재 앱을 구분할 수 없다면 임의로 변경하지 마십시오. 암호 표시와 모든 응용 프로그램 접근 허용은 필요하지 않습니다. 기존 항목과 접속 정보를 보존하십시오.')),
+  h('p',null,t('다시 거절되면 기존 자료를 보존하고 지원 요청에 오류 번호와 사용한 앱 버전을 함께 기록하십시오.')));
+}
 
 export default function RemoteManagementSettings({invoke,projects=[],active=true}){
  useLocale();
@@ -209,6 +225,7 @@ export default function RemoteManagementSettings({invoke,projects=[],active=true
    <h2>{t('이 컴퓨터 신원')}</h2><p>{state?statusLabel(state.identity.status):t('상태를 불러오는 중입니다.')}</p>
    {state?.identity.errorCode&&<p className="form-error" role="alert">{failureMessage({code:state.identity.errorCode})}</p>}
    <IdentityDiagnosticNotice identity={state?.identity}/>
+   <ExistingIdentityAccessGuidance identity={state?.identity}/>
    {state?.identity.status==='unavailable'&&state.identity.backend!=='unsupported'&&<><p>{t('기존 신원을 다시 확인하면 저장된 보호 항목만 읽습니다. 신원·인증서·접속 정보는 새로 만들거나 삭제하지 않습니다. 운영체제 보안 저장소의 잠금과 이 앱의 해당 항목 접근 권한을 확인한 뒤 다시 시도하십시오.')}</p><button type="button" className="button" disabled={disabled||state?.web.enabled||state?.app.enabled} onClick={()=>command('retryExistingIdentity')}>{t('기존 신원 읽기 다시 시도')}</button></>}
    {identity&&<dl><dt>{t('기기 ID')}</dt><dd><code>{identity.deviceId}</code></dd><dt>{t('인증서 주소')}</dt><dd>{identity.address}</dd>
     <dt>{t('공개 키 지문 · SHA-256')}</dt><dd><code style={{overflowWrap:'anywhere'}}>{identity.keyFingerprint}</code></dd>
