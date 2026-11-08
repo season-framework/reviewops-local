@@ -32,8 +32,8 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
  const [ownUi,setOwnUi]=useState(initialManagementUi),[error,setError]=useState(''),[catalog,setCatalog]=useState(null),[catalogError,setCatalogError]=useState(''),[wide,setWide]=useState(false),[chatWidth,setChatWidth]=useState(0),[confirmDelete,setConfirmDelete]=useState(null),[preview,setPreview]=useState(false),[control,setControl]=useState(null);
  const view=ui||ownUi,update=setUi||setOwnUi,rows=state.managementConversations||[],conversation=rows.find(row=>row.id===view.selected)||rows[0],id=conversation?.id||'new',draft=view.drafts[id]||'';
  const submitting=pending.has(`management:${id}`)||id==='new'&&pending.has('management:new'),controlBusy=pending.has(`management-control:${id}`),phase=managementPhase(conversation,{submitting,stopping:control?.id===id&&['stop','delete'].includes(control.action)}),canStop=canStopManagementConversation(conversation,{submitting}),running=canStop&&phase!=='unknown',showHistory=wide?!view.historyCollapsed:Boolean(view.historyOpen),historyOnly=!wide&&showHistory;
- const host=useRef(null),messagesElement=useRef(null),textarea=useRef(null),dirtyCallback=useRef(onDirtyChange),currentView=useRef(view),positions=useRef({}),scrollFrame=useRef(null),restoringScroll=useRef(false),admissions=useRef(new Map());
- dirtyCallback.current=onDirtyChange;currentView.current=view;
+ const host=useRef(null),messagesElement=useRef(null),textarea=useRef(null),dirtyCallback=useRef(onDirtyChange),currentView=useRef(view),currentId=useRef(id),positions=useRef({}),scrollFrame=useRef(null),restoringScroll=useRef(false),admissions=useRef(new Map());
+ dirtyCallback.current=onDirtyChange;currentView.current=view;currentId.current=id;
  let context,targetError='';try{context=targetContext(view.target,screenContext,data)}catch(cause){targetError=errorText(cause)}
  const Heading=compact?'h2':'h1',contextData={...data,goals:state.goals||[]},environment=catalog?.targets?.find(row=>row.id==='local'),models=availableModels(environment),model=view.model??conversation?.model??'',effort=view.reasoningEffort??conversation?.reasoningEffort??'',selectedModel=models.find(row=>row.id===(model||environment?.defaultModel)),efforts=reasoningOptions(selectedModel),timeline=managementTimeline(conversation),messages=conversation?.conversation||[];
  const savePosition=()=>{
@@ -45,9 +45,14 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
  };
  const restorePosition=()=>{
   const element=messagesElement.current;if(!element||!element.clientHeight)return;
-  const position=positions.current[id]||currentView.current.scrollPositions?.[id];restoringScroll.current=true;
+  const position=positions.current[currentId.current]||currentView.current.scrollPositions?.[currentId.current];restoringScroll.current=true;
   element.scrollTop=position?.atBottom===false?Number(position.top)||0:element.scrollHeight;
   restoringScroll.current=false;
+ };
+ const fitInput=()=>{
+  const element=textarea.current;if(!element?.getClientRects().length)return;
+  element.style.height='0px';const maximum=parseFloat(getComputedStyle(element).maxHeight)||220,height=Math.max(42,Math.min(maximum,element.scrollHeight));
+  element.style.height=`${height}px`;element.style.overflowY=element.scrollHeight>maximum?'auto':'hidden';
  };
  const saveSelection=element=>{
   const value={start:element.selectionStart,end:element.selectionEnd,direction:element.selectionDirection};
@@ -56,7 +61,9 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
  useEffect(()=>{dirtyCallback.current?.(Object.values(view.drafts).some(value=>Boolean(value.trim())));return()=>dirtyCallback.current?.(false)},[view.drafts]);
  useLayoutEffect(()=>{
   const element=host.current;if(!element)return;
-  const measure=()=>{const width=element.getBoundingClientRect().width;if(width>0){setWide(width>=760);setChatWidth(Math.floor(width))}};
+  // A hidden panel can reopen at its previous width, so state equality alone
+  // must not suppress restoring its draft height and saved reading position.
+  const measure=()=>{const width=element.getBoundingClientRect().width;if(width>0){setWide(width>=760);setChatWidth(Math.floor(width));fitInput();restorePosition()}};
   measure();const observer=new ResizeObserver(measure);observer.observe(element);return()=>observer.disconnect();
  },[]);
  useLayoutEffect(()=>{restorePosition()},[id,historyOnly,wide,chatWidth,showHistory]);
@@ -65,9 +72,7 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
   if(element&&position?.atBottom!==false){restoringScroll.current=true;element.scrollTop=element.scrollHeight;restoringScroll.current=false}
  },[id,historyOnly,messages.length,messages.at(-1)?.text,conversation?.progressEvents,phase]);
  useLayoutEffect(()=>{
-  const element=textarea.current;if(!element||historyOnly)return;
-  element.style.height='0px';const maximum=parseFloat(getComputedStyle(element).maxHeight)||220,height=Math.max(42,Math.min(maximum,element.scrollHeight));
-  element.style.height=`${height}px`;element.style.overflowY=element.scrollHeight>maximum?'auto':'hidden';
+  if(!historyOnly)fitInput();
  },[draft,id,historyOnly,chatWidth,showHistory]);
  useLayoutEffect(()=>{
   const element=textarea.current,selection=view.selections?.[id];if(!element||!selection)return;
