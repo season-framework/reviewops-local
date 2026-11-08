@@ -13,10 +13,20 @@ function validateSnapshot(value){
  if(!value||!UUID.test(value.id)||!['auto','manual','inherited'].includes(value.selection)||!Array.isArray(value.skills)||value.skills.length>20||typeof value.createdAt!=='string')fail('OPS_SKILL_SNAPSHOT','적용한 스킬 기록이 올바르지 않습니다.');kinds(value.taskKinds);
  const ids=new Set();for(const skill of value.skills){if(!skill||!UUID.test(skill.id)||ids.has(skill.id)||!HASH.test(skill.revision)||typeof skill.slug!=='string'||!/^[a-z0-9][a-z0-9-]{0,63}$/.test(skill.slug)||typeof skill.name!=='string'||skill.name.length>200||typeof skill.version!=='string'||skill.version.length>100)fail('OPS_SKILL_SNAPSHOT','스킬 버전 기록이 올바르지 않습니다.');ids.add(skill.id);}return structuredClone(value);
 }
+// This contract is appended when a NEW management request is created. Stored
+// prompts and immutable inherited skill snapshots must never be reconstructed
+// with a newly edited contract.
+function reviewAuthoringGuidance(){return [
+ 'When the user asks to write, refine or register a ReviewOps review, produce a concise issue-quality Markdown review, not a copy of the raw chat request. Use a specific one-line feature/trigger/problem title unless the user supplied an exact title. State the problem or requested behavior, user impact, operation/reproduction steps, expected and actual behavior as applicable; omit empty or irrelevant headings. Clearly mark an unverified user report and do not invent a reproduction, cause, screenshot, code location or completed test.',
+ 'Before saving, read the selected original review and relevant comments, list/search existing reviews including resolved items, and reuse the matching review for the same problem. Preserve valid original scope, comments and evidence. Split a broad request only into independently actionable changes with separate acceptance checks; keep one coherent workflow, shared symptom or tightly coupled fix together. Do not create one review per sentence, file or implementation step, do not force a review count, and do not lose any requested detail. For multiple new reviews retain the same frozen project, identify the original request and related review IDs/titles, and return all actual saved links.',
+ 'Use mode:create for each genuinely new review and mode:update with a freshly read revision for an existing one. Give each distinct write a stable operationId and reuse it for retries; lookup an uncertain result before another write. Read back every saved title/body and resulting response/attachments, and report partial failures without recreating successful writes. Review registration alone does not start an agent or goal, enable a schedule, publish to GitHub or generate a standalone report.'
+ ].join('\n\n');}
 function inferredTasks(instruction,context={}){
  const tasks=[],add=value=>{if(!tasks.includes(value))tasks.push(value)};
  const request=String(instruction||'');
- if(/(?:리뷰|이슈).*(?:작성|등록|남겨|추가|만들|생성|적어|기록)|(?:create|write|add|register|record|log)\s+(?:(?:a|the|new|another)\s+){0,2}(?:review|issue)/i.test(request))add('review_create');
+ const koreanReview=/(?:리뷰|이슈|개선\s*(?:요청|제안)|작업\s*요청)/i.test(request),koreanAuthor=/작성|등록|남겨|추가|만들|생성|적어|기록|정리|다듬|재작성|나눠|나누|분리|쪼개/i.test(request);
+ const englishAuthor=/(?:create|write|add|register|record|log|draft|file|submit|rewrite|revise|polish|format|organize|split|break\s+(?:up|down))\b[^.!?\n]{0,100}\b(?:reviews?|issues?|tickets?)\b|\b(?:reviews?|issues?|tickets?)\b[^.!?\n]{0,100}\b(?:rewrite|revise|polish|format|organize|split)\b|\b(?:turn|convert)\b[^.!?\n]{0,100}\b(?:into|as)\b[^.!?\n]{0,40}\b(?:reviews?|issues?|tickets?)\b/i.test(request);
+ if(koreanReview&&koreanAuthor||englishAuthor)add('review_create');
  if(/답변|응답|대응|댓글|코멘트|\brepl(?:y|ies)\b|\brespond|\bcomment/i.test(request))add('review_response');
  const report=/(?:QA\s*)?보고서(?:를|을|로)?\s*(?:작성|생성|만들|출력|내보내|저장)|(?:작성|생성|만들|출력|내보내)(?:해|할|한)?\s*(?:QA\s*)?보고서|PDF(?:\s*(?:보고서|파일))?(?:를|을|로)?\s*(?:생성|내보내|출력|만들)|(?:create|generate|write|export|produce)\s+(?:(?:a|the)\s+)?(?:QA\s+)?(?:report|PDF)\b/i.test(request);
  if(report&&/\bQA\b|QA보고서|사용성/i.test(request)||/QA(?:를|을)?\s*(?:진행|수행|검사|검증|해|하고)|(?:검증|테스트|검사|사용성)(?:를|을)?\s*(?:진행|수행|해|하고)|(?:run|perform)\s+(?:QA|tests?|usability)/i.test(request))add('qa');if(report)add('report');
@@ -109,4 +119,4 @@ class OpsSkills{
  async checkCapabilities(){let python;for(const folder of (process.env.PATH||'').split(path.delimiter).filter(folder=>path.isAbsolute(folder))){const candidate=path.join(folder,process.platform==='win32'?'python.exe':'python3');try{fs.accessSync(candidate,fs.constants.X_OK);python=candidate;break;}catch{}}let modules=[];if(python)try{const value=await run(python,['-I','-c','import importlib.util,json; print(json.dumps([x for x in ["hwpx","PIL","lxml","pypdf"] if importlib.util.find_spec(x) is None]))'],{cwd:this.directory,timeout:8000,maxBuffer:4096,windowsHide:true});modules=JSON.parse(value.stdout);}catch{python=null;}
   this.capabilities.report={status:python&&modules.length===0?'partial':'unavailable',python:python?path.basename(python):null,missingModules:modules,message:python&&modules.length===0?'보고서 파일 생성 도구를 찾았습니다. 한글 앱의 저장·PDF 내보내기 연결은 별도 확인이 필요합니다.':'보고서 생성 도구가 설치되지 않았거나 확인되지 않았습니다. 리뷰 작성·응답은 사용할 수 있습니다.'};try{this.onChange(this.snapshot());}catch{/* Keep the committed registry authoritative. */}return this.snapshot();}
 }
-module.exports={OpsSkills,validateData,validateSnapshot,TASKS,inferredTasks,ruleMatches};
+module.exports={OpsSkills,validateData,validateSnapshot,TASKS,inferredTasks,ruleMatches,reviewAuthoringGuidance};

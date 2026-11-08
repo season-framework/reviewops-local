@@ -3,22 +3,32 @@
   "packages": {
     "reviewops-review-agent": {
       "kind": "repository",
-      "name": "ReviewOps 2.0.0",
+      "name": "ReviewOps 2.1.0",
       "files": [
         {
           "path": "SKILL.md",
-          "bytes": 2095,
-          "sha256": "6e62f4dc081705488f305161aade22e4b20df91ec2a1bd58212d71ebf1ed2076"
+          "bytes": 4708,
+          "sha256": "c942a1498b1556a8991e92e86bdff389d8dca525d12a6f6498e9f33811142c38"
         },
         {
           "path": "agents/openai.yaml",
-          "bytes": 190,
-          "sha256": "683e2755bb3a48649180803dabad1c0513691d40260ff9ff1191dd26d2efe15f"
+          "bytes": 250,
+          "sha256": "3e4160f48dd60593697a3747df7519fc95df733584ec173b1a899a2ea0323e6e"
         },
         {
           "path": "references/recording.md",
-          "bytes": 1117,
-          "sha256": "e3fa5ae5679be1316f126542eb112bec6972ec28eb1fa032417945ee0b09c3ab"
+          "bytes": 2529,
+          "sha256": "01b975a4ae3c579395d2be4fed7752e8b8e86b7accd238b8ab04937389653d73"
+        },
+        {
+          "path": "references/request-scope.md",
+          "bytes": 3761,
+          "sha256": "810e49d02173706c09609b3540c4226e53a78242032eacc22abea3a9039c4229"
+        },
+        {
+          "path": "references/review-writing.md",
+          "bytes": 3878,
+          "sha256": "532873910b64a88d6eac53d73f88e3e3c168372655c230ad356e73de012a58ee"
         }
       ]
     },
