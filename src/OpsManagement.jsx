@@ -54,10 +54,14 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
   element.style.height='0px';const maximum=parseFloat(getComputedStyle(element).maxHeight)||220,height=Math.max(42,Math.min(maximum,element.scrollHeight));
   element.style.height=`${height}px`;element.style.overflowY=element.scrollHeight>maximum?'auto':'hidden';
  };
- const saveSelection=element=>{
+ const saveSelection=(element,leaving=false)=>{
+  // React reuses the textarea across conversations. Delayed selection events
+  // from a blurred/hidden composer must not replace another draft's caret.
+  if(!element||!element.getClientRects().length||!leaving&&document.activeElement!==element)return;
   const value={start:element.selectionStart,end:element.selectionEnd,direction:element.selectionDirection};
   update(current=>({...current,selections:{...current.selections,[id]:value}}));
  };
+ const rememberConversation=()=>{savePosition();saveSelection(textarea.current,true)};
  useEffect(()=>{dirtyCallback.current?.(Object.values(view.drafts).some(value=>Boolean(value.trim())));return()=>dirtyCallback.current?.(false)},[view.drafts]);
  useLayoutEffect(()=>{
   const element=host.current;if(!element)return;
@@ -89,7 +93,7 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
  useEffect(()=>{if(conversation?.id&&view.selected!==conversation.id)update(current=>({...current,selected:conversation.id}))},[conversation?.id,view.selected]);
  const setDraft=value=>update(current=>({...current,drafts:{...current.drafts,[id]:value}}));
  const create=async()=>{
-  setError('');savePosition();const createdId=crypto.randomUUID(),next=await command('managementCreate',{id:createdId,model,reasoningEffort:effort},'management:new'),created=next.managementConversations?.find(row=>row.id===createdId);
+  setError('');rememberConversation();const createdId=crypto.randomUUID(),next=await command('managementCreate',{id:createdId,model,reasoningEffort:effort},'management:new'),created=next.managementConversations?.find(row=>row.id===createdId);
   if(!created)throw new Error(t('새 대화를 준비하지 못했습니다.'));
   update(current=>({...current,selected:created.id,historyOpen:false,historyOrigin:''}));setPreview(false);return created;
  };
@@ -114,13 +118,13 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
   try{const next=await action('delete',target);if(next.managementConversations?.some(row=>row.id===target.id))throw new Error(t('대화 삭제 결과를 확인하지 못했습니다.'));update(current=>removeManagementUiConversation(current,target.id,next.managementConversations||[]));setConfirmDelete(null)}catch(cause){setError(errorText(cause))}
  };
  const selectConversation=row=>{
-  savePosition();update(current=>({...current,selected:row.id,historyOpen:false}));setError('');setPreview(false);
+  rememberConversation();update(current=>({...current,selected:row.id,historyOpen:false}));setError('');setPreview(false);
  };
  const openHistory=()=>{
-  savePosition();update(current=>wide?{...current,historyCollapsed:!current.historyCollapsed}:{...current,historyOpen:!current.historyOpen,historyOrigin:current.historyOpen?current.historyOrigin:id});
+  rememberConversation();update(current=>wide?{...current,historyCollapsed:!current.historyCollapsed}:{...current,historyOpen:!current.historyOpen,historyOrigin:current.historyOpen?current.historyOrigin:id});
  };
  const back=()=>{
-  savePosition();update(current=>({...current,selected:rows.some(row=>row.id===current.historyOrigin)?current.historyOrigin:current.selected,historyOpen:false,historyOrigin:''}));setError('');setPreview(false);
+  rememberConversation();update(current=>({...current,selected:rows.some(row=>row.id===current.historyOrigin)?current.historyOrigin:current.selected,historyOpen:false,historyOrigin:''}));setError('');setPreview(false);
  };
  const follow=async link=>{setError('');try{if(onNavigate)await onNavigate(link);else if(link.kind==='goal')onGoal?.(link.id);else if(link.kind==='project')await invoke('window.openProject',{projectId:link.id})}catch(cause){setError(errorText(cause))}};
  const backAvailable=!wide&&(historyOnly||view.historyOrigin&&view.historyOrigin!==id&&rows.some(row=>row.id===view.historyOrigin));
