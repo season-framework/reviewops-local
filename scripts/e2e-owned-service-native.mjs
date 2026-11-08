@@ -378,7 +378,33 @@ async function afterCancelledQuit(project,page,survivor){
 async function configure(project,page){
  await show(page);
  for(const [name,value] of [['Node 실행 파일',project.config.executable],['프로젝트 안의 .cjs 진입 파일',project.config.entry],['실행 인수 (JSON 문자열 배열)',JSON.stringify(project.config.args)],['관리형 서비스 준비 URL',project.config.readinessUrl]])await owned(page).getByLabel(name,{exact:true}).fill(value);
- await owned(page).getByRole('button',{name:'서비스 설정 저장',exact:true}).click();await expect(owned(page).getByRole('button',{name:'저장한 서비스 시작',exact:true})).toBeEnabled();assert.deepEqual((await runtime(project,page)).config,project.config);record('actual-ui-configuration-save',{projectId:project.id});
+ const saveButton=owned(page).getByRole('button',{name:'서비스 설정 저장',exact:true}),startButton=owned(page).getByRole('button',{name:'저장한 서비스 시작',exact:true});
+ const started=Date.now(),deadline=started+30000,remaining=()=>Math.max(1,deadline-Date.now());
+ // This is a test observation bound, not a product configure/start/quit timer.
+ // Preserve the original 5s observation before allowing the same pending save
+ // to finish its bounded file snapshots. Never click Save a second time.
+ const observation=()=>owned(page).evaluate(node=>{
+  const form=node.querySelector('.owned-service-config'),save=form?.querySelector('button[type=submit]'),start=[...node.querySelectorAll('button')].find(button=>button.textContent.trim()==='저장한 서비스 시작');
+  return {save:{text:save?.textContent.trim()||'',disabled:save?.disabled??null},start:{text:start?.textContent.trim()||'',disabled:start?.disabled??null},fields:[...form.querySelectorAll('input,textarea')].map(field=>({label:field.getAttribute('aria-label'),disabled:field.disabled,readOnly:field.readOnly})),errors:[...node.querySelectorAll('[role=alert]')].map(item=>item.textContent.trim()),dirty:document.documentElement.dataset.reviewopsDirty};
+ });
+ await saveButton.click();record('actual-ui-configuration-save-start',{projectId:project.id,startedAt:new Date(started).toISOString(),testObservationBoundMs:30000,saveClicks:1});
+ let firstObservationExceeded=false;
+ try{await expect(startButton).toBeEnabled({timeout:5000});}
+ catch(firstError){
+  if(firstError?.matcherResult?.name!=='toBeEnabled')throw firstError;
+  firstObservationExceeded=true;
+  let ui;try{ui=await boundedCleanup(observation(),'configuration5s UI observation',Math.min(1000,remaining()));}catch(error){record('actual-ui-configuration-save-first-observation',{projectId:project.id,elapsedMs:Date.now()-started,originalAssertion:diagnosticError(firstError),observationError:diagnosticError(error)});throw firstError;}
+  const stillPending=ui.save.text==='저장 중'&&ui.save.disabled===true&&ui.fields.length===4&&ui.fields.every(field=>field.disabled)&&ui.errors.length===0;
+  let state;if(stillPending)try{state=await boundedCleanup(runtime(project,page),'configuration5s runtime observation',Math.min(1000,remaining()));}catch(error){state={observationError:diagnosticError(error)};}
+  record('actual-ui-configuration-save-first-observation',{projectId:project.id,elapsedMs:Date.now()-started,firstObservationMs:5000,originalAssertion:diagnosticError(firstError),ui,stillPending,state});
+  if(!stillPending||Date.now()>=deadline)throw firstError;
+  try{await expect(startButton).toBeEnabled({timeout:remaining()});}
+  catch(error){let ui;try{ui=await boundedCleanup(observation(),'configuration final UI observation',1000);}catch(cause){ui={observationError:diagnosticError(cause)};}record('actual-ui-configuration-save-observation-exhausted',{projectId:project.id,elapsedMs:Date.now()-started,testObservationBoundMs:30000,ui,originalAssertion:diagnosticError(firstError),finalAssertion:diagnosticError(error)});throw error;}
+ }
+ await expect(saveButton).toBeEnabled({timeout:remaining()});await expect(saveButton).toHaveText('서비스 설정 저장',{timeout:remaining()});await expect(owned(page).getByRole('alert')).toHaveCount(0,{timeout:remaining()});
+ await expect.poll(()=>page.evaluate(()=>document.documentElement.dataset.reviewopsDirty),{timeout:remaining()}).toBe('false');
+ const state=await boundedCleanup(runtime(project,page),'configured service exact readback',remaining());assert.deepEqual(state.config,project.config);assert.ok(Date.now()<=deadline,'Configuration completion exceeded the30s test observation bound');
+ record('actual-ui-configuration-save',{projectId:project.id,elapsedMs:Date.now()-started,firstObservationExceeded,testObservationBoundMs:30000,saveClicks:1,exactConfigMatched:true,startEnabled:true,dirty:false,UIErrors:[]});
 }
 async function hostID(page){const handle=await app.browserWindow(page);return handle.evaluate(w=>w.id);}
 const sourceSelectionFacts=new Map();
