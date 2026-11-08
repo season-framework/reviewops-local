@@ -54,7 +54,7 @@ function testBuild(value, version) {
   try { return validateBuildInfo(value, version); } catch { throw updateFailure('invalid_manifest', '테스트 버전의 빌드 정보가 올바르지 않습니다.'); }
 }
 function testPointer(release) {
-  if (!release || release.draft || !release.prerelease || release.tag_name !== TEST_TAG) throw updateFailure('invalid_manifest', '테스트 버전의 공개 정보가 올바르지 않습니다.');
+  if (!release || release.draft !== false || release.prerelease !== true || release.tag_name !== TEST_TAG) throw updateFailure('invalid_manifest', '테스트 버전의 공개 정보가 올바르지 않습니다.');
   const pointers = [...String(release.body || '').matchAll(/<!-- reviewops-test-pointer:(.*?) -->/g)];
   if (!pointers.length) throw updateFailure('test_unavailable', '공개된 테스트 설치파일이 없습니다.');
   if (pointers.length !== 1) throw updateFailure('invalid_manifest', '테스트 버전의 파일 정보가 중복되었습니다.');
@@ -297,14 +297,14 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
         const checkingChannel = channel;
         unavailableChannels = []; feedErrors = [];
         const releaseInfo = async (url, kind) => {
-          try { const value = JSON.parse((await request(url,{maxBytes:2*1024**2,signal})).toString('utf8')); guard(epoch); return value; }
+          try { const value = JSON.parse((await request(url,{maxBytes:2*1024**2,signal})).toString('utf8')); guard(epoch); if (!value || typeof value !== 'object' || Array.isArray(value)) throw updateFailure('invalid_manifest', 'The update information is invalid.'); return value; }
           catch (failure) { guard(epoch); if (failure.code === 'not_found') { unavailableChannels.push(kind); return null; } throw failure; }
         };
         const stableFeed = async () => {
           const published = await releaseInfo(RELEASE_API,'stable'); if (!published) return null;
           const tagVersion = typeof published.tag_name === 'string' ? published.tag_name.replace(/^v/, '') : '';
           versionParts(tagVersion);
-          if (published.draft || published.prerelease) throw updateFailure('invalid_manifest','Only published stable releases can be installed.');
+          if (published.tag_name !== `v${tagVersion}` || published.draft !== false || published.prerelease !== false) throw updateFailure('invalid_manifest','Only published stable releases can be installed.');
           const publishedAt = checkingChannel === 'test' ? publicationTime(published.published_at) : null;
           const eligible = newer(tagVersion,version) || (tagVersion === version && installedBuild.channel === 'test');
           if (!eligible) return {version:tagVersion,publishedAt,candidate:null};

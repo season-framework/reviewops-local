@@ -42,6 +42,18 @@ test('explicit absent feed can offer another verified newer-base candidate; abse
 test('one or both feed failures are identified, never current or a partial silently selected update',async t=>{
  const f=await fixture(t);f.stableError=Object.assign(new Error('stable network'),{code:'network_error'});let state=await f.manager.configure({testUpdates:true});assert.equal(state.status,'error');assert.deepEqual(state.feedErrors.map(x=>x.channel),['stable']);assert.equal(state.availableVersion,null);f.testError=Object.assign(new Error('test network'),{code:'network_error'});state=await f.manager.check();assert.equal(state.errorCode,'update_check_failed');assert.deepEqual(state.feedErrors.map(x=>x.channel),['stable','test']);assert.match(state.error,/stable network/);assert.match(state.error,/test network/);
 });
+test('malformed release JSON is an invalid feed, never an absent channel or permission to select the other feed',async t=>{
+ for(const channel of ['stable','test'])for(const malformed of [null,[],false,'not an object']){
+  const f=await fixture(t,{installed:null});f.setTest(info(6),'2026-11-08T13:00:00Z');f[channel]=malformed;
+  const state=await f.manager.configure({testUpdates:true});assert.equal(state.status,'error');assert.equal(state.availableVersion,null);assert.equal(state.errorCode,'invalid_manifest');assert.deepEqual(state.feedErrors.map(item=>item.channel),[channel]);assert.deepEqual(state.unavailableChannels,[]);
+ }
+});
+test('stable and test release identities require exact tags and explicit publication flags even for ineligible stable descriptors',async t=>{
+ for(const channel of ['stable','test'])for(const patch of [{draft:undefined},{prerelease:undefined},{draft:0},{prerelease:channel==='stable'?0:'true'},{tag_name:channel==='stable'?'1.7.0':'v1.7.0'}]){
+  const f=await fixture(t,{installed:null});f.setTest(info(6),'2026-11-08T13:00:00Z');Object.assign(f[channel],patch);
+  const state=await f.manager.configure({testUpdates:true});assert.equal(state.status,'error');assert.equal(state.availableVersion,null);assert.equal(state.errorCode,'invalid_manifest');assert.deepEqual(state.feedErrors.map(item=>item.channel),[channel]);assert.deepEqual(state.unavailableChannels,[]);
+ }
+});
 test('validated test rollback identity remains blocked even when a stable release is eligible',async t=>{
  const f=await fixture(t,{installed:null});f.setTest(info(6),'2026-11-08T13:00:00Z');await f.manager.configure({testUpdates:true});f.setTest(info(5),'2026-11-08T11:00:00Z');const state=await f.manager.check();assert.equal(state.errorCode,'older_build');assert.equal(state.availableVersion,null);
 });
