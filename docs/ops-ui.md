@@ -37,7 +37,7 @@ After building, `node scripts/e2e-ops-ui.mjs` exercises the real main-process Op
 
 The sidebar Ops conversation and the right-hand Ops panel use the same conversation, draft and work-target selection. The panel occupies the body below the workspace tab strip. Opening, closing or resizing it leaves the tab strip at its original width and height.
 
-The single conversation header contains Ops, the current conversation name, previous conversations and a new-conversation action. Selecting a conversation closes the history list. The compact panel also exposes its close action in that header.
+The single conversation header contains Ops, the current conversation name, previous conversations and a new-conversation action. On a narrow chat, history replaces the conversation and offers a return to the original conversation after selecting another item. A wide chat keeps the history list beside the selected conversation. The compact panel also exposes its close action in that header.
 
 Choose a model and reasoning effort from the locally discovered Codex model catalog in the composer footer. The selection is recorded for each request and passed to the connected Codex session. Changing it during an active turn queues the next request until that turn and its background work are confirmed idle, then resumes the same thread using the new settings. Previous requests retain their original settings and target.
 
@@ -50,3 +50,15 @@ Settings contains a skill list and separate detail view. Built-in review/agent, 
 Enabled skills are selected from their registered application rules and task categories using the request and captured target. User-created skills participate in the same selection. Requests and goals do not expose a manual skill picker. The execution record shows the exact immutable skill revisions applied to that request; editing a skill affects later requests.
 
 In a skill detail view, select files from the expandable folder tree. Add files or folders beneath a selected folder and edit Markdown with Monaco. Deletion identifies its scope and refuses removal of required instructions or referenced resources. Skill management is rendered only in its own settings section.
+
+## Conversation activity and deletion
+
+The common composer preserves Markdown source, line breaks and pasted text, grows to a bounded height and offers a rendered preview. Responses and actual tool or command events appear in chronological order. Quiet output does not imply completion. Unknown execution or background state requires reconciliation.
+
+Stop uses an independent control request during input admission and delayed acknowledgements. It cancels queued or preparing input, confirms the original turn and background work have stopped, preserves received response text and retires the original adapter before another request. Deletion removes only the selected conversation after confirmed stop; linked projects, reviews and other conversations remain. A failed interruption retains the conversation and its uncertain status.
+
+## Review authoring and skill detail tabs
+
+The review/agent skill includes immutable writing and request-scope guides. New requests receive their complete selected versions. Review creation uses specific feature-and-behavior titles, relevant Markdown sections, all supplied constraints and truthful evidence. Cohesive steps and exceptions stay together; independent changes become separately actionable reviews in the original project. Existing matching reviews are reused and saved records are reread. External publication and goal execution are separate actions.
+
+Skill details separate information and usage settings from the package-file workspace. Switching tabs keeps metadata and Monaco drafts, selected files, expanded folders and independent scroll positions. Leaving the document or changing destructive context still requires an explicit decision about unsaved work.

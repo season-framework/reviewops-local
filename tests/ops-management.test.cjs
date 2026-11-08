@@ -35,7 +35,7 @@ async function harness(t, extra = {}) {
     return {
       start: deliver('start'), steer: deliver('steer'),
       async reconcile(input) { calls.push({kind: 'reconcile', id: options.goalId, ...input}); return extra.reconcile ? extra.reconcile(input, state, external) : external.get(input.deliveryId) || {threadId: input.threadId, state: 'idle', backgroundState: 'empty', backgroundCount: 0, delivery: 'not_found', safeToRetry: true}; },
-      async interrupt(input) { calls.push({kind: 'interrupt', id: options.goalId, ...input}); await options.onEvent({type: 'turn.completed', threadId: state.threadId || input.threadId, turnId: state.turnId || input.turnId, status: 'interrupted', backgroundState: 'empty', backgroundCount: 0}); return {confirmed: true, state: 'idle', turnId: state.turnId || input.turnId}; },
+      async interrupt(input) { calls.push({kind: 'interrupt', id: options.goalId, ...input}); if(extra.interrupt){const result=await extra.interrupt(input,state);if(result)return result;} await options.onEvent({type: 'turn.completed', threadId: state.threadId || input.threadId, turnId: state.turnId || input.turnId, status: 'interrupted', backgroundState: 'empty', backgroundCount: 0}); return {confirmed: true, state: 'idle', turnId: state.turnId || input.turnId}; },
       async close() { calls.push({kind: 'close', id: options.goalId}); if(extra.close)await extra.close(state); }
     };
   };
@@ -328,4 +328,70 @@ test('changing a model preserves the known conversation configuration of unfinis
  assert.deepEqual(row.requests[1].executionSettings.sent,{model:'new-model',reasoningEffort:'high'});
  assert.equal(row.requests[1].status,'queued');assert.equal(h.calls.filter(x=>x.kind==='steer').length,0);
  assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].requests,row.requests);
+});
+
+test('management stop interrupts before a delayed acknowledgement and retains received content', async t => {
+ let release, entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);
+ const h=await harness(t,{deliver:async()=>{entered();await gate;return {threadId:h.sessions.get(id).threadId,turnId:h.sessions.get(id).turnId,state:'running',delivery:'accepted',backgroundState:'empty',backgroundCount:0};},interrupt:async()=>{release();}}),id=await h.create();t.after(()=>release());
+ await h.manager.managementRequest({conversationId:id,instruction:'Long response'});await ready;
+ const session=h.sessions.get(id);await session.options.onEvent({type:'message',role:'assistant',itemId:'partial-before-stop',text:'## Received response\n\n- Kept text',partial:true});
+ await h.manager.managementAction({conversationId:id,action:'stop'});
+ const row=h.manager.snapshot().managementConversations[0];assert.equal(row.activity.phase,'stopped');assert.equal(row.executionState,'idle');assert.equal(row.requests[0].status,'interrupted');assert.equal(row.conversation.at(-1).text,'## Received response\n\n- Kept text');assert.ok(h.calls.find(call=>call.kind==='interrupt'));assert.ok(h.calls.find(call=>call.kind==='close'));assert.equal(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].conversation.at(-1).text,'## Received response\n\n- Kept text');
+});
+
+test('stop cancels skill capture admission without submitting a user input', async t => {
+ const h=await harness(t),id=await h.create();let release,entered;const gate=new Promise(resolve=>release=resolve),ready=new Promise(resolve=>entered=resolve);t.after(()=>release());
+ h.manager.captureSkills=async()=>{entered();await gate;return null;};
+ const request=h.manager.managementRequest({conversationId:id,instruction:'Not yet admitted'});await ready;
+ await h.manager.managementAction({conversationId:id,action:'stop'});release();await assert.rejects(request,{code:'OPS_INPUT_CANCELLED'});
+ assert.equal(h.calls.filter(call=>call.kind==='start').length,0);assert.equal(h.manager.snapshot().managementConversations[0].requests.length,0);
+});
+
+test('deleting a running conversation stops it and preserves unrelated conversations and project records', async t => {
+ const h=await harness(t),id=await h.create(),other=await h.create({name:'Keep this conversation'});await h.request(id);
+ const project=await h.tool(id,'ops_projects_create',{name:'Keep project',workPath:h.root});
+ const session=h.sessions.get(id),oldThread=session.threadId,oldTurn=session.turnId;
+ await h.manager.managementAction({conversationId:id,action:'delete'});
+ assert.deepEqual(h.manager.snapshot().managementConversations.map(row=>row.id),[other]);assert.equal(h.projectStore.project(project.data.id).name,'Keep project');
+ assert.ok(h.calls.some(call=>call.kind==='interrupt'&&call.id===id));assert.ok(h.calls.some(call=>call.kind==='close'&&call.id===id));
+ await session.options.onEvent({type:'message',role:'assistant',itemId:'late-deleted',text:'No resurrection'});
+ await assert.rejects(session.options.tools.find(tool=>tool.name==='ops_projects_create').execute({name:'No stale creation',workPath:h.root},{callId:'late',threadId:oldThread,turnId:oldTurn}),{code:'OPS_CONVERSATION_NOT_FOUND'});
+ assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations.map(row=>row.id),[other]);
+});
+
+test('an unconfirmed interruption keeps the conversation and records unknown rather than stopped or deleted', async t => {
+ const h=await harness(t,{interrupt:async()=>({confirmed:false,state:'unknown'})}),id=await h.create();await h.request(id);
+ await assert.rejects(h.manager.managementAction({conversationId:id,action:'delete'}),{code:'OPS_INTERRUPT_UNCONFIRMED'});
+ const row=h.manager.snapshot().managementConversations[0];assert.equal(row.id,id);assert.equal(row.executionState,'unknown');assert.equal(row.activity.phase,'unknown');assert.equal(h.calls.filter(call=>call.kind==='close').length,0);
+});
+
+test('real progress events update the same bounded record and survive reload without inventing completion', async t => {
+ const h=await harness(t),id=await h.create();await h.request(id);const session=h.sessions.get(id);
+ await session.options.onEvent({type:'progress',itemId:'tool-one',kind:'tool',name:'ops_reviews_read',text:'',status:'running',turnId:session.turnId});
+ let row=h.manager.snapshot().managementConversations[0];assert.equal(row.activity.phase,'working');assert.equal(row.progressEvents[0].status,'running');
+ await session.options.onEvent({type:'message',role:'assistant',itemId:'stream',text:'Partial Markdown',partial:true});assert.equal(h.manager.snapshot().managementConversations[0].activity.phase,'responding');
+ await session.options.onEvent({type:'progress',itemId:'tool-one',kind:'tool',name:'ops_reviews_read',text:'Read the original review',status:'completed',turnId:session.turnId});
+ row=h.manager.snapshot().managementConversations[0];assert.equal(row.progressEvents.length,1);assert.equal(row.progressEvents[0].status,'completed');assert.equal(row.executionState,'running');
+ assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].progressEvents,row.progressEvents);
+});
+
+test('late message deltas cannot revive terminal activity or replace a final answer',async t=>{
+ const h=await harness(t),id=await h.create();await h.request(id);const session=h.sessions.get(id),turnId=session.turnId;
+ await session.options.onEvent({type:'message',role:'assistant',itemId:'final-answer',text:'Final complete answer',partial:false,turnId});await h.complete(id);
+ await session.options.onEvent({type:'message',role:'assistant',itemId:'final-answer',text:'Late prefix',partial:true,turnId});
+ await session.options.onEvent({type:'message',role:'assistant',itemId:'late-new-answer',text:'Received after terminal',partial:true,turnId});
+ const row=h.manager.snapshot().managementConversations[0];assert.equal(row.executionState,'idle');assert.equal(row.activity.phase,'completed');assert.equal(row.conversation.find(item=>item.id==='final-answer').text,'Final complete answer');assert.equal(row.conversation.find(item=>item.id==='late-new-answer').partial,false);assert.equal(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].conversation.at(-1).text,'Received after terminal');
+});
+
+test('a deleted and recreated UUID never admits an old asynchronous skill capture',async t=>{
+ const h=await harness(t),id=await h.create();let release,entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);t.after(()=>release());h.manager.captureSkills=async()=>{entered();await gate;return null;};
+ const old=h.manager.managementRequest({conversationId:id,instruction:'Old incarnation input'});await ready;await h.manager.managementAction({conversationId:id,action:'delete'});await h.manager.managementCreate({id,name:'New incarnation'});release();await assert.rejects(old,{code:'OPS_INPUT_CANCELLED'});assert.equal(h.calls.filter(call=>call.kind==='start').length,0);assert.equal(h.manager.snapshot().managementConversations[0].requests.length,0);assert.equal(h.manager.snapshot().managementConversations[0].name,'New incarnation');
+});
+
+test('stop during model-session retirement cannot resurrect a cancelled queued request',async t=>{
+ let release,entered;const ready=new Promise(resolve=>entered=resolve),gate=new Promise(resolve=>release=resolve);let closes=0;
+ const h=await harness(t,{close:async()=>{if(++closes===1){entered();await gate;}}}),id=await h.create({model:'model-a'});t.after(()=>release());await h.request(id,'First model request');await h.complete(id);
+ await h.manager.managementRequest({conversationId:id,instruction:'Must remain cancelled',model:'model-b'});await ready;
+ const stop=h.manager.managementAction({conversationId:id,action:'stop'});await new Promise(resolve=>setImmediate(resolve));assert.equal(h.manager.snapshot().managementConversations[0].requests.at(-1).status,'cancelled');release();await stop;
+ const row=h.manager.snapshot().managementConversations[0];assert.equal(row.executionState,'idle');assert.equal(row.activity.phase,'stopped');assert.equal(row.requests.at(-1).status,'cancelled');assert.equal(h.calls.filter(call=>call.kind==='start').length,1);assert.equal(h.calls.filter(call=>call.kind==='interrupt').length,0,'The already idle model needed no invented interruption');
 });

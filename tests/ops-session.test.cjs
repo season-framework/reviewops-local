@@ -21,6 +21,7 @@ function fixture(t, settings = {}) {
       calls.push({client: this, method, params});
       if(server.unsupported===method)throw Object.assign(new Error('Unsupported method'),{code:-32601});
       if (method === 'thread/start') {
+        if (server.beforeThreadStart) await server.beforeThreadStart();
         const thread = {id: `thread_${++nextThread}`, status: {type: 'idle'}, updatedAt: 1, turns: [], entries: []};threads.set(thread.id, thread);
         this.emit('notification', 'thread/started', {thread});return {thread};
       }
@@ -49,6 +50,7 @@ function fixture(t, settings = {}) {
         if (server.finishBeforeAck) {server.finishBeforeAck = false;this.complete(thread.id);}
         if (method === 'turn/start' && server.loseStart) {server.loseStart = false;throw Object.assign(new Error('Lost response'), {code: 'TIMEOUT'});}
         if (method === 'turn/steer' && server.loseSteer) {server.loseSteer = false;throw Object.assign(new Error('Lost response'), {code: 'TIMEOUT'});}
+        if (server.beforeTurnAck) await server.beforeTurnAck();
         return method === 'turn/start' ? {turn: {...turn, status: 'inProgress'}} : {turnId: turn.id};
       }
       if (method === 'turn/interrupt') {if (!server.ackInterruptOnly) this.complete(thread.id, 'interrupted');return {};}
@@ -71,6 +73,48 @@ test('delivery markers preserve exact prompt content and reject changed marked i
   assert.equal(opsDeliveryPrompt({deliveryId: 'delivery_one', prompt: value}), value);
   assert.match(value, /^\[ReviewOps Ops delivery delivery_one; sha256=[a-f0-9]{64}\]\n\nOriginal\n\nrequest$/);
   assert.throws(() => opsDeliveryPrompt({deliveryId: 'delivery_one', prompt: value + 'changed'}), {code: 'OPS_DELIVERY_CONFLICT'});
+});
+
+test('interrupt reaches a running turn before its delayed start acknowledgement', async t => {
+  let release, entered;
+  const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  const f = fixture(t, {beforeTurnAck: async () => { entered(); await gate; }});
+  t.after(() => release());
+  const pending = f.primary.start({deliveryId: 'delayed_ack', prompt: 'Wait for the user.'});
+  await ready;
+  const stopped = await f.primary.interrupt({});
+  assert.equal(stopped.confirmed, true);assert.equal(stopped.state, 'idle');
+  assert.ok(f.calls.some(call => call.method === 'turn/interrupt'));
+  release();const delivered = await pending;
+  assert.equal(delivered.outcome, 'interrupted');
+  assert.equal(f.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('stop fences a preparing input without sending a user turn and later allows a new request', async t => {
+  let release, entered;
+  const ready = new Promise(resolve => entered = resolve), gate = new Promise(resolve => release = resolve);
+  const f = fixture(t, {beforeThreadStart: async () => { entered(); await gate; }});
+  t.after(() => release());
+  const pending = f.primary.start({deliveryId: 'cancel_preparation', prompt: 'Must never reach a turn.'});
+  await ready;
+  const stopped = await f.primary.interrupt({});
+  assert.equal(stopped.inputNotSent, true);assert.equal(stopped.confirmed, true);
+  release();await assert.rejects(pending, {code: 'OPS_INPUT_CANCELLED', deliveryState: 'not_sent'});
+  assert.equal(f.calls.filter(call => call.method === 'turn/start').length, 0);
+  const next = await f.primary.start({deliveryId: 'after_cancel', prompt: 'New deliberate request.'});
+  assert.equal(next.delivery, 'accepted');
+  assert.equal(f.calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('only actual tool, command and reasoning item events produce bounded progress records', async t => {
+  const f = fixture(t);const result = await f.primary.start({deliveryId: 'progress', prompt: 'Read the project.'});
+  const client = f.clients[0], item = {id: 'command_one', type: 'commandExecution', command: 'inspect project', status: 'inProgress'};
+  client.emit('notification', 'item/started', {threadId: result.threadId, turnId: result.turnId, item});
+  client.emit('notification', 'item/completed', {threadId: result.threadId, turnId: result.turnId, item: {...item, status: 'completed'}});
+  client.emit('notification', 'item/started', {threadId: 'other_thread', turnId: result.turnId, item});
+  await f.primary.reconcile({threadId: result.threadId});
+  const progress = f.events.filter(event => event.type === 'progress');
+  assert.deepEqual(progress.map(event => [event.kind, event.status, event.text]), [['command', 'running', 'inspect project'], ['command', 'completed', 'inspect project']]);
 });
 
 test('a runtime below the validated protocol baseline is rejected before allocating a thread',async t=>{

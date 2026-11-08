@@ -1,6 +1,6 @@
 ---
 name: reviewops
-description: "Create or respond to a review for a specified ReviewOps project or open an existing review in a dedicated task window. Use to send review requests from external tools or query request status."
+description: "Compose clear ReviewOps reviews for a specified project, group broad requests into independently actionable work, and create or open their task windows through the app bridge."
 ---
 
 # ReviewOps review registration and agent execution
@@ -22,11 +22,11 @@ Replace `SKILL_DIR` with the actual directory containing this file. An `.app` pa
 node "$SKILL_DIR/scripts/reviewops.mjs" list
 ```
 
-Create a review request:
+Compose the title and Markdown body first using the [review writing guide](references/review-writing.md). For broad requests read the [grouping guide](references/request-scope.md); keep a coherent workflow together and split only independently actionable changes. Then create a review request:
 
 ```sh
 node "$SKILL_DIR/scripts/reviewops.mjs" open <<'JSON'
-{"requestId":"review-2026-001","projectId":"PROJECT_ID","serviceId":"SERVICE_ID","title":"Inspect checkout","body":"Check whether the checkout button is obscured on a mobile viewport.","tool":"codex"}
+{"requestId":"review-2026-001","projectId":"PROJECT_ID","serviceId":"SERVICE_ID","title":"Checkout button is obscured on a narrow window","body":"## Problem\n\nA user reports that the checkout button is obscured in a narrow window. Direct reproduction has not been performed.\n\n## Reported steps\n\n1. Open checkout in a narrow window.\n2. Inspect the checkout action.\n\n## Expected behavior\n\nThe checkout action remains visible and usable.","tool":"codex"}
 JSON
 ```
 
@@ -49,3 +49,11 @@ Read the target project, existing review and relevant comments before writing. S
 Use real whole-window photographs and linked operation steps for UI problems and development results. Preserve original photographs and annotate a separate copy. Record only implemented changes and tests actually performed; retain failures, partial work and unrun checks. Re-read saved reviews, replies, status and attachments. Ordinary internal review work does not require GitHub publication or a standalone QA report.
 
 Review registration and agent execution are separate actions. The bridge above registers or opens a review and does not start an agent. If the user requests execution, use the selected app's supported agent tools, preserve the original review and execution target, and record the actual outcome on that review. Do not report opening a task window as completion.
+
+## Request scope and saved results
+
+Before saving, read both writing and grouping guides and inspect the target project and relevant existing reviews/comments through supported app tools when available. The bridge's `list` command lists projects and connections; it does not itself provide a full review search or response API. Do not claim an omitted duplicate search or response was performed. Use the supported ReviewOps/MCP tools for those actions.
+
+Write one concise, specific title and a composed Markdown body per actual review. Preserve every requested detail and the original review reference. A multi-step reproduction or tightly coupled fix belongs in one review. A broad request may need separate reviews only when their desired behavior and acceptance can stand alone; do not create a review per sentence, file or implementation step, or force a fixed count. Follow an explicit single-review request.
+
+Each distinct new review uses its own stable `requestId` and the same intended project/connection. Reuse the original JSON and request ID for a retry. Keep the mapping from request parts to actual returned review IDs so a partial failure does not recreate successful siblings. Query uncertain status first and read each saved title/body and returned result link using the app's available read tools. Correct the same review instead of creating a replacement. Do not invent a GitHub URL or unsupported internal link scheme.
