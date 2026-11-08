@@ -28,6 +28,8 @@
 .workspace-app .reviewops-page-header .host-toolbar-actions{flex-wrap:wrap;width:auto}
 .workspace-app .reviewops-page-header .ops-page-actions{display:contents}
 .workspace-app .reviewops-page-header .original-project-nav{align-self:center;margin:0;min-height:34px}
+.workspace-app .reviewops-page-header:is(.original-project-header,.group-resource-header) .page-header-controls{max-width:100%}
+.workspace-app .reviewops-page-header.group-resource-header{height:auto}
 .workspace-app .reviewops-page-header.original-project-header .page-header-title{max-width:36ch}
 .workspace-app .reviewops-page-header.original-feature-header{margin-bottom:14px}
 .workspace-app .remote-host-workspace .remote-workspace-identity{position:sticky;top:0;z-index:5;background:var(--surface);padding:10px 12px;margin:-16px -16px 12px;border-bottom:1px solid var(--border)}
