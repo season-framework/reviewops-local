@@ -60,6 +60,10 @@ function createOpsSession(options) {
   let rpc = null, connecting = null, loaded = false, creating = false, creationUnknown = false, closed = false,protocolChecked=false,newEmptyThread=false;
   let sshService = null, sessionWorkPath = workPath, targetIdentity = target.identityKey || null;
   let activeTurnId = null, state = 'unknown', queue = Promise.resolve(), eventQueue = Promise.resolve(), persistenceFailed = false;
+  // Interrupts must not queue behind a turn/start acknowledgement. The epoch
+  // also fences inputs still preparing their thread when Stop is requested.
+  let deliveryEpoch = 0, interrupting = null;
+  const pendingInputs = new Set();
   const turns = new Map(), deliveries = new Map(), toolCalls = new Map(), partials = new Map(), overflowed = new Set(), pendingCompletions = new Set();
   const publish = event => {
     const task = eventQueue.then(() => onEvent({...event, goalId}));
@@ -118,7 +122,14 @@ function createOpsSession(options) {
         publish(event).catch(() => {});
         for (const item of turn.items || []) { const message = itemMessage(item, turn.id);if (message) publish(message).catch(() => {}); }
       }
-    } else if (method === 'item/completed') {
+    } else if (method === 'item/started' || method === 'item/completed') {
+      const item = params.item;
+      if (item && typeof item.id === 'string' && ['commandExecution', 'fileChange', 'mcpToolCall', 'dynamicToolCall', 'reasoning'].includes(item.type)) {
+        const kind = item.type === 'commandExecution' ? 'command' : item.type === 'fileChange' ? 'file' : item.type === 'reasoning' ? 'reasoning' : 'tool';
+        const detail = kind === 'command' ? item.command : kind === 'file' ? (item.changes || []).map(change => change.path).join('\n') : kind === 'reasoning' ? (item.summary || []).map(value => typeof value === 'string' ? value : value.text || '').join('\n') : item.tool;
+        publish({type: 'progress', threadId, turnId: params.turnId, itemId: item.id, kind, name: String(item.tool || item.type).slice(0, 200), text: String(detail || '').slice(0, 8000), status: method === 'item/started' ? 'running' : ['failed', 'declined'].includes(item.status) ? 'failed' : 'completed'}).catch(() => {});
+      }
+      if (method !== 'item/completed') return;
       const event = itemMessage(params.item, params.turnId);if (event) {partials.delete(`${params.turnId}:${params.item.id}`);publish(event).catch(() => {});}
     } else if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
       const key = `${params.turnId}:${params.itemId}`;
@@ -343,7 +354,9 @@ function createOpsSession(options) {
       return {threadId, turnId: activeTurnId, activeTurnId, state: 'unknown', delivery: 'unknown', errorCode: 'OPS_RECONCILIATION_UNAVAILABLE'};
     }
   }
-  async function deliver(input) {
+  async function deliver(input, epoch) {
+    const admitted = () => { if (epoch !== deliveryEpoch) throw Object.assign(new Error('The request was stopped before input delivery.'), {code: 'OPS_INPUT_CANCELLED', deliveryState: 'not_sent'}); };
+    admitted();
     const deliveryId = id(input.deliveryId), text = opsDeliveryPrompt(input);
     if (input.threadId) bind(input.threadId);
     const known = deliveries.get(deliveryId);
@@ -375,7 +388,7 @@ function createOpsSession(options) {
     // A serial caller can still race a model completion. A failed steer is
     // reconciled before an idle fallback; transport errors never replay input.
     for (let attempt = 0; attempt < 2; attempt++) {
-      current();await flush();
+      current();await flush();admitted();
       const method = view.state === 'running' ? 'turn/steer' : 'turn/start';
       const params = {threadId, clientUserMessageId: deliveryId, input: [{type: 'text', text, text_elements: []}]};
       if (method === 'turn/steer') params.expectedTurnId = view.turnId;
@@ -384,6 +397,7 @@ function createOpsSession(options) {
       newEmptyThread=false;
       await publish({type: 'delivery', threadId, turnId: view.turnId, deliveryId, state: 'unknown', deliveredPrompt: text});
       try {
+        admitted();pendingInputs.add(deliveryId);
         const result = await client.request(method, params), acceptedTurn = method === 'turn/steer' ? result.turnId : result.turn?.id;
         id(acceptedTurn);
         const observed = turns.get(acceptedTurn) || result.turn;
@@ -398,19 +412,33 @@ function createOpsSession(options) {
           outcome: ['completed','failed','interrupted'].includes(turnStatus) ? turnStatus : null};
       } catch (error) {
         if (error.code === 'OPS_EVENT_PERSISTENCE_FAILED') throw error;
+        if (error.code === 'OPS_INPUT_CANCELLED') throw error;
         const reconciled = await reconcileInternal({...input, prompt: text});
-        if (method === 'turn/steer' && [-32600,-32602].includes(error.code) && reconciled.delivery === 'not_found' && reconciled.state === 'idle' && !client.closed && attempt === 0) {view = reconciled;continue;}
+        if (epoch === deliveryEpoch && method === 'turn/steer' && [-32600,-32602].includes(error.code) && reconciled.delivery === 'not_found' && reconciled.state === 'idle' && !client.closed && attempt === 0) {view = reconciled;continue;}
         return reconciled;
-      }
+      } finally { pendingInputs.delete(deliveryId); }
     }
   }
   return Object.freeze({
-    start: input => serial(() => deliver(input)),
-    steer: input => serial(() => deliver(input)),
+    start: input => { const epoch = deliveryEpoch; return serial(() => deliver(input, epoch)); },
+    steer: input => { const epoch = deliveryEpoch; return serial(() => deliver(input, epoch)); },
     reconcile: (input = {}) => serial(() => reconcileInternal(input)),
-    interrupt: input => serial(async () => {
+    interrupt: (input = {}) => {
+      if (interrupting) return interrupting;
+      deliveryEpoch++;
+      const task = Promise.resolve().then(async () => {
+      current();
       if (input.threadId) bind(input.threadId);
-      const view = await readState(), target = input.turnId || view.turnId;
+      // No submitted input and no active turn: preparation can be fenced
+      // immediately without claiming an unknown server request was stopped.
+      if (!threadId && pendingInputs.size === 0) { await flush();return {threadId: null, turnId: null, state: 'idle', confirmed: true, inputNotSent: true, terminalsStopped: true}; }
+      let view, target;
+      for (let count = 0; count < 20; count++) {
+        view = await readState({allowIdleMetadata: true});target = input.turnId || view.turnId;
+        if (target || pendingInputs.size === 0) break;
+        await pause(options.interruptPollMs || 250);
+      }
+      if (!target && pendingInputs.size) fail('OPS_INTERRUPT_UNCONFIRMED');
       if (!target) {
         if (view.state !== 'idle') fail('OPS_INTERRUPT_UNCONFIRMED');
         await cleanTerminals();await flush();
@@ -426,7 +454,9 @@ function createOpsSession(options) {
         await pause(options.interruptPollMs || 250);
       }
       fail('OPS_INTERRUPT_UNCONFIRMED');
-    }),
+      }).finally(() => { if (interrupting === task) interrupting = null; });
+      interrupting = task;return task;
+    },
     async close() {closed = true;rpc?.close();await sshService?.close();await Promise.allSettled([...pendingCompletions]);await eventQueue;},
   });
 }
