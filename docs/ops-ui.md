@@ -31,3 +31,22 @@ Execution/change records expose their status, reason, schedule IDs, Codex thread
 `node --test tests/ops-ui.test.cjs tests/window-context.test.cjs tests/i18n.test.cjs` checks stale-snapshot handling, configuration ownership, outcome labels and navigation/QA isolation.
 
 After building, `node scripts/e2e-ops-ui.mjs` exercises the real main-process Ops manager, store, scheduler, preload and UI in an isolated data folder. Its CRUD/preview/restart scenarios do not start Codex. Real Codex execution, steering, schedule-tool calls and packaged release acceptance require their own connected checks.
+
+
+## Shared assistant composer
+
+The sidebar Ops conversation and the right-hand Ops panel use the same conversation, draft and work-target selection. The panel occupies the body below the workspace tab strip. Opening, closing or resizing it leaves the tab strip at its original width and height.
+
+The single conversation header contains Ops, the current conversation name, previous conversations and a new-conversation action. Selecting a conversation closes the history list. The compact panel also exposes its close action in that header.
+
+Choose a model and reasoning effort from the locally discovered Codex model catalog in the composer footer. The selection is recorded for each request and passed to the connected Codex session. Changing it during an active turn queues the next request until that turn and its background work are confirmed idle, then resumes the same thread using the new settings. Previous requests retain their original settings and target.
+
+Search the work-target menu for the current screen, a group, project, review or document. The current-screen option captures the visible context when each request is sent. A later screen change never redirects a request that is already queued or running.
+
+## Automatic skills and skill files
+
+Settings contains a skill list and separate detail view. Built-in review/agent, ReviewOps control and usage/usability skills replace the former GitHub and report defaults. Updated applications archive the retired bundled entries while preserving user edits, resources and prior execution snapshots. Archived defaults are excluded from automatic application and do not reappear on restart.
+
+Enabled skills are selected from their registered application rules and task categories using the request and captured target. User-created skills participate in the same selection. Requests and goals do not expose a manual skill picker. The execution record shows the exact immutable skill revisions applied to that request; editing a skill affects later requests.
+
+In a skill detail view, select files from the expandable folder tree. Add files or folders beneath a selected folder and edit Markdown with Monaco. Deletion identifies its scope and refuses removal of required instructions or referenced resources. Skill management is rendered only in its own settings section.

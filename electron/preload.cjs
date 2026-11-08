@@ -74,7 +74,7 @@ contextBridge.exposeInMainWorld('reviewops', Object.freeze({
 if (process.isMainFrame) {
 
 const skillMethod=method=>input=>ipcRenderer.invoke('ops-skills:invoke',method,input||{});
-contextBridge.exposeInMainWorld('opsSkills',Object.freeze({snapshot:skillMethod('snapshot'),readFile:skillMethod('readFile'),importZip:skillMethod('importZip'),create:skillMethod('create'),update:skillMethod('update'),save:skillMethod('save'),saveFile:skillMethod('saveFile'),remove:skillMethod('remove'),restoreOriginal:skillMethod('restoreOriginal'),checkCapabilities:skillMethod('checkCapabilities'),onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-skills-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-skills-state',listener);}}));
+contextBridge.exposeInMainWorld('opsSkills',Object.freeze({snapshot:skillMethod('snapshot'),readFile:skillMethod('readFile'),importZip:skillMethod('importZip'),create:skillMethod('create'),update:skillMethod('update'),save:skillMethod('save'),saveFile:skillMethod('saveFile'),createEntry:skillMethod('createEntry'),removeEntry:skillMethod('removeEntry'),remove:skillMethod('remove'),restoreOriginal:skillMethod('restoreOriginal'),checkCapabilities:skillMethod('checkCapabilities'),onState(callback){if(typeof callback!=='function')return()=>{};const listener=(_event,value)=>callback(value);ipcRenderer.on('reviewops:ops-skills-state',listener);return()=>ipcRenderer.removeListener('reviewops:ops-skills-state',listener);}}));
 
 const invokeOps=method=>(...args)=>ipcRenderer.invoke('ops:invoke',method,...args);
 contextBridge.exposeInMainWorld('opsManager',Object.freeze({
