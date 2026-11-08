@@ -6,6 +6,7 @@ const fs=require('node:fs'),path=require('node:path'),{randomUUID}=require('node
 const root=process.env.REVIEWOPS_CHAT_QA_FIXTURE_ROOT,args=process.argv.slice(2);
 if(!root||!path.isAbsolute(root))throw new Error('A private chat QA fixture root is required.');
 const log=value=>fs.appendFileSync(path.join(root,'protocol.jsonl'),JSON.stringify({at:new Date().toISOString(),pid:process.pid,cwd:process.cwd(),...value})+'\n');
+const writeReceipt=(file,action)=>{const temporary=file+'.tmp';fs.writeFileSync(temporary,JSON.stringify({ok:true,action}));fs.renameSync(temporary,file);};
 if(args[0]==='--version'){console.log('codex-cli 0.166.0-alpha.5.1');process.exit();}
 if(args[0]==='login'&&args[1]==='status')process.exit();
 if(args[0]!=='app-server')process.exit(73);
@@ -63,9 +64,9 @@ const timer=setInterval(()=>{
    send({id:'typed:'+request.id,method:'item/tool/call',params:{threadId:thread.id,turnId:active().id,callId:'typed:'+request.id,namespace:null,tool:'ops_projects_list',arguments:{}}});
   }
   else if(request.action==='complete')finish(request.status||'completed');
-  else if(request.action==='disconnect'){fs.writeFileSync(receipt,JSON.stringify({ok:true,action:request.action}));log({event:'controlled-disconnect'});process.exit(78);}
+  else if(request.action==='disconnect'){writeReceipt(receipt,request.action);log({event:'controlled-disconnect'});process.exit(78);}
   else throw new Error('Unsupported controlled action');
-  fs.writeFileSync(receipt,JSON.stringify({ok:true,action:request.action}));log({event:'control',...request});
+  writeReceipt(receipt,request.action);log({event:'control',...request});
  }
  seen=lines.length;
 },20);

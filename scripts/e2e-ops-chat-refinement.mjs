@@ -62,7 +62,7 @@ async function send(text,scope=main()){
 }
 async function control(id,action,payload={}){
  const record={id:'control-'+randomUUID(),action,...payload},file=path.join(dataPath,'ops','management',id,'qa-chat-controls.jsonl');await until(()=>fs.existsSync(path.dirname(file)),'private session directory');fs.appendFileSync(file,JSON.stringify(record)+'\n');
- const receipt=path.join(fixture,'responses',record.id+'.json');await until(()=>fs.existsSync(receipt)&&read(receipt).ok,'controlled '+action);records.push({conversationId:id,...record});save();
+ const receipt=path.join(fixture,'responses',record.id+'.json');await until(()=>{if(!fs.existsSync(receipt))return false;try{const value=read(receipt);return value.ok===true&&value.action===action;}catch(error){if(error instanceof SyntaxError)return false;throw error;}},'controlled '+action);records.push({conversationId:id,...record});save();
 }
 async function stopped(id,scope=main()){
  const button=scope.getByRole('button',{name:'중지',exact:true});await expect(button).toBeVisible();await expect(button).toBeEnabled();await button.click();
