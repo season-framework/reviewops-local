@@ -58,8 +58,10 @@ assert.ok(path.isAbsolute(output) && !fs.existsSync(output), 'Preserve prior evi
 fs.mkdirSync(output, {recursive: true}); fs.mkdirSync(path.join(dataPath, 'updates'), {recursive: true});
 fs.writeFileSync(config, '# Owned synthetic identity-guidance UI fixture\n');
 fs.writeFileSync(path.join(dataPath, 'updates/settings.json'), JSON.stringify({automatic: false, intervalMinutes: 10}));
-const env = {...process.env, ...isolatedModelRuntime({home, dataPath}), REVIEWOPS_DATA_DIR: dataPath, REVIEWOPS_SSH_CONFIG: config, REVIEWOPS_CODEX_SSH_CONFIG: config};
+const fixtureRuntimeEnvironment = Object.fromEntries(Object.entries(isolatedModelRuntime({home, dataPath})).filter(([key]) => !['HOME', 'CODEX_HOME'].includes(key)));
+const env = {...process.env, ...fixtureRuntimeEnvironment, REVIEWOPS_DATA_DIR: dataPath, REVIEWOPS_SSH_CONFIG: config, REVIEWOPS_CODEX_SSH_CONFIG: config};
 for (const key of ['ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH', 'SSH_AUTH_SOCK', 'OPENAI_API_KEY', 'CODEX_API_KEY', 'CHATGPT_ACCESS_TOKEN']) delete env[key];
+for (const key of ['HOME', 'CODEX_HOME']) assert.equal(env[key], process.env[key], 'Keep inherited ' + key + ' unchanged; the private PATH and explicit runtime lookup isolate this fixture.');
 const checks = [], photos = [], errors = [], externalRequests = [], packageIntegrity = [];
 let app, page, failure, fixtureObservation, exit, expectedInventory;
 const guardedDirectory = admission.record.lane === 'source' ? path.join(root, 'dist') : path.resolve(path.dirname(admission.record.executable), '../..');
@@ -84,7 +86,7 @@ try {
  app = await electron.launch({...admission.launchOptions, env, timeout: 60000}); app.process().once('exit', (code, signal) => { exit = {code, signal}; });
  page = await app.firstWindow(); page.setDefaultTimeout(20000);
  page.on('pageerror', error => errors.push(error.message)); page.on('request', request => { if (/^https?:/.test(request.url())) externalRequests.push(request.url()); });
- await admission.verify(app, page, dataPath); await setTestLocale(page);
+ await admission.verify(app, page, dataPath); assert.deepEqual(await app.evaluate(() => ({HOME: process.env.HOME ?? null, CODEX_HOME: process.env.CODEX_HOME ?? null})), {HOME: process.env.HOME ?? null, CODEX_HOME: process.env.CODEX_HOME ?? null}); await setTestLocale(page);
  await expect(page.getByRole('heading', {name: '홈', exact: true})).toBeVisible();
  assert.equal(fs.existsSync(path.join(dataPath, 'remote-device-identity')), false, 'Start without an enrolled or pending real identity');
  await app.evaluate(({app, BrowserWindow, ipcMain}, {dataPath, coordinatorData}) => {
@@ -169,7 +171,7 @@ finally {
   } catch (error) { failure ||= {message: error.message, stack: error.stack}; process.exitCode = 1; }
  }
  const photoFiles = photos.map(name => { const file = path.join(output, name); return {name, bytes: fs.statSync(file).size, sha256: sha(fs.readFileSync(file)), fullAppWindow: true, syntheticReadRefusal: true}; });
- const result = {ok: !failure && checks.length === 3, checks, photos: photoFiles, errors, externalRequests, failure, exit, fixtureObservation, admission: admission.record, packageIntegrity, sourceCommit, syntheticReadRefusal: true, actualOsApproval: false, actualSavedConnectionRecovery: false, actualModelTurns: 0, scope: 'Actual unmodified full ReviewOps renderer and preload with a test-only narrow main IPC response fixture, real coordinator and separate private Store. Precise synthetic -25293 state and denied retry only; no native identity storage operation, enrollment, OS approval, listener/network setup, hardware or comprehensive QA acceptance.', output};
+ const result = {ok: !failure && checks.length === 3, checks, photos: photoFiles, errors, externalRequests, failure, exit, fixtureObservation, admission: admission.record, packageIntegrity, sourceCommit, syntheticReadRefusal: true, actualOsApproval: false, actualSavedConnectionRecovery: false, actualModelTurns: 0, environmentIsolation: {inheritedHomeAndCodexHomePreserved: true, privateFixturePATHAndExplicitRuntime: true, explicitPrivateDataPath: true}, scope: 'Actual unmodified full ReviewOps renderer and preload with a test-only narrow main IPC response fixture, real coordinator and separate private Store. Precise synthetic -25293 state and denied retry only; no native identity storage operation, enrollment, OS approval, listener/network setup, hardware or comprehensive QA acceptance.', output};
  if (!failure) fs.rmSync(fixture, {recursive: true, force: true}); else result.fixturePreserved = fixture;
  fs.writeFileSync(path.join(output, 'results.json'), JSON.stringify(result, null, 2) + '\n');
  console.log(JSON.stringify({ok: result.ok, checks: checks.length, syntheticReadRefusal: true, failure, output}));
