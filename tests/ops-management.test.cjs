@@ -295,3 +295,37 @@ test('management rejects invalid model settings before storing or submitting the
   assert.equal(h.manager.snapshot().managementConversations[0].requests.length,0);
   assert.equal(h.calls.length,0);
 });
+
+test('new conversations retain the caller identity despite another window creating a conversation first',async t=>{
+ const h=await harness(t),own=randomUUID(),other=randomUUID();
+ await h.manager.managementCreate({id:other,name:'Other window'});
+ const result=await h.manager.managementCreate({id:own,name:'This window'});
+ assert.equal(result.managementConversations.find(row=>row.id===own).name,'This window');
+ assert.equal(result.managementConversations.find(row=>row.id===other).name,'Other window');
+ await assert.rejects(h.manager.managementCreate({id:own}),{code:'OPS_CONVERSATION_EXISTS'});
+ await assert.rejects(h.manager.managementCreate({id:'not-a-uuid'}),{code:'INVALID_OPS_REQUEST'});
+ assert.equal(h.manager.snapshot().managementConversations.length,2);assert.equal(h.calls.length,0);
+});
+
+test('simultaneous matching requests share one durable admission after asynchronous skill capture',async t=>{
+ const h=await harness(t),id=await h.create(),input={conversationId:id,instruction:'One simultaneous request',model:'model-a',reasoningEffort:'low'};
+ await Promise.all([h.manager.managementRequest(input),h.manager.managementRequest({...input})]);
+ await h.manager.management.pump(id);
+ const row=h.manager.snapshot().managementConversations[0];
+ assert.equal(row.requests.length,1);assert.equal(row.conversation.filter(x=>x.role==='user').length,1);
+ assert.equal(h.calls.filter(x=>['start','steer'].includes(x.kind)).length,1);
+ await h.manager.managementRequest({...input,model:'model-b'});await h.manager.management.pump(id);
+ assert.equal(h.manager.snapshot().managementConversations[0].requests.length,2,'A distinct selected model is a distinct frozen request');
+});
+
+test('changing a model preserves the known conversation configuration of unfinished legacy requests',async t=>{
+ const h=await harness(t),id=await h.create({model:'legacy-model',reasoningEffort:'low'});await h.request(id,'Legacy active request');
+ h.manager.store.update(data=>{delete data.managementConversations[0].requests[0].executionSettings;});
+ await h.manager.managementRequest({conversationId:id,instruction:'Future request',model:'new-model',reasoningEffort:'high'});await h.manager.management.pump(id);
+ const row=h.manager.snapshot().managementConversations[0];
+ assert.deepEqual(row.requests[0].executionSettings.sent,{model:'legacy-model',reasoningEffort:'low'});
+ assert.equal(row.requests[0].executionSettingsOrigin,'legacy-conversation-config');
+ assert.deepEqual(row.requests[1].executionSettings.sent,{model:'new-model',reasoningEffort:'high'});
+ assert.equal(row.requests[1].status,'queued');assert.equal(h.calls.filter(x=>x.kind==='steer').length,0);
+ assert.deepEqual(new OpsStore({dataPath:h.dataPath}).read().managementConversations[0].requests,row.requests);
+});
