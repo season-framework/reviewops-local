@@ -37,7 +37,7 @@ async function fixture(t, {platform='darwin', info, beforeRequest, beforeInspect
     onChange:state=>observed.states.push(state),isBusy:()=>observed.busy,
     request:async(url,options)=>{
       observed.requests.push(url); await beforeRequest?.(url,options);
-      if(url===RELEASE_API)return Buffer.from(JSON.stringify({tag_name:'v1.2.9',draft:false,prerelease:false}));
+      if(url===RELEASE_API)return Buffer.from(JSON.stringify({tag_name:'v1.2.9',draft:false,prerelease:false,published_at:'2026-10-30T00:00:00Z'}));
       if(url===TEST_RELEASE_API)return Buffer.from(JSON.stringify(published.published));
       const bytes=url.endsWith('.json')?published.manifestBytes:published.bytes;
       if(options.expectedHash)assert.equal(sha(bytes),options.expectedHash);
@@ -112,7 +112,7 @@ test('test package build mismatch prevents native installation',async t=>{
   await f.manager.configure({testUpdates:true});assert.equal((await f.manager.download()).errorCode,'build_mismatch');await assert.rejects(f.manager.install());assert.equal(f.observed.quit,0);
 });
 test('Windows receives, verifies and opens its installer without replacing or quitting the app',async t=>{
-  const f=await fixture(t,{platform:'win32'});assert.equal(f.manager.snapshot().testSupported,true);assert.equal(f.manager.snapshot().canCheck,false);
+  const f=await fixture(t,{platform:'win32'});assert.equal(f.manager.snapshot().testSupported,true);assert.equal(f.manager.snapshot().canCheck,true);
   await f.manager.configure({testUpdates:true});assert.equal(f.manager.snapshot().manualInstall,true);assert.equal((await f.manager.download()).status,'ready');
   const original=await fs.readFile(f.exe,'utf8');assert.equal((await f.manager.install()).status,'ready');assert.equal(f.observed.opens.length,1);assert.match(f.observed.opens[0],/-windows-x64\.exe$/);assert.equal(f.observed.quit,0);assert.equal(await fs.readFile(f.exe,'utf8'),original);
   await fs.writeFile(f.observed.opens[0],'corrupt');assert.equal((await f.manager.install()).status,'error');assert.equal(f.observed.opens.length,1);
