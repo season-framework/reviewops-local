@@ -859,11 +859,18 @@ try{
  record('controlled-final-consent-delay-armed',{delayMs:11000,productCloseWatchdogMs:10000,productTimeoutModified:false,instanceId:delayedOwned.instance.instanceId,pid:delayedOwned.instance.pid,nonce:delayedMeta.nonce});
  write(heldFile,'Release own request before final synchronous thinking fixture');const delayedStored=await delayedRequest;assert.equal(delayedStored.pid,delayedOwned.instance.pid);
  await until(()=>log(pa,'actual-process-exit'),v=>v.some(row=>row.nonce===delayedMeta.nonce&&row.pid===delayedOwned.instance.pid&&row.code===0),'actual owned child natural exit0, before app teardown');
- const exit=await confirmedAppExit(app);assert.equal(exit.confirmed,true,'Actual Electron process exit AND application closed event must be observed');assert.equal(exit.exit.code,0);assert.equal(exit.exit.signal,null);app=null;
+ // This fixture deliberately spends 11s inside final consent. Leave a bounded
+ // observation budget for natural Windows teardown after that delay; the
+ // product's 10s close watchdog and original-handle exit assertions stay fixed.
+ const finalConsentExitObservation={timeoutMs:30000,fixtureDialogDelayMs:11000,productCloseWatchdogMs:10000,productTimeoutModified:false,startedAt:new Date().toISOString()},finalConsentExitStarted=performance.now();
+ record('controlled-final-consent-exit-observation-started',finalConsentExitObservation);
+ const exit=await confirmedAppExit(app,finalConsentExitObservation.timeoutMs);finalConsentExitObservation.elapsedMs=Math.round(performance.now()-finalConsentExitStarted);finalConsentExitObservation.completedAt=new Date().toISOString();
+ record('controlled-final-consent-exit-observation-completed',{...finalConsentExitObservation,exit});
+ assert.equal(exit.confirmed,true,'Actual Electron process exit AND application closed event must be observed');assert.equal(exit.exit.code,0);assert.equal(exit.exit.signal,null);app=null;
  const nativeDialogJournal=fs.readFileSync(path.join(temporary,'native-dialog-fixture.jsonl'),'utf8').trim().split('\n').map(JSON.parse);
  const delayedDialogs=nativeDialogJournal.filter(row=>row.phase==='dialog-finished'&&row.delayMs===11000);assert.equal(delayedDialogs.length,1);assert.equal(delayedDialogs[0].answer,1);assert.ok(delayedDialogs[0].elapsedMs>=11000);
  result.nativeDialogJournal=nativeDialogJournal;
- pass('NEXT-015-008','controlled11s-final-consent-real-app-and-child-exit',{dialog:delayedDialogs[0],ownedChildExitCode:0,appExit:exit,nativePhysicalDialogClicks:false,productionWatchdogChanged:false});
+ pass('NEXT-015-008','controlled11s-final-consent-real-app-and-child-exit',{dialog:delayedDialogs[0],ownedChildExitCode:0,appExit:exit,exitObservation:finalConsentExitObservation,nativePhysicalDialogClicks:false,productionWatchdogChanged:false});
  for(const p of [pa,pb]){assert.equal(readJSON(path.join(p.work,'cleanup-marker.json')).pendingWrites,0);await assert.rejects(fetch(p.origin+'/health',{signal:AbortSignal.timeout(500)}))}
  record('actual-Electron-approved-quit',{exit,beforeUnloadEvents,nativeDialogDecisions:'controlled fixture, not physical OS UI clicks'});
  ({app,page:main}=await launch());assert.equal((await runtime(pa)).instance,null);assert.equal((await runtime(pb)).instance,null);assert.ok((await runtime(pa)).config);assert.equal(fs.readFileSync(path.join(pb.work,'sentinel.txt'),'utf8'),'PRESERVE_B');
