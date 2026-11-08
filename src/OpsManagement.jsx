@@ -79,7 +79,8 @@ export default function OpsManagement({state,command,pending,invoke,onGoal,onDir
   if(!historyOnly)fitInput();
  },[draft,id,historyOnly,chatWidth,showHistory]);
  useLayoutEffect(()=>{
-  const element=textarea.current,selection=view.selections?.[id];if(!element||!selection)return;
+  const element=textarea.current,selection=view.selections?.[id],activeSurface=document.activeElement?.closest('.ops-management-layout');
+  if(!element?.getClientRects().length||!selection||activeSurface&&activeSurface!==host.current)return;
   const length=draft.length;element.setSelectionRange(Math.min(length,Math.max(0,selection.start||0)),Math.min(length,Math.max(0,selection.end||0)),selection.direction||'none');
  },[id,historyOnly]);
  useEffect(()=>()=>{if(scrollFrame.current)cancelAnimationFrame(scrollFrame.current)},[]);
