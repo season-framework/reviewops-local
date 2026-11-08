@@ -133,19 +133,21 @@ Deleting a group removes its projects, reviews, history, and attachments. Deleti
 
 ## Updates
 
-On macOS, ReviewOps checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) immediately at startup and every ten minutes by default while the app is running, when automatic checks are enabled. Change the interval in **Settings → Automatic checks**. No GitHub account or token is needed in the app. An update notification appears at the bottom of the sidebar. Select it to download, verify, install, and restart in one action. The same action is available in Settings. Enabling automatic checks also checks immediately.
+ReviewOps checks public [GitHub Releases](https://github.com/season-framework/reviewops-local/releases) immediately at startup and every ten minutes by default while the app is running, when automatic checks are enabled. Change the interval in **Settings → Automatic checks**. No GitHub account or token is needed in the app. On macOS, an update notification appears at the bottom of the sidebar; select it to download, verify, install, and restart in one action. The same action is available in Settings. Enabling automatic checks also checks immediately.
 
 The updater selects the build for your Mac, checks its declared size and SHA-256 hash, verifies the app bundle, and replaces the application before restarting. Project data is kept outside the application bundle. SSH agent tasks continue on the server while the app restarts, and the app reconnects to their output. Local tasks, terminal sessions, login operations, and file transfers must finish before installation. Remote agent execution requires Linux with bash, nohup, and setsid. The website is an introduction and download page; the update feed comes directly from GitHub Releases.
 
-For official updates on Windows, download the newer Windows installer from GitHub Releases, close ReviewOps, and run the installer again. Project data is stored separately and retained. The optional Season AI connection is available on macOS only.
+For official or test updates on Windows, select **Download installer**, wait for verification, and select **Open installer**. Close ReviewOps and follow the installer instructions; the app does not close automatically. You can also download the matching installer from GitHub Releases. Project data is stored separately and retained. The optional Season AI connection is available on macOS only.
 
 ### Test versions
 
-Enable **Settings → Automatic checks → App updates → Get test versions** to check for the latest version before its official release. This option is off by default. Only the latest test build is kept for download; newer test files replace earlier ones without adding a separate release for every build.
+Enable **Settings → Automatic checks → App updates → Get test versions** to include test releases when checking for updates. This option is off by default. When enabled, the app compares both official and test releases and offers the newest eligible version. A higher base version takes precedence; at the same base version, a later publication can replace the installed development or official release. An official release wins a publication-time tie. The option stays enabled after installing an official release, so a later eligible test release can still be offered. Only the latest test build is kept for download; newer test files replace earlier ones without adding a separate release for every build.
 
 Installed and available versions are shown separately. Open **Show details** to read or copy the build number, commit, and build time. On macOS, use the existing update action to download, verify, install, and restart. On Windows, select **Download installer**, then **Open installer** after verification. ReviewOps does not close automatically; close the app and follow the installer to complete installation.
 
-Turning this option off selects official updates for future checks. It does not downgrade the installed app, delete data, or restore an earlier backup. Official updates keep their existing behavior. Version 1.2.9 cannot open data saved by 1.2.10, so back up before updating if you need to return to the older app.
+Clients installed as **1.7.0-dev-4 or earlier** use the previous updater. To move automatically to official 1.7.0 at the same base version, first install the next updater bootstrap test release, then check again after official 1.7.0 is published. You can instead install the matching official package manually. The old client cannot perform that direct same-base automatic transition.
+
+Turning this option off selects official updates for future checks. It does not downgrade the installed app, delete data, or restore an earlier backup. Version 1.2.9 cannot open data saved by 1.2.10, so back up before updating if you need to return to the older app.
 
 ## Development
 

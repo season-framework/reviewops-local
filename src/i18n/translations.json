@@ -463,7 +463,13 @@
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "インストーラーを開けませんでした。再試行してください。",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "インストール済み、または以前ダウンロードしたバージョンより古いファイルです。",
     "정식": "正式",
-    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "レビューまたはデータが変更されました。保存済みのレビュー資料のバージョン一覧を再読み込みしてください。"
+    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "レビューまたはデータが変更されました。保存済みのレビュー資料のバージョン一覧を再読み込みしてください。",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "正式版とテスト版のうち、新しいバージョンを受け取ります。更新後もこの設定を維持します。",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "公開テスト版がないため、正式版を表示しています。",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "公開正式版がないため、テスト版を表示しています。",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "更新の公開日時を確認できません。もう一度確認してください。",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "同じ基本バージョンの公開順序を確認できません。もう一度確認してください。",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "利用可能な公開更新を確認できません。もう一度確認してください。"
   },
   "zh-CN": {
     "홈": "主页",
@@ -929,7 +935,13 @@
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "无法打开安装程序。请重试。",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "此文件比已安装或以前下载的版本更旧。",
     "정식": "正式",
-    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "评审或数据已更改。请重新加载已保存的评审资料版本列表。"
+    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "评审或数据已更改。请重新加载已保存的评审资料版本列表。",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "接收正式版和测试版中较新的版本。更新后保留此设置。",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "没有公开的测试版，正在显示正式版。",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "没有公开的正式版，正在显示测试版。",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "无法确认更新的发布时间。请重试。",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "无法确认同一基础版本的发布顺序。请重试。",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "无法确认是否有可用的公开更新。请重试。"
   },
   "zh-TW": {
     "홈": "首頁",
@@ -1395,7 +1407,13 @@
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "無法開啟安裝程式。請重試。",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "此檔案比已安裝或先前下載的版本更舊。",
     "정식": "正式",
-    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "審查或資料已變更。請重新載入已儲存的審查資料版本清單。"
+    "리뷰 또는 자료가 변경되었습니다. 검토자료 버전 목록을 다시 불러오십시오.": "審查或資料已變更。請重新載入已儲存的審查資料版本清單。",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "接收正式版和測試版中較新的版本。更新後保留此設定。",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "沒有公開的測試版，正在顯示正式版。",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "沒有公開的正式版，正在顯示測試版。",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "無法確認更新的發佈時間。請重試。",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "無法確認同一基礎版本的發佈順序。請重試。",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "無法確認是否有可用的公開更新。請重試。"
   },
   "es": {
     "홈": "Inicio",
@@ -1860,7 +1878,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "La comprobación del instalador falló. Descárguelo de nuevo.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "No se pudo abrir el instalador. Vuelva a intentarlo.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Este archivo es anterior a una versión instalada o descargada previamente.",
-    "정식": "Oficial"
+    "정식": "Oficial",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Recibe la versión más reciente entre las versiones oficiales y de prueba. Esta preferencia se conserva tras actualizar.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "No hay una versión de prueba pública. Se muestra la versión oficial.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "No hay una versión oficial pública. Se muestra la versión de prueba.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "No se pudo verificar cuándo se publicó la actualización. Compruébalo de nuevo.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "No se pudo verificar el orden de publicación de esta versión base. Compruébalo de nuevo.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "No se pudo confirmar una actualización pública disponible. Compruébalo de nuevo."
   },
   "fr": {
     "홈": "Accueil",
@@ -2325,7 +2349,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "La vérification du programme d’installation a échoué. Téléchargez-le à nouveau.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Impossible d’ouvrir le programme d’installation. Réessayez.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Ce fichier est plus ancien qu’une version installée ou déjà téléchargée.",
-    "정식": "Officielle"
+    "정식": "Officielle",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Recevez la version la plus récente, officielle ou de test. Ce réglage est conservé après la mise à jour.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Aucune version de test publique n’est disponible. La version officielle est affichée.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Aucune version officielle publique n’est disponible. La version de test est affichée.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Impossible de vérifier la date de publication de la mise à jour. Réessayez.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Impossible de vérifier l’ordre de publication pour cette version de base. Réessayez.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Impossible de confirmer la disponibilité d’une mise à jour publique. Réessayez."
   },
   "de": {
     "홈": "Startseite",
@@ -2790,7 +2820,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "Die Prüfung der Installationsdatei ist fehlgeschlagen. Laden Sie sie erneut herunter.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Die Installationsdatei konnte nicht geöffnet werden. Versuchen Sie es erneut.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Diese Datei ist älter als eine installierte oder zuvor heruntergeladene Version.",
-    "정식": "Offiziell"
+    "정식": "Offiziell",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Die neuere offizielle oder Testversion erhalten. Diese Einstellung bleibt nach dem Update erhalten.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Keine öffentliche Testversion verfügbar. Die offizielle Version wird angezeigt.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Keine öffentliche offizielle Version verfügbar. Die Testversion wird angezeigt.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Der Veröffentlichungszeitpunkt des Updates konnte nicht geprüft werden. Erneut prüfen.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Die Veröffentlichungsreihenfolge dieser Basisversion konnte nicht geprüft werden. Erneut prüfen.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Ein verfügbares öffentliches Update konnte nicht bestätigt werden. Erneut prüfen."
   },
   "pt-BR": {
     "홈": "Início",
@@ -3255,7 +3291,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "A verificação do instalador falhou. Baixe-o novamente.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Não foi possível abrir o instalador. Tente novamente.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Este arquivo é mais antigo que uma versão instalada ou baixada anteriormente.",
-    "정식": "Oficial"
+    "정식": "Oficial",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Receba a versão mais recente, oficial ou de teste. Esta preferência é mantida após atualizar.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Não há uma versão de teste pública disponível. Exibindo a versão oficial.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Não há uma versão oficial pública disponível. Exibindo a versão de teste.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Não foi possível verificar quando a atualização foi publicada. Verifique novamente.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Não foi possível verificar a ordem de publicação desta versão base. Verifique novamente.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Não foi possível confirmar uma atualização pública disponível. Verifique novamente."
   },
   "it": {
     "홈": "Home",
@@ -3720,7 +3762,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "La verifica del programma di installazione non è riuscita. Scaricalo di nuovo.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Impossibile aprire il programma di installazione. Riprova.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Questo file è precedente a una versione installata o già scaricata.",
-    "정식": "Ufficiale"
+    "정식": "Ufficiale",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Ricevi la versione più recente tra quelle ufficiali e di prova. Questa preferenza resta dopo l’aggiornamento.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Nessuna versione di prova pubblica disponibile. Viene mostrata la versione ufficiale.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Nessuna versione ufficiale pubblica disponibile. Viene mostrata la versione di prova.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Impossibile verificare quando è stato pubblicato l’aggiornamento. Controlla di nuovo.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Impossibile verificare l’ordine di pubblicazione per questa versione di base. Controlla di nuovo.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Impossibile confermare un aggiornamento pubblico disponibile. Controlla di nuovo."
   },
   "ru": {
     "홈": "Главная",
@@ -4185,7 +4233,13 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "Проверка установщика не пройдена. Скачайте его снова.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Не удалось открыть установщик. Повторите попытку.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Этот файл старше установленной или ранее загруженной версии.",
-    "정식": "Официальная"
+    "정식": "Официальная",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Получать более новую официальную или тестовую версию. Настройка сохраняется после обновления.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Общедоступной тестовой версии нет. Показана официальная версия.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Общедоступной официальной версии нет. Показана тестовая версия.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Не удалось проверить дату публикации обновления. Повторите проверку.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Не удалось проверить порядок публикации этой базовой версии. Повторите проверку.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Не удалось подтвердить доступное общедоступное обновление. Повторите проверку."
   },
   "vi": {
     "홈": "Trang chủ",
@@ -4650,6 +4704,12 @@
     "설치 파일 검사가 실패했습니다. 다시 받으십시오.": "Kiểm tra trình cài đặt thất bại. Hãy tải lại.",
     "설치 파일을 열지 못했습니다. 다시 시도하십시오.": "Không thể mở trình cài đặt. Hãy thử lại.",
     "설치했거나 전에 받은 버전보다 오래된 파일입니다.": "Tệp này cũ hơn phiên bản đã cài đặt hoặc đã tải trước đó.",
-    "정식": "Chính thức"
+    "정식": "Chính thức",
+    "정식 버전과 테스트 버전 중 더 최신인 버전을 받습니다. 업데이트 뒤에도 이 설정을 유지합니다.": "Nhận phiên bản mới hơn giữa bản chính thức và bản thử nghiệm. Giữ tùy chọn này sau khi cập nhật.",
+    "공개된 테스트 버전이 없어 정식 버전을 표시합니다.": "Không có bản thử nghiệm công khai. Đang hiển thị bản chính thức.",
+    "공개된 정식 버전이 없어 테스트 버전을 표시합니다.": "Không có bản chính thức công khai. Đang hiển thị bản thử nghiệm.",
+    "업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.": "Không thể xác minh thời điểm phát hành bản cập nhật. Hãy kiểm tra lại.",
+    "같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.": "Không thể xác minh thứ tự phát hành cho phiên bản cơ sở này. Hãy kiểm tra lại.",
+    "공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.": "Không thể xác nhận bản cập nhật công khai có sẵn. Hãy kiểm tra lại."
   }
 }

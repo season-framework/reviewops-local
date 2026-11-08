@@ -4,7 +4,7 @@ const fs=require('node:fs/promises'),os=require('node:os'),path=require('node:pa
 const {execFileSync}=require('node:child_process'),Module=require('node:module');
 const crypto=require('node:crypto');
 const {createZip}=require('../electron/archive.cjs');
-const {testManifestFor,createUpdateManager,TEST_RELEASE_API}=require('../electron/updates.cjs');
+const {testManifestFor,createUpdateManager,TEST_RELEASE_API,RELEASE_API}=require('../electron/updates.cjs');
 const release=import('../scripts/test-release.mjs'),ledgerModule=import('../scripts/test-development-ledger.mjs'),metadataModule=import('../scripts/test-development-metadata.mjs');
 const build=(number=11001,developmentNumber=1,version='1.2.11')=>({channel:'test',version,buildNumber:number,developmentNumber,commit:number.toString(16).padStart(40,'0'),builtAt:'2026-11-01T16:00:00.000Z'});
 const withoutDevelopment=value=>{const {developmentNumber,...rest}=value;return rest;};
@@ -113,7 +113,7 @@ test('preferences written by the real legacy updater remain current after a deve
  const published={tag_name:'test-latest',draft:false,prerelease:true,body:`${m.marker}${JSON.stringify(plan.pointer)} -->`,assets:plan.assets.map(item=>({name:item.name,size:item.size,browser_download_url:m.ROOT_URL+item.name}))};
  for(const [platform,arch]of[['darwin','arm64'],['darwin','x64'],['win32','x64']]){
   const dataPath=path.join(directory,platform+'-'+arch),app={isPackaged:true,getVersion:()=> '1.2.10'};
-  const options={app,dataPath,platform,arch,shell:{openExternal(){}},request:async url=>Buffer.from(JSON.stringify(url===TEST_RELEASE_API?published:plan.manifest))};
+  const options={app,dataPath,platform,arch,shell:{openExternal(){}},request:async url=>Buffer.from(JSON.stringify(url===TEST_RELEASE_API?published:url===RELEASE_API?{tag_name:'v1.2.9',draft:false,prerelease:false,published_at:'2026-10-30T00:00:00Z'}:plan.manifest))};
   const previous=old.createUpdateManager(options);t.after(()=>previous.close());
   const state=await previous.configure({testUpdates:true,automatic:false});assert.equal(state.status,'available');
   const saved=JSON.parse(await fs.readFile(path.join(dataPath,'updates/settings.json'),'utf8'));assert.equal(saved.highestTestBuild.developmentNumber,undefined);

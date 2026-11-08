@@ -34,18 +34,18 @@ function assetUrl(value, version, filename) {
   if (value !== `${RELEASES_URL}/download/v${version}/${filename}`) throw new Error('The update download address is invalid.');
   return value;
 }
-function manifestFor(manifest, release, arch, currentVersion) {
+function manifestFor(manifest, release, arch, currentVersion, { installedBuild = null, platform = 'darwin' } = {}) {
   if (!manifest || manifest.schema !== 1 || release.draft || release.prerelease) throw new Error('The update information is invalid.');
   versionParts(manifest.version);
   if (release.tag_name !== `v${manifest.version}`) throw new Error('The release version does not match its update information.');
-  if (!newer(manifest.version, currentVersion)) return null;
-  if (!['arm64', 'x64'].includes(arch)) throw new Error('Updates are not available for this processor.');
-  const item = manifest.artifacts?.[`darwin-${arch}`], filename = `ReviewOps-${manifest.version}-${arch}.zip`;
-  if (!item || item.name !== filename || !/^[a-f0-9]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 1024 || item.size > MAX_DOWNLOAD) throw new Error('An update for this Mac is not available in this release.');
+  if (!newer(manifest.version, currentVersion) && !(manifest.version === currentVersion && installedBuild?.channel === 'test')) return null;
+  if (!['darwin-arm64','darwin-x64','win32-x64'].includes(`${platform}-${arch}`)) throw new Error('Updates are not available for this processor.');
+  const item = manifest.artifacts?.[`${platform}-${arch}`], filename = platform === 'win32' ? `ReviewOps-${manifest.version}-windows-${arch}.exe` : `ReviewOps-${manifest.version}-${arch}.zip`;
+  if (!item || item.name !== filename || !/^[a-f0-9]{64}$/.test(item.sha256) || !Number.isSafeInteger(item.size) || item.size < 1024 || item.size > MAX_DOWNLOAD) throw new Error('An update for this computer is not available in this release.');
   assetUrl(item.url, manifest.version, filename);
   const publishedAsset = release.assets?.find(asset => asset.name === filename);
   if (!publishedAsset || publishedAsset.size !== item.size || publishedAsset.browser_download_url !== item.url) throw new Error('The update file does not match the GitHub release.');
-  return { ...item, version: manifest.version, releaseUrl: `${RELEASES_URL}/tag/v${manifest.version}` };
+  return { ...item, version: manifest.version, channel: 'stable', releaseUrl: `${RELEASES_URL}/tag/v${manifest.version}` };
 }
 function updateFailure(code, message) { return Object.assign(new Error(message), { code }); }
 function testBuild(value, version) {
@@ -54,7 +54,7 @@ function testBuild(value, version) {
   try { return validateBuildInfo(value, version); } catch { throw updateFailure('invalid_manifest', '테스트 버전의 빌드 정보가 올바르지 않습니다.'); }
 }
 function testPointer(release) {
-  if (!release || release.draft || !release.prerelease || release.tag_name !== TEST_TAG) throw updateFailure('invalid_manifest', '테스트 버전의 공개 정보가 올바르지 않습니다.');
+  if (!release || release.draft !== false || release.prerelease !== true || release.tag_name !== TEST_TAG) throw updateFailure('invalid_manifest', '테스트 버전의 공개 정보가 올바르지 않습니다.');
   const pointers = [...String(release.body || '').matchAll(/<!-- reviewops-test-pointer:(.*?) -->/g)];
   if (!pointers.length) throw updateFailure('test_unavailable', '공개된 테스트 설치파일이 없습니다.');
   if (pointers.length !== 1) throw updateFailure('invalid_manifest', '테스트 버전의 파일 정보가 중복되었습니다.');
@@ -94,6 +94,25 @@ function testManifestFor(manifest, published, arch, currentVersion, installedBui
   try { if (manifest.changes) changes = validateChangeNotes(manifest.changes, build.commit); }
   catch { throw updateFailure('invalid_manifest', '테스트 버전의 변경 내용이 올바르지 않습니다.'); }
   return { ...item, version: build.version, build, changes, channel: 'test', releaseUrl: TEST_RELEASE_URL };
+}
+function publicationTime(value) {
+  const match = typeof value === 'string' && value.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/);
+  const canonical = match && `${match[1]}.${(match[2] || '').padEnd(3,'0')}Z`;
+  if (!canonical || !Number.isFinite(Date.parse(value)) || new Date(value).toISOString() !== canonical) throw updateFailure('invalid_manifest', '업데이트 게시 시점을 확인할 수 없습니다. 다시 확인하십시오.');
+  return Date.parse(value);
+}
+function testPublicationTime(published, pointer, build) {
+  const asset = published.assets.find(item => item.name === pointer.manifest);
+  // The rolling release keeps its original publication date. The selected
+  // immutable manifest asset belongs to this generation; notes edits do not.
+  return publicationTime(Object.hasOwn(asset,'created_at') ? asset.created_at : build.builtAt);
+}
+function selectUpdateCandidate(stable, test) {
+  if (!stable) return test?.candidate || null;
+  if (!test) return stable.candidate;
+  if (newer(stable.version,test.version)) return stable.candidate;
+  if (newer(test.version,stable.version)) return test.candidate;
+  return stable.publishedAt >= test.publishedAt ? stable.candidate : test.candidate;
 }
 function allowedDownload(value) {
   const url = new URL(value);
@@ -219,6 +238,7 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
   let installedBuild = buildInfo?.channel === 'test' ? testBuild(buildInfo, version) : { channel: 'stable', version };
   let automatic = true, intervalMinutes = DEFAULT_INTERVAL_MINUTES, channel = 'stable', highestTestBuild = null;
   let ready = null, interval = null, started = false, pendingInstall = null, status = 'idle', error = '', errorCode = '', release = null, progress = 0, checkedAt = null;
+  let unavailableChannels = [], feedErrors = [];
   let generation = 0, activeTask = null, applying = null, controller = null, configuration = Promise.resolve();
   try {
     const saved = JSON.parse(fs.readFileSync(preferences, 'utf8'));
@@ -229,8 +249,8 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
   try { const pending = JSON.parse(fs.readFileSync(pendingFile, 'utf8')); if (typeof pending.job === 'string' && path.dirname(pending.job) === root && fs.readFileSync(path.join(pending.job, 'result'), 'utf8').trim() === 'failed') { status = 'error'; error = 'The update could not start. The previous version was restored.'; errorCode = 'install_failed'; } } catch { /* No previous installation result. */ }
   const supported = platform === 'darwin' && app.isPackaged && ['arm64','x64'].includes(arch) && /^\d+\.\d+\.\d+$/.test(version);
   const testSupported = supported || (platform === 'win32' && app.isPackaged && arch === 'x64');
-  const canCheck = () => supported || (channel === 'test' && testSupported);
-  const snapshot = () => ({ version, arch, supported, testSupported, canCheck: canCheck(), manualInstall: !supported && canCheck(), automatic, intervalMinutes, channel, testUpdates: channel === 'test', installedBuild: { ...installedBuild }, availableBuild: release?.build || null, availableChanges: release?.changes || null, generation, status, error, errorCode, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || (channel === 'test' ? TEST_RELEASE_URL : RELEASES_URL) });
+  const canCheck = () => testSupported;
+  const snapshot = () => ({ version, arch, supported, testSupported, canCheck: canCheck(), manualInstall: !supported && canCheck(), automatic, intervalMinutes, channel, testUpdates: channel === 'test', installedBuild: { ...installedBuild }, availableChannel: release?.channel || null, unavailableChannels: [...unavailableChannels], feedErrors: feedErrors.map(item=>({...item})), availableBuild: release?.build || null, availableChanges: release?.changes || null, generation, status, error, errorCode, progress, checkedAt, availableVersion: release?.version || null, releaseUrl: release?.releaseUrl || (channel === 'test' ? TEST_RELEASE_URL : RELEASES_URL) });
   const emit = () => onChange(snapshot());
   const set = (next, message = '', code = '') => { status = next; error = message; errorCode = code; emit(); };
   const stale = Symbol('old update channel');
@@ -260,7 +280,7 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
         automatic = nextAutomatic; intervalMinutes = nextInterval;
         if (changedChannel) {
           generation++; controller?.abort(); controller = null; activeTask = null; applying = null;
-          channel = nextChannel; release = null; ready = null; pendingInstall = null; checkedAt = null; progress = 0;
+          channel = nextChannel; unavailableChannels = []; feedErrors = []; release = null; ready = null; pendingInstall = null; checkedAt = null; progress = 0;
           await fsp.unlink(pendingFile).catch(failure => { if (failure.code !== 'ENOENT') throw failure; });
           set('idle');
         } else emit();
@@ -275,30 +295,51 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
       set('checking');
       try {
         const checkingChannel = channel;
-        const published = JSON.parse((await request(checkingChannel === 'test' ? TEST_RELEASE_API : RELEASE_API, { maxBytes: 2 * 1024 ** 2, signal })).toString('utf8')); guard(epoch);
-        let candidate;
-        if (checkingChannel === 'test') {
-          const pointer = testPointer(published);
-          const manifest = JSON.parse((await request(pointer.url, { maxBytes: 1024 ** 2, expectedSize: pointer.size, expectedHash: pointer.sha256, signal })).toString('utf8')); guard(epoch);
-          if (manifest.build?.buildNumber !== pointer.buildNumber || manifest.build?.commit !== pointer.commit) throw updateFailure('invalid_manifest', '테스트 안내 파일과 공개한 빌드 정보가 다릅니다.');
-          candidate = testManifestFor(manifest, published, arch, version, installedBuild, platform, highestTestBuild);
-          highestTestBuild = testBuild(manifest.build, manifest.version); await privateRoot(); guard(epoch); savePreferences();
-        } else {
+        unavailableChannels = []; feedErrors = [];
+        const releaseInfo = async (url, kind) => {
+          try { const value = JSON.parse((await request(url,{maxBytes:2*1024**2,signal})).toString('utf8')); guard(epoch); if (!value || typeof value !== 'object' || Array.isArray(value)) throw updateFailure('invalid_manifest', 'The update information is invalid.'); return value; }
+          catch (failure) { guard(epoch); if (failure.code === 'not_found') { unavailableChannels.push(kind); return null; } throw failure; }
+        };
+        const stableFeed = async () => {
+          const published = await releaseInfo(RELEASE_API,'stable'); if (!published) return null;
           const tagVersion = typeof published.tag_name === 'string' ? published.tag_name.replace(/^v/, '') : '';
           versionParts(tagVersion);
-          if (published.draft || published.prerelease) throw new Error('Only published stable releases can be installed.');
-          if (!newer(tagVersion, version)) { release = null; ready = null; checkedAt = new Date().toISOString(); set('current'); return snapshot(); }
+          if (published.tag_name !== `v${tagVersion}` || published.draft !== false || published.prerelease !== false) throw updateFailure('invalid_manifest','Only published stable releases can be installed.');
+          const publishedAt = checkingChannel === 'test' ? publicationTime(published.published_at) : null;
+          const eligible = newer(tagVersion,version) || (tagVersion === version && installedBuild.channel === 'test');
+          if (!eligible) return {version:tagVersion,publishedAt,candidate:null};
           const manifestAsset = published.assets?.find(asset => asset.name === 'reviewops-update.json');
-          if (!manifestAsset || manifestAsset.size > 1024 ** 2) throw new Error('The release does not contain update information.');
-          assetUrl(manifestAsset.browser_download_url, tagVersion, 'reviewops-update.json');
-          const manifest = JSON.parse((await request(manifestAsset.browser_download_url, { maxBytes: 1024 ** 2, signal })).toString('utf8')); guard(epoch);
-          candidate = manifestFor(manifest, published, arch, version);
-        }
+          if (!manifestAsset || manifestAsset.size > 1024 ** 2) throw updateFailure('invalid_manifest','The release does not contain update information.');
+          assetUrl(manifestAsset.browser_download_url,tagVersion,'reviewops-update.json');
+          const manifest = JSON.parse((await request(manifestAsset.browser_download_url,{maxBytes:1024**2,signal})).toString('utf8')); guard(epoch);
+          return {version:tagVersion,publishedAt,candidate:manifestFor(manifest,published,arch,version,{installedBuild,platform})};
+        };
+        const testFeed = async () => {
+          const published = await releaseInfo(TEST_RELEASE_API,'test'); if (!published) return null;
+          const pointer = testPointer(published);
+          const manifest = JSON.parse((await request(pointer.url,{maxBytes:1024**2,expectedSize:pointer.size,expectedHash:pointer.sha256,signal})).toString('utf8')); guard(epoch);
+          if (manifest.build?.buildNumber !== pointer.buildNumber || manifest.build?.commit !== pointer.commit) throw updateFailure('invalid_manifest','테스트 안내 파일과 공개한 빌드 정보가 다릅니다.');
+          const belowInstalledStable = installedBuild.channel === 'stable' && newer(version,manifest.version);
+          const candidate = testManifestFor(manifest,published,arch,belowInstalledStable ? manifest.version : version,installedBuild,platform,highestTestBuild);
+          return {version:manifest.version,publishedAt:testPublicationTime(published,pointer,manifest.build),build:testBuild(manifest.build,manifest.version),candidate:belowInstalledStable ? null : candidate};
+        };
+        let candidate;
+        if (checkingChannel === 'test') {
+          const results = await Promise.allSettled([stableFeed(),testFeed()]); guard(epoch);
+          feedErrors = results.flatMap((result,index)=>result.status==='rejected'?[{channel:index===0?'stable':'test',code:result.reason.code||'network_error',message:result.reason.message}]:[]);
+          if (feedErrors.length) throw updateFailure(feedErrors.length===1?feedErrors[0].code:'update_check_failed',feedErrors.map(item=>`${item.channel==='stable'?'정식':'테스트'}: ${item.message}`).join(' / '));
+          const [stable,test] = results.map(result=>result.value);
+          if (!test && stable?.version === version && installedBuild.channel === 'test') throw updateFailure('test_unavailable','같은 기본 버전의 게시 순서를 확인할 수 없습니다. 다시 확인하십시오.');
+          candidate = selectUpdateCandidate(stable,test);
+          if (test) { await privateRoot(); guard(epoch); highestTestBuild = test.build; savePreferences(); }
+        } else candidate = (await stableFeed())?.candidate || null;
+        guard(epoch);
+        if (!candidate && unavailableChannels.length) throw updateFailure(unavailableChannels.length===1&&unavailableChannels[0]==='test'?'test_unavailable':'update_unavailable','공개된 업데이트를 확인할 수 없습니다. 다시 확인하십시오.');
         release = candidate; checkedAt = new Date().toISOString();
         if (ready?.release?.sha256 !== release?.sha256 || ready?.generation !== epoch) ready = null;
         set(!release ? 'current' : ready ? 'ready' : 'available');
       } catch (failure) {
-        if (generation === epoch && failure !== stale) { release = null; ready = null; set('error', failure.message, channel === 'test' && failure.code === 'not_found' ? 'test_unavailable' : failure.code || 'network_error'); }
+        if (generation === epoch && failure !== stale) { release = null; ready = null; set('error', failure.message, failure.code || 'network_error'); }
       }
       return snapshot();
     },
@@ -339,7 +380,7 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
     },
     async install(epoch) {
       if (pendingInstall) return snapshot();
-      if (!ready || ready.generation !== epoch || !canCheck() || ready.release.channel !== (channel === 'test' ? 'test' : undefined)) throw new Error('Download and verify the update first.');
+      if (!ready || ready.generation !== epoch || !canCheck() || !['stable','test'].includes(ready.release.channel) || (ready.release.channel === 'test' && channel !== 'test')) throw new Error('Download and verify the update first.');
       if (isBusy()) throw new Error('Finish active tasks and close terminal sessions before installing the update.');
       const selectedReady = ready;
       if (!supported) {
@@ -423,4 +464,4 @@ function createUpdateManager({ app, dataPath, shell, isBusy = () => false, platf
   };
   return manager;
 }
-module.exports = { createUpdateManager, manifestFor, newer, allowedDownload, download, inspectBundle, inspectWindowsInstaller, machoArchitectures, pruneUpdateCache, hasActiveWork, REPOSITORY, RELEASE_API, RELEASES_URL, TEST_RELEASE_API, TEST_RELEASE_URL, TEST_TAG, testManifestFor, testPointer, testBuild };
+module.exports = { createUpdateManager, manifestFor, newer, allowedDownload, download, inspectBundle, inspectWindowsInstaller, machoArchitectures, pruneUpdateCache, hasActiveWork, REPOSITORY, RELEASE_API, RELEASES_URL, TEST_RELEASE_API, TEST_RELEASE_URL, TEST_TAG, testManifestFor, testPointer, testBuild, publicationTime, testPublicationTime, selectUpdateCandidate };
